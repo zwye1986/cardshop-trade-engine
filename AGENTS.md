@@ -20,6 +20,7 @@ Put production code in each module's `src/main/java`, tests in `src/test/java`, 
 - `mvn clean package`: build all modules and run tests.
 - `mvn test`: run the full test suite.
 - `mvn -pl cardshop-trade-engine-bootstrap -am test`: test the bootstrap module plus required dependencies.
+- `./scripts/dev-local.sh`: run the service locally with `local` profile and external middleware auto-configuration disabled.
 - `APP_PROFILE=dev NACOS_SERVER_ADDR=127.0.0.1:8848 NACOS_NAMESPACE=cardshop-trade-engine-dev NACOS_GROUP=TRADE_ENGINE_DEV mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run`: run locally with the dev profile.
 
 Use JDK 21 and Maven 3.9 or newer.

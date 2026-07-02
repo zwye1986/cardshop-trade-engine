@@ -1,0 +1,34 @@
+server:
+  port: ${SERVER_PORT:18081}
+
+spring:
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration
+      - org.mybatis.spring.boot.autoconfigure.MybatisAutoConfiguration
+      - org.springframework.boot.autoconfigure.amqp.RabbitAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration
+      - org.springframework.boot.autoconfigure.data.redis.RedisReactiveAutoConfiguration
+      - org.springframework.boot.autoconfigure.liquibase.LiquibaseAutoConfiguration
+  liquibase:
+    enabled: false
+  rabbitmq:
+    virtual-host: cardshop-trade-local
+
+trade:
+  engine:
+    environment: local
+    redis:
+      write-enabled: false
+    routing:
+      enabled: false
+      legacy-base-url: ${LEGACY_CARD_SHOP_BASE_URL:}
+      gray-org-codes: []
+      gray-app-ids: []
+    balance:
+      owner-mode: NEW
+    fault-injection:
+      enabled: false
+    health:
+      external-check-enabled: false

@@ -66,7 +66,15 @@ mvn -pl cardshop-trade-engine-bootstrap -am test
 
 ## 本地启动
 
-默认 profile 为 `dev`。本地需要提供 Nacos 地址，Redis、RabbitMQ、MySQL 等连接信息应来自环境变量、Nacos 或部署密钥。
+本机轻量开发优先使用 `local` profile。该模式禁用 Nacos、Redis、RabbitMQ、MySQL、Liquibase 自动连接，只用于启动应用、调试 Actuator 和开发接口骨架。
+
+```bash
+./scripts/dev-local.sh
+```
+
+`local` 默认端口为 `18081`，可通过 `SERVER_PORT` 覆盖。脚本默认使用 `/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home`；如需指定其他 JDK 21 路径，设置 `CARD_SHOP_TRADE_JAVA_HOME`。
+
+需要联调真实中间件时使用 `dev` profile。本地需要提供 Nacos 地址，Redis、RabbitMQ、MySQL 等连接信息应来自环境变量、Nacos 或部署密钥。
 
 ```bash
 APP_PROFILE=dev \
@@ -76,7 +84,7 @@ NACOS_GROUP=TRADE_ENGINE_DEV \
 mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
 ```
 
-服务默认端口为 `8080`，可通过 `SERVER_PORT` 覆盖。
+`dev` 默认端口为 `8080`，可通过 `SERVER_PORT` 覆盖。
 
 ## 环境与配置
 
