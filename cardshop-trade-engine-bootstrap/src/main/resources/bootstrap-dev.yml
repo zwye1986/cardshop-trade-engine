@@ -1,0 +1,9 @@
+spring:
+  cloud:
+    nacos:
+      config:
+        namespace: ${NACOS_NAMESPACE:cardshop-trade-engine-dev}
+        group: ${NACOS_GROUP:TRADE_ENGINE_DEV}
+      discovery:
+        namespace: ${NACOS_NAMESPACE:cardshop-trade-engine-dev}
+        group: ${NACOS_GROUP:TRADE_ENGINE_DEV}

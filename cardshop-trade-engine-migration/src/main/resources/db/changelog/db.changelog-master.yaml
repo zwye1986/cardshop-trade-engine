@@ -1,0 +1,7 @@
+databaseChangeLog:
+  - changeSet:
+      id: 0000-d1-baseline
+      author: cardshop
+      changes:
+        - tagDatabase:
+            tag: cardshop-trade-engine-d1-baseline

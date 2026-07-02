@@ -1,0 +1,76 @@
+package com.cardshop.trade.engine.infrastructure.config;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Configuration;
+
+/**
+ * `trade.engine.*` 配置绑定测试。
+ *
+ * <p>配置字段对应 {@code docs/交行直充业务系统详细设计.md}「7.4 核心配置项」和
+ * 「20.10 Nacos 配置全量模板」。新增配置项时应同步补充默认值和环境覆盖测试，防止 Nacos 模板、
+ * 本地 YAML 与 Java 绑定对象语义漂移。
+ */
+class TradeEnginePropertiesTest {
+
+    private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
+            .withUserConfiguration(PropertiesConfiguration.class);
+
+    @Test
+    void bindsDesignDefaults() {
+        contextRunner.run(context -> {
+            var properties = context.getBean(TradeEngineProperties.class);
+
+            // 默认值来自详细设计和高可用方案中的 D1 基线配置。
+            assertThat(properties.getRedis().isWriteEnabled()).isTrue();
+            assertThat(properties.getRedis().getWaitReplicas()).isEqualTo(1);
+            assertThat(properties.getRedis().getPendingOrgBucketCount()).isEqualTo(128);
+            assertThat(properties.getMq().getPublishConfirmTimeoutMs()).isEqualTo(500);
+            assertThat(properties.getMq().getBreaker().isEnabled()).isTrue();
+            assertThat(properties.getOrder().getPendingTtlDays()).isEqualTo(7);
+            assertThat(properties.getOrder().getTerminalTtlHours()).isEqualTo(72);
+            assertThat(properties.getRouting().getSupportedPaths())
+                    .contains("/v1/cardapi/order/createRechargeOrder");
+            assertThat(properties.getV1().getTokenClockSkewSeconds()).isEqualTo(30);
+            assertThat(properties.getBalance().getOwnerMode()).isEqualTo("NEW");
+            assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(16);
+            assertThat(properties.getThreadPool().getDbMaxSize()).isEqualTo(32);
+        });
+    }
+
+    @Test
+    void bindsEnvironmentOverrides() {
+        contextRunner
+                .withPropertyValues(
+                        "trade.engine.redis.write-enabled=false",
+                        "trade.engine.redis.wait-replicas=2",
+                        "trade.engine.mq.breaker.failure-threshold=9",
+                        "trade.engine.routing.gray-org-codes[0]=A11",
+                        "trade.engine.routing.supported-paths[0]=/v1/cardapi/order/getRechargeOrder",
+                        "trade.engine.v1.crypto.key-rotation-previous-enabled=false",
+                        "trade.engine.thread-pool.db-core-size=4",
+                        "trade.engine.thread-pool.db-max-size=8")
+                .run(context -> {
+                    var properties = context.getBean(TradeEngineProperties.class);
+
+                    // 环境覆盖验证用于保证 Nacos 灰度配置能被 Spring Boot 正确绑定。
+                    assertThat(properties.getRedis().isWriteEnabled()).isFalse();
+                    assertThat(properties.getRedis().getWaitReplicas()).isEqualTo(2);
+                    assertThat(properties.getMq().getBreaker().getFailureThreshold()).isEqualTo(9);
+                    assertThat(properties.getRouting().getGrayOrgCodes()).containsExactly("A11");
+                    assertThat(properties.getRouting().getSupportedPaths())
+                            .containsExactly("/v1/cardapi/order/getRechargeOrder");
+                    assertThat(properties.getV1().getCrypto().isKeyRotationPreviousEnabled()).isFalse();
+                    assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(4);
+                    assertThat(properties.getThreadPool().getDbMaxSize()).isEqualTo(8);
+                });
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableConfigurationProperties(TradeEngineProperties.class)
+    static class PropertiesConfiguration {
+    }
+}

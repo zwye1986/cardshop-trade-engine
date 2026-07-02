@@ -1,0 +1,23 @@
+spring:
+  application:
+    name: cardshop-trade-engine
+  profiles:
+    active: ${APP_PROFILE:dev}
+  config:
+    import:
+      - optional:nacos:cardshop-trade-engine-common.yaml
+      - optional:nacos:cardshop-trade-engine-${spring.profiles.active}.yaml
+      - optional:nacos:cardshop-trade-engine-supplier.yaml
+      - optional:nacos:cardshop-trade-engine-risk.yaml
+  cloud:
+    nacos:
+      server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+      username: ${NACOS_USERNAME:}
+      password: ${NACOS_PASSWORD:}
+      config:
+        namespace: ${NACOS_NAMESPACE:cardshop-trade-engine-dev}
+        group: ${NACOS_GROUP:TRADE_ENGINE_DEV}
+        file-extension: yaml
+      discovery:
+        namespace: ${NACOS_NAMESPACE:cardshop-trade-engine-dev}
+        group: ${NACOS_GROUP:TRADE_ENGINE_DEV}

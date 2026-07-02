@@ -1,0 +1,91 @@
+server:
+  port: ${SERVER_PORT:8080}
+
+spring:
+  main:
+    web-application-type: reactive
+  liquibase:
+    change-log: classpath:/db/changelog/db.changelog-master.yaml
+
+management:
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      group:
+        readiness:
+          include: readinessState,tradeEngineReadiness
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  health:
+    livenessstate:
+      enabled: true
+    readinessstate:
+      enabled: true
+
+trade:
+  engine:
+    redis:
+      write-enabled: true
+      wait-replicas: 1
+      wait-timeout-ms: 100
+      pending-org-bucket-count: 128
+      unavailable-fail-closed: true
+      lua-warn-threshold-ms: 30
+    mq:
+      persist-exchange: recharge.persist.exchange
+      persist-routing-key: recharge.persist.mysql
+      publish-confirm-timeout-ms: 500
+      publish-retry-times: 3
+      confirm-worker-queue-capacity: 10000
+      breaker:
+        enabled: true
+        failure-threshold: 20
+        rolling-window-seconds: 30
+        open-seconds: 30
+        half-open-permits: 3
+    order:
+      pending-ttl-days: 7
+      terminal-ttl-hours: 72
+      pending-protect-seconds: 300
+      request-hash-version: v1
+      request-hash-alg: SHA-256
+      config-changed-retry-min-ms: 500
+      config-changed-retry-max-ms: 2000
+    routing:
+      enabled: true
+      legacy-base-url: ${LEGACY_CARD_SHOP_BASE_URL:}
+      proxy-timeout-ms: 3000
+      gray-org-codes: []
+      gray-app-ids: []
+      supported-paths:
+        - /v1/cardapi/auth/getToken
+        - /v1/cardapi/order/createRechargeOrder
+        - /v1/cardapi/order/getRechargeOrder
+        - /v1/cardapi/order/invalid
+    v1:
+      request-sm4-enabled: true
+      timestamp-allowed-skew-seconds: 300
+      nonce-replay-ttl-seconds: 600
+      token-clock-skew-seconds: 30
+      sign-alg: SM3
+      jwt-secret: ${V1_CARDAPI_JWT_SECRET:}
+      token-redis-key-prefix: "token:app_id:"
+      token-claim-key: "order_token_key:"
+      crypto:
+        sm4-key-source: MERCHANT_SECRET
+        sign-key-source: MERCHANT_SECRET
+        key-rotation-previous-enabled: true
+    balance:
+      owner-mode: NEW
+      reconcile-diff-threshold-cent: 100
+    thread-pool:
+      db-core-size: 16
+      db-max-size: 32
+      mq-confirm-worker-size: 8
+      supplier-io-size: 32
+      queue-capacity: 10000
+    health:
+      external-check-enabled: false

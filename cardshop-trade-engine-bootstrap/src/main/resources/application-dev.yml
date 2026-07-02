@@ -1,0 +1,17 @@
+spring:
+  liquibase:
+    enabled: true
+  rabbitmq:
+    virtual-host: cardshop-trade-dev
+
+trade:
+  engine:
+    environment: dev
+    redis:
+      write-enabled: true
+    balance:
+      owner-mode: NEW
+    mq:
+      publish-confirm-timeout-ms: 1000
+    fault-injection:
+      enabled: false

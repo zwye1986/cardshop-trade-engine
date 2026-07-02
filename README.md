@@ -1,93 +1,106 @@
-# Cardshop Trade Engine
+# cardshop-trade-engine
 
+`cardshop-trade-engine` 是面向交行直充场景拆分出的独立交易服务。当前工程处于 D1 骨架阶段，已落地 Maven 多模块工作区、Spring Boot 启动模块、多环境/Nacos bootstrap、Actuator 探针、Liquibase 入口和 `trade.engine.*` 共享配置绑定。
 
+目标设计见：
 
-## Getting started
+- [交行直充业务系统详细设计](docs/交行直充业务系统详细设计.md)
+- [交行直充接口 Redis 与 MySQL 一致性及高可用设计实现方案](docs/交行直充业务系统高可用方案设计.md)
+- [交行直充业务系统开发时间表](docs/交行直充业务系统开发时间表.md)
+- [贡献者指南](AGENTS.md)
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## 技术栈
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+- Java 21，Maven 3.9+
+- Spring Boot 3.3.6，Spring WebFlux，Actuator
+- Spring Cloud 2023.0.4，Spring Cloud Alibaba 2023.0.1.2，Nacos
+- Redis Reactive，RabbitMQ，MyBatis，MySQL
+- Liquibase 4.29.2
+- JUnit 5，AssertJ，Spring Boot Test
 
-## Add your files
+## 目标架构
 
-- [ ] [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-- [ ] [Add files using the command line](https://docs.gitlab.com/ee/gitlab-basics/add-file.html#add-a-file-using-the-command-line) or push an existing Git repository with the following command:
+服务通过 `/v1/cardapi` 兼容旧直充接口，按配置支持灰度路由和无侵入切流。目标链路以 Redis Lua 承接高并发下单和余额冻结，RabbitMQ 负责异步持久化与补偿，MySQL 保留最终业务状态，XXL-Job 承担补投、对账、缓存修复等后台任务。Redis 写入、MQ Confirm、MySQL 落库和灰度切流均通过配置开关渐进启用。
 
+## 模块结构
+
+| Module | Responsibility |
+| --- | --- |
+| `cardshop-trade-engine-domain` | 领域模型和业务规则；不依赖 Spring、MyBatis、Redis、RabbitMQ。 |
+| `cardshop-trade-engine-application` | 应用服务、用例编排和端口接口。 |
+| `cardshop-trade-engine-api` | WebFlux Controller、请求/响应 DTO、接口适配。 |
+| `cardshop-trade-engine-infrastructure` | Redis、RabbitMQ、MyBatis、Nacos 配置和外部适配器。 |
+| `cardshop-trade-engine-job` | XXL-Job Handler 和后台任务入口。 |
+| `cardshop-trade-engine-migration` | Liquibase changelog，入口位于 `src/main/resources/db/changelog/`。 |
+| `cardshop-trade-engine-test-support` | 集成测试复用 fixture。 |
+| `cardshop-trade-engine-bootstrap` | Spring Boot 启动、profile、Actuator、线程池和 readiness 配置。 |
+
+生产代码放在各模块 `src/main/java`，测试放在 `src/test/java`，资源放在 `src/main/resources`。
+
+## 开发规范
+
+- 开发过程中如果发现既定方案需要调整，必须先同步更新 `docs/交行直充业务系统高可用方案设计.md` 和 `docs/交行直充业务系统详细设计.md`，再修改代码。
+- 代码中的关键类、方法、流程和非显然决策必须写详细中文注释，并链接到 `docs/交行直充业务系统详细设计.md` 的对应章节。
+- DTO 的类注释和字段注释必须与对应 DDL 中的 `COMMENT` 保持一致。
+- 优先使用 JDK 21 能提升清晰性、安全性或简洁性的语言和标准库特性。
+- 关键业务、路由、Redis、MQ、MySQL、补偿和对账链路必须记录足够排障上下文；日志不能输出密钥、密码或敏感报文。
+
+## 构建与测试
+
+如本机存在多 JDK，先切到 JDK 21：
+
+```bash
+export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home
+export PATH="$JAVA_HOME/bin:$PATH"
 ```
-cd existing_repo
-git remote add origin http://47.117.129.235/backend/cardshop-trade-engine.git
-git branch -M main
-git push -uf origin main
+
+常用命令：
+
+```bash
+mvn clean package
+mvn test
+mvn -pl cardshop-trade-engine-bootstrap -am test
 ```
 
-## Integrate with your tools
+## 本地启动
 
-- [ ] [Set up project integrations](http://47.117.129.235/backend/cardshop-trade-engine/-/settings/integrations)
+默认 profile 为 `dev`。本地需要提供 Nacos 地址，Redis、RabbitMQ、MySQL 等连接信息应来自环境变量、Nacos 或部署密钥。
 
-## Collaborate with your team
+```bash
+APP_PROFILE=dev \
+NACOS_SERVER_ADDR=127.0.0.1:8848 \
+NACOS_NAMESPACE=cardshop-trade-engine-dev \
+NACOS_GROUP=TRADE_ENGINE_DEV \
+mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
+```
 
-- [ ] [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-- [ ] [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-- [ ] [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-- [ ] [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-- [ ] [Set auto-merge](https://docs.gitlab.com/ee/user/project/merge_requests/merge_when_pipeline_succeeds.html)
+服务默认端口为 `8080`，可通过 `SERVER_PORT` 覆盖。
 
-## Test and Deploy
+## 环境与配置
 
-Use the built-in continuous integration in GitLab.
+| Profile | Nacos namespace default | Nacos group default | Liquibase | RabbitMQ vhost |
+| --- | --- | --- | --- | --- |
+| `dev` | `cardshop-trade-engine-dev` | `TRADE_ENGINE_DEV` | enabled | `cardshop-trade-dev` |
+| `test` | `cardshop-trade-engine-test` | `TRADE_ENGINE_TEST` | enabled | `cardshop-trade-test` |
+| `prod` | `cardShop` | `TRADE_ENGINE_PROD` | disabled | `cardshop-trade-prod` |
 
-- [ ] [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/index.html)
-- [ ] [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-- [ ] [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-- [ ] [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-- [ ] [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
+Nacos 会按顺序加载：
 
-***
+- `cardshop-trade-engine-common.yaml`
+- `cardshop-trade-engine-${spring.profiles.active}.yaml`
+- `cardshop-trade-engine-supplier.yaml`
+- `cardshop-trade-engine-risk.yaml`
 
-# Editing this README
+核心配置前缀为 `trade.engine.*`。生产环境默认 `trade.engine.redis.write-enabled=false`，必须在 Redis、MQ、MySQL、Liquibase 和灰度路由验证通过后再开启写行为。
 
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
+## 健康检查
 
-## Suggestions for a good README
+- `/actuator/health/liveness`
+- `/actuator/health/readiness`
+- `/actuator/prometheus`
 
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
+`tradeEngineReadiness` 会暴露运行环境、Redis 写开关、Redis fail-closed、MQ breaker、路由开关、旧系统地址配置状态和外部检查开关。
 
-## Name
-Choose a self-explaining name for your project.
+## 安全要求
 
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+不要提交账号、密码、密钥或真实连接串。Nacos、Redis、RabbitMQ、MySQL 和旧系统地址等配置必须通过环境变量、Nacos 或部署密钥注入。提交前确认 `target/`、日志、IDE 文件和本地配置未进入版本库。
