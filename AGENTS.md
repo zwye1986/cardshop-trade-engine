@@ -32,6 +32,10 @@ Follow existing Spring Java style: four-space indentation, package names under `
 
 When implementation details require changing the agreed approach, update both design documents in `docs/` before changing code: `docs/交行直充业务系统高可用方案设计.md` and `docs/交行直充业务系统详细设计.md`.
 
+Before implementing interfaces covered by `docs/交行直充接口技术文档-V1.1.docx`, inspect the legacy implementation under `/Users/mac/Documents/codeSpace/cardshop` and keep the new service's business behavior basically consistent with the existing system unless the design documents or the user explicitly require a change.
+
+If requirements, interface semantics, legacy behavior, or design details are ambiguous or unclear, stop and confirm with the user before implementing that part.
+
 Code must include detailed Chinese comments for important classes, methods, flows, and non-obvious decisions. Comments should link to the relevant section in `docs/交行直充业务系统详细设计.md`. DTO class comments and field comments must stay consistent with the corresponding DDL `COMMENT` text.
 
 Prefer Java 21 language and library features where they make the code clearer, safer, or simpler. Key business, routing, Redis, MQ, MySQL, and compensation paths must log enough context to support production troubleshooting, without writing secrets or sensitive payloads.
