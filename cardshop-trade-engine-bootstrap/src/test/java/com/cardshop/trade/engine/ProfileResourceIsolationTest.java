@@ -67,8 +67,17 @@ class ProfileResourceIsolationTest {
         Properties prod = load("application-prod.yml");
 
         assertThat(dev.getProperty("spring.liquibase.enabled")).isEqualTo("true");
+        assertThat(dev).doesNotContainKeys(
+                "spring.datasource.url",
+                "spring.datasource.username",
+                "spring.datasource.password");
         assertThat(dev.getProperty("trade.engine.redis.write-enabled")).isEqualTo("true");
         assertThat(dev.getProperty("spring.rabbitmq.virtual-host")).isEqualTo("cardshop-trade-dev");
+        assertThat(dev.values())
+                .doesNotContain(
+                        "jdbc:mysql://",
+                        "spring.datasource.password",
+                        "NACOS_PASSWORD");
 
         assertThat(test.getProperty("spring.liquibase.enabled")).isEqualTo("true");
         assertThat(test.getProperty("trade.engine.redis.write-enabled")).isEqualTo("true");

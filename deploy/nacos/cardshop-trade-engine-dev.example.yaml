@@ -1,0 +1,25 @@
+spring:
+  datasource:
+    url: jdbc:mysql://<mysql-host>/cardshop_test?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=true&serverTimezone=GMT%2B8&allowMultiQueries=true
+    username: <mysql-user>
+    password: <mysql-password>
+    hikari:
+      maximum-pool-size: 16
+      minimum-idle: 4
+      connection-timeout: 2000
+  liquibase:
+    enabled: true
+  rabbitmq:
+    virtual-host: cardshop-trade-dev
+
+trade:
+  engine:
+    environment: dev
+    redis:
+      write-enabled: true
+    balance:
+      owner-mode: NEW
+    mq:
+      publish-confirm-timeout-ms: 1000
+    fault-injection:
+      enabled: false

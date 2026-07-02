@@ -62,6 +62,8 @@ export PATH="$JAVA_HOME/bin:$PATH"
 mvn clean package
 mvn test
 mvn -pl cardshop-trade-engine-bootstrap -am test
+./scripts/package.sh
+./scripts/publish-dev-nacos.sh
 ```
 
 ## 本地启动
@@ -74,17 +76,37 @@ mvn -pl cardshop-trade-engine-bootstrap -am test
 
 `local` 默认端口为 `18081`，可通过 `SERVER_PORT` 覆盖。脚本默认使用 `/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home`；如需指定其他 JDK 21 路径，设置 `CARD_SHOP_TRADE_JAVA_HOME`。
 
-需要联调真实中间件时使用 `dev` profile。本地需要提供 Nacos 地址，Redis、RabbitMQ、MySQL 等连接信息应来自环境变量、Nacos 或部署密钥。
+需要联调真实中间件时使用 `dev` profile。本地只提供 Nacos 启动引导信息，MySQL、Redis、RabbitMQ、XXL-Job 和旧卡管地址等业务/中间件配置应来自 Nacos 或部署密钥。`dev` 使用独立 namespace `cardshop-trade-engine-dev`，MySQL datasource 共用原卡管测试库 `cardshop_test`。
 
 ```bash
 APP_PROFILE=dev \
-NACOS_SERVER_ADDR=127.0.0.1:8848 \
+NACOS_SERVER_ADDR=47.117.130.100:8848 \
 NACOS_NAMESPACE=cardshop-trade-engine-dev \
 NACOS_GROUP=TRADE_ENGINE_DEV \
+NACOS_USERNAME=nacos \
+NACOS_PASSWORD='***' \
 mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
 ```
 
 `dev` 默认端口为 `8080`，可通过 `SERVER_PORT` 覆盖。
+
+## 部署打包
+
+生成可部署 zip 包：
+
+```bash
+./scripts/package.sh
+```
+
+脚本会强制检测 JDK 21，并在 `dist/` 下生成 `cardshop-trade-engine-<version>.zip`。zip 内包含应用 jar、`bin/start.sh`、`config/env.example` 和 `STARTUP.md`。服务器解压后复制 `config/env.example` 为 `config/env.<profile>`，只填写 Nacos、端口、JDK 和 JVM 参数，然后执行：
+
+```bash
+./bin/start.sh start dev
+./bin/start.sh status dev
+./bin/start.sh stop dev
+```
+
+`scripts/publish-dev-nacos.sh` 用于从本机忽略文件 `config/env.dev` 发布 `cardshop-trade-engine-dev.yaml` 到 dev Nacos。该文件可以包含真实 Nacos/MySQL 密码，但受 `.gitignore` 保护，不能提交。
 
 ## 环境与配置
 

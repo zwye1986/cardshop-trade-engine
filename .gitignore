@@ -6,3 +6,7 @@ target/
 .DS_Store
 *.iml
 logs/
+dist/
+config/env.*
+deploy/config/env.*
+!deploy/config/env.example
