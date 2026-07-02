@@ -36,6 +36,7 @@
         <spring-cloud.version>2023.0.4</spring-cloud.version>
         <spring-cloud-alibaba.version>2023.0.1.2</spring-cloud-alibaba.version>
         <mybatis-spring-boot.version>3.0.3</mybatis-spring-boot.version>
+        <mybatis-plus.version>3.5.3.1</mybatis-plus.version>
         <liquibase.version>4.29.2</liquibase.version>
     </properties>
 
@@ -59,6 +60,11 @@
                 <groupId>org.mybatis.spring.boot</groupId>
                 <artifactId>mybatis-spring-boot-starter</artifactId>
                 <version>${mybatis-spring-boot.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.baomidou</groupId>
+                <artifactId>mybatis-plus-core</artifactId>
+                <version>${mybatis-plus.version}</version>
             </dependency>
         </dependencies>
     </dependencyManagement>

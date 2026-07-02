@@ -5,3 +5,249 @@ databaseChangeLog:
       changes:
         - tagDatabase:
             tag: cardshop-trade-engine-d1-baseline
+  - changeSet:
+      id: 0001-d2-mc-order-fail-code
+      author: codex
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: mc_order
+        - not:
+            columnExists:
+              tableName: mc_order
+              columnName: fail_code
+      changes:
+        - sql:
+            stripComments: false
+            sql: |
+              ALTER TABLE mc_order
+                ADD COLUMN fail_code varchar(64) DEFAULT NULL COMMENT '失败码'
+      rollback:
+        - sql:
+            sql: |
+              ALTER TABLE mc_order
+                DROP COLUMN fail_code
+  - changeSet:
+      id: 0002-d2-mc-order-fail-reason
+      author: codex
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: mc_order
+        - not:
+            columnExists:
+              tableName: mc_order
+              columnName: fail_reason
+      changes:
+        - sql:
+            stripComments: false
+            sql: |
+              ALTER TABLE mc_order
+                ADD COLUMN fail_reason varchar(500) DEFAULT NULL COMMENT '失败原因'
+      rollback:
+        - sql:
+            sql: |
+              ALTER TABLE mc_order
+                DROP COLUMN fail_reason
+  - changeSet:
+      id: 0003-d2-check-direct-recharge-out-order-duplicates
+      author: codex
+      preConditions:
+        - onFail: HALT
+        - tableExists:
+            tableName: mc_order
+        - columnExists:
+            tableName: mc_order
+            columnName: direct_recharge_out_order_key
+        - sqlCheck:
+            expectedResult: "0"
+            sql: |
+              select count(*)
+              from (
+                select direct_recharge_out_order_key, count(*) as cnt
+                from mc_order
+                where direct_recharge_out_order_key is not null
+                group by direct_recharge_out_order_key
+                having count(*) > 1
+              ) duplicate_direct_recharge_orders
+      changes:
+        - sql:
+            sql: |
+              select 1
+      rollback:
+        - sql:
+            sql: |
+              select 1
+  - changeSet:
+      id: 0004-d2-add-direct-recharge-out-order-unique-key
+      author: codex
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: mc_order
+        - columnExists:
+            tableName: mc_order
+            columnName: direct_recharge_out_order_key
+        - not:
+            indexExists:
+              tableName: mc_order
+              indexName: uk_direct_recharge_out_order_key
+      changes:
+        - sql:
+            sql: |
+              ALTER TABLE mc_order
+                ADD UNIQUE KEY uk_direct_recharge_out_order_key (direct_recharge_out_order_key)
+      rollback:
+        - sql:
+            sql: |
+              ALTER TABLE mc_order
+                DROP INDEX uk_direct_recharge_out_order_key
+  - changeSet:
+      id: 0005-d2-create-recharge-order-ext
+      author: codex
+      changes:
+        - sql:
+            splitStatements: false
+            stripComments: false
+            sql: |
+              create table if not exists recharge_order_ext (
+                id bigint not null auto_increment comment '表主键',
+                order_id varchar(100) not null comment '平台订单号，对应mc_order.order_Id',
+                org_code varchar(64) not null comment '商户编码',
+                out_order_sn varchar(100) not null comment '商户订单号，对应mc_order.out_orderId',
+                request_hash varchar(128) not null comment '标准化请求摘要',
+                request_hash_version varchar(32) not null comment '请求摘要规范版本',
+                request_hash_alg varchar(32) not null comment '请求摘要算法',
+                redis_order_id varchar(256) default null comment 'Redis订单key或Redis侧订单标识',
+                persist_msg_id varchar(100) default null comment 'RabbitMQ落库消息ID',
+                persist_status varchar(32) not null comment 'Redis/MQ/MySQL持久化状态',
+                persist_source varchar(64) not null comment 'MySQL落库使用的快照来源',
+                redis_order_version bigint not null default 0 comment 'Redis当前订单版本',
+                persisted_version bigint not null default 0 comment '已成功写入MySQL的订单版本',
+                validation_status varchar(32) not null comment '业务校验状态',
+                dispatch_allowed tinyint(1) not null default 0 comment '是否允许供应商派单',
+                balance_reserved tinyint(1) not null default 0 comment '是否已完成Redis余额预扣',
+                mq_publish_count int not null default 0 comment '落库消息发布次数',
+                persist_retry_count int not null default 0 comment 'Redis到MySQL异步落库重试次数',
+                last_error varchar(1000) default null comment '最近一次持久化失败原因',
+                created_at datetime not null default current_timestamp comment '创建时间',
+                updated_at datetime not null default current_timestamp on update current_timestamp comment '更新时间',
+                primary key (id),
+                unique key uk_ext_order_id (order_id),
+                unique key uk_ext_org_out_order (org_code, out_order_sn),
+                key idx_ext_persist_status (persist_status, updated_at),
+                key idx_ext_msg_id (persist_msg_id)
+              ) engine=InnoDB default charset=utf8mb4 comment='交易订单扩展表，保存Redis/MQ/MySQL一致性状态'
+      rollback:
+        - sql:
+            sql: |
+              drop table if exists recharge_order_ext
+  - changeSet:
+      id: 0006-d2-create-recharge-outbox
+      author: codex
+      changes:
+        - sql:
+            splitStatements: false
+            stripComments: false
+            sql: |
+              create table if not exists recharge_outbox (
+                id bigint not null auto_increment comment '表主键',
+                event_id varchar(100) not null comment '事件唯一ID',
+                event_type varchar(64) not null comment '事件类型',
+                org_code varchar(64) not null comment '商户编码',
+                order_id varchar(100) not null comment '平台订单号',
+                out_order_sn varchar(100) not null comment '商户订单号',
+                payload json not null comment '事件参数JSON',
+                status varchar(32) not null comment '事件状态',
+                retry_count int not null default 0 comment '已重试次数',
+                max_retry_count int not null default 10 comment '最大重试次数',
+                next_retry_time datetime not null comment '下次允许执行时间',
+                locked_by varchar(100) default null comment '当前抢占该事件的应用实例ID',
+                locked_until datetime default null comment '抢占租约到期时间',
+                version bigint not null default 0 comment '乐观锁版本号',
+                last_error varchar(1000) default null comment '最近一次失败原因',
+                shard_key varchar(128) not null comment '固定使用event_id，避免不同任务分片语义冲突',
+                created_at datetime not null default current_timestamp comment '创建时间',
+                updated_at datetime not null default current_timestamp on update current_timestamp comment '更新时间',
+                primary key (id),
+                unique key uk_outbox_event_id (event_id),
+                key idx_outbox_status_retry (status, next_retry_time),
+                key idx_outbox_locked_until (status, locked_until),
+                key idx_outbox_shard (shard_key)
+              ) engine=InnoDB default charset=utf8mb4 comment='交易订单可靠事件表，承载派单、刷账、作废、缓存修复等异步动作'
+      rollback:
+        - sql:
+            sql: |
+              drop table if exists recharge_outbox
+  - changeSet:
+      id: 0007-d2-create-recharge-notify-task
+      author: codex
+      changes:
+        - sql:
+            splitStatements: false
+            stripComments: false
+            sql: |
+              create table if not exists recharge_notify_task (
+                id bigint not null auto_increment comment '表主键',
+                task_id varchar(100) not null comment '通知任务唯一ID',
+                notify_type varchar(64) not null comment '通知类型',
+                org_code varchar(64) not null comment '商户编码',
+                order_id varchar(100) not null comment '平台订单号',
+                out_order_sn varchar(100) not null comment '商户订单号',
+                notify_url varchar(500) not null comment '商户通知地址',
+                biz_status varchar(64) not null comment '业务状态',
+                payload json not null comment '通知参数JSON',
+                status varchar(32) not null comment '任务状态',
+                retry_count int not null default 0 comment '已重试次数',
+                max_retry_count int not null default 10 comment '最大重试次数',
+                next_retry_time datetime not null comment '下次允许执行时间',
+                locked_by varchar(100) default null comment '当前抢占该任务的应用实例ID',
+                locked_until datetime default null comment '抢占租约到期时间',
+                last_error varchar(1000) default null comment '最近一次失败原因',
+                created_at datetime not null default current_timestamp comment '创建时间',
+                updated_at datetime not null default current_timestamp on update current_timestamp comment '更新时间',
+                primary key (id),
+                unique key uk_notify_task_id (task_id),
+                key idx_notify_status_retry (status, next_retry_time)
+              ) engine=InnoDB default charset=utf8mb4 comment='交易订单回调通知任务表'
+      rollback:
+        - sql:
+            sql: |
+              drop table if exists recharge_notify_task
+  - changeSet:
+      id: 0008-d2-create-recharge-accept-anomaly
+      author: codex
+      changes:
+        - sql:
+            splitStatements: false
+            stripComments: false
+            sql: |
+              create table if not exists recharge_accept_anomaly (
+                id bigint not null auto_increment comment '表主键',
+                anomaly_id varchar(100) not null comment '异常记录唯一ID',
+                org_code varchar(64) not null comment '商户编码',
+                out_order_sn varchar(100) not null comment '商户订单号',
+                order_id varchar(100) default null comment '平台订单号',
+                request_hash varchar(128) default null comment '标准化请求摘要',
+                persist_msg_id varchar(100) default null comment 'RabbitMQ落库消息ID',
+                anomaly_type varchar(64) not null comment '异常类型',
+                status varchar(32) not null comment '核查状态',
+                raw_context json not null comment '受理异常原始上下文',
+                redis_check_result json default null comment 'Redis核查结果',
+                mysql_check_result json default null comment 'MySQL核查结果',
+                mq_check_result json default null comment 'RabbitMQ核查结果',
+                resolution varchar(64) default null comment '最终处理结论',
+                resolved_by varchar(100) default null comment '处理人或处理任务',
+                resolved_at datetime default null comment '处理完成时间',
+                last_error varchar(1000) default null comment '最近一次核查失败原因',
+                created_at datetime not null default current_timestamp comment '创建时间',
+                updated_at datetime not null default current_timestamp on update current_timestamp comment '更新时间',
+                primary key (id),
+                unique key uk_accept_anomaly_id (anomaly_id),
+                key idx_accept_anomaly_status (status, updated_at),
+                key idx_accept_anomaly_org_out (org_code, out_order_sn)
+              ) engine=InnoDB default charset=utf8mb4 comment='Redis受理状态未知异常核查表'
+      rollback:
+        - sql:
+            sql: |
+              drop table if exists recharge_accept_anomaly

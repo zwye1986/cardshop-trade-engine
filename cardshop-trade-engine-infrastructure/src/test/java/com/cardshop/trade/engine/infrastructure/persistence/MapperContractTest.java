@@ -1,0 +1,86 @@
+package com.cardshop.trade.engine.infrastructure.persistence;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import org.junit.jupiter.api.Test;
+
+/**
+ * D2 Mapper 契约测试。
+ *
+ * <p>Mapper 合同对应 {@code docs/交行直充业务系统详细设计.md} 的「20.7 MyBatis Mapper 细节」
+ * 和用户补充要求：SQL 禁止多表关联查询，优先使用 MyBatis-Plus LambdaWrapper。
+ */
+class MapperContractTest {
+
+    @Test
+    void mcOrderMapperUsesLegacyColumnNamesAndFailCompatibilityFields() throws IOException {
+        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/McOrderMapper.java"));
+
+        assertThat(mapper)
+                .contains("insert into mc_order")
+                .contains("order_Id")
+                .contains("out_orderId")
+                .contains("produt_code")
+                .contains("fail_code")
+                .contains("fail_reason")
+                .contains("on duplicate key update")
+                .contains("order_Id = order_Id")
+                .doesNotContainIgnoringCase(" join ");
+    }
+
+    @Test
+    void rechargeOrderExtMapperProtectsVersionForwardOnlyState() throws IOException {
+        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeOrderExtMapper.java"));
+
+        assertThat(mapper)
+                .contains("insert into recharge_order_ext")
+                .contains("persist_status = case")
+                .contains("values(persisted_version) > persisted_version")
+                .contains("values(persist_status) in ('DB_PERSISTED', 'MANUAL_REQUIRED')")
+                .contains("persisted_version = greatest(persisted_version, values(persisted_version))")
+                .contains("redis_order_version = greatest(redis_order_version, values(redis_order_version))");
+    }
+
+    @Test
+    void outboxMapperScansDueAndZombieEventsWithShardPredicate() throws IOException {
+        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeOutboxMapper.java"));
+
+        assertThat(mapper)
+                .contains("LambdaQueryWrapper")
+                .contains("RechargeOutboxDO::getStatus")
+                .contains("TaskStatus.INIT.name()")
+                .contains("TaskStatus.FAILED.name()")
+                .contains("TaskStatus.PROCESSING.name()")
+                .contains("mod(crc32(shard_key), {0}) = {1}")
+                .contains("LambdaUpdateWrapper")
+                .contains("version = version + 1");
+    }
+
+    @Test
+    void persistenceCodeDoesNotUseMultiTableJoinQueries() throws IOException {
+        Path root = Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence");
+
+        try (var files = Files.walk(root)) {
+            var joinedSource = files
+                    .filter(path -> path.toString().endsWith(".java"))
+                    .map(path -> {
+                        try {
+                            return Files.readString(path);
+                        } catch (IOException e) {
+                            throw new IllegalStateException(e);
+                        }
+                    })
+                    .reduce("", (left, right) -> left + "\n" + right);
+
+            assertThat(joinedSource)
+                    .contains("LambdaQueryWrapper")
+                    .doesNotContainIgnoringCase(" join ")
+                    .doesNotContainIgnoringCase(" left join ")
+                    .doesNotContainIgnoringCase(" right join ")
+                    .doesNotContainIgnoringCase(" inner join ");
+        }
+    }
+}
