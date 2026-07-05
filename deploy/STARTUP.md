@@ -27,8 +27,9 @@ switches should be managed by Nacos to avoid per-server configuration drift.
 
 For dev, use namespace `cardshop-trade-engine-dev` and group
 `TRADE_ENGINE_DEV`. The dev datasource points to the shared legacy cardshop
-test database `cardshop_test`; keep the actual JDBC URL and password in
-`cardshop-trade-engine-dev.yaml`, not in this package.
+test database `cardshop_test`, and Redis connection values should match the
+current legacy cardshop dev Redis settings. Keep the actual JDBC URL, Redis
+host, and password in `cardshop-trade-engine-dev.yaml`, not in this package.
 
 ## Required Nacos DataIds
 
@@ -39,7 +40,7 @@ Prepare these YAML DataIds in the selected namespace and group before starting:
 - `cardshop-trade-engine-supplier.yaml`
 - `cardshop-trade-engine-risk.yaml`
 
-Minimal dev datasource content belongs in `cardshop-trade-engine-dev.yaml`:
+Minimal dev datasource and Redis content belongs in `cardshop-trade-engine-dev.yaml`:
 
 ```yaml
 spring:
@@ -51,6 +52,13 @@ spring:
       maximum-pool-size: 16
       minimum-idle: 4
       connection-timeout: 2000
+  data:
+    redis:
+      host: <cardshop-dev-redis-host>
+      port: 6379
+      database: 15
+      password: <cardshop-dev-redis-password>
+      timeout: 3s
 ```
 
 ## Start And Stop

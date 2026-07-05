@@ -7,6 +7,20 @@ spring:
       maximum-pool-size: 16
       minimum-idle: 4
       connection-timeout: 2000
+  data:
+    redis:
+      # Keep dev Redis values consistent with legacy cardshop dev. Spring Boot 3 must use spring.data.redis.*.
+      host: <cardshop-dev-redis-host>
+      port: 6379
+      database: 15
+      password: <cardshop-dev-redis-password>
+      timeout: 3s
+      lettuce:
+        pool:
+          min-idle: 20
+          max-idle: 50
+          max-active: 100
+          max-wait: 5000ms
   liquibase:
     enabled: true
   rabbitmq:

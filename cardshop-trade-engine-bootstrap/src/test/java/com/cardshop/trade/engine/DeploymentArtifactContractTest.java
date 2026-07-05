@@ -20,12 +20,14 @@ class DeploymentArtifactContractTest {
         Path root = repositoryRoot();
         Path packageScript = root.resolve("scripts/package.sh");
         Path startScript = root.resolve("deploy/bin/start.sh");
+        Path publishDevNacosScript = root.resolve("scripts/publish-dev-nacos.sh");
         Path envExample = root.resolve("deploy/config/env.example");
         Path startupGuide = root.resolve("deploy/STARTUP.md");
         Path devNacosExample = root.resolve("deploy/nacos/cardshop-trade-engine-dev.example.yaml");
 
         assertThat(packageScript).exists().isRegularFile();
         assertThat(startScript).exists().isRegularFile();
+        assertThat(publishDevNacosScript).exists().isRegularFile();
         assertThat(envExample).exists().isRegularFile();
         assertThat(startupGuide).exists().isRegularFile();
         assertThat(devNacosExample).exists().isRegularFile();
@@ -50,6 +52,18 @@ class DeploymentArtifactContractTest {
                 .contains("JDK 21")
                 .contains("lsof");
 
+        String publishDevNacosText = Files.readString(publishDevNacosScript);
+        assertThat(publishDevNacosText)
+                .contains("CARD_SHOP_REDIS_HOST")
+                .contains("CARD_SHOP_REDIS_PORT")
+                .contains("CARD_SHOP_REDIS_DATABASE")
+                .contains("CARD_SHOP_REDIS_PASSWORD")
+                .contains("CARD_SHOP_REDIS_LOAD_FROM_CARDSHOP_NACOS")
+                .contains("spring.data.redis")
+                .contains("data:")
+                .contains("redis:")
+                .contains("password: $(yaml_quote");
+
         String envText = Files.readString(envExample);
         assertThat(envText)
                 .contains("APP_PROFILE=dev")
@@ -66,6 +80,7 @@ class DeploymentArtifactContractTest {
         assertThat(guideText)
                 .contains("cardshop-trade-engine-dev.yaml")
                 .contains("cardshop_test")
+                .contains("legacy cardshop dev Redis settings")
                 .contains("config/env.<profile>")
                 .contains("./bin/start.sh start dev")
                 .doesNotContain("NACOS_PASSWORD=")
@@ -75,9 +90,13 @@ class DeploymentArtifactContractTest {
         assertThat(devNacosText)
                 .contains("spring:")
                 .contains("datasource:")
+                .contains("data:")
+                .contains("redis:")
                 .contains("cardshop_test")
                 .contains("cardshop-trade-dev")
                 .contains("password: <mysql-password>")
+                .contains("database: 15")
+                .contains("password: <cardshop-dev-redis-password>")
                 .doesNotContain("NACOS_PASSWORD=")
                 .doesNotContain("MYSQL_PASSWORD=");
     }

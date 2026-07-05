@@ -46,6 +46,7 @@
 - DTO 的类注释和字段注释必须与对应 DDL 中的 `COMMENT` 保持一致。
 - 优先使用 JDK 21 能提升清晰性、安全性或简洁性的语言和标准库特性。
 - 关键业务、路由、Redis、MQ、MySQL、补偿和对账链路必须记录足够排障上下文；日志不能输出密钥、密码或敏感报文。
+- 暂未实现的功能必须在代码对应位置添加 `TODO` 注释，说明剩余工作，并链接到相关设计文档章节。
 
 ## 构建与测试
 
@@ -76,7 +77,7 @@ mvn -pl cardshop-trade-engine-bootstrap -am test
 
 `local` 默认端口为 `18081`，可通过 `SERVER_PORT` 覆盖。脚本默认使用 `/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home`；如需指定其他 JDK 21 路径，设置 `CARD_SHOP_TRADE_JAVA_HOME`。
 
-需要联调真实中间件时使用 `dev` profile。本地只提供 Nacos 启动引导信息，MySQL、Redis、RabbitMQ、XXL-Job 和旧卡管地址等业务/中间件配置应来自 Nacos 或部署密钥。`dev` 使用独立 namespace `cardshop-trade-engine-dev`，MySQL datasource 共用原卡管测试库 `cardshop_test`。
+需要联调真实中间件时使用 `dev` profile。本地只提供 Nacos 启动引导信息，MySQL、Redis、RabbitMQ、XXL-Job 和旧卡管地址等业务/中间件配置应来自 Nacos 或部署密钥。`dev` 使用独立 namespace `cardshop-trade-engine-dev`，MySQL datasource 共用原卡管测试库 `cardshop_test`，Redis 连接参数与旧卡管 dev 当前配置保持一致，发布到新服务 Nacos 时使用 Spring Boot 3 的 `spring.data.redis.*`。
 
 ```bash
 APP_PROFILE=dev \
@@ -106,7 +107,7 @@ mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
 ./bin/start.sh stop dev
 ```
 
-`scripts/publish-dev-nacos.sh` 用于从本机忽略文件 `config/env.dev` 发布 `cardshop-trade-engine-dev.yaml` 到 dev Nacos。该文件可以包含真实 Nacos/MySQL 密码，但受 `.gitignore` 保护，不能提交。
+`scripts/publish-dev-nacos.sh` 用于从本机忽略文件 `config/env.dev` 发布 `cardshop-trade-engine-dev.yaml` 到 dev Nacos。该文件可以包含真实 Nacos/MySQL 密码，以及 `CARD_SHOP_REDIS_HOST`、`CARD_SHOP_REDIS_PORT`、`CARD_SHOP_REDIS_DATABASE`、`CARD_SHOP_REDIS_PASSWORD` 等 Redis 发布变量，但受 `.gitignore` 保护，不能提交。旧卡管 dev Nacos 只作为可选辅助来源；确需临时读取时显式设置 `CARD_SHOP_REDIS_LOAD_FROM_CARDSHOP_NACOS=true` 和对应 `CARD_SHOP_DEV_NACOS_*` 凭据。
 
 ## 环境与配置
 
