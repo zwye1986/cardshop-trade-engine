@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.api.v1.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 /**
  * 交行 V1 订单响应 DTO。
  *
@@ -12,8 +14,8 @@ package com.cardshop.trade.engine.api.v1.dto;
  * @param orderStatusDesc 订单状态说明
  */
 public record V1RechargeOrderResponse(
-        String orderId,
-        String outOrderSn,
-        String orderStatus,
-        String orderStatusDesc) {
+        @JsonProperty("order_id") String orderId,
+        @JsonProperty("out_order_sn") String outOrderSn,
+        @JsonProperty("order_status") String orderStatus,
+        @JsonProperty("order_status_desc") String orderStatusDesc) {
 }

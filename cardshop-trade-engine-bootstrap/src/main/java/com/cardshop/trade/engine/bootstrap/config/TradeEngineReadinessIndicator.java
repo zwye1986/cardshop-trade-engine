@@ -39,6 +39,7 @@ public class TradeEngineReadinessIndicator implements HealthIndicator {
         var snapshot = ReadinessSnapshot.from(properties);
         logReadinessRisks(snapshot);
 
+        // TODO(D8): 当 externalCheckEnabled=true 时接入 Redis、RabbitMQ、MySQL 真实连通性检查；参见 docs/交行直充业务系统详细设计.md「16.2 健康检查」。
         return Health.up()
                 .withDetail("environment", snapshot.environment())
                 .withDetail("redisWriteEnabled", snapshot.redisWriteEnabled())

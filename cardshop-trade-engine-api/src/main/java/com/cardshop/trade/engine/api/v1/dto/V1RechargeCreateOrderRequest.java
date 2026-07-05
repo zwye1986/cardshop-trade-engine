@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.api.v1.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -24,16 +26,16 @@ import jakarta.validation.constraints.NotNull;
  * @param sign 请求签名
  */
 public record V1RechargeCreateOrderRequest(
-        String orgCode,
-        @NotBlank String outOrderSn,
-        @NotBlank String productId,
-        String parentId,
+        @JsonProperty("org_code") @JsonAlias("orgCode") String orgCode,
+        @JsonProperty("out_order_sn") @JsonAlias("outOrderSn") @NotBlank String outOrderSn,
+        @JsonProperty("product_id") @JsonAlias("productId") @NotBlank String productId,
+        @JsonProperty("parent_id") @JsonAlias("parentId") String parentId,
         @NotBlank String account,
         @NotNull @Min(1) Integer num,
-        @NotNull @Min(0) Long orderPrice,
-        @NotNull Integer productType,
-        String notifyUrl,
-        @NotBlank String nonceStr,
+        @JsonProperty("order_price") @JsonAlias("orderPrice") @NotNull @Min(0) Long orderPrice,
+        @JsonProperty("product_type") @JsonAlias("productType") @NotNull Integer productType,
+        @JsonProperty("notify_url") @JsonAlias("notifyUrl") String notifyUrl,
+        @JsonProperty("nonce_str") @JsonAlias("nonceStr") @NotBlank String nonceStr,
         @NotBlank String timestamp,
         @NotBlank String sign) {
 }

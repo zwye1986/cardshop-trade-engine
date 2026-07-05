@@ -28,12 +28,14 @@ class TradeEnginePropertiesTest {
             assertThat(properties.getRedis().isWriteEnabled()).isTrue();
             assertThat(properties.getRedis().getWaitReplicas()).isEqualTo(1);
             assertThat(properties.getRedis().getPendingOrgBucketCount()).isEqualTo(128);
+            assertThat(properties.getRedis().getKeyPrefix()).isEqualTo("cardshop:trade");
             assertThat(properties.getMq().getPublishConfirmTimeoutMs()).isEqualTo(500);
             assertThat(properties.getMq().getBreaker().isEnabled()).isTrue();
             assertThat(properties.getOrder().getPendingTtlDays()).isEqualTo(7);
             assertThat(properties.getOrder().getTerminalTtlHours()).isEqualTo(72);
             assertThat(properties.getRouting().getSupportedPaths())
                     .contains("/v1/cardapi/order/createRechargeOrder");
+            assertThat(properties.getV1().getNonceReplayTtlSeconds()).isEqualTo(600);
             assertThat(properties.getV1().getTokenClockSkewSeconds()).isEqualTo(30);
             assertThat(properties.getBalance().getOwnerMode()).isEqualTo("NEW");
             assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(16);

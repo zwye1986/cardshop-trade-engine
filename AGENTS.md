@@ -41,6 +41,8 @@ If requirements, interface semantics, legacy behavior, or design details are amb
 
 Code must include detailed Chinese comments for important classes, methods, flows, and non-obvious decisions. Comments should link to the relevant section in `docs/交行直充业务系统详细设计.md`. DTO class comments and field comments must stay consistent with the corresponding DDL `COMMENT` text.
 
+Temporarily unimplemented functionality must be marked with a `TODO` comment at the corresponding code location. The comment must briefly state what remains to be implemented and link to the relevant section in `docs/交行直充业务系统详细设计.md` or `docs/交行直充业务系统高可用方案设计.md`.
+
 Prefer Java 21 language and library features where they make the code clearer, safer, or simpler. Key business, routing, Redis, MQ, MySQL, and compensation paths must log enough context to support production troubleshooting, without writing secrets or sensitive payloads.
 
 ## Testing Guidelines

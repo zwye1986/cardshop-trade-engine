@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.api.v1.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.validation.constraints.NotBlank;
 
 /**
@@ -14,8 +16,8 @@ import jakarta.validation.constraints.NotBlank;
  * @param sign 请求签名
  */
 public record V1RechargeOrderQueryRequest(
-        @NotBlank String outOrderSn,
-        @NotBlank String nonceStr,
+        @JsonProperty("out_order_sn") @JsonAlias("outOrderSn") @NotBlank String outOrderSn,
+        @JsonProperty("nonce_str") @JsonAlias("nonceStr") @NotBlank String nonceStr,
         @NotBlank String timestamp,
         @NotBlank String sign) {
 }

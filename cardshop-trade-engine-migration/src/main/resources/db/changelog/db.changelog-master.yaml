@@ -50,6 +50,48 @@ databaseChangeLog:
               ALTER TABLE mc_order
                 DROP COLUMN fail_reason
   - changeSet:
+      id: 0002a-d2-add-direct-recharge-out-order-key-column
+      author: codex
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: mc_order
+        - columnExists:
+            tableName: mc_order
+            columnName: org_code
+        - columnExists:
+            tableName: mc_order
+            columnName: out_orderId
+        - columnExists:
+            tableName: mc_order
+            columnName: product_type
+        - not:
+            columnExists:
+              tableName: mc_order
+              columnName: direct_recharge_out_order_key
+      changes:
+        - sql:
+            stripComments: false
+            sql: |
+              ALTER TABLE mc_order
+                ADD COLUMN direct_recharge_out_order_key varchar(191)
+                GENERATED ALWAYS AS (
+                  CASE
+                    WHEN product_type = 1
+                      AND org_code IS NOT NULL
+                      AND org_code <> ''
+                      AND out_orderId IS NOT NULL
+                      AND out_orderId <> ''
+                    THEN concat(org_code, ':', out_orderId)
+                    ELSE NULL
+                  END
+                ) STORED COMMENT '直充订单幂等唯一键，仅product_type=1时生成'
+      rollback:
+        - sql:
+            sql: |
+              ALTER TABLE mc_order
+                DROP COLUMN direct_recharge_out_order_key
+  - changeSet:
       id: 0003-d2-check-direct-recharge-out-order-duplicates
       author: codex
       preConditions:

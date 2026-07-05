@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
  *
  * <p>本测试覆盖 {@code docs/交行直充业务系统详细设计.md} 的「20.8 Liquibase 生产级变更清单」
  * 和 {@code docs/交行直充业务系统高可用方案设计.md} 的「6.2 `mc_order` 字段说明」「6.6 新增表」。
- * 这些断言用于防止后续迁移脚本遗漏共享旧表兼容字段、幂等唯一约束或补偿任务扫描索引。
+ * 这些断言用于防止后续迁移脚本遗漏共享旧表兼容字段、幂等生成列或补偿任务扫描索引。
  */
 class RechargeD2ChangelogContractTest {
 
@@ -28,8 +28,12 @@ class RechargeD2ChangelogContractTest {
         assertThat(changelog)
                 .contains("ADD COLUMN fail_code varchar(64) DEFAULT NULL COMMENT '失败码'")
                 .contains("ADD COLUMN fail_reason varchar(500) DEFAULT NULL COMMENT '失败原因'")
-                .contains("uk_direct_recharge_out_order_key")
+                .contains("ADD COLUMN direct_recharge_out_order_key varchar(191)")
+                .contains("GENERATED ALWAYS AS")
+                .contains("0003-d2-check-direct-recharge-out-order-duplicates")
+                .contains("0004-d2-add-direct-recharge-out-order-unique-key")
                 .contains("direct_recharge_out_order_key, count(*) as cnt")
+                .contains("uk_direct_recharge_out_order_key")
                 .contains("create table if not exists recharge_order_ext")
                 .contains("create table if not exists recharge_outbox")
                 .contains("create table if not exists recharge_notify_task")
@@ -70,6 +74,9 @@ class RechargeD2ChangelogContractTest {
                 .extracting(changeSet -> changeSet.getId())
                 .contains(
                         "0001-d2-mc-order-fail-code",
+                        "0002a-d2-add-direct-recharge-out-order-key-column",
+                        "0003-d2-check-direct-recharge-out-order-duplicates",
+                        "0004-d2-add-direct-recharge-out-order-unique-key",
                         "0005-d2-create-recharge-order-ext",
                         "0006-d2-create-recharge-outbox",
                         "0007-d2-create-recharge-notify-task",
