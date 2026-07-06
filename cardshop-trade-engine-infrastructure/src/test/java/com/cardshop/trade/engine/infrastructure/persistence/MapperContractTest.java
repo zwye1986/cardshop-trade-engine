@@ -45,6 +45,17 @@ class MapperContractTest {
     }
 
     @Test
+    void acceptAnomalyMapperRefreshesDuplicateByStableAnomalyId() throws IOException {
+        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeAcceptAnomalyMapper.java"));
+
+        assertThat(mapper)
+                .contains("insert into recharge_accept_anomaly")
+                .contains("on duplicate key update")
+                .contains("last_error = values(last_error)")
+                .contains("updated_at = values(updated_at)");
+    }
+
+    @Test
     void outboxMapperScansDueAndZombieEventsWithShardPredicate() throws IOException {
         String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeOutboxMapper.java"));
 

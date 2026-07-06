@@ -1,11 +1,14 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitTemplatePersistMessageOperations;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyRecordAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.redis.LettuceRechargeRedisSessionFactory;
 import com.cardshop.trade.engine.infrastructure.redis.RedisAcceptRechargeOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
@@ -95,6 +98,20 @@ public class TradeEngineInfrastructureConfiguration {
                 objectMapper,
                 properties,
                 Clock.systemUTC());
+    }
+
+    /**
+     * 装配接单异常登记端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+     * Mapper 存在才说明 D2 的 anomaly 表访问能力已就绪；否则 API 层会使用 noop 端口保守跳过登记。
+     */
+    @Bean
+    @ConditionalOnBean(RechargeAcceptAnomalyMapper.class)
+    public AcceptAnomalyRecordPort acceptAnomalyRecordPort(
+            RechargeAcceptAnomalyMapper mapper,
+            ObjectMapper objectMapper) {
+        return new MybatisAcceptAnomalyRecordAdapter(mapper, objectMapper, Clock.systemUTC());
     }
 
     @Bean

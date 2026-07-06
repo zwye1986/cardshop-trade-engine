@@ -1,7 +1,6 @@
 -- accept_recharge_order.lua
 -- docs/交行直充业务系统详细设计.md「20.6 Redis Lua 入参与 Key 构造」「20.13.6 Redis Lua 下单结果」
--- D4 第一版只处理幂等、nonce、商户/商品配置版本、余额预扣、pending、org_index 和初始订单事件。
--- TODO(D5): 在 WAIT 失败路径配套 cancel_unconfirmed_accept.lua；参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
+-- 本脚本只处理 Redis 原子受理；WAIT、cancel 和 MQ confirm 由 Java 编排层在同一接单链路继续推进。
 
 -- KEYS
 -- 1 balanceKey              recharge:{orgCode}:balance

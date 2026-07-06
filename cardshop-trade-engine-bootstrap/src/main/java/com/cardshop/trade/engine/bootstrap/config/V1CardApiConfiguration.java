@@ -10,6 +10,7 @@ import com.cardshop.trade.engine.api.v1.usecase.V1InvalidRechargeOrderUseCaseSer
 import com.cardshop.trade.engine.api.v1.usecase.V1IssueTokenUseCaseService;
 import com.cardshop.trade.engine.api.v1.usecase.V1QueryRechargeOrderUseCaseService;
 import com.cardshop.trade.engine.api.v1.usecase.V1RechargeAcceptSettings;
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
@@ -25,6 +26,7 @@ import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.domain.service.RequestHashCanonicalizer;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -81,6 +83,13 @@ public class V1CardApiConfiguration {
         return new V1RechargeAcceptSettings(Duration.ofSeconds(properties.getOrder().getPendingProtectSeconds()));
     }
 
+    /**
+     * 创建 V1 直充下单用例。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+     * `AcceptAnomalyRecordPort` 是旁路能力：生产环境有 anomaly 表时写入核查入口，local profile
+     * 或局部测试未装配该端口时退化为空实现，避免把“异常登记能力是否存在”变成下单 Bean 创建条件。
+     */
     @Bean
     @ConditionalOnBean({
             AcceptRechargeOrderPort.class,
@@ -98,6 +107,7 @@ public class V1CardApiConfiguration {
             AcceptRechargeOrderPort acceptRechargeOrderPort,
             RechargeAcceptReliabilityPort rechargeAcceptReliabilityPort,
             PersistRechargeOrderMessagePublisher persistMessagePublisher,
+            ObjectProvider<AcceptAnomalyRecordPort> acceptAnomalyRecordPortProvider,
             RechargeOrderIdGenerator orderIdGenerator,
             Clock clock,
             V1RechargeAcceptSettings settings,
@@ -110,6 +120,7 @@ public class V1CardApiConfiguration {
                 acceptRechargeOrderPort,
                 rechargeAcceptReliabilityPort,
                 persistMessagePublisher,
+                acceptAnomalyRecordPortProvider.getIfAvailable(AcceptAnomalyRecordPort::noop),
                 orderIdGenerator,
                 clock,
                 settings,

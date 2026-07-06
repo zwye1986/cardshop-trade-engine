@@ -76,7 +76,7 @@ public class LettuceRechargeRedisSessionFactory implements RechargeRedisSessionF
 
         @Override
         public void close() {
-            // TODO(D5): 引入专用连接池或共享串行 WAIT 通道，降低每笔接单新建连接的成本；参见 docs/交行直充业务系统高可用方案设计.md「14.2 Redis WAIT 协议」。
+            // TODO(D5B): 引入专用连接池或共享串行 WAIT 通道，降低每笔接单新建连接的成本；参见 docs/交行直充业务系统高可用方案设计.md「14.2 Redis WAIT 协议」。
             connection.close();
         }
     }

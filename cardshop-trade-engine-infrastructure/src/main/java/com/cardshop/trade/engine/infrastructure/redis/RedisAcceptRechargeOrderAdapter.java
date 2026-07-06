@@ -16,8 +16,9 @@ import reactor.core.publisher.Mono;
  * 基于 Redis Lua 的直充下单受理适配器。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
- * D4 阶段只负责调用 `accept_recharge_order.lua` 完成 Redis 原子受理；Redis WAIT、取消未确认受理、MQ
- * publisher confirm 和 `recharge_accept_anomaly` 写入属于 D5/D6，会在上层编排中继续补齐。
+ * 该类只负责调用 `accept_recharge_order.lua`，用于没有装配同 session WAIT 能力时的兼容受理端口。
+ * 生产主链路优先使用 {@link RedisSessionAcceptReliabilityAdapter}，由 Java 编排层继续执行 WAIT、cancel、
+ * RabbitMQ confirm 和 `recharge_accept_anomaly` 登记。
  */
 public class RedisAcceptRechargeOrderAdapter implements AcceptRechargeOrderPort {
 
@@ -74,7 +75,7 @@ public class RedisAcceptRechargeOrderAdapter implements AcceptRechargeOrderPort 
                             command.orderId(),
                             command.requestHash(),
                             ex);
-                    // TODO(D5): Lua 超时、Redis BUSY 或状态未知时写 recharge_accept_anomaly 并触发核查；参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
+                    // TODO(D5B): Lua 超时、Redis BUSY 或状态未知时写 recharge_accept_anomaly 并触发核查；参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
                     return Mono.just(redisUnavailable(command, "Redis Lua 执行失败"));
                 })
                 .toFuture();

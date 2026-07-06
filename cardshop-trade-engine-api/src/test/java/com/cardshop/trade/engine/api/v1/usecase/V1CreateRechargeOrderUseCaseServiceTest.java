@@ -6,6 +6,8 @@ import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolSettings;
 import com.cardshop.trade.engine.api.v1.security.V1Sm3SignatureVerifier;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampSettings;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampValidator;
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecord;
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
@@ -33,9 +35,13 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -297,6 +303,147 @@ class V1CreateRechargeOrderUseCaseServiceTest {
     }
 
     @Test
+    void recordsAcceptAnomalyWhenRedisWaitFailsAndCancelCannotConfirmRollback() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingAcceptAnomalyPort anomalyPort = new RecordingAcceptAnomalyPort();
+        reliabilityPort.waitResult = ReplicationWaitResult.missed(0, "WAIT replicas not reached");
+        reliabilityPort.cancelResult = CancelUnconfirmedAcceptResult.failed("CANCEL_FAILED", "订单状态不允许回滚");
+        RecordingPersistPublisher publisher = new RecordingPersistPublisher();
+        V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher, anomalyPort);
+
+        V1CardApiResult result = localService.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-UNKNOWN", "nonce-12345678901234567890123455", 1)))
+                .toCompletableFuture().join();
+
+        assertThat(result.code()).isEqualTo("500");
+        assertThat(result.msg()).isEqualTo("系统繁忙，请稍后查询订单状态");
+        assertThat(anomalyPort.lastRecord).isNotNull();
+        assertThat(anomalyPort.lastRecord.orgCode()).isEqualTo("A36");
+        assertThat(anomalyPort.lastRecord.outOrderSn()).isEqualTo("OUT-WAIT-UNKNOWN");
+        assertThat(anomalyPort.lastRecord.orderId()).isEqualTo("202607051337458961474292");
+        assertThat(anomalyPort.lastRecord.rawContext())
+                .containsEntry("wait_reason", "WAIT replicas not reached")
+                .containsEntry("cancel_fail_code", "CANCEL_FAILED")
+                .containsEntry("cancel_fail_reason", "订单状态不允许回滚");
+    }
+
+    @Test
+    void stillReturnsProcessingWhenAcceptAnomalyRecordFails() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingAcceptAnomalyPort anomalyPort = new RecordingAcceptAnomalyPort();
+        anomalyPort.failure = new IllegalStateException("anomaly table unavailable");
+        reliabilityPort.waitResult = ReplicationWaitResult.missed(0, "WAIT_ERROR");
+        reliabilityPort.cancelResult = CancelUnconfirmedAcceptResult.failed("CANCEL_FAILED", "订单状态不允许回滚");
+        RecordingPersistPublisher publisher = new RecordingPersistPublisher();
+        V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher, anomalyPort);
+
+        V1CardApiResult result = localService.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-RECORD-FAIL", "nonce-12345678901234567890123456", 1)))
+                .toCompletableFuture().join();
+
+        assertThat(result.code()).isEqualTo("500");
+        assertThat(result.msg()).isEqualTo("系统繁忙，请稍后查询订单状态");
+        assertThat(anomalyPort.lastRecord).isNotNull();
+        assertThat(publisher.publishCalls).isZero();
+    }
+
+    @Test
+    void returnsProcessingWithoutWaitingForAcceptAnomalyDbWrite() throws Exception {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingAcceptAnomalyPort anomalyPort = new RecordingAcceptAnomalyPort();
+        reliabilityPort.waitResult = ReplicationWaitResult.missed(0, "WAIT_ERROR");
+        reliabilityPort.cancelResult = CancelUnconfirmedAcceptResult.failed("CANCEL_FAILED", "订单状态不允许回滚");
+        RecordingPersistPublisher publisher = new RecordingPersistPublisher();
+        OneInlineThenQueuedExecutor dbExecutor = new OneInlineThenQueuedExecutor();
+        V1CreateRechargeOrderUseCaseService localService = service(
+                localAcceptPort,
+                reliabilityPort,
+                publisher,
+                anomalyPort,
+                dbExecutor);
+
+        CompletableFuture<V1CardApiResult> response = localService.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-NO-BLOCK", "nonce-12345678901234567890123458", 1)))
+                .toCompletableFuture();
+
+        V1CardApiResult result = response.get(200, TimeUnit.MILLISECONDS);
+        assertThat(result.code()).isEqualTo("500");
+        assertThat(result.msg()).isEqualTo("系统繁忙，请稍后查询订单状态");
+        assertThat(anomalyPort.lastRecord).isNull();
+        assertThat(dbExecutor.queuedTasks()).isEqualTo(1);
+
+        dbExecutor.runQueuedTasks();
+        assertThat(anomalyPort.lastRecord).isNotNull();
+    }
+
+    @Test
+    void usesRequestHashInAcceptAnomalyIdWhenLuaResultHasNoOrderId() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        localAcceptPort.nextResult = new AcceptRechargeOrderResult(
+                AcceptRechargeOrderStatus.ACCEPTED,
+                "",
+                "PASSED",
+                "",
+                "",
+                true,
+                true,
+                1L);
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingAcceptAnomalyPort anomalyPort = new RecordingAcceptAnomalyPort();
+        reliabilityPort.waitResult = ReplicationWaitResult.missed(0, "WAIT_ERROR");
+        reliabilityPort.cancelResult = CancelUnconfirmedAcceptResult.failed("CANCEL_FAILED", "订单状态不允许回滚");
+        RecordingPersistPublisher publisher = new RecordingPersistPublisher();
+        V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher, anomalyPort);
+
+        localService.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-NO-ORDER-ID", "nonce-12345678901234567890123459", 1)))
+                .toCompletableFuture().join();
+
+        assertThat(anomalyPort.lastRecord).isNotNull();
+        assertThat(anomalyPort.lastRecord.anomalyId())
+                .isEqualTo("accept-WAIT_CANCEL_FAILED-request-" + anomalyPort.lastRecord.requestHash())
+                .doesNotContain("unknown");
+    }
+
+    @Test
+    void recordsAcceptAnomalyOnDbExecutorWhenRedisCancelCompletesOnCallbackThread() throws Exception {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingAcceptAnomalyPort anomalyPort = new RecordingAcceptAnomalyPort();
+        reliabilityPort.waitResult = ReplicationWaitResult.missed(0, "WAIT_ERROR");
+        reliabilityPort.cancelResult = CancelUnconfirmedAcceptResult.failed("CANCEL_FAILED", "订单状态不允许回滚");
+        var redisCallbackExecutor = Executors.newSingleThreadExecutor(command -> new Thread(command, "redis-callback-test"));
+        var dbExecutor = Executors.newSingleThreadExecutor(command -> new Thread(command, "trade-db-anomaly-test"));
+        reliabilityPort.cancelExecutor = redisCallbackExecutor;
+        reliabilityPort.cancelDelayMillis = 50L;
+        RecordingPersistPublisher publisher = new RecordingPersistPublisher();
+        V1CreateRechargeOrderUseCaseService localService = service(
+                localAcceptPort,
+                reliabilityPort,
+                publisher,
+                anomalyPort,
+                dbExecutor);
+
+        try {
+            V1CardApiResult result = localService.createRechargeOrder(
+                    new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-THREAD", "nonce-12345678901234567890123457", 1)))
+                    .toCompletableFuture().join();
+
+            assertThat(result.msg()).isEqualTo("系统繁忙，请稍后查询订单状态");
+            assertThat(anomalyPort.awaitRecord(Duration.ofSeconds(1))).isTrue();
+            assertThat(anomalyPort.recordThreadName)
+                    .as("anomaly MyBatis 写库必须隔离到 tradeDbTaskExecutor，不能阻塞 Redis/Lettuce 回调线程")
+                    .isEqualTo("trade-db-anomaly-test");
+        } finally {
+            redisCallbackExecutor.shutdown();
+            dbExecutor.shutdown();
+        }
+    }
+
+    @Test
     void returnsProcessingWhenMqConfirmFailsAfterRedisWaitSucceeded() {
         CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
         RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
@@ -327,6 +474,23 @@ class V1CreateRechargeOrderUseCaseServiceTest {
             AcceptRechargeOrderPort acceptPort,
             RechargeAcceptReliabilityPort reliabilityPort,
             PersistRechargeOrderMessagePublisher publisher) {
+        return service(acceptPort, reliabilityPort, publisher, AcceptAnomalyRecordPort.noop());
+    }
+
+    private static V1CreateRechargeOrderUseCaseService service(
+            AcceptRechargeOrderPort acceptPort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            PersistRechargeOrderMessagePublisher publisher,
+            AcceptAnomalyRecordPort anomalyRecordPort) {
+        return service(acceptPort, reliabilityPort, publisher, anomalyRecordPort, SYNC_EXECUTOR);
+    }
+
+    private static V1CreateRechargeOrderUseCaseService service(
+            AcceptRechargeOrderPort acceptPort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            PersistRechargeOrderMessagePublisher publisher,
+            AcceptAnomalyRecordPort anomalyRecordPort,
+            Executor tradeDbTaskExecutor) {
         return new V1CreateRechargeOrderUseCaseService(
                 precheckService(),
                 new RequestHashCanonicalizer(),
@@ -345,10 +509,11 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 acceptPort,
                 reliabilityPort,
                 publisher,
+                anomalyRecordPort,
                 () -> "202607051337458961474292",
                 CLOCK,
                 new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
-                SYNC_EXECUTOR);
+                tradeDbTaskExecutor);
     }
 
     private static String validRawBody(String outOrderSn, String nonceStr, int num) {
@@ -400,6 +565,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         private int cancelCalls;
         private int markQueuedCalls;
         private String lastPersistMessageId;
+        private Executor cancelExecutor = SYNC_EXECUTOR;
+        private long cancelDelayMillis;
 
         @Override
         public CompletableFuture<ReplicationWaitResult> waitForReplication(
@@ -415,7 +582,10 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 AcceptRechargeOrderResult acceptResult,
                 String reason) {
             cancelCalls++;
-            return CompletableFuture.completedFuture(cancelResult);
+            return CompletableFuture.supplyAsync(() -> {
+                sleepQuietly(cancelDelayMillis);
+                return cancelResult;
+            }, cancelExecutor);
         }
 
         @Override
@@ -447,6 +617,67 @@ class V1CreateRechargeOrderUseCaseServiceTest {
             publishCalls++;
             lastMessage = message;
             return CompletableFuture.completedFuture(nextResult.withMessageId(message.messageId()));
+        }
+    }
+
+    private static void sleepQuietly(long millis) {
+        if (millis <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("test sleep interrupted", ex);
+        }
+    }
+
+    private static final class RecordingAcceptAnomalyPort implements AcceptAnomalyRecordPort {
+
+        private AcceptAnomalyRecord lastRecord;
+        private RuntimeException failure;
+        private String recordThreadName;
+        private final CountDownLatch recordLatch = new CountDownLatch(1);
+
+        @Override
+        public void record(AcceptAnomalyRecord record) {
+            this.lastRecord = record;
+            this.recordThreadName = Thread.currentThread().getName();
+            this.recordLatch.countDown();
+            if (failure != null) {
+                throw failure;
+            }
+        }
+
+        private boolean awaitRecord(Duration timeout) throws InterruptedException {
+            return recordLatch.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private static final class OneInlineThenQueuedExecutor implements Executor {
+
+        private boolean firstTask = true;
+        private final Queue<Runnable> queued = new ConcurrentLinkedQueue<>();
+
+        @Override
+        public void execute(Runnable command) {
+            if (firstTask) {
+                firstTask = false;
+                command.run();
+                return;
+            }
+            queued.add(command);
+        }
+
+        private int queuedTasks() {
+            return queued.size();
+        }
+
+        private void runQueuedTasks() {
+            Runnable task;
+            while ((task = queued.poll()) != null) {
+                task.run();
+            }
         }
     }
 }

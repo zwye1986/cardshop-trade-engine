@@ -4,6 +4,8 @@ import com.cardshop.trade.engine.api.v1.dto.V1RechargeCreateOrderRequest;
 import com.cardshop.trade.engine.api.v1.protocol.V1MerchantSecurityProfile;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckResult;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecord;
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
@@ -24,6 +26,7 @@ import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
 import com.cardshop.trade.engine.application.v1.V1ProductSelection;
+import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.domain.service.RequestHashCanonicalizer;
 import org.slf4j.Logger;
@@ -32,6 +35,7 @@ import org.springframework.util.StringUtils;
 
 import java.net.URI;
 import java.time.Clock;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -51,6 +55,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
 
     private static final Logger log = LoggerFactory.getLogger(V1CreateRechargeOrderUseCaseService.class);
     private static final String PERSIST_STATUS_PENDING_MQ = "PENDING_MQ";
+    private static final int MAX_ACCEPT_ANOMALY_ID_LENGTH = 100;
 
     private final V1ProtocolPrecheckService precheckService;
     private final RequestHashCanonicalizer requestHashCanonicalizer;
@@ -59,6 +64,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     private final AcceptRechargeOrderPort acceptRechargeOrderPort;
     private final RechargeAcceptReliabilityPort reliabilityPort;
     private final PersistRechargeOrderMessagePublisher persistMessagePublisher;
+    private final AcceptAnomalyRecordPort acceptAnomalyRecordPort;
     private final RechargeOrderIdGenerator orderIdGenerator;
     private final Clock clock;
     private final V1RechargeAcceptSettings settings;
@@ -82,6 +88,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 acceptRechargeOrderPort,
                 new NoopRechargeAcceptReliabilityPort(),
                 new NoopPersistRechargeOrderMessagePublisher(),
+                AcceptAnomalyRecordPort.noop(),
                 orderIdGenerator,
                 clock,
                 settings,
@@ -100,6 +107,34 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             Clock clock,
             V1RechargeAcceptSettings settings,
             Executor tradeDbTaskExecutor) {
+        this(
+                precheckService,
+                requestHashCanonicalizer,
+                merchantProfilePort,
+                productCandidateSelector,
+                acceptRechargeOrderPort,
+                reliabilityPort,
+                persistMessagePublisher,
+                AcceptAnomalyRecordPort.noop(),
+                orderIdGenerator,
+                clock,
+                settings,
+                tradeDbTaskExecutor);
+    }
+
+    public V1CreateRechargeOrderUseCaseService(
+            V1ProtocolPrecheckService precheckService,
+            RequestHashCanonicalizer requestHashCanonicalizer,
+            V1MerchantProfilePort merchantProfilePort,
+            V1ProductCandidateSelector productCandidateSelector,
+            AcceptRechargeOrderPort acceptRechargeOrderPort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            PersistRechargeOrderMessagePublisher persistMessagePublisher,
+            AcceptAnomalyRecordPort acceptAnomalyRecordPort,
+            RechargeOrderIdGenerator orderIdGenerator,
+            Clock clock,
+            V1RechargeAcceptSettings settings,
+            Executor tradeDbTaskExecutor) {
         this.precheckService = precheckService;
         this.requestHashCanonicalizer = requestHashCanonicalizer;
         this.merchantProfilePort = merchantProfilePort;
@@ -107,6 +142,9 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         this.acceptRechargeOrderPort = acceptRechargeOrderPort;
         this.reliabilityPort = reliabilityPort;
         this.persistMessagePublisher = persistMessagePublisher;
+        this.acceptAnomalyRecordPort = acceptAnomalyRecordPort == null
+                ? AcceptAnomalyRecordPort.noop()
+                : acceptAnomalyRecordPort;
         this.orderIdGenerator = orderIdGenerator;
         this.clock = clock;
         this.settings = settings;
@@ -157,7 +195,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             ReplicationWaitResult waitResult) {
         return reliabilityPort
                 .cancelUnconfirmedAccept(preparation.acceptCommand, acceptResult, waitResult.reason())
-                .thenApply(cancelResult -> toWaitFailureResult(preparation.outOrderSn, acceptResult, cancelResult));
+                .thenCompose(cancelResult -> toWaitFailureResult(preparation, acceptResult, waitResult, cancelResult));
     }
 
     private CompletionStage<V1CardApiResult> publishPersistMessage(
@@ -362,14 +400,140 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         return V1CardApiResultStatus.SYSTEM_BUSY.result(defaultText(result.failReason(), "系统繁忙，请稍后重试"));
     }
 
-    private static V1CardApiResult toWaitFailureResult(
-            String outOrderSn,
+    private CompletionStage<V1CardApiResult> toWaitFailureResult(
+            Preparation preparation,
             AcceptRechargeOrderResult acceptResult,
+            ReplicationWaitResult waitResult,
             CancelUnconfirmedAcceptResult cancelResult) {
+        /*
+         * cancel 成功代表 Redis 已确认释放余额并清理 pending，此时旧协议只能返回系统繁忙让调用方重试；
+         * cancel 失败则不能假定订单未受理，必须进入“稍后查单 + anomaly 核查”保守语义。
+         */
         if (cancelResult.cancelled()) {
-            return V1CardApiResultStatus.SYSTEM_BUSY.result();
+            return CompletableFuture.completedFuture(V1CardApiResultStatus.SYSTEM_BUSY.result());
         }
-        return processingResult(outOrderSn, acceptResult);
+        /*
+         * anomaly 写库是旁路证据留存，不能参与 HTTP 响应耗时；否则 tradeDbTaskExecutor 或 MySQL 抖动会把
+         * “稍后查单”的保守响应拖到调用方超时。参见详细设计「20.13.6 Redis Lua 下单结果」。
+         */
+        recordWaitCancelFailedAnomalyAsync(preparation.acceptCommand, acceptResult, waitResult, cancelResult);
+        return CompletableFuture.completedFuture(processingResult(preparation.outOrderSn, acceptResult));
+    }
+
+    /**
+     * 将 MyBatis anomaly 写库隔离到 tradeDbTaskExecutor。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+     * Redis WAIT/cancel 的 CompletionStage 可能由 Lettuce/Redis 回调线程完成，不能在该线程上同步写 MySQL；
+     * 因此这里显式切换到交易 DB executor，并把调度失败也降级为告警，保持接口响应语义不变。
+     */
+    private void recordWaitCancelFailedAnomalyAsync(
+            AcceptRechargeOrderCommand command,
+            AcceptRechargeOrderResult acceptResult,
+            ReplicationWaitResult waitResult,
+            CancelUnconfirmedAcceptResult cancelResult) {
+        try {
+            CompletableFuture
+                    .runAsync(
+                            () -> recordWaitCancelFailedAnomaly(command, acceptResult, waitResult, cancelResult),
+                            tradeDbTaskExecutor)
+                    .exceptionally(ex -> {
+                        log.warn("V1直充接单异常登记任务执行失败 orgCode={}, outOrderSn={}, orderId={}",
+                                command.orgCode(),
+                                command.outOrderSn(),
+                                acceptResult.orderId(),
+                                ex);
+                        return null;
+                    });
+        } catch (RuntimeException ex) {
+            log.warn("V1直充接单异常登记任务调度失败 orgCode={}, outOrderSn={}, orderId={}",
+                    command.orgCode(),
+                    command.outOrderSn(),
+                    acceptResult.orderId(),
+                    ex);
+        }
+    }
+
+    /**
+     * WAIT 未达标且 cancel 也未确认时，Redis 中可能仍保留订单、余额预扣和 pending 索引。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+     * 这里登记 `recharge_accept_anomaly` 是为了给后续自动核查任务留下入口；登记失败不能改变接口响应，
+     * 因为调用方已经只能得到“稍后查单”的保守语义。
+     */
+    private void recordWaitCancelFailedAnomaly(
+            AcceptRechargeOrderCommand command,
+            AcceptRechargeOrderResult acceptResult,
+            ReplicationWaitResult waitResult,
+            CancelUnconfirmedAcceptResult cancelResult) {
+        AcceptAnomalyRecord record = new AcceptAnomalyRecord(
+                acceptAnomalyId(AcceptAnomalyType.WAIT_CANCEL_FAILED, command, acceptResult),
+                AcceptAnomalyType.WAIT_CANCEL_FAILED,
+                command.orgCode(),
+                command.outOrderSn(),
+                acceptResult.orderId(),
+                command.requestHash(),
+                "",
+                acceptAnomalyContext(command, acceptResult, waitResult, cancelResult),
+                defaultText(cancelResult.failReason(), cancelResult.failCode()));
+        try {
+            acceptAnomalyRecordPort.record(record);
+        } catch (RuntimeException ex) {
+            log.warn("V1直充接单异常登记失败 orgCode={}, outOrderSn={}, orderId={}, anomalyId={}, failCode={}, failReason={}",
+                    command.orgCode(),
+                    command.outOrderSn(),
+                    acceptResult.orderId(),
+                    record.anomalyId(),
+                    cancelResult.failCode(),
+                    cancelResult.failReason(),
+                    ex);
+        }
+    }
+
+    private static String acceptAnomalyId(
+            AcceptAnomalyType type,
+            AcceptRechargeOrderCommand command,
+            AcceptRechargeOrderResult acceptResult) {
+        String prefix = "accept-" + type.name() + "-";
+        if (StringUtils.hasText(acceptResult.orderId())) {
+            return prefix + acceptResult.orderId();
+        }
+        /*
+         * Lua timeout、Redis BUSY 等状态未知分支可能拿不到 Lua 返回体，也就没有平台订单号。这里使用 request_hash
+         * 作为稳定兜底：同一业务意图重复进入异常登记时仍会命中同一个 anomaly_id；同时避免多个订单共同退化成
+         * `unknown`。字段长度受 `recharge_accept_anomaly.anomaly_id varchar(100)` 约束，需要做显式截断。
+         */
+        String requestHashSuffix = "request-" + command.requestHash();
+        int maxSuffixLength = MAX_ACCEPT_ANOMALY_ID_LENGTH - prefix.length();
+        return prefix + abbreviate(requestHashSuffix, maxSuffixLength);
+    }
+
+    private static Map<String, Object> acceptAnomalyContext(
+            AcceptRechargeOrderCommand command,
+            AcceptRechargeOrderResult acceptResult,
+            ReplicationWaitResult waitResult,
+            CancelUnconfirmedAcceptResult cancelResult) {
+        Map<String, Object> context = new LinkedHashMap<>();
+        // 业务定位维度：后续核查任务优先用这些字段回查 Redis、MySQL 和 MQ 消息轨迹。
+        context.put("org_code", command.orgCode());
+        context.put("out_order_sn", command.outOrderSn());
+        context.put("order_id", acceptResult.orderId());
+        context.put("request_hash", command.requestHash());
+        // Redis accept Lua 结果：用于判断是否已经写入订单快照、是否已经预扣余额。
+        context.put("accept_status", acceptResult.status().name());
+        context.put("validation_status", acceptResult.validationStatus());
+        context.put("accept_fail_code", acceptResult.failCode());
+        context.put("accept_fail_reason", acceptResult.failReason());
+        context.put("order_version", acceptResult.orderVersion());
+        // JSON 中这里保留 boolean 类型；D5B 核查任务读取 raw_context 时不能把这些字段按字符串解析。
+        context.put("balance_reserved", acceptResult.balanceReserved());
+        context.put("dispatch_allowed", acceptResult.dispatchAllowed());
+        // WAIT 与 cancel 结果：用于区分复制未达标、回滚失败、状态未知等恢复分支。
+        context.put("wait_replica_count", waitResult.replicaCount());
+        context.put("wait_reason", defaultText(waitResult.reason(), "WAIT_NOT_CONFIRMED"));
+        context.put("cancel_fail_code", cancelResult.failCode());
+        context.put("cancel_fail_reason", cancelResult.failReason());
+        return context;
     }
 
     private static V1CardApiResult toMarkQueuedResult(
@@ -394,6 +558,16 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
 
     private static String defaultText(String value, String fallback) {
         return StringUtils.hasText(value) ? value : fallback;
+    }
+
+    private static String abbreviate(String value, int maxLength) {
+        if (maxLength <= 0) {
+            return "";
+        }
+        if (value.length() <= maxLength) {
+            return value;
+        }
+        return value.substring(0, maxLength);
     }
 
     private record BusinessFailure(String failCode, String failReason) {
