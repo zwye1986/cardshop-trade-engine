@@ -27,4 +27,19 @@ public interface McExtDepartMapper extends BaseMapper<McExtDepartDO>, V1Merchant
         }
         return selectOne(wrapper.last("limit 1"));
     }
+
+    /**
+     * 按旧系统 `/auth/getToken` 凭证语义读取商户资料；启停状态交由应用用例统一转换为 401。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.5 Token 生成接口」。
+     * 这里不能追加 {@code limit 1}：appId/appSecret 代表签发凭证，若旧表出现重复数据，应让
+     * MyBatis-Plus 的 {@code selectOne} 暴露非唯一问题，再由适配器失败关闭，避免把 token 签发到
+     * 任意一条商户记录上。
+     */
+    @Override
+    default McExtDepartDO selectByAppIdAndAppSecret(String appId, String appSecret) {
+        return selectOne(new LambdaQueryWrapper<McExtDepartDO>()
+                .eq(McExtDepartDO::getAppId, appId)
+                .eq(McExtDepartDO::getAppSecret, appSecret));
+    }
 }

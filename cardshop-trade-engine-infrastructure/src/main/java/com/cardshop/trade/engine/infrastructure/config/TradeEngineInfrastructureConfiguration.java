@@ -1,7 +1,9 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
+import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.redis.RedisAcceptRechargeOrderAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptLoader;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptExecutor;
@@ -50,5 +52,13 @@ public class TradeEngineInfrastructureConfiguration {
             RechargeRedisScriptLoader scriptLoader,
             TradeEngineProperties properties) {
         return new RedisAcceptRechargeOrderAdapter(scriptExecutor, keyBuilder, scriptLoader, properties);
+    }
+
+    @Bean
+    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
+    public V1TokenStorePort v1TokenStorePort(
+            ReactiveStringRedisTemplate redisTemplate,
+            TradeEngineProperties properties) {
+        return new RedisV1TokenStoreAdapter(redisTemplate, properties);
     }
 }

@@ -9,7 +9,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
  * 旧卡管商户扩展表 `mc_ext_depart` 的最小持久化对象。
  *
  * <p>字段来源对应 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」。
- * 新链路只读取 appId、orgCode、aesKey 和启停状态，禁止把请求体里的 orgCode 当作可信商户身份。
+ * 新链路只读取 appId、appSecret、orgCode、aesKey 和启停状态，禁止把请求体里的 orgCode 当作可信商户身份。
  */
 @TableName("mc_ext_depart")
 public class McExtDepartDO {
@@ -28,6 +28,12 @@ public class McExtDepartDO {
      */
     @TableField("app_id")
     private String appId;
+
+    /**
+     * 旧接口应用密钥，禁止写日志。
+     */
+    @TableField("app_secret")
+    private String appSecret;
 
     /**
      * 兼容旧系统的 SM4/SM3 密钥，禁止写日志。
@@ -63,6 +69,14 @@ public class McExtDepartDO {
 
     public void setAppId(String appId) {
         this.appId = appId;
+    }
+
+    public String getAppSecret() {
+        return appSecret;
+    }
+
+    public void setAppSecret(String appSecret) {
+        this.appSecret = appSecret;
     }
 
     public String getAesKey() {

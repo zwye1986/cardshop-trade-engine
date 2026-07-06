@@ -598,6 +598,11 @@ public class TradeEngineProperties {
         private String tokenRedisKeyPrefix = "token:app_id:";
 
         /**
+         * Token 有效期秒数，默认与旧系统 3 小时一致。
+         */
+        private int tokenTtlSeconds = 3 * 60 * 60;
+
+        /**
          * Token claim 中订单 token key 的前缀。
          */
         private String tokenClaimKey = "order_token_key:";
@@ -661,6 +666,14 @@ public class TradeEngineProperties {
 
         public void setTokenRedisKeyPrefix(String tokenRedisKeyPrefix) {
             this.tokenRedisKeyPrefix = tokenRedisKeyPrefix;
+        }
+
+        public int getTokenTtlSeconds() {
+            return tokenTtlSeconds;
+        }
+
+        public void setTokenTtlSeconds(int tokenTtlSeconds) {
+            this.tokenTtlSeconds = tokenTtlSeconds;
         }
 
         public String getTokenClaimKey() {

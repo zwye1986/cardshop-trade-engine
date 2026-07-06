@@ -12,4 +12,13 @@ import com.cardshop.trade.engine.infrastructure.persistence.entity.McExtDepartDO
 public interface V1MerchantProfileReader {
 
     McExtDepartDO selectByAppIdAndOptionalOrg(String appId, String orgCode);
+
+    /**
+     * 按旧 `/auth/getToken` 的 app_id/app_secret 读取商户资料。
+     *
+     * <p>默认返回 null，便于单测使用 lambda 只覆盖 token 鉴权读取；真实 Mapper 必须覆盖该方法。
+     */
+    default McExtDepartDO selectByAppIdAndAppSecret(String appId, String appSecret) {
+        return null;
+    }
 }

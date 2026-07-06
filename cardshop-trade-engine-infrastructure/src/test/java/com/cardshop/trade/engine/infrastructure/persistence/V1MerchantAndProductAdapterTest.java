@@ -5,6 +5,7 @@ import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McDepartProductDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McExtDepartDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McProductDO;
+import org.apache.ibatis.exceptions.TooManyResultsException;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -24,6 +25,7 @@ class V1MerchantAndProductAdapterTest {
     void loadsMerchantProfileByAppIdAndOrgCode() {
         McExtDepartDO merchant = new McExtDepartDO();
         merchant.setAppId("app-gray");
+        merchant.setAppSecret("secret-1");
         merchant.setOrgCode("A36");
         merchant.setAesKey("AES-KEY");
         merchant.setDepartStatus("0");
@@ -37,6 +39,55 @@ class V1MerchantAndProductAdapterTest {
         assertThat(profile.get().aesKey()).isEqualTo("AES-KEY");
         assertThat(profile.get().enabled()).isTrue();
         assertThat(profile.get().configVersion()).isEqualTo(7L);
+    }
+
+    @Test
+    void loadsMerchantProfileByAppIdAndAppSecretForTokenIssue() {
+        McExtDepartDO merchant = new McExtDepartDO();
+        merchant.setAppId("app-gray");
+        merchant.setAppSecret("secret-1");
+        merchant.setOrgCode("A36");
+        merchant.setAesKey("AES-KEY");
+        merchant.setDepartStatus("0");
+        merchant.setId(7L);
+
+        MybatisV1MerchantProfileAdapter adapter = new MybatisV1MerchantProfileAdapter(new V1MerchantProfileReader() {
+            @Override
+            public McExtDepartDO selectByAppIdAndOptionalOrg(String appId, String orgCode) {
+                return null;
+            }
+
+            @Override
+            public McExtDepartDO selectByAppIdAndAppSecret(String appId, String appSecret) {
+                return "app-gray".equals(appId) && "secret-1".equals(appSecret) ? merchant : null;
+            }
+        });
+
+        var profile = adapter.findByAppIdAndAppSecret("app-gray", "secret-1");
+
+        assertThat(profile).isPresent();
+        assertThat(profile.get().appId()).isEqualTo("app-gray");
+        assertThat(profile.get().orgCode()).isEqualTo("A36");
+        assertThat(profile.get().enabled()).isTrue();
+    }
+
+    @Test
+    void returnsEmptyWhenCredentialLookupMatchesMoreThanOneMerchant() {
+        MybatisV1MerchantProfileAdapter adapter = new MybatisV1MerchantProfileAdapter(new V1MerchantProfileReader() {
+            @Override
+            public McExtDepartDO selectByAppIdAndOptionalOrg(String appId, String orgCode) {
+                return null;
+            }
+
+            @Override
+            public McExtDepartDO selectByAppIdAndAppSecret(String appId, String appSecret) {
+                throw new TooManyResultsException("duplicate app_id/app_secret");
+            }
+        });
+
+        var profile = adapter.findByAppIdAndAppSecret("app-gray", "secret-1");
+
+        assertThat(profile).isEmpty();
     }
 
     @Test

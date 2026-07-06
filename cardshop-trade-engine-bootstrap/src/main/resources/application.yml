@@ -70,6 +70,7 @@ trade:
       timestamp-allowed-skew-seconds: 300
       nonce-replay-ttl-seconds: 600
       token-clock-skew-seconds: 30
+      token-ttl-seconds: 10800
       sign-alg: SM3
       jwt-secret: ${V1_CARDAPI_JWT_SECRET:}
       token-redis-key-prefix: "token:app_id:"

@@ -2,7 +2,9 @@ package com.cardshop.trade.engine.api.v1.security;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
@@ -19,8 +21,8 @@ import java.util.Optional;
  * 原卡管 `/v1/cardapi` JWT Token 兼容解析器。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.4 Token 兼容校验」。
- * 当前阶段只完成 Bearer/bare JWT 兼容、HS512 签名和时间窗校验；Redis 中
- * {@code token:app_id:{appId}} 的一致性校验会在缓存端口接入后补齐。
+ * 兼容 Bearer/bare JWT、HS512 签名、时间窗校验，并在 Redis token 存储端口存在时复用旧系统
+ * {@code token:app_id:{appId}} 规则做“最后签发 token”一致性校验。
  */
 @Component
 public class V1TokenAuthenticator {
@@ -31,23 +33,28 @@ public class V1TokenAuthenticator {
 
     private final V1TokenSettings settings;
     private final Clock clock;
+    private final Optional<V1TokenStorePort> tokenStorePort;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
-    public V1TokenAuthenticator(V1TokenSettings settings) {
-        this(settings, Clock.systemUTC());
+    public V1TokenAuthenticator(V1TokenSettings settings, ObjectProvider<V1TokenStorePort> tokenStorePort) {
+        this(settings, Clock.systemUTC(), Optional.ofNullable(tokenStorePort.getIfAvailable()));
     }
 
     V1TokenAuthenticator(V1TokenSettings settings, Clock clock) {
+        this(settings, clock, Optional.empty());
+    }
+
+    public V1TokenAuthenticator(V1TokenSettings settings, Clock clock, Optional<V1TokenStorePort> tokenStorePort) {
         this.settings = settings;
         this.clock = clock;
+        this.tokenStorePort = tokenStorePort == null ? Optional.empty() : tokenStorePort;
     }
 
     /**
      * 解析兼容旧系统的 Bearer 或裸 JWT；任何解析失败都返回 empty，避免异常穿透入口层。
      */
     public Optional<AuthenticatedMerchant> authenticate(String authorization) {
-        // TODO(D5): 接入 Redis token:app_id:{appId} 存量一致性校验；参见 docs/交行直充业务系统详细设计.md「20.13.4 Token 兼容校验」。
         String token = normalizeToken(authorization);
         if (!StringUtils.hasText(token) || !StringUtils.hasText(settings.jwtSecret())) {
             return Optional.empty();
@@ -76,6 +83,10 @@ public class V1TokenAuthenticator {
             Object appIdValue = payload.get(settings.tokenClaimKey());
             String appId = appIdValue == null ? null : String.valueOf(appIdValue).trim();
             if (!StringUtils.hasText(appId)) {
+                return Optional.empty();
+            }
+            if (tokenStorePort.isPresent()
+                    && tokenStorePort.get().findIssuedToken(appId).filter(token::equals).isEmpty()) {
                 return Optional.empty();
             }
             String orgCode = optionalText(payload.get("orgCode"));
@@ -133,7 +144,7 @@ public class V1TokenAuthenticator {
         return token;
     }
 
-    static String hmacSha512Base64Url(String secret, String signingInput) {
+    public static String hmacSha512Base64Url(String secret, String signingInput) {
         try {
             Mac mac = Mac.getInstance(HMAC_SHA_512);
             mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), HMAC_SHA_512));

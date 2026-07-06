@@ -6,6 +6,7 @@ import com.cardshop.trade.engine.api.v1.routing.V1RoutingSettings;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampSettings;
 import com.cardshop.trade.engine.api.v1.security.V1TokenSettings;
 import com.cardshop.trade.engine.api.v1.usecase.V1CreateRechargeOrderUseCaseService;
+import com.cardshop.trade.engine.api.v1.usecase.V1IssueTokenUseCaseService;
 import com.cardshop.trade.engine.api.v1.usecase.V1RechargeAcceptSettings;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
@@ -16,6 +17,7 @@ import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.domain.service.RequestHashCanonicalizer;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -54,7 +56,9 @@ public class V1CardApiConfiguration {
         return new V1TokenSettings(
                 v1.getJwtSecret(),
                 v1.getTokenClaimKey(),
-                Duration.ofSeconds(v1.getTokenClockSkewSeconds()));
+                Duration.ofSeconds(v1.getTokenClockSkewSeconds()),
+                v1.getTokenRedisKeyPrefix(),
+                Duration.ofSeconds(v1.getTokenTtlSeconds()));
     }
 
     @Bean
@@ -108,9 +112,19 @@ public class V1CardApiConfiguration {
     }
 
     @Bean
+    @ConditionalOnBean({V1MerchantProfilePort.class, V1TokenStorePort.class})
+    @ConditionalOnMissingBean(IssueV1TokenUseCase.class)
+    public IssueV1TokenUseCase v1IssueTokenUseCase(
+            V1MerchantProfilePort merchantProfilePort,
+            V1TokenStorePort tokenStorePort,
+            V1TokenSettings settings,
+            Clock clock) {
+        return new V1IssueTokenUseCaseService(merchantProfilePort, tokenStorePort, settings, clock);
+    }
+
+    @Bean
     @ConditionalOnMissingBean(IssueV1TokenUseCase.class)
     public IssueV1TokenUseCase unavailableIssueV1TokenUseCase() {
-        // TODO(D5): 接入商户凭证校验和 Redis token 写入；参见 docs/交行直充业务系统详细设计.md「20.13.5 Token 生成接口」。
         return rawBody -> V1CardApiResult.unavailable("新交易引擎Token生成暂未启用");
     }
 

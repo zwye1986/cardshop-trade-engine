@@ -22,6 +22,7 @@ import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 import java.util.Optional;
 import java.util.concurrent.CompletionStage;
@@ -31,8 +32,9 @@ import java.util.function.Function;
  * 原卡管兼容的 `/v1/cardapi/order` 入口。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.6 创建直充订单」、
- * 「20.13.10 查单设计」和「20.13.11 作废设计」。D3 阶段负责入口、token 兼容解析、
- * 灰度判定和旧系统代理；创建直充订单在新路由命中后交由应用用例完成协议预检和 Redis 接单。
+ * 「20.13.10 查单设计」和「20.13.11 作废设计」。入口层负责 token 兼容解析、灰度判定和旧系统代理；
+ * 其中 token 兼容解析可能读取共享 Redis key {@code token:app_id:{appId}}，必须和 Netty
+ * 事件循环隔离，避免灰度流量放大后造成 worker 线程饥饿。
  */
 @RestController
 @RequestMapping("/v1/cardapi/order")
@@ -91,24 +93,9 @@ public class V1RechargeOrderController {
             Mono<String> body,
             ServerHttpRequest request,
             Function<V1MerchantCommand, V1CardApiResult> newRouteHandler) {
-        Optional<AuthenticatedMerchant> merchant = tokenAuthenticator.authenticate(authorization);
-        return body.defaultIfEmpty("")
-                .flatMap(rawBody -> {
-                    V1RouteDecision decision = routeDecisionService.decideOrder(path(request), merchant.orElse(null));
-                    log.info("V1订单路由判定 path={}, target={}, reason={}, appId={}, orgCode={}",
-                            path(request),
-                            decision.target(),
-                            decision.reason(),
-                            merchant.map(AuthenticatedMerchant::appId).orElse(""),
-                            merchant.map(AuthenticatedMerchant::orgCode).orElse(""));
-                    if (decision.isLegacy()) {
-                        return legacyCardApiClient.proxy(request, rawBody).map(entity -> (ResponseEntity<?>) entity);
-                    }
-                    AuthenticatedMerchant principal = merchant.orElse(new AuthenticatedMerchant("", ""));
-                    V1CardApiResult result = newRouteHandler.apply(
-                            new V1MerchantCommand(principal.appId(), principal.orgCode(), rawBody));
-                    return Mono.just(ok(result));
-                });
+        return authenticateOnBlockingScheduler(authorization)
+                .flatMap(merchant -> body.defaultIfEmpty("")
+                        .flatMap(rawBody -> routeResolvedOrderRequest(request, newRouteHandler, merchant, rawBody)));
     }
 
     private static ResponseEntity<V1CardApiResponse<Object>> ok(V1CardApiResult result) {
@@ -120,24 +107,64 @@ public class V1RechargeOrderController {
             Mono<String> body,
             ServerHttpRequest request,
             Function<V1MerchantCommand, CompletionStage<V1CardApiResult>> newRouteHandler) {
-        Optional<AuthenticatedMerchant> merchant = tokenAuthenticator.authenticate(authorization);
-        return body.defaultIfEmpty("")
-                .flatMap(rawBody -> {
-                    V1RouteDecision decision = routeDecisionService.decideOrder(path(request), merchant.orElse(null));
-                    log.info("V1订单路由判定 path={}, target={}, reason={}, appId={}, orgCode={}",
-                            path(request),
-                            decision.target(),
-                            decision.reason(),
-                            merchant.map(AuthenticatedMerchant::appId).orElse(""),
-                            merchant.map(AuthenticatedMerchant::orgCode).orElse(""));
-                    if (decision.isLegacy()) {
-                        return legacyCardApiClient.proxy(request, rawBody).map(entity -> (ResponseEntity<?>) entity);
-                    }
-                    AuthenticatedMerchant principal = merchant.orElse(new AuthenticatedMerchant("", ""));
-                    return Mono.fromCompletionStage(newRouteHandler.apply(
-                            new V1MerchantCommand(principal.appId(), principal.orgCode(), rawBody)))
-                            .map(V1RechargeOrderController::ok);
-                });
+        return authenticateOnBlockingScheduler(authorization)
+                .flatMap(merchant -> body.defaultIfEmpty("")
+                        .flatMap(rawBody -> routeResolvedAsyncOrderRequest(request, newRouteHandler, merchant, rawBody)));
+    }
+
+    private Mono<ResponseEntity<?>> routeResolvedOrderRequest(
+            ServerHttpRequest request,
+            Function<V1MerchantCommand, V1CardApiResult> newRouteHandler,
+            Optional<AuthenticatedMerchant> merchant,
+            String rawBody) {
+        V1RouteDecision decision = routeDecisionService.decideOrder(path(request), merchant.orElse(null));
+        logOrderDecision(request, decision, merchant);
+        if (decision.isLegacy()) {
+            return legacyCardApiClient.proxy(request, rawBody).map(entity -> (ResponseEntity<?>) entity);
+        }
+        AuthenticatedMerchant principal = merchant.orElse(new AuthenticatedMerchant("", ""));
+        V1CardApiResult result = newRouteHandler.apply(
+                new V1MerchantCommand(principal.appId(), principal.orgCode(), rawBody));
+        return Mono.just(ok(result));
+    }
+
+    private Mono<ResponseEntity<?>> routeResolvedAsyncOrderRequest(
+            ServerHttpRequest request,
+            Function<V1MerchantCommand, CompletionStage<V1CardApiResult>> newRouteHandler,
+            Optional<AuthenticatedMerchant> merchant,
+            String rawBody) {
+        V1RouteDecision decision = routeDecisionService.decideOrder(path(request), merchant.orElse(null));
+        logOrderDecision(request, decision, merchant);
+        if (decision.isLegacy()) {
+            return legacyCardApiClient.proxy(request, rawBody).map(entity -> (ResponseEntity<?>) entity);
+        }
+        AuthenticatedMerchant principal = merchant.orElse(new AuthenticatedMerchant("", ""));
+        return Mono.fromCompletionStage(newRouteHandler.apply(
+                new V1MerchantCommand(principal.appId(), principal.orgCode(), rawBody)))
+                .map(V1RechargeOrderController::ok);
+    }
+
+    private void logOrderDecision(
+            ServerHttpRequest request,
+            V1RouteDecision decision,
+            Optional<AuthenticatedMerchant> merchant) {
+        log.info("V1订单路由判定 path={}, target={}, reason={}, appId={}, orgCode={}",
+                path(request),
+                decision.target(),
+                decision.reason(),
+                merchant.map(AuthenticatedMerchant::appId).orElse(""),
+                merchant.map(AuthenticatedMerchant::orgCode).orElse(""));
+    }
+
+    /**
+     * V1 token 校验遵循旧系统规则：先验 JWT，再读取 Redis 中
+     * {@code token:app_id:{appId}} 做“最后签发 token”一致性检查，参见详细设计
+     * 「20.13.4 Token 兼容校验」。当前 Redis 端口仍是同步接口，所以认证必须延迟到订阅时，
+     * 并放入 boundedElastic；否则 controller 方法在 Netty event-loop 上被调用时会直接阻塞。
+     */
+    private Mono<Optional<AuthenticatedMerchant>> authenticateOnBlockingScheduler(String authorization) {
+        return Mono.fromCallable(() -> tokenAuthenticator.authenticate(authorization))
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     private static String path(ServerHttpRequest request) {

@@ -2,11 +2,14 @@ package com.cardshop.trade.engine.bootstrap.config;
 
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
 import com.cardshop.trade.engine.api.v1.usecase.V1CreateRechargeOrderUseCaseService;
+import com.cardshop.trade.engine.api.v1.usecase.V1IssueTokenUseCaseService;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
+import com.cardshop.trade.engine.application.v1.IssueV1TokenUseCase;
 import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -62,6 +65,35 @@ class V1CardApiConfigurationTest {
                     // fallback 返回的是 bean method 直接 new 的 lambda，不是 V1CreateRechargeOrderUseCaseService
                     assertThat(context.getBean(CreateRechargeOrderUseCase.class))
                             .isNotInstanceOf(V1CreateRechargeOrderUseCaseService.class);
+                });
+    }
+
+    @Test
+    void registersRealIssueTokenUseCaseWhenMerchantAndTokenStorePresent() {
+        contextRunner
+                .withBean(V1MerchantProfilePort.class, () -> null)
+                .withBean(V1TokenStorePort.class, () -> null)
+                .run(context -> {
+                    assertThat(context.getBeansOfType(IssueV1TokenUseCase.class))
+                            .as("商户资料和 token store 就绪时应注册真实 token 生成用例")
+                            .hasSize(1);
+                    assertThat(context).hasBean("v1IssueTokenUseCase");
+                    assertThat(context).doesNotHaveBean("unavailableIssueV1TokenUseCase");
+                    assertThat(context.getBean(IssueV1TokenUseCase.class))
+                            .isInstanceOf(V1IssueTokenUseCaseService.class);
+                });
+    }
+
+    @Test
+    void registersFallbackIssueTokenUseCaseWhenTokenStoreMissing() {
+        contextRunner
+                .withBean(V1MerchantProfilePort.class, () -> null)
+                .run(context -> {
+                    assertThat(context.getBeansOfType(IssueV1TokenUseCase.class)).hasSize(1);
+                    assertThat(context).doesNotHaveBean("v1IssueTokenUseCase");
+                    assertThat(context).hasBean("unavailableIssueV1TokenUseCase");
+                    assertThat(context.getBean(IssueV1TokenUseCase.class))
+                            .isNotInstanceOf(V1IssueTokenUseCaseService.class);
                 });
     }
 

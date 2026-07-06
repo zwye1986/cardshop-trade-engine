@@ -15,12 +15,15 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * 原卡管兼容的 `/v1/cardapi/auth` 入口。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.5 Token 生成接口」。
- * D3 阶段只完成入口和灰度代理框架，真实 token 生成依赖后续商户密钥读取与 Redis 写入能力。
+ * 灰度命中新交易引擎时，真实签发会访问旧商户表和共享 Redis token key；这些依赖当前仍通过同步端口
+ * 适配旧 MyBatis/Redis 语义，因此必须在 controller 层显式放到 boundedElastic，避免 WebFlux Netty
+ * 事件循环线程直接等待阻塞 IO。
  */
 @RestController
 @RequestMapping("/v1/cardapi/auth")
@@ -52,9 +55,19 @@ public class V1AuthController {
                     if (decision.isLegacy()) {
                         return legacyCardApiClient.proxy(request, rawBody).map(entity -> (ResponseEntity<?>) entity);
                     }
-                    V1CardApiResult result = issueV1TokenUseCase.issueToken(rawBody);
-                    return Mono.just(ok(result));
+                    return issueTokenOnBlockingScheduler(rawBody).map(V1AuthController::ok);
                 });
+    }
+
+    /**
+     * `/auth/getToken` 的签发链路会读取 `mc_ext_depart` 并写入 Redis
+     * {@code token:app_id:{appId}}，参见详细设计「20.13.5 Token 生成接口」。
+     * 在 V1TokenStorePort 改造成全响应式之前，统一在这里设置阻塞边界，保证调用方即使运行在
+     * Netty event-loop 上，也不会把 worker 线程卡在同步 IO 等待上。
+     */
+    private Mono<V1CardApiResult> issueTokenOnBlockingScheduler(String rawBody) {
+        return Mono.fromCallable(() -> issueV1TokenUseCase.issueToken(rawBody))
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     private static ResponseEntity<V1CardApiResponse<Object>> ok(V1CardApiResult result) {
