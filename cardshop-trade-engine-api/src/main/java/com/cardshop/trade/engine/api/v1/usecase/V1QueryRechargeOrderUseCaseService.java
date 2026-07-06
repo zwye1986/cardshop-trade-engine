@@ -79,23 +79,41 @@ public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUse
         String orderStatus = defaultText(snapshot.orderStatus(), "");
         String persistStatus = defaultText(snapshot.persistStatus(), "");
         String validationStatus = defaultText(snapshot.validationStatus(), "");
+        /*
+         * 查单响应必须使用 V1.1 接口文档「1.4.2 订单状态码」和详细设计「20.13.10 查单设计」中的
+         * order_status 码表。这里特别避免把旧后台推送状态或核销 use_state 的 3 当成订单失败：
+         * 失败订单对外是 6，核销作废才使用 use_state=3。
+         */
         if ("FAILED".equals(validationStatus)
                 || "VALIDATION_FAILED".equals(orderStatus)
                 || "ACCEPT_REJECTED".equals(orderStatus)) {
-            return new OrderView("3", defaultText(snapshot.failReason(), "订单失败"));
+            return new OrderView("6", defaultText(snapshot.failReason(), "订单失败"));
         }
         if ("SUCCESS".equals(orderStatus)) {
-            return new OrderView("1", "成功");
+            return new OrderView("12", "成功");
         }
-        if ("FAILED".equals(orderStatus) || "REFUNDED".equals(orderStatus)) {
-            return new OrderView("3", defaultText(snapshot.failReason(), "订单失败"));
+        if ("SUPPLIER_ACCEPTED".equals(orderStatus)) {
+            return new OrderView("13", "充值中");
+        }
+        if ("REFUNDED".equals(orderStatus)) {
+            return new OrderView("11", "已退款");
+        }
+        if ("FAILED".equals(orderStatus) || "SUPPLIER_FAILED".equals(orderStatus)) {
+            return new OrderView("6", defaultText(snapshot.failReason(), "订单失败"));
         }
         if (!"DB_PERSISTED".equals(persistStatus)
                 || "ACCEPTED".equals(orderStatus)
+                || "PERSISTING".equals(orderStatus)
                 || "WAIT".equals(orderStatus)
+                || "WAIT_DISPATCH".equals(orderStatus)
+                || "FREQUENCY_WAIT".equals(orderStatus)
                 || "DISPATCHING".equals(orderStatus)) {
             return new OrderView("2", "处理中");
         }
+        /*
+         * 对未知内部态保持保守处理中，避免查单接口越权推进供应商查询或把未识别状态误报为终态。
+         * 后续若新增内部状态，应在详细设计「20.13.10 查单设计」状态映射表先补充，再扩展这里。
+         */
         return new OrderView("2", "处理中");
     }
 

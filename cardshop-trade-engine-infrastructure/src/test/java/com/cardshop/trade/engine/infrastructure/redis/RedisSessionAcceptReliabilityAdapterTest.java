@@ -61,7 +61,7 @@ class RedisSessionAcceptReliabilityAdapterTest {
 
         RecordingSession session = sessionFactory.sessions.getFirst();
         assertThat(waitResult.confirmed()).isFalse();
-        assertThat(cancelResult.cancelled()).isTrue();
+        assertThat(cancelResult.rollbackConfirmed()).isTrue();
         assertThat(session.executedScripts).extracting(RedisScript::getScriptAsString)
                 .anySatisfy(script -> assertThat(script).contains("cancel_unconfirmed_accept.lua"));
         assertThat(session.lastArgs)

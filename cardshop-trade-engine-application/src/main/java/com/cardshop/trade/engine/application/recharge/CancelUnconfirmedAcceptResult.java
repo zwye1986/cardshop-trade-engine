@@ -7,11 +7,11 @@ package com.cardshop.trade.engine.application.recharge;
  * 当 accept Lua 已执行但 WAIT 未达到副本确认要求时，只能通过 Redis Lua 原子释放余额和清理 pending；
  * 如果回滚也失败，上层不得本地释放余额，必须进入“稍后查单/异常核查”语义。
  *
- * @param cancelled 是否确认完成回滚
+ * @param rollbackConfirmed 是否确认完成回滚
  * @param failCode 回滚失败码
  * @param failReason 回滚失败原因
  */
-public record CancelUnconfirmedAcceptResult(boolean cancelled, String failCode, String failReason) {
+public record CancelUnconfirmedAcceptResult(boolean rollbackConfirmed, String failCode, String failReason) {
 
     public CancelUnconfirmedAcceptResult {
         failCode = failCode == null ? "" : failCode;

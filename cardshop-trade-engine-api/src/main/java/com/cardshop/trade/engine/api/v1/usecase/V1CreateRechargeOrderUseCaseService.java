@@ -409,7 +409,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
          * cancel 成功代表 Redis 已确认释放余额并清理 pending，此时旧协议只能返回系统繁忙让调用方重试；
          * cancel 失败则不能假定订单未受理，必须进入“稍后查单 + anomaly 核查”保守语义。
          */
-        if (cancelResult.cancelled()) {
+        if (cancelResult.rollbackConfirmed()) {
             return CompletableFuture.completedFuture(V1CardApiResultStatus.SYSTEM_BUSY.result());
         }
         /*

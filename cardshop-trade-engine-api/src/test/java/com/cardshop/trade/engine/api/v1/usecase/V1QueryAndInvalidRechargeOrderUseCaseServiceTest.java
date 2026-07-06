@@ -62,8 +62,53 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
 
         assertThat(result.code()).isEqualTo("200");
         V1RechargeOrderResponse data = (V1RechargeOrderResponse) result.data();
-        assertThat(data.orderStatus()).isEqualTo("3");
+        assertThat(data.orderStatus()).isEqualTo("6");
         assertThat(data.orderStatusDesc()).isEqualTo("商品无权限");
+    }
+
+    @Test
+    void queryReturnsSuccessWhenRedisSnapshotContainsTerminalSuccess() {
+        var service = new V1QueryRechargeOrderUseCaseService(
+                precheckService(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (orgCode, outOrderSn) -> Optional.of(snapshot("SUCCESS", "DB_PERSISTED", "PASSED", "", "")));
+
+        V1CardApiResult result = service.queryRechargeOrder(command("OUT-QUERY-3", "nonce-query-42345678901234567890"));
+
+        assertThat(result.code()).isEqualTo("200");
+        V1RechargeOrderResponse data = (V1RechargeOrderResponse) result.data();
+        assertThat(data.orderStatus()).isEqualTo("12");
+        assertThat(data.orderStatusDesc()).isEqualTo("成功");
+    }
+
+    @Test
+    void queryReturnsRechargingWhenRedisSnapshotContainsSupplierAccepted() {
+        var service = new V1QueryRechargeOrderUseCaseService(
+                precheckService(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (orgCode, outOrderSn) -> Optional.of(snapshot("SUPPLIER_ACCEPTED", "DB_PERSISTED", "PASSED", "", "")));
+
+        V1CardApiResult result = service.queryRechargeOrder(command("OUT-QUERY-4", "nonce-query-52345678901234567890"));
+
+        assertThat(result.code()).isEqualTo("200");
+        V1RechargeOrderResponse data = (V1RechargeOrderResponse) result.data();
+        assertThat(data.orderStatus()).isEqualTo("13");
+        assertThat(data.orderStatusDesc()).isEqualTo("充值中");
+    }
+
+    @Test
+    void queryReturnsRefundedWhenRedisSnapshotContainsRefunded() {
+        var service = new V1QueryRechargeOrderUseCaseService(
+                precheckService(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (orgCode, outOrderSn) -> Optional.of(snapshot("REFUNDED", "DB_PERSISTED", "PASSED", "", "")));
+
+        V1CardApiResult result = service.queryRechargeOrder(command("OUT-QUERY-5", "nonce-query-62345678901234567890"));
+
+        assertThat(result.code()).isEqualTo("200");
+        V1RechargeOrderResponse data = (V1RechargeOrderResponse) result.data();
+        assertThat(data.orderStatus()).isEqualTo("11");
+        assertThat(data.orderStatusDesc()).isEqualTo("已退款");
     }
 
     @Test
