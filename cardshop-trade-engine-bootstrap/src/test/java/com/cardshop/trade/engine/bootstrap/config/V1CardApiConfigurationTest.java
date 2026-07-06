@@ -4,8 +4,13 @@ import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
 import com.cardshop.trade.engine.api.v1.usecase.V1CreateRechargeOrderUseCaseService;
 import com.cardshop.trade.engine.api.v1.usecase.V1IssueTokenUseCaseService;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
+import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
+import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
+import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.IssueV1TokenUseCase;
+import com.cardshop.trade.engine.application.v1.QueryRechargeOrderUseCase;
+import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
@@ -38,6 +43,8 @@ class V1CardApiConfigurationTest {
     void registersSingleRealBeanWhenDependenciesPresent() {
         contextRunner
                 .withBean(AcceptRechargeOrderPort.class, () -> null)
+                .withBean(RechargeAcceptReliabilityPort.class, () -> null)
+                .withBean(PersistRechargeOrderMessagePublisher.class, () -> null)
                 .withBean(V1MerchantProfilePort.class, () -> null)
                 .withBean(V1ProductCandidateSelector.class, () -> null)
                 .run(context -> {
@@ -94,6 +101,21 @@ class V1CardApiConfigurationTest {
                     assertThat(context).hasBean("unavailableIssueV1TokenUseCase");
                     assertThat(context.getBean(IssueV1TokenUseCase.class))
                             .isNotInstanceOf(V1IssueTokenUseCaseService.class);
+                });
+    }
+
+    @Test
+    void registersRealQueryAndInvalidUseCasesWhenOrderQueryPortPresent() {
+        contextRunner
+                .withBean(V1MerchantProfilePort.class, () -> null)
+                .withBean(RechargeOrderQueryPort.class, () -> null)
+                .run(context -> {
+                    assertThat(context).hasBean("v1QueryRechargeOrderUseCase");
+                    assertThat(context).hasBean("v1InvalidRechargeOrderUseCase");
+                    assertThat(context).doesNotHaveBean("unavailableQueryRechargeOrderUseCase");
+                    assertThat(context).doesNotHaveBean("unavailableInvalidRechargeOrderUseCase");
+                    assertThat(context).hasSingleBean(QueryRechargeOrderUseCase.class);
+                    assertThat(context).hasSingleBean(InvalidRechargeOrderUseCase.class);
                 });
     }
 

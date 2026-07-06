@@ -50,6 +50,48 @@ public final class RechargeRedisKeyBuilder {
     }
 
     /**
+     * 构造 `cancel_unconfirmed_accept.lua` 所需 KEYS。
+     *
+     * <p>参见详细设计「20.5 下单服务实现细节」第 8-10 步。WAIT 失败回滚必须和 pending/org_index
+     * 维护在同一个 Lua 中完成，避免 Java 先删 pending 再删 org_index 时丢失新写入商户索引。
+     */
+    public List<String> cancelUnconfirmedAcceptKeys(AcceptRechargeOrderCommand command) {
+        String orgTag = orgTag(command.orgCode());
+        int bucket = pendingOrgBucket(command.orgCode());
+        return List.of(
+                key("recharge:" + orgTag + ":balance"),
+                key("recharge:" + orgTag + ":idem:" + command.outOrderSn()),
+                key("recharge:" + orgTag + ":order:" + command.outOrderSn()),
+                key("recharge:" + orgTag + ":reservation:" + command.orderId()),
+                key("recharge:" + orgTag + ":persist:pending"),
+                key("recharge:" + orgTag + ":order:event_index:" + command.orderId()),
+                key("recharge:" + orgTag + ":order:event:" + command.orderId() + ":2"),
+                key("recharge:persist:pending:org_index:" + bucket));
+    }
+
+    /**
+     * 构造 `mark_persist_queued.lua` 所需 KEYS。
+     */
+    public List<String> markPersistQueuedKeys(AcceptRechargeOrderCommand command) {
+        String orgTag = orgTag(command.orgCode());
+        return List.of(
+                key("recharge:" + orgTag + ":order:" + command.outOrderSn()),
+                key("recharge:" + orgTag + ":idem:" + command.outOrderSn()),
+                key("recharge:" + orgTag + ":order:event_index:" + command.orderId()),
+                key("recharge:" + orgTag + ":order:event:" + command.orderId() + ":2"));
+    }
+
+    /**
+     * 构造查单/作废入口读取的 Redis 订单快照 key。
+     *
+     * <p>参见详细设计「20.13.10 查单设计」。接口层只知道商户订单号，因此 Redis 查询必须基于
+     * `orgCode + outOrderSn` 定位订单 hash；后续 MySQL 兜底也应沿用同一个业务主键。
+     */
+    public String orderKey(String orgCode, String outOrderSn) {
+        return key("recharge:" + orgTag(orgCode) + ":order:" + outOrderSn);
+    }
+
+    /**
      * 按 CRC32 对商户 pending 索引分桶，保证 XXL-Job 后续可通过 org_index 分片扫描。
      */
     public int pendingOrgBucket(String orgCode) {

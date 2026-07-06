@@ -8,6 +8,13 @@ import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
+import com.cardshop.trade.engine.application.recharge.CancelUnconfirmedAcceptResult;
+import com.cardshop.trade.engine.application.recharge.MarkPersistQueuedResult;
+import com.cardshop.trade.engine.application.recharge.PersistMessagePublishResult;
+import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
+import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
+import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
+import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
@@ -26,6 +33,7 @@ import java.net.URI;
 import java.time.Clock;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
@@ -35,17 +43,21 @@ import java.util.concurrent.Executor;
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」、
  * 「20.13.5 商品选择规则」和「20.13.6 Redis Lua 下单结果」。该用例完成协议预检、request_hash、
- * Java 商品候选校验和 Redis-first 原子接单；WAIT、MQ confirm 和 MySQL 落库属于 D5/D6 后续职责。
+ * Java 商品候选校验、Redis-first 原子接单、Redis WAIT 和 RabbitMQ publisher confirm。
+ * MySQL 落库仍由后续 Consumer 异步完成，本用例只保证接口返回前订单进入可恢复的 Redis/MQ 通道。
  */
 public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(V1CreateRechargeOrderUseCaseService.class);
+    private static final String PERSIST_STATUS_PENDING_MQ = "PENDING_MQ";
 
     private final V1ProtocolPrecheckService precheckService;
     private final RequestHashCanonicalizer requestHashCanonicalizer;
     private final V1MerchantProfilePort merchantProfilePort;
     private final V1ProductCandidateSelector productCandidateSelector;
     private final AcceptRechargeOrderPort acceptRechargeOrderPort;
+    private final RechargeAcceptReliabilityPort reliabilityPort;
+    private final PersistRechargeOrderMessagePublisher persistMessagePublisher;
     private final RechargeOrderIdGenerator orderIdGenerator;
     private final Clock clock;
     private final V1RechargeAcceptSettings settings;
@@ -61,11 +73,39 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             Clock clock,
             V1RechargeAcceptSettings settings,
             Executor tradeDbTaskExecutor) {
+        this(
+                precheckService,
+                requestHashCanonicalizer,
+                merchantProfilePort,
+                productCandidateSelector,
+                acceptRechargeOrderPort,
+                new NoopRechargeAcceptReliabilityPort(),
+                new NoopPersistRechargeOrderMessagePublisher(),
+                orderIdGenerator,
+                clock,
+                settings,
+                tradeDbTaskExecutor);
+    }
+
+    public V1CreateRechargeOrderUseCaseService(
+            V1ProtocolPrecheckService precheckService,
+            RequestHashCanonicalizer requestHashCanonicalizer,
+            V1MerchantProfilePort merchantProfilePort,
+            V1ProductCandidateSelector productCandidateSelector,
+            AcceptRechargeOrderPort acceptRechargeOrderPort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            PersistRechargeOrderMessagePublisher persistMessagePublisher,
+            RechargeOrderIdGenerator orderIdGenerator,
+            Clock clock,
+            V1RechargeAcceptSettings settings,
+            Executor tradeDbTaskExecutor) {
         this.precheckService = precheckService;
         this.requestHashCanonicalizer = requestHashCanonicalizer;
         this.merchantProfilePort = merchantProfilePort;
         this.productCandidateSelector = productCandidateSelector;
         this.acceptRechargeOrderPort = acceptRechargeOrderPort;
+        this.reliabilityPort = reliabilityPort;
+        this.persistMessagePublisher = persistMessagePublisher;
         this.orderIdGenerator = orderIdGenerator;
         this.clock = clock;
         this.settings = settings;
@@ -78,8 +118,101 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 .supplyAsync(() -> prepare(command), tradeDbTaskExecutor)
                 .thenCompose(preparation -> preparation.errorResult != null
                         ? CompletableFuture.completedFuture(preparation.errorResult)
-                        : acceptRechargeOrderPort.accept(preparation.acceptCommand)
-                                .thenApply(acceptResult -> toV1Result(preparation.outOrderSn, acceptResult)));
+                        : acceptAfterDependencyGate(preparation));
+    }
+
+    /**
+     * RabbitMQ publisher breaker 必须在 Redis accept Lua 之前检查，参见详细设计「20.5 下单服务实现细节」。
+     * 如果 MQ 全局不可用仍继续写 Redis，会制造大量只能依赖补偿任务追平的 pending 订单，因此这里 fail closed。
+     */
+    private CompletionStage<V1CardApiResult> acceptAfterDependencyGate(Preparation preparation) {
+        if (!persistMessagePublisher.isAvailable()) {
+            log.warn("V1直充下单MQ发布不可用，Redis接单前拒绝 appId={}, orgCode={}, outOrderSn={}, requestHash={}",
+                    preparation.acceptCommand.appId(),
+                    preparation.acceptCommand.orgCode(),
+                    preparation.acceptCommand.outOrderSn(),
+                    preparation.acceptCommand.requestHash());
+            return CompletableFuture.completedFuture(new V1CardApiResult("500", "系统繁忙", null));
+        }
+        return acceptRechargeOrderPort.accept(preparation.acceptCommand)
+                .thenCompose(acceptResult -> afterRedisAccept(preparation, acceptResult));
+    }
+
+    private CompletionStage<V1CardApiResult> afterRedisAccept(
+            Preparation preparation,
+            AcceptRechargeOrderResult acceptResult) {
+        if (!acceptResult.orderWritten()) {
+            return CompletableFuture.completedFuture(toV1Result(preparation.outOrderSn, acceptResult));
+        }
+        return reliabilityPort.waitForReplication(preparation.acceptCommand, acceptResult)
+                .thenCompose(waitResult -> waitResult.confirmed()
+                        ? publishPersistMessage(preparation, acceptResult)
+                        : cancelUnconfirmedAccept(preparation, acceptResult, waitResult));
+    }
+
+    private CompletionStage<V1CardApiResult> cancelUnconfirmedAccept(
+            Preparation preparation,
+            AcceptRechargeOrderResult acceptResult,
+            ReplicationWaitResult waitResult) {
+        return reliabilityPort
+                .cancelUnconfirmedAccept(preparation.acceptCommand, acceptResult, waitResult.reason())
+                .thenApply(cancelResult -> toWaitFailureResult(preparation.outOrderSn, acceptResult, cancelResult));
+    }
+
+    private CompletionStage<V1CardApiResult> publishPersistMessage(
+            Preparation preparation,
+            AcceptRechargeOrderResult acceptResult) {
+        PersistTradeOrderMessage message = buildPersistMessage(preparation.acceptCommand, acceptResult);
+        return persistMessagePublisher.publish(message)
+                .thenCompose(publishResult -> publishResult.confirmed()
+                        ? markPersistQueued(preparation, acceptResult, publishResult)
+                        : CompletableFuture.completedFuture(processingResult(preparation.outOrderSn, acceptResult)));
+    }
+
+    private CompletionStage<V1CardApiResult> markPersistQueued(
+            Preparation preparation,
+            AcceptRechargeOrderResult acceptResult,
+            PersistMessagePublishResult publishResult) {
+        return reliabilityPort
+                .markPersistQueued(
+                        preparation.acceptCommand,
+                        acceptResult,
+                        publishResult.messageId(),
+                        publishResult.attemptCount())
+                .thenApply(markResult -> toMarkQueuedResult(preparation.outOrderSn, acceptResult, markResult));
+    }
+
+    private PersistTradeOrderMessage buildPersistMessage(
+            AcceptRechargeOrderCommand command,
+            AcceptRechargeOrderResult acceptResult) {
+        String messageId = "persist-" + command.orderId() + "-" + UUID.randomUUID();
+        Map<String, Object> snapshot = Map.ofEntries(
+                Map.entry("order_id", acceptResult.orderId()),
+                Map.entry("org_code", command.orgCode()),
+                Map.entry("app_id", command.appId()),
+                Map.entry("out_order_sn", command.outOrderSn()),
+                Map.entry("product_id", command.productId()),
+                Map.entry("selected_product_id", command.selectedProductId()),
+                Map.entry("account", command.account()),
+                Map.entry("notify_url", command.notifyUrl()),
+                Map.entry("num", command.num()),
+                Map.entry("order_price", command.orderAmountCent()),
+                Map.entry("validation_status", acceptResult.validationStatus()),
+                Map.entry("fail_code", acceptResult.failCode()),
+                Map.entry("fail_reason", acceptResult.failReason()),
+                Map.entry("dispatch_allowed", acceptResult.dispatchAllowed()),
+                Map.entry("balance_reserved", acceptResult.balanceReserved()),
+                Map.entry("persist_status", PERSIST_STATUS_PENDING_MQ),
+                Map.entry("order_version", acceptResult.orderVersion()),
+                Map.entry("request_hash", command.requestHash()));
+        return new PersistTradeOrderMessage(
+                messageId,
+                command.orgCode(),
+                acceptResult.orderId(),
+                command.outOrderSn(),
+                command.requestHash(),
+                Math.max(1L, acceptResult.orderVersion()),
+                snapshot);
     }
 
     private Preparation prepare(V1MerchantCommand command) {
@@ -231,6 +364,30 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         return new V1CardApiResult("500", defaultText(result.failReason(), "系统繁忙，请稍后重试"), null);
     }
 
+    private static V1CardApiResult toWaitFailureResult(
+            String outOrderSn,
+            AcceptRechargeOrderResult acceptResult,
+            CancelUnconfirmedAcceptResult cancelResult) {
+        if (cancelResult.cancelled()) {
+            return new V1CardApiResult("500", "系统繁忙，请稍后重试", null);
+        }
+        return processingResult(outOrderSn, acceptResult);
+    }
+
+    private static V1CardApiResult toMarkQueuedResult(
+            String outOrderSn,
+            AcceptRechargeOrderResult acceptResult,
+            MarkPersistQueuedResult markResult) {
+        return markResult.marked() ? toV1Result(outOrderSn, acceptResult) : processingResult(outOrderSn, acceptResult);
+    }
+
+    private static V1CardApiResult processingResult(String outOrderSn, AcceptRechargeOrderResult acceptResult) {
+        return new V1CardApiResult(
+                "500",
+                "系统繁忙，请稍后查询订单状态",
+                Map.of("out_order_sn", outOrderSn, "order_status", "2"));
+    }
+
     private static String businessCode(String failCode) {
         return switch (defaultText(failCode, "")) {
             case "BALANCE_NOT_ENOUGH", "MERCHANT_DISABLED" -> "504";
@@ -243,5 +400,49 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     }
 
     private record BusinessFailure(String failCode, String failReason) {
+    }
+
+    /**
+     * 旧构造器的兼容默认值，仅用于测试或未装配 D4 可靠性端口时保持已有行为。
+     * 生产 Bean 会通过完整构造器注入真实 WAIT/cancel/mark 实现。
+     */
+    private static final class NoopRechargeAcceptReliabilityPort implements RechargeAcceptReliabilityPort {
+
+        @Override
+        public CompletionStage<ReplicationWaitResult> waitForReplication(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult) {
+            return CompletableFuture.completedFuture(ReplicationWaitResult.confirmed(1));
+        }
+
+        @Override
+        public CompletionStage<CancelUnconfirmedAcceptResult> cancelUnconfirmedAccept(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult,
+                String reason) {
+            return CompletableFuture.completedFuture(CancelUnconfirmedAcceptResult.success());
+        }
+
+        @Override
+        public CompletionStage<MarkPersistQueuedResult> markPersistQueued(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult,
+                String persistMessageId,
+                int publishCount) {
+            return CompletableFuture.completedFuture(MarkPersistQueuedResult.success());
+        }
+    }
+
+    private static final class NoopPersistRechargeOrderMessagePublisher implements PersistRechargeOrderMessagePublisher {
+
+        @Override
+        public boolean isAvailable() {
+            return true;
+        }
+
+        @Override
+        public CompletionStage<PersistMessagePublishResult> publish(PersistTradeOrderMessage message) {
+            return CompletableFuture.completedFuture(PersistMessagePublishResult.confirmed(message.messageId(), 1));
+        }
     }
 }

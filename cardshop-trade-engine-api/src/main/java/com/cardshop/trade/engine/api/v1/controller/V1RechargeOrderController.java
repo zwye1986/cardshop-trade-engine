@@ -123,9 +123,10 @@ public class V1RechargeOrderController {
             return legacyCardApiClient.proxy(request, rawBody).map(entity -> (ResponseEntity<?>) entity);
         }
         AuthenticatedMerchant principal = merchant.orElse(new AuthenticatedMerchant("", ""));
-        V1CardApiResult result = newRouteHandler.apply(
-                new V1MerchantCommand(principal.appId(), principal.orgCode(), rawBody));
-        return Mono.just(ok(result));
+        return Mono.fromCallable(() -> newRouteHandler.apply(
+                        new V1MerchantCommand(principal.appId(), principal.orgCode(), rawBody)))
+                .subscribeOn(Schedulers.boundedElastic())
+                .map(V1RechargeOrderController::ok);
     }
 
     private Mono<ResponseEntity<?>> routeResolvedAsyncOrderRequest(

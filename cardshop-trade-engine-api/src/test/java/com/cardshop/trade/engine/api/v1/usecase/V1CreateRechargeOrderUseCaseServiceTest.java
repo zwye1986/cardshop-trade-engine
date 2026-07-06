@@ -10,6 +10,13 @@ import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
+import com.cardshop.trade.engine.application.recharge.CancelUnconfirmedAcceptResult;
+import com.cardshop.trade.engine.application.recharge.MarkPersistQueuedResult;
+import com.cardshop.trade.engine.application.recharge.PersistMessagePublishResult;
+import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
+import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
+import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
+import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
 import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
@@ -206,12 +213,120 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 .isNotEqualTo(Thread.currentThread().getName());
     }
 
+    @Test
+    void rejectsBeforeRedisAcceptWhenMqPublisherIsUnavailable() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingPersistPublisher publisher = new RecordingPersistPublisher();
+        publisher.available = false;
+        V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher);
+
+        V1CardApiResult result = localService.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-MQ-OFF", "nonce-12345678901234567890123451", 1)))
+                .toCompletableFuture().join();
+
+        assertThat(result.code()).isEqualTo("500");
+        assertThat(result.msg()).isEqualTo("系统繁忙");
+        assertThat(localAcceptPort.lastCommand).isNull();
+        assertThat(reliabilityPort.waitCalls).isZero();
+        assertThat(publisher.publishCalls).isZero();
+    }
+
+    @Test
+    void waitsPublishesAndMarksQueuedBeforeReturningAcceptedOrder() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingPersistPublisher publisher = new RecordingPersistPublisher();
+        V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher);
+
+        V1CardApiResult result = localService.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-RELIABLE", "nonce-12345678901234567890123452", 1)))
+                .toCompletableFuture().join();
+
+        assertThat(result.code()).isEqualTo("200");
+        assertThat(reliabilityPort.waitCalls).isEqualTo(1);
+        assertThat(publisher.publishCalls).isEqualTo(1);
+        assertThat(reliabilityPort.markQueuedCalls).isEqualTo(1);
+        assertThat(publisher.lastMessage.outOrderSn()).isEqualTo("OUT-RELIABLE");
+        assertThat(publisher.lastMessage.initialOrderSnapshot())
+                .containsEntry("order_id", "202607051337458961474292")
+                .containsEntry("persist_status", "PENDING_MQ");
+        assertThat(reliabilityPort.lastPersistMessageId).isEqualTo(publisher.lastMessage.messageId());
+    }
+
+    @Test
+    void cancelsUnconfirmedAcceptWhenRedisWaitFails() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        reliabilityPort.waitResult = ReplicationWaitResult.missed(0, "WAIT replicas not reached");
+        RecordingPersistPublisher publisher = new RecordingPersistPublisher();
+        V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher);
+
+        V1CardApiResult result = localService.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-FAIL", "nonce-12345678901234567890123453", 1)))
+                .toCompletableFuture().join();
+
+        assertThat(result.code()).isEqualTo("500");
+        assertThat(result.msg()).isEqualTo("系统繁忙，请稍后重试");
+        assertThat(reliabilityPort.waitCalls).isEqualTo(1);
+        assertThat(reliabilityPort.cancelCalls).isEqualTo(1);
+        assertThat(publisher.publishCalls).isZero();
+        assertThat(reliabilityPort.markQueuedCalls).isZero();
+    }
+
+    @Test
+    void returnsProcessingWhenMqConfirmFailsAfterRedisWaitSucceeded() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingPersistPublisher publisher = new RecordingPersistPublisher();
+        publisher.nextResult = PersistMessagePublishResult.failed("msg-1", 1, "CONFIRM_NACK", "RabbitMQ confirm nack");
+        V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher);
+
+        V1CardApiResult result = localService.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-MQ-NACK", "nonce-12345678901234567890123454", 1)))
+                .toCompletableFuture().join();
+
+        assertThat(result.code()).isEqualTo("500");
+        assertThat(result.msg()).isEqualTo("系统繁忙，请稍后查询订单状态");
+        assertThat(publisher.publishCalls).isEqualTo(1);
+        assertThat(reliabilityPort.markQueuedCalls).isZero();
+        assertThat(result.data()).isEqualTo(Map.of("out_order_sn", "OUT-MQ-NACK", "order_status", "2"));
+    }
+
     private static V1ProtocolPrecheckService precheckService() {
         return new V1ProtocolPrecheckService(
                 new V1RequestBodyCodec(),
                 new V1TimestampValidator(new V1TimestampSettings(Duration.ofSeconds(300)), CLOCK),
                 new V1Sm3SignatureVerifier(),
                 new V1ProtocolSettings(false));
+    }
+
+    private static V1CreateRechargeOrderUseCaseService service(
+            AcceptRechargeOrderPort acceptPort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            PersistRechargeOrderMessagePublisher publisher) {
+        return new V1CreateRechargeOrderUseCaseService(
+                precheckService(),
+                new RequestHashCanonicalizer(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (orgCode, parentProductId, account) -> V1ProductSelection.passed(
+                        parentProductId,
+                        "73301289",
+                        "TF_KA",
+                        "话费50元",
+                        "codekey",
+                        1,
+                        5200L,
+                        5000L,
+                        4900L,
+                        11L),
+                acceptPort,
+                reliabilityPort,
+                publisher,
+                () -> "202607051337458961474292",
+                CLOCK,
+                new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
+                SYNC_EXECUTOR);
     }
 
     private static String validRawBody(String outOrderSn, String nonceStr, int num) {
@@ -251,6 +366,65 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         public CompletableFuture<AcceptRechargeOrderResult> accept(AcceptRechargeOrderCommand command) {
             this.lastCommand = command;
             return CompletableFuture.completedFuture(nextResult);
+        }
+    }
+
+    private static final class RecordingReliabilityPort implements RechargeAcceptReliabilityPort {
+
+        private ReplicationWaitResult waitResult = ReplicationWaitResult.confirmed(1);
+        private CancelUnconfirmedAcceptResult cancelResult = CancelUnconfirmedAcceptResult.success();
+        private MarkPersistQueuedResult markResult = MarkPersistQueuedResult.success();
+        private int waitCalls;
+        private int cancelCalls;
+        private int markQueuedCalls;
+        private String lastPersistMessageId;
+
+        @Override
+        public CompletableFuture<ReplicationWaitResult> waitForReplication(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult) {
+            waitCalls++;
+            return CompletableFuture.completedFuture(waitResult);
+        }
+
+        @Override
+        public CompletableFuture<CancelUnconfirmedAcceptResult> cancelUnconfirmedAccept(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult,
+                String reason) {
+            cancelCalls++;
+            return CompletableFuture.completedFuture(cancelResult);
+        }
+
+        @Override
+        public CompletableFuture<MarkPersistQueuedResult> markPersistQueued(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult,
+                String persistMessageId,
+                int publishCount) {
+            markQueuedCalls++;
+            lastPersistMessageId = persistMessageId;
+            return CompletableFuture.completedFuture(markResult);
+        }
+    }
+
+    private static final class RecordingPersistPublisher implements PersistRechargeOrderMessagePublisher {
+
+        private boolean available = true;
+        private int publishCalls;
+        private PersistTradeOrderMessage lastMessage;
+        private PersistMessagePublishResult nextResult = PersistMessagePublishResult.confirmed("msg-1", 1);
+
+        @Override
+        public boolean isAvailable() {
+            return available;
+        }
+
+        @Override
+        public CompletableFuture<PersistMessagePublishResult> publish(PersistTradeOrderMessage message) {
+            publishCalls++;
+            lastMessage = message;
+            return CompletableFuture.completedFuture(nextResult.withMessageId(message.messageId()));
         }
     }
 }

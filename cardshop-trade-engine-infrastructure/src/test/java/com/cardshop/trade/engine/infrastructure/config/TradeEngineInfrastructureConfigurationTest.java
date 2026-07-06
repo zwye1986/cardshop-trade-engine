@@ -3,9 +3,11 @@ package com.cardshop.trade.engine.infrastructure.config;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
+import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptLoader;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptExecutor;
+import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisSessionFactory;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import reactor.core.publisher.Mono;
@@ -37,5 +39,19 @@ class TradeEngineInfrastructureConfigurationTest {
         contextRunner
                 .withBean(RechargeRedisScriptExecutor.class, () -> (script, keys, args) -> Mono.empty())
                 .run(context -> assertThat(context).hasSingleBean(AcceptRechargeOrderPort.class));
+    }
+
+    @Test
+    void createsSessionAdapterAsAcceptAndReliabilityPortsWhenRedisSessionFactoryExists() {
+        contextRunner
+                .withBean(RechargeRedisSessionFactory.class, () -> () -> {
+                    throw new AssertionError("configuration test should not open redis session");
+                })
+                .run(context -> {
+                    assertThat(context).hasSingleBean(AcceptRechargeOrderPort.class);
+                    assertThat(context).hasSingleBean(RechargeAcceptReliabilityPort.class);
+                    assertThat(context.getBean(AcceptRechargeOrderPort.class))
+                            .isSameAs(context.getBean(RechargeAcceptReliabilityPort.class));
+                });
     }
 }

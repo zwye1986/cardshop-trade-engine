@@ -27,4 +27,34 @@ class RechargeRedisScriptLoaderTest {
                 .contains("DUPLICATE")
                 .contains("BALANCE_NOT_ENOUGH");
     }
+
+    @Test
+    void loadsCancelUnconfirmedAcceptScriptFromClasspath() {
+        var loader = new RechargeRedisScriptLoader();
+
+        var script = loader.cancelUnconfirmedAcceptScript();
+
+        assertThat(script.getResultType()).isEqualTo(List.class);
+        assertThat(script.getSha1()).isNotBlank();
+        assertThat(script.getScriptAsString())
+                .contains("cancel_unconfirmed_accept.lua")
+                .contains("CANCELLED")
+                .contains("HINCRBY', KEYS[1], 'available'")
+                .contains("ZREM', KEYS[5]");
+    }
+
+    @Test
+    void loadsMarkPersistQueuedScriptFromClasspath() {
+        var loader = new RechargeRedisScriptLoader();
+
+        var script = loader.markPersistQueuedScript();
+
+        assertThat(script.getResultType()).isEqualTo(List.class);
+        assertThat(script.getSha1()).isNotBlank();
+        assertThat(script.getScriptAsString())
+                .contains("mark_persist_queued.lua")
+                .contains("PERSIST_QUEUED")
+                .contains("persist_msg_id")
+                .doesNotContain("ZREM");
+    }
 }

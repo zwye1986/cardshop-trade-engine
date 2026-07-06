@@ -6,13 +6,18 @@ import com.cardshop.trade.engine.api.v1.routing.V1RoutingSettings;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampSettings;
 import com.cardshop.trade.engine.api.v1.security.V1TokenSettings;
 import com.cardshop.trade.engine.api.v1.usecase.V1CreateRechargeOrderUseCaseService;
+import com.cardshop.trade.engine.api.v1.usecase.V1InvalidRechargeOrderUseCaseService;
 import com.cardshop.trade.engine.api.v1.usecase.V1IssueTokenUseCaseService;
+import com.cardshop.trade.engine.api.v1.usecase.V1QueryRechargeOrderUseCaseService;
 import com.cardshop.trade.engine.api.v1.usecase.V1RechargeAcceptSettings;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
+import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
+import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.IssueV1TokenUseCase;
 import com.cardshop.trade.engine.application.v1.QueryRechargeOrderUseCase;
+import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
@@ -77,7 +82,13 @@ public class V1CardApiConfiguration {
     }
 
     @Bean
-    @ConditionalOnBean({AcceptRechargeOrderPort.class, V1MerchantProfilePort.class, V1ProductCandidateSelector.class})
+    @ConditionalOnBean({
+            AcceptRechargeOrderPort.class,
+            RechargeAcceptReliabilityPort.class,
+            PersistRechargeOrderMessagePublisher.class,
+            V1MerchantProfilePort.class,
+            V1ProductCandidateSelector.class
+    })
     @ConditionalOnMissingBean(CreateRechargeOrderUseCase.class)
     public CreateRechargeOrderUseCase v1CreateRechargeOrderUseCase(
             V1ProtocolPrecheckService precheckService,
@@ -85,6 +96,8 @@ public class V1CardApiConfiguration {
             V1MerchantProfilePort merchantProfilePort,
             V1ProductCandidateSelector productCandidateSelector,
             AcceptRechargeOrderPort acceptRechargeOrderPort,
+            RechargeAcceptReliabilityPort rechargeAcceptReliabilityPort,
+            PersistRechargeOrderMessagePublisher persistMessagePublisher,
             RechargeOrderIdGenerator orderIdGenerator,
             Clock clock,
             V1RechargeAcceptSettings settings,
@@ -95,6 +108,8 @@ public class V1CardApiConfiguration {
                 merchantProfilePort,
                 productCandidateSelector,
                 acceptRechargeOrderPort,
+                rechargeAcceptReliabilityPort,
+                persistMessagePublisher,
                 orderIdGenerator,
                 clock,
                 settings,
@@ -136,10 +151,30 @@ public class V1CardApiConfiguration {
     }
 
     @Bean
+    @ConditionalOnBean({V1MerchantProfilePort.class, RechargeOrderQueryPort.class})
+    @ConditionalOnMissingBean(QueryRechargeOrderUseCase.class)
+    public QueryRechargeOrderUseCase v1QueryRechargeOrderUseCase(
+            V1ProtocolPrecheckService precheckService,
+            V1MerchantProfilePort merchantProfilePort,
+            RechargeOrderQueryPort orderQueryPort) {
+        return new V1QueryRechargeOrderUseCaseService(precheckService, merchantProfilePort, orderQueryPort);
+    }
+
+    @Bean
     @ConditionalOnMissingBean(QueryRechargeOrderUseCase.class)
     public QueryRechargeOrderUseCase unavailableQueryRechargeOrderUseCase() {
         // TODO(D6): 接入 Redis/MySQL 查单聚合；参见 docs/交行直充业务系统详细设计.md「20.13.10 查单设计」。
         return command -> V1CardApiResult.unavailable("新交易引擎查单暂未启用");
+    }
+
+    @Bean
+    @ConditionalOnBean({V1MerchantProfilePort.class, RechargeOrderQueryPort.class})
+    @ConditionalOnMissingBean(InvalidRechargeOrderUseCase.class)
+    public InvalidRechargeOrderUseCase v1InvalidRechargeOrderUseCase(
+            V1ProtocolPrecheckService precheckService,
+            V1MerchantProfilePort merchantProfilePort,
+            RechargeOrderQueryPort orderQueryPort) {
+        return new V1InvalidRechargeOrderUseCaseService(precheckService, merchantProfilePort, orderQueryPort);
     }
 
     @Bean

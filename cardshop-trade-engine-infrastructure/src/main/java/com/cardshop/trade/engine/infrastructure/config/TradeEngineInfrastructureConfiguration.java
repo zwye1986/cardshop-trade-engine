@@ -1,17 +1,30 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
+import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
+import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
+import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
+import com.cardshop.trade.engine.infrastructure.mq.RabbitTemplatePersistMessageOperations;
+import com.cardshop.trade.engine.infrastructure.redis.LettuceRechargeRedisSessionFactory;
 import com.cardshop.trade.engine.infrastructure.redis.RedisAcceptRechargeOrderAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptLoader;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptExecutor;
+import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisSessionFactory;
 import com.cardshop.trade.engine.infrastructure.redis.SpringDataRechargeRedisScriptExecutor;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Clock;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 
 /**
@@ -45,7 +58,24 @@ public class TradeEngineInfrastructureConfiguration {
     }
 
     @Bean
+    @ConditionalOnBean(LettuceConnectionFactory.class)
+    public RechargeRedisSessionFactory rechargeRedisSessionFactory(LettuceConnectionFactory connectionFactory) {
+        return new LettuceRechargeRedisSessionFactory(connectionFactory);
+    }
+
+    @Bean
+    @ConditionalOnBean(RechargeRedisSessionFactory.class)
+    public RedisSessionAcceptReliabilityAdapter redisSessionAcceptReliabilityAdapter(
+            RechargeRedisSessionFactory sessionFactory,
+            RechargeRedisKeyBuilder keyBuilder,
+            RechargeRedisScriptLoader scriptLoader,
+            TradeEngineProperties properties) {
+        return new RedisSessionAcceptReliabilityAdapter(sessionFactory, keyBuilder, scriptLoader, properties);
+    }
+
+    @Bean
     @ConditionalOnBean(RechargeRedisScriptExecutor.class)
+    @ConditionalOnMissingBean(AcceptRechargeOrderPort.class)
     public AcceptRechargeOrderPort acceptRechargeOrderPort(
             RechargeRedisScriptExecutor scriptExecutor,
             RechargeRedisKeyBuilder keyBuilder,
@@ -55,10 +85,36 @@ public class TradeEngineInfrastructureConfiguration {
     }
 
     @Bean
+    @ConditionalOnBean(RabbitTemplate.class)
+    public PersistRechargeOrderMessagePublisher persistRechargeOrderMessagePublisher(
+            RabbitTemplate rabbitTemplate,
+            ObjectMapper objectMapper,
+            TradeEngineProperties properties) {
+        return new RabbitPersistRechargeOrderMessagePublisher(
+                new RabbitTemplatePersistMessageOperations(rabbitTemplate),
+                objectMapper,
+                properties,
+                Clock.systemUTC());
+    }
+
+    @Bean
     @ConditionalOnBean(ReactiveStringRedisTemplate.class)
     public V1TokenStorePort v1TokenStorePort(
             ReactiveStringRedisTemplate redisTemplate,
             TradeEngineProperties properties) {
         return new RedisV1TokenStoreAdapter(redisTemplate, properties);
+    }
+
+    @Bean
+    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
+    public RechargeOrderQueryPort rechargeOrderQueryPort(
+            ReactiveStringRedisTemplate redisTemplate,
+            RechargeRedisKeyBuilder keyBuilder,
+            TradeEngineProperties properties) {
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
+        return new RedisRechargeOrderQueryAdapter(
+                redisTemplate,
+                keyBuilder,
+                java.time.Duration.ofMillis(timeoutMs));
     }
 }
