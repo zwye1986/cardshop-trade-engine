@@ -31,7 +31,7 @@ import java.util.function.Function;
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.6 创建直充订单」、
  * 「20.13.10 查单设计」和「20.13.11 作废设计」。D3 阶段负责入口、token 兼容解析、
- * 灰度判定和旧系统代理；真实受理流程后续在应用用例中接入。
+ * 灰度判定和旧系统代理；创建直充订单在新路由命中后交由应用用例完成协议预检和 Redis 接单。
  */
 @RestController
 @RequestMapping("/v1/cardapi/order")
@@ -103,7 +103,6 @@ public class V1RechargeOrderController {
                     if (decision.isLegacy()) {
                         return legacyCardApiClient.proxy(request, rawBody).map(entity -> (ResponseEntity<?>) entity);
                     }
-                    // TODO(D5): 由 appId/orgCode 查询商户 aesKey/启停状态后串联 V1ProtocolPrecheckService、商品候选校验和 Redis 接单端口；参见 docs/交行直充业务系统详细设计.md「20.13.2 V1 请求 DTO 和字段来源」和「20.13.6 Redis Lua 下单结果」。
                     AuthenticatedMerchant principal = merchant.orElse(new AuthenticatedMerchant("", ""));
                     V1CardApiResult result = newRouteHandler.apply(
                             new V1MerchantCommand(principal.appId(), principal.orgCode(), rawBody));

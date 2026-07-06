@@ -1,0 +1,211 @@
+package com.cardshop.trade.engine.api.v1.usecase;
+
+import com.cardshop.trade.engine.api.v1.codec.V1RequestBodyCodec;
+import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
+import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolSettings;
+import com.cardshop.trade.engine.api.v1.security.V1Sm3SignatureVerifier;
+import com.cardshop.trade.engine.api.v1.security.V1TimestampSettings;
+import com.cardshop.trade.engine.api.v1.security.V1TimestampValidator;
+import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
+import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
+import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
+import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
+import com.cardshop.trade.engine.application.v1.V1CardApiResult;
+import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1ProductSelection;
+import com.cardshop.trade.engine.domain.order.ValidationStatus;
+import com.cardshop.trade.engine.domain.service.RequestHashCanonicalizer;
+import org.junit.jupiter.api.Test;
+
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * V1 创建直充订单新链路用例测试。
+ *
+ * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」、
+ * 「20.13.5 商品选择规则」和「20.13.6 Redis Lua 下单结果」。旧卡管 V3/V2 的核心兼容点是：
+ * `product_id` 表示父商品编码，验签通过后再按父商品选择可售子商品并进入 Redis 原子接单。
+ */
+class V1CreateRechargeOrderUseCaseServiceTest {
+
+    private static final Instant NOW = Instant.parse("2026-07-05T04:15:58Z");
+    private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
+
+    private final CapturingAcceptPort acceptPort = new CapturingAcceptPort();
+    private final V1CreateRechargeOrderUseCaseService service = new V1CreateRechargeOrderUseCaseService(
+            precheckService(),
+            new RequestHashCanonicalizer(),
+            (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+            (orgCode, parentProductId, account) -> V1ProductSelection.passed(
+                    parentProductId,
+                    "73301289",
+                    "TF_KA",
+                    "话费50元",
+                    "codekey",
+                    1,
+                    5200L,
+                    5000L,
+                    4900L,
+                    11L),
+            acceptPort,
+            () -> "202607051337458961474292",
+            CLOCK,
+            new V1RechargeAcceptSettings(Duration.ofMinutes(5)));
+
+    @Test
+    void acceptsValidCreateRequestAndBuildsRedisCommandFromLegacyV1Fields() {
+        acceptPort.nextResult = new AcceptRechargeOrderResult(
+                AcceptRechargeOrderStatus.ACCEPTED,
+                "202607051337458961474292",
+                "PASSED",
+                "",
+                "",
+                true,
+                true,
+                1L);
+
+        V1CardApiResult result = service.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-1001", "nonce-12345678901234567890123456", 1)));
+
+        assertThat(result.code()).isEqualTo("200");
+        assertThat(result.msg()).isEqualTo("操作成功");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> data = (Map<String, Object>) result.data();
+        assertThat(data)
+                .containsEntry("order_sn", "202607051337458961474292")
+                .containsEntry("out_order_sn", "OUT-1001");
+        assertThat(acceptPort.lastCommand).isNotNull();
+        assertThat(acceptPort.lastCommand.orgCode()).isEqualTo("A36");
+        assertThat(acceptPort.lastCommand.productId()).isEqualTo("73301280");
+        assertThat(acceptPort.lastCommand.selectedProductId()).isEqualTo("73301289");
+        assertThat(acceptPort.lastCommand.orderAmountCent()).isEqualTo(5200L);
+        assertThat(acceptPort.lastCommand.candidateValidationStatus()).isEqualTo(ValidationStatus.PASSED);
+        assertThat(acceptPort.lastCommand.nextRetryEpochMillis()).isEqualTo(NOW.plus(Duration.ofMinutes(5)).toEpochMilli());
+    }
+
+    @Test
+    void rejectsBadSignatureBeforeCallingRedis() {
+        String rawBody = validRawBody("OUT-1002", "nonce-12345678901234567890123457", 1)
+                .replaceFirst("\"sign\"\\s*:\\s*\"[0-9a-f]+\"", "\"sign\": \"bad-sign\"");
+
+        V1CardApiResult result = service.createRechargeOrder(new V1MerchantCommand("app-gray", "A36", rawBody));
+
+        assertThat(result.code()).isEqualTo("501");
+        assertThat(result.msg()).isEqualTo("验签不合规！");
+        assertThat(acceptPort.lastCommand).isNull();
+    }
+
+    @Test
+    void mapsDuplicateRedisResultToLegacyOrderWarnResponse() {
+        acceptPort.nextResult = new AcceptRechargeOrderResult(
+                AcceptRechargeOrderStatus.DUPLICATE,
+                "202607051337458961474292",
+                "",
+                "DUPLICATE_OUT_ORDER_SN",
+                "订单号重复",
+                false,
+                false,
+                0L);
+
+        V1CardApiResult result = service.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-1003", "nonce-12345678901234567890123458", 1)));
+
+        assertThat(result.code()).isEqualTo("505");
+        assertThat(result.msg()).isEqualTo("订单号重复");
+    }
+
+    @Test
+    void sendsProductCandidateFailureToRedisSoLuaCanWriteFailedOrder() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        localAcceptPort.nextResult = new AcceptRechargeOrderResult(
+                AcceptRechargeOrderStatus.ACCEPTED_FAILED,
+                "202607051337458961474292",
+                "FAILED",
+                "PRODUCT_NO_PERMISSION",
+                "商品无权限",
+                false,
+                false,
+                1L);
+        V1CreateRechargeOrderUseCaseService localService = new V1CreateRechargeOrderUseCaseService(
+                precheckService(),
+                new RequestHashCanonicalizer(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (orgCode, parentProductId, account) -> V1ProductSelection.failed(
+                        parentProductId,
+                        "PRODUCT_NO_PERMISSION",
+                        "商品无权限",
+                        11L),
+                localAcceptPort,
+                () -> "202607051337458961474292",
+                CLOCK,
+                new V1RechargeAcceptSettings(Duration.ofMinutes(5)));
+
+        V1CardApiResult result = localService.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-1004", "nonce-12345678901234567890123459", 1)));
+
+        assertThat(localAcceptPort.lastCommand).isNotNull();
+        assertThat(localAcceptPort.lastCommand.candidateValidationStatus()).isEqualTo(ValidationStatus.FAILED);
+        assertThat(localAcceptPort.lastCommand.candidateFailCode()).isEqualTo("PRODUCT_NO_PERMISSION");
+        assertThat(result.code()).isEqualTo("503");
+        assertThat(result.msg()).isEqualTo("商品无权限");
+    }
+
+    private static V1ProtocolPrecheckService precheckService() {
+        return new V1ProtocolPrecheckService(
+                new V1RequestBodyCodec(),
+                new V1TimestampValidator(new V1TimestampSettings(Duration.ofSeconds(300)), CLOCK),
+                new V1Sm3SignatureVerifier(),
+                new V1ProtocolSettings(false));
+    }
+
+    private static String validRawBody(String outOrderSn, String nonceStr, int num) {
+        String signSource = "account=18186222336,aesKey=AES-KEY,nonce_str=%s,notify_url=http://notify,num=%d,"
+                + "out_order_sn=%s,product_id=73301280,timestamp=1783224958";
+        String sign = new V1Sm3SignatureVerifier().digestHex(signSource.formatted(nonceStr, num, outOrderSn));
+        return """
+                {
+                  "product_id": "73301280",
+                  "out_order_sn": "%s",
+                  "account": "18186222336",
+                  "timestamp": "1783224958",
+                  "nonce_str": "%s",
+                  "notify_url": "http://notify",
+                  "num": %d,
+                  "order_price": 5200,
+                  "product_type": 1,
+                  "sign": "%s"
+                }
+                """.formatted(outOrderSn, nonceStr, num, sign);
+    }
+
+    private static final class CapturingAcceptPort implements AcceptRechargeOrderPort {
+
+        private AcceptRechargeOrderCommand lastCommand;
+        private AcceptRechargeOrderResult nextResult = new AcceptRechargeOrderResult(
+                AcceptRechargeOrderStatus.ACCEPTED,
+                "202607051337458961474292",
+                "PASSED",
+                "",
+                "",
+                true,
+                true,
+                1L);
+
+        @Override
+        public CompletableFuture<AcceptRechargeOrderResult> accept(AcceptRechargeOrderCommand command) {
+            this.lastCommand = command;
+            return CompletableFuture.completedFuture(nextResult);
+        }
+    }
+}

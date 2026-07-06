@@ -74,8 +74,7 @@ public class RedisAcceptRechargeOrderAdapter implements AcceptRechargeOrderPort 
                             command.orderId(),
                             command.requestHash(),
                             ex);
-                    // TODO(D5): Lua 超时、Redis BUSY 或状态未知时写 recharge_accept_anomaly 并触发核查；
-                    // 参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
+                    // TODO(D5): Lua 超时、Redis BUSY 或状态未知时写 recharge_accept_anomaly 并触发核查；参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
                     return Mono.just(redisUnavailable(command, "Redis Lua 执行失败"));
                 })
                 .toFuture();
