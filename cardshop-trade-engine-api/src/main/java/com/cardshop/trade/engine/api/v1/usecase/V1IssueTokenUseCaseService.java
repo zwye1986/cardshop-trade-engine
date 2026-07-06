@@ -5,6 +5,7 @@ import com.cardshop.trade.engine.api.v1.security.V1TokenAuthenticator;
 import com.cardshop.trade.engine.api.v1.security.V1TokenSettings;
 import com.cardshop.trade.engine.application.v1.IssueV1TokenUseCase;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
+import com.cardshop.trade.engine.application.v1.V1CardApiResultStatus;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
@@ -49,25 +50,25 @@ public class V1IssueTokenUseCaseService implements IssueV1TokenUseCase {
         if (request == null
                 || !StringUtils.hasText(request.appId())
                 || !StringUtils.hasText(request.appSecret())) {
-            return new V1CardApiResult("506", "参数错误", null);
+            return V1CardApiResultStatus.PARAM_ERROR.result();
         }
         if (!StringUtils.hasText(settings.jwtSecret())) {
-            return new V1CardApiResult("502", "系统异常", null);
+            return V1CardApiResultStatus.SYSTEM_ERROR.result();
         }
 
         Optional<V1MerchantProfile> merchant = merchantProfilePort.findByAppIdAndAppSecret(
                 request.appId(),
                 request.appSecret());
         if (merchant.isEmpty() || !merchant.get().enabled()) {
-            return new V1CardApiResult("401", "凭证错误", null);
+            return V1CardApiResultStatus.AUTH_FAILED.result();
         }
 
         String token = createToken(merchant.get());
         boolean stored = tokenStorePort.storeIssuedToken(merchant.get().appId(), token, settings.tokenTtl());
         if (!stored) {
-            return new V1CardApiResult("502", "系统异常", null);
+            return V1CardApiResultStatus.SYSTEM_ERROR.result();
         }
-        return new V1CardApiResult("200", "操作成功", Map.of("token", token));
+        return V1CardApiResultStatus.SUCCESS.result(Map.of("token", token));
     }
 
     private V1IssueTokenRequest decode(String rawBody) {

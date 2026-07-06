@@ -9,6 +9,7 @@ import com.cardshop.trade.engine.application.v1.QueryRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderSnapshot;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
+import com.cardshop.trade.engine.application.v1.V1CardApiResultStatus;
 import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
@@ -45,7 +46,7 @@ public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUse
         Optional<V1MerchantProfile> maybeMerchant = merchantProfilePort.findByAppIdAndOrgCode(command.appId(), command.orgCode());
         if (maybeMerchant.isEmpty() || !StringUtils.hasText(maybeMerchant.get().aesKey())) {
             log.warn("V1查单商户资料缺失 appId={}, orgCode={}", command.appId(), command.orgCode());
-            return new V1CardApiResult("401", "凭证错误", null);
+            return V1CardApiResultStatus.AUTH_FAILED.result();
         }
 
         V1MerchantProfile merchant = maybeMerchant.get();
@@ -57,24 +58,21 @@ public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUse
         }
         V1RechargeOrderQueryRequest request = precheck.payload();
         if (!validRequest(request)) {
-            return new V1CardApiResult("506", "参数错误", null);
+            return V1CardApiResultStatus.PARAM_ERROR.result();
         }
 
         return orderQueryPort.findByOrgCodeAndOutOrderSn(merchant.orgCode(), request.outOrderSn())
                 .map(V1QueryRechargeOrderUseCaseService::snapshotResult)
-                .orElseGet(() -> new V1CardApiResult("505", "订单不存在", null));
+                .orElseGet(V1CardApiResultStatus.NOT_FOUND_OR_DUPLICATE::result);
     }
 
     static V1CardApiResult snapshotResult(RechargeOrderSnapshot snapshot) {
         OrderView view = toOrderView(snapshot);
-        return new V1CardApiResult(
-                "200",
-                "操作成功",
-                new V1RechargeOrderResponse(
-                        snapshot.orderId(),
-                        snapshot.outOrderSn(),
-                        view.orderStatus(),
-                        view.orderStatusDesc()));
+        return V1CardApiResultStatus.SUCCESS.result(new V1RechargeOrderResponse(
+                snapshot.orderId(),
+                snapshot.outOrderSn(),
+                view.orderStatus(),
+                view.orderStatusDesc()));
     }
 
     private static OrderView toOrderView(RechargeOrderSnapshot snapshot) {
@@ -110,10 +108,10 @@ public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUse
 
     private static V1CardApiResult protocolFailure(String reason) {
         return switch (reason) {
-            case "SIGN_FAILED" -> new V1CardApiResult("501", "验签不合规！", null);
-            case "DECRYPT_FAILED" -> new V1CardApiResult("501", "验签失败！", null);
-            case "TIMESTAMP_OUT_OF_RANGE" -> new V1CardApiResult("506", "timestamp超出允许范围", null);
-            default -> new V1CardApiResult("506", "参数错误", null);
+            case "SIGN_FAILED" -> V1CardApiResultStatus.SIGN_FAILED.result("验签不合规！");
+            case "DECRYPT_FAILED" -> V1CardApiResultStatus.SIGN_FAILED.result();
+            case "TIMESTAMP_OUT_OF_RANGE" -> V1CardApiResultStatus.PARAM_ERROR.result("timestamp超出允许范围");
+            default -> V1CardApiResultStatus.PARAM_ERROR.result();
         };
     }
 

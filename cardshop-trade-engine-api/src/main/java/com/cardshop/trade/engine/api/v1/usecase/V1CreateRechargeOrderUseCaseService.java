@@ -18,6 +18,7 @@ import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
+import com.cardshop.trade.engine.application.v1.V1CardApiResultStatus;
 import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
@@ -132,7 +133,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                     preparation.acceptCommand.orgCode(),
                     preparation.acceptCommand.outOrderSn(),
                     preparation.acceptCommand.requestHash());
-            return CompletableFuture.completedFuture(new V1CardApiResult("500", "系统繁忙", null));
+            return CompletableFuture.completedFuture(V1CardApiResultStatus.SYSTEM_BUSY.result("系统繁忙"));
         }
         return acceptRechargeOrderPort.accept(preparation.acceptCommand)
                 .thenCompose(acceptResult -> afterRedisAccept(preparation, acceptResult));
@@ -219,7 +220,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         Optional<V1MerchantProfile> maybeMerchant = merchantProfilePort.findByAppIdAndOrgCode(command.appId(), command.orgCode());
         if (maybeMerchant.isEmpty() || !StringUtils.hasText(maybeMerchant.get().aesKey())) {
             log.warn("V1直充下单商户资料缺失 appId={}, orgCode={}", command.appId(), command.orgCode());
-            return Preparation.error(new V1CardApiResult("401", "凭证错误", null));
+            return Preparation.error(V1CardApiResultStatus.AUTH_FAILED.result());
         }
 
         V1MerchantProfile merchant = maybeMerchant.get();
@@ -233,7 +234,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         V1RechargeCreateOrderRequest request = precheck.payload();
         String syntaxError = validatePayload(request);
         if (syntaxError != null) {
-            return Preparation.error(new V1CardApiResult("506", syntaxError, null));
+            return Preparation.error(V1CardApiResultStatus.PARAM_ERROR.result(syntaxError));
         }
 
         V1ProductSelection productSelection = productCandidateSelector.select(
@@ -337,31 +338,28 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
 
     private static V1CardApiResult protocolFailure(String reason) {
         return switch (reason) {
-            case "SIGN_FAILED" -> new V1CardApiResult("501", "验签不合规！", null);
-            case "DECRYPT_FAILED" -> new V1CardApiResult("501", "验签失败！", null);
-            case "TIMESTAMP_OUT_OF_RANGE" -> new V1CardApiResult("506", "timestamp超出允许范围", null);
-            default -> new V1CardApiResult("506", "参数错误", null);
+            case "SIGN_FAILED" -> V1CardApiResultStatus.SIGN_FAILED.result("验签不合规！");
+            case "DECRYPT_FAILED" -> V1CardApiResultStatus.SIGN_FAILED.result();
+            case "TIMESTAMP_OUT_OF_RANGE" -> V1CardApiResultStatus.PARAM_ERROR.result("timestamp超出允许范围");
+            default -> V1CardApiResultStatus.PARAM_ERROR.result();
         };
     }
 
     private static V1CardApiResult toV1Result(String outOrderSn, AcceptRechargeOrderResult result) {
         AcceptRechargeOrderStatus status = result.status();
         if (status == AcceptRechargeOrderStatus.ACCEPTED) {
-            return new V1CardApiResult(
-                    "200",
-                    "操作成功",
-                    Map.of("order_sn", result.orderId(), "out_order_sn", outOrderSn));
+            return V1CardApiResultStatus.SUCCESS.result(Map.of("order_sn", result.orderId(), "out_order_sn", outOrderSn));
         }
         if (status == AcceptRechargeOrderStatus.ACCEPTED_FAILED) {
-            return new V1CardApiResult(businessCode(result.failCode()), result.failReason(), null);
+            return businessStatus(result.failCode()).result(result.failReason());
         }
         if (status == AcceptRechargeOrderStatus.DUPLICATE) {
-            return new V1CardApiResult("505", defaultText(result.failReason(), "订单号重复"), null);
+            return V1CardApiResultStatus.NOT_FOUND_OR_DUPLICATE.result(defaultText(result.failReason(), "订单号重复"));
         }
         if (status == AcceptRechargeOrderStatus.NONCE_REPLAY) {
-            return new V1CardApiResult("501", defaultText(result.failReason(), "请求随机串重复"), null);
+            return V1CardApiResultStatus.SIGN_FAILED.result(defaultText(result.failReason(), "请求随机串重复"));
         }
-        return new V1CardApiResult("500", defaultText(result.failReason(), "系统繁忙，请稍后重试"), null);
+        return V1CardApiResultStatus.SYSTEM_BUSY.result(defaultText(result.failReason(), "系统繁忙，请稍后重试"));
     }
 
     private static V1CardApiResult toWaitFailureResult(
@@ -369,7 +367,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             AcceptRechargeOrderResult acceptResult,
             CancelUnconfirmedAcceptResult cancelResult) {
         if (cancelResult.cancelled()) {
-            return new V1CardApiResult("500", "系统繁忙，请稍后重试", null);
+            return V1CardApiResultStatus.SYSTEM_BUSY.result();
         }
         return processingResult(outOrderSn, acceptResult);
     }
@@ -382,16 +380,15 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     }
 
     private static V1CardApiResult processingResult(String outOrderSn, AcceptRechargeOrderResult acceptResult) {
-        return new V1CardApiResult(
-                "500",
+        return V1CardApiResultStatus.SYSTEM_BUSY.result(
                 "系统繁忙，请稍后查询订单状态",
                 Map.of("out_order_sn", outOrderSn, "order_status", "2"));
     }
 
-    private static String businessCode(String failCode) {
+    private static V1CardApiResultStatus businessStatus(String failCode) {
         return switch (defaultText(failCode, "")) {
-            case "BALANCE_NOT_ENOUGH", "MERCHANT_DISABLED" -> "504";
-            default -> "503";
+            case "BALANCE_NOT_ENOUGH", "MERCHANT_DISABLED" -> V1CardApiResultStatus.BALANCE_OR_MERCHANT_FAILED;
+            default -> V1CardApiResultStatus.BUSINESS_FAILED;
         };
     }
 

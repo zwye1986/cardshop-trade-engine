@@ -9,6 +9,6 @@ package com.cardshop.trade.engine.application.v1;
 public record V1CardApiResult(String code, String msg, Object data) {
 
     public static V1CardApiResult unavailable(String msg) {
-        return new V1CardApiResult("505", msg, null);
+        return V1CardApiResultStatus.NOT_FOUND_OR_DUPLICATE.result(msg);
     }
 }
