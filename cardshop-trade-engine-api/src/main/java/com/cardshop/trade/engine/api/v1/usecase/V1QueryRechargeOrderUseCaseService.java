@@ -63,7 +63,7 @@ public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUse
 
         return orderQueryPort.findByOrgCodeAndOutOrderSn(merchant.orgCode(), request.outOrderSn())
                 .map(V1QueryRechargeOrderUseCaseService::snapshotResult)
-                .orElseGet(V1CardApiResultStatus.NOT_FOUND_OR_DUPLICATE::result);
+                .orElseGet(V1CardApiResultStatus.ORDER_NOT_FOUND::result);
     }
 
     static V1CardApiResult snapshotResult(RechargeOrderSnapshot snapshot) {

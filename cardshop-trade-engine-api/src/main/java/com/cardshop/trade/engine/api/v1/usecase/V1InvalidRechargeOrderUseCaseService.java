@@ -64,7 +64,7 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
 
         return orderQueryPort.findByOrgCodeAndOutOrderSn(merchant.orgCode(), request.outOrderSn())
                 .map(this::toInvalidResult)
-                .orElseGet(V1CardApiResultStatus.NOT_FOUND_OR_DUPLICATE::result);
+                .orElseGet(V1CardApiResultStatus.ORDER_NOT_FOUND::result);
     }
 
     private V1CardApiResult toInvalidResult(RechargeOrderSnapshot snapshot) {

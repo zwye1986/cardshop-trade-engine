@@ -351,10 +351,10 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             return V1CardApiResultStatus.SUCCESS.result(Map.of("order_sn", result.orderId(), "out_order_sn", outOrderSn));
         }
         if (status == AcceptRechargeOrderStatus.ACCEPTED_FAILED) {
-            return businessStatus(result.failCode()).result(result.failReason());
+            return businessStatus(result.failCode()).result(defaultText(result.failReason(), "订单失败"));
         }
         if (status == AcceptRechargeOrderStatus.DUPLICATE) {
-            return V1CardApiResultStatus.NOT_FOUND_OR_DUPLICATE.result(defaultText(result.failReason(), "订单号重复"));
+            return V1CardApiResultStatus.ORDER_DUPLICATE.result(defaultText(result.failReason(), "订单号重复"));
         }
         if (status == AcceptRechargeOrderStatus.NONCE_REPLAY) {
             return V1CardApiResultStatus.SIGN_FAILED.result(defaultText(result.failReason(), "请求随机串重复"));

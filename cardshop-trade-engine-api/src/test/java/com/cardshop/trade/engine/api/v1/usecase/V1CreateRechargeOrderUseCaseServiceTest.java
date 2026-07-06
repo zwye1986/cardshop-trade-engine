@@ -179,6 +179,28 @@ class V1CreateRechargeOrderUseCaseServiceTest {
     }
 
     @Test
+    void mapsAcceptedFailedWithoutFailReasonToBusinessFailureFallbackMessage() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        localAcceptPort.nextResult = new AcceptRechargeOrderResult(
+                AcceptRechargeOrderStatus.ACCEPTED_FAILED,
+                "202607051337458961474292",
+                "FAILED",
+                "PRODUCT_NO_PERMISSION",
+                "",
+                false,
+                false,
+                1L);
+        V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, new RecordingReliabilityPort(), new RecordingPersistPublisher());
+
+        V1CardApiResult result = localService.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-EMPTY-FAIL", "nonce-12345678901234567890123449", 1)))
+                .toCompletableFuture().join();
+
+        assertThat(result.code()).isEqualTo("503");
+        assertThat(result.msg()).isEqualTo("订单失败");
+    }
+
+    @Test
     void executesPrepareOnDbTaskExecutorThread() throws Exception {
         var executorThread = new AtomicReference<String>();
         var realExecutor = Executors.newSingleThreadExecutor();

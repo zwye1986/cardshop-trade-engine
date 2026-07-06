@@ -15,7 +15,18 @@ public enum V1CardApiResultStatus {
     SYSTEM_ERROR("502", "系统异常"),
     BUSINESS_FAILED("503", null),
     BALANCE_OR_MERCHANT_FAILED("504", null),
-    NOT_FOUND_OR_DUPLICATE("505", "订单不存在"),
+    /**
+     * 旧协议中订单重复和订单不存在都复用 505，但业务语义必须拆开，避免调用点误用默认文案。
+     */
+    ORDER_DUPLICATE("505", "订单号重复"),
+    /**
+     * 旧协议订单查询/作废未命中订单时返回 505 + 订单不存在；参见详细设计「20.13.10 查单设计」。
+     */
+    ORDER_NOT_FOUND("505", "订单不存在"),
+    /**
+     * Feature fallback 也沿用 505，但它既不是重复订单也不是订单不存在，必须由调用方传入明确文案。
+     */
+    FEATURE_UNAVAILABLE("505", null),
     PARAM_ERROR("506", "参数错误");
 
     private final String code;
