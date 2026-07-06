@@ -20,15 +20,15 @@ import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.domain.service.RequestHashCanonicalizer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
-import org.springframework.context.annotation.Primary;
-import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.net.URI;
 import java.time.Clock;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
 
 /**
  * V1 创建直充订单新链路用例。
@@ -37,9 +37,6 @@ import java.util.Optional;
  * 「20.13.5 商品选择规则」和「20.13.6 Redis Lua 下单结果」。该用例完成协议预检、request_hash、
  * Java 商品候选校验和 Redis-first 原子接单；WAIT、MQ confirm 和 MySQL 落库属于 D5/D6 后续职责。
  */
-@Component
-@Primary
-@ConditionalOnBean({AcceptRechargeOrderPort.class, V1MerchantProfilePort.class, V1ProductCandidateSelector.class})
 public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(V1CreateRechargeOrderUseCaseService.class);
@@ -52,6 +49,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     private final RechargeOrderIdGenerator orderIdGenerator;
     private final Clock clock;
     private final V1RechargeAcceptSettings settings;
+    private final Executor tradeDbTaskExecutor;
 
     public V1CreateRechargeOrderUseCaseService(
             V1ProtocolPrecheckService precheckService,
@@ -61,7 +59,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             AcceptRechargeOrderPort acceptRechargeOrderPort,
             RechargeOrderIdGenerator orderIdGenerator,
             Clock clock,
-            V1RechargeAcceptSettings settings) {
+            V1RechargeAcceptSettings settings,
+            Executor tradeDbTaskExecutor) {
         this.precheckService = precheckService;
         this.requestHashCanonicalizer = requestHashCanonicalizer;
         this.merchantProfilePort = merchantProfilePort;
@@ -70,14 +69,24 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         this.orderIdGenerator = orderIdGenerator;
         this.clock = clock;
         this.settings = settings;
+        this.tradeDbTaskExecutor = tradeDbTaskExecutor;
     }
 
     @Override
-    public V1CardApiResult createRechargeOrder(V1MerchantCommand command) {
+    public CompletionStage<V1CardApiResult> createRechargeOrder(V1MerchantCommand command) {
+        return CompletableFuture
+                .supplyAsync(() -> prepare(command), tradeDbTaskExecutor)
+                .thenCompose(preparation -> preparation.errorResult != null
+                        ? CompletableFuture.completedFuture(preparation.errorResult)
+                        : acceptRechargeOrderPort.accept(preparation.acceptCommand)
+                                .thenApply(acceptResult -> toV1Result(preparation.outOrderSn, acceptResult)));
+    }
+
+    private Preparation prepare(V1MerchantCommand command) {
         Optional<V1MerchantProfile> maybeMerchant = merchantProfilePort.findByAppIdAndOrgCode(command.appId(), command.orgCode());
         if (maybeMerchant.isEmpty() || !StringUtils.hasText(maybeMerchant.get().aesKey())) {
             log.warn("V1直充下单商户资料缺失 appId={}, orgCode={}", command.appId(), command.orgCode());
-            return new V1CardApiResult("401", "凭证错误", null);
+            return Preparation.error(new V1CardApiResult("401", "凭证错误", null));
         }
 
         V1MerchantProfile merchant = maybeMerchant.get();
@@ -85,13 +94,13 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 command.rawBody(),
                 new V1MerchantSecurityProfile(merchant.appId(), merchant.orgCode(), merchant.aesKey()));
         if (!precheck.valid()) {
-            return protocolFailure(precheck.reason());
+            return Preparation.error(protocolFailure(precheck.reason()));
         }
 
         V1RechargeCreateOrderRequest request = precheck.payload();
         String syntaxError = validatePayload(request);
         if (syntaxError != null) {
-            return new V1CardApiResult("506", syntaxError, null);
+            return Preparation.error(new V1CardApiResult("506", syntaxError, null));
         }
 
         V1ProductSelection productSelection = productCandidateSelector.select(
@@ -139,8 +148,16 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 productSelection.productConfigVersion(),
                 now,
                 now + settings.firstPersistRetryDelay().toMillis());
-        AcceptRechargeOrderResult acceptResult = acceptRechargeOrderPort.accept(acceptCommand).toCompletableFuture().join();
-        return toV1Result(request.outOrderSn(), acceptResult);
+        return Preparation.ready(acceptCommand, request.outOrderSn());
+    }
+
+    private record Preparation(V1CardApiResult errorResult, AcceptRechargeOrderCommand acceptCommand, String outOrderSn) {
+        static Preparation error(V1CardApiResult result) {
+            return new Preparation(result, null, null);
+        }
+        static Preparation ready(AcceptRechargeOrderCommand command, String outOrderSn) {
+            return new Preparation(null, command, outOrderSn);
+        }
     }
 
     private static BusinessFailure firstBusinessFailure(

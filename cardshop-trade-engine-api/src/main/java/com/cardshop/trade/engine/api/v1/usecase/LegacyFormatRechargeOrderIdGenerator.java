@@ -22,11 +22,7 @@ public class LegacyFormatRechargeOrderIdGenerator implements RechargeOrderIdGene
 
     private final Clock clock;
 
-    public LegacyFormatRechargeOrderIdGenerator() {
-        this(Clock.systemDefaultZone());
-    }
-
-    LegacyFormatRechargeOrderIdGenerator(Clock clock) {
+    public LegacyFormatRechargeOrderIdGenerator(Clock clock) {
         this.clock = clock;
     }
 

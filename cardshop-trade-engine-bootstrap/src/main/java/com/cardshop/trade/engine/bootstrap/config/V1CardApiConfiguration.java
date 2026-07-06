@@ -1,23 +1,31 @@
 package com.cardshop.trade.engine.bootstrap.config;
 
+import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolSettings;
 import com.cardshop.trade.engine.api.v1.routing.V1RoutingSettings;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampSettings;
 import com.cardshop.trade.engine.api.v1.security.V1TokenSettings;
+import com.cardshop.trade.engine.api.v1.usecase.V1CreateRechargeOrderUseCaseService;
 import com.cardshop.trade.engine.api.v1.usecase.V1RechargeAcceptSettings;
+import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.IssueV1TokenUseCase;
 import com.cardshop.trade.engine.application.v1.QueryRechargeOrderUseCase;
+import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
 import com.cardshop.trade.engine.domain.service.RequestHashCanonicalizer;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * `/v1/cardapi` 入口框架 Bean 装配。
@@ -65,6 +73,31 @@ public class V1CardApiConfiguration {
     }
 
     @Bean
+    @ConditionalOnBean({AcceptRechargeOrderPort.class, V1MerchantProfilePort.class, V1ProductCandidateSelector.class})
+    @ConditionalOnMissingBean(CreateRechargeOrderUseCase.class)
+    public CreateRechargeOrderUseCase v1CreateRechargeOrderUseCase(
+            V1ProtocolPrecheckService precheckService,
+            RequestHashCanonicalizer requestHashCanonicalizer,
+            V1MerchantProfilePort merchantProfilePort,
+            V1ProductCandidateSelector productCandidateSelector,
+            AcceptRechargeOrderPort acceptRechargeOrderPort,
+            RechargeOrderIdGenerator orderIdGenerator,
+            Clock clock,
+            V1RechargeAcceptSettings settings,
+            @org.springframework.beans.factory.annotation.Qualifier("tradeDbTaskExecutor") java.util.concurrent.Executor tradeDbTaskExecutor) {
+        return new V1CreateRechargeOrderUseCaseService(
+                precheckService,
+                requestHashCanonicalizer,
+                merchantProfilePort,
+                productCandidateSelector,
+                acceptRechargeOrderPort,
+                orderIdGenerator,
+                clock,
+                settings,
+                tradeDbTaskExecutor);
+    }
+
+    @Bean
     public Clock clock() {
         return Clock.systemUTC();
     }
@@ -82,9 +115,10 @@ public class V1CardApiConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean(CreateRechargeOrderUseCase.class)
     public CreateRechargeOrderUseCase unavailableCreateRechargeOrderUseCase() {
         // TODO(D3/D4): 当 Redis 接单端口或商户/商品查询端口未装配时保守拒绝；参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
-        return command -> V1CardApiResult.unavailable("新交易引擎直充受理暂未启用");
+        return command -> CompletableFuture.completedFuture(V1CardApiResult.unavailable("新交易引擎直充受理暂未启用"));
     }
 
     @Bean

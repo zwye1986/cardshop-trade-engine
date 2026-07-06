@@ -24,6 +24,7 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Mono;
 
 import java.util.Optional;
+import java.util.concurrent.CompletionStage;
 import java.util.function.Function;
 
 /**
@@ -66,7 +67,7 @@ public class V1RechargeOrderController {
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
             @RequestBody(required = false) Mono<String> body,
             ServerHttpRequest request) {
-        return routeOrderRequest(authorization, body, request, createRechargeOrderUseCase::createRechargeOrder);
+        return routeAsyncOrderRequest(authorization, body, request, createRechargeOrderUseCase::createRechargeOrder);
     }
 
     @PostMapping("/getRechargeOrder")
@@ -112,6 +113,31 @@ public class V1RechargeOrderController {
 
     private static ResponseEntity<V1CardApiResponse<Object>> ok(V1CardApiResult result) {
         return ResponseEntity.ok(V1CardApiResponse.failure(result.code(), result.msg(), result.data()));
+    }
+
+    private Mono<ResponseEntity<?>> routeAsyncOrderRequest(
+            String authorization,
+            Mono<String> body,
+            ServerHttpRequest request,
+            Function<V1MerchantCommand, CompletionStage<V1CardApiResult>> newRouteHandler) {
+        Optional<AuthenticatedMerchant> merchant = tokenAuthenticator.authenticate(authorization);
+        return body.defaultIfEmpty("")
+                .flatMap(rawBody -> {
+                    V1RouteDecision decision = routeDecisionService.decideOrder(path(request), merchant.orElse(null));
+                    log.info("V1订单路由判定 path={}, target={}, reason={}, appId={}, orgCode={}",
+                            path(request),
+                            decision.target(),
+                            decision.reason(),
+                            merchant.map(AuthenticatedMerchant::appId).orElse(""),
+                            merchant.map(AuthenticatedMerchant::orgCode).orElse(""));
+                    if (decision.isLegacy()) {
+                        return legacyCardApiClient.proxy(request, rawBody).map(entity -> (ResponseEntity<?>) entity);
+                    }
+                    AuthenticatedMerchant principal = merchant.orElse(new AuthenticatedMerchant("", ""));
+                    return Mono.fromCompletionStage(newRouteHandler.apply(
+                            new V1MerchantCommand(principal.appId(), principal.orgCode(), rawBody)))
+                            .map(V1RechargeOrderController::ok);
+                });
     }
 
     private static String path(ServerHttpRequest request) {

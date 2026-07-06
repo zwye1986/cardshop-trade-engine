@@ -27,6 +27,9 @@ import java.time.ZoneOffset;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -41,6 +44,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
 
     private static final Instant NOW = Instant.parse("2026-07-05T04:15:58Z");
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
+    private static final Executor SYNC_EXECUTOR = Runnable::run;
 
     private final CapturingAcceptPort acceptPort = new CapturingAcceptPort();
     private final V1CreateRechargeOrderUseCaseService service = new V1CreateRechargeOrderUseCaseService(
@@ -61,7 +65,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
             acceptPort,
             () -> "202607051337458961474292",
             CLOCK,
-            new V1RechargeAcceptSettings(Duration.ofMinutes(5)));
+            new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
+            SYNC_EXECUTOR);
 
     @Test
     void acceptsValidCreateRequestAndBuildsRedisCommandFromLegacyV1Fields() {
@@ -76,7 +81,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 1L);
 
         V1CardApiResult result = service.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-1001", "nonce-12345678901234567890123456", 1)));
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-1001", "nonce-12345678901234567890123456", 1)))
+                .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("200");
         assertThat(result.msg()).isEqualTo("操作成功");
@@ -99,7 +105,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         String rawBody = validRawBody("OUT-1002", "nonce-12345678901234567890123457", 1)
                 .replaceFirst("\"sign\"\\s*:\\s*\"[0-9a-f]+\"", "\"sign\": \"bad-sign\"");
 
-        V1CardApiResult result = service.createRechargeOrder(new V1MerchantCommand("app-gray", "A36", rawBody));
+        V1CardApiResult result = service.createRechargeOrder(new V1MerchantCommand("app-gray", "A36", rawBody))
+                .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("501");
         assertThat(result.msg()).isEqualTo("验签不合规！");
@@ -119,7 +126,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 0L);
 
         V1CardApiResult result = service.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-1003", "nonce-12345678901234567890123458", 1)));
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-1003", "nonce-12345678901234567890123458", 1)))
+                .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("505");
         assertThat(result.msg()).isEqualTo("订单号重复");
@@ -149,16 +157,53 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 localAcceptPort,
                 () -> "202607051337458961474292",
                 CLOCK,
-                new V1RechargeAcceptSettings(Duration.ofMinutes(5)));
+                new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
+                SYNC_EXECUTOR);
 
         V1CardApiResult result = localService.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-1004", "nonce-12345678901234567890123459", 1)));
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-1004", "nonce-12345678901234567890123459", 1)))
+                .toCompletableFuture().join();
 
         assertThat(localAcceptPort.lastCommand).isNotNull();
         assertThat(localAcceptPort.lastCommand.candidateValidationStatus()).isEqualTo(ValidationStatus.FAILED);
         assertThat(localAcceptPort.lastCommand.candidateFailCode()).isEqualTo("PRODUCT_NO_PERMISSION");
         assertThat(result.code()).isEqualTo("503");
         assertThat(result.msg()).isEqualTo("商品无权限");
+    }
+
+    @Test
+    void executesPrepareOnDbTaskExecutorThread() throws Exception {
+        var executorThread = new AtomicReference<String>();
+        var realExecutor = Executors.newSingleThreadExecutor();
+        Executor recordingExecutor = command -> realExecutor.execute(() -> {
+            executorThread.set(Thread.currentThread().getName());
+            command.run();
+        });
+        var localAcceptPort = new CapturingAcceptPort();
+        var localService = new V1CreateRechargeOrderUseCaseService(
+                precheckService(),
+                new RequestHashCanonicalizer(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (orgCode, parentProductId, account) -> V1ProductSelection.passed(
+                        parentProductId, "73301289", "TF_KA", "话费50元", "codekey", 1, 5200L, 5000L, 4900L, 11L),
+                localAcceptPort,
+                () -> "202607051337458961474292",
+                CLOCK,
+                new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
+                recordingExecutor);
+
+        try {
+            localService.createRechargeOrder(
+                    new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-ASYNC", "nonce-12345678901234567890123450", 1)))
+                    .toCompletableFuture().join();
+        } finally {
+            realExecutor.shutdown();
+        }
+
+        assertThat(executorThread.get())
+                .as("prepare() 应在 tradeDbTaskExecutor 线程执行，不在调用线程")
+                .isNotNull()
+                .isNotEqualTo(Thread.currentThread().getName());
     }
 
     private static V1ProtocolPrecheckService precheckService() {
