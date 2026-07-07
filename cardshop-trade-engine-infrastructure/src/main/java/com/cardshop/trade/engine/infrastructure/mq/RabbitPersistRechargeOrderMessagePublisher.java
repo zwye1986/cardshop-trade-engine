@@ -99,6 +99,13 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
         }
 
         long timeoutMs = Math.max(1L, properties.getMq().getPublishConfirmTimeoutMs());
+        /*
+         * TODO(D7B): 将 publisher confirm 的 handle/retry continuation 切到 tradeMqConfirmTaskExecutor。
+         * 参见 docs/交行直充业务系统高可用方案设计.md「3.7 线程池与隔离」中的 mq-confirm-worker。
+         * 当前链路会在 Rabbit confirm 完成线程或 CompletableFuture timeout 调度线程上执行 handle/thenCompose，
+         * 失败重试时还会继续调用 convertAndSend；后续接入独立执行器后，需要补充线程名断言测试，避免
+         * confirm 回调线程承担业务重试和 Redis 状态推进工作。
+         */
         return correlationData.getFuture()
                 .orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                 .handle((confirm, ex) -> {
