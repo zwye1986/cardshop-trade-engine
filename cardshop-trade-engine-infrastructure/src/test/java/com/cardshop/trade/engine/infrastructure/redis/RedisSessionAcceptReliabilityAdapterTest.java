@@ -1,6 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.redis;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
@@ -103,7 +104,7 @@ class RedisSessionAcceptReliabilityAdapterTest {
         var adapter = adapter(sessionFactory, properties(true, 1, 100));
 
         var result = adapter
-                .markDbPersisted(sampleCommand(), acceptedResult(), 1783224999000L)
+                .markDbPersisted(sampleCommand(), acceptedResult(), 7L, 1783224999000L)
                 .toCompletableFuture()
                 .join();
 
@@ -112,7 +113,7 @@ class RedisSessionAcceptReliabilityAdapterTest {
         assertThat(session.executedScripts).extracting(RedisScript::getScriptAsString)
                 .anySatisfy(script -> assertThat(script).contains("mark_db_persisted.lua"));
         assertThat(session.lastArgs)
-                .containsExactly("A36", "202607051337458961474292", "1783224999000", "259200");
+                .containsExactly("A36", "202607051337458961474292", "7", "1783224999000", "259200");
         assertThat(session.closed).isTrue();
     }
 
@@ -176,6 +177,21 @@ class RedisSessionAcceptReliabilityAdapterTest {
 
         assertThat(result.status()).isEqualTo(AcceptRechargeOrderStatus.REDIS_WRITE_DISABLED);
         assertThat(result.orderWritten()).isFalse();
+        assertThat(sessionFactory.sessions).isEmpty();
+    }
+
+    @Test
+    void doesNotOpenSessionWhenAcceptLuaPreparationFailsBeforeRedisCall() {
+        var sessionFactory = new RecordingSessionFactory(List.of());
+        var adapter = new RedisSessionAcceptReliabilityAdapter(
+                sessionFactory,
+                new RechargeRedisKeyBuilder("cardshop:trade", 128),
+                new FailingAcceptScriptLoader(),
+                properties(true, 1, 100));
+
+        assertThatThrownBy(() -> adapter.accept(sampleCommand()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("script unavailable");
         assertThat(sessionFactory.sessions).isEmpty();
     }
 
@@ -317,6 +333,14 @@ class RedisSessionAcceptReliabilityAdapterTest {
         @Override
         public void close() {
             closed = true;
+        }
+    }
+
+    private static final class FailingAcceptScriptLoader extends RechargeRedisScriptLoader {
+
+        @Override
+        public RedisScript<List> acceptRechargeOrderScript() {
+            throw new IllegalStateException("script unavailable");
         }
     }
 }

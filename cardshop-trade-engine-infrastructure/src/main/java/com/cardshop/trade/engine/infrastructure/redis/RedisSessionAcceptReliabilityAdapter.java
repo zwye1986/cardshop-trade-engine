@@ -3,7 +3,6 @@ package com.cardshop.trade.engine.infrastructure.redis;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
-import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
 import com.cardshop.trade.engine.application.recharge.CancelUnconfirmedAcceptResult;
 import com.cardshop.trade.engine.application.recharge.MarkPersistQueuedResult;
 import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
@@ -20,6 +19,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.core.script.RedisScript;
 import reactor.core.publisher.Mono;
 
 /**
@@ -66,16 +66,20 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
     @Override
     public CompletionStage<AcceptRechargeOrderResult> accept(AcceptRechargeOrderCommand command) {
         if (!properties.getRedis().isWriteEnabled() || !redisHaGuardPort.isWriteAllowed()) {
-            return CompletableFuture.completedFuture(new AcceptRechargeOrderResult(
-                    AcceptRechargeOrderStatus.REDIS_WRITE_DISABLED,
-                    command.orderId(),
-                    "",
-                    "REDIS_WRITE_DISABLED",
-                    "Redis 写入开关关闭",
-                    false,
-                    false,
-                    0));
+            return CompletableFuture.completedFuture(AcceptRechargeOrderResult.redisWriteDisabled(command.orderId()));
         }
+
+        /*
+         * 参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
+         * Lua 参数和脚本对象都不依赖 Redis 连接，必须在 openSession 之前完成；否则参数构造或脚本加载异常时，
+         * 已打开的同 session WAIT 连接没有机会进入 Reactor 链路的关闭分支。
+         */
+        var luaArguments = AcceptRechargeOrderLuaArguments.from(
+                command,
+                keyBuilder,
+                Duration.ofDays(properties.getOrder().getPendingTtlDays()),
+                Duration.ofSeconds(properties.getV1().getNonceReplayTtlSeconds()));
+        RedisScript<?> acceptScript = scriptLoader.acceptRechargeOrderScript();
 
         RechargeRedisSession session;
         try {
@@ -83,25 +87,21 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         } catch (RuntimeException ex) {
             log.error("打开Redis接单会话失败 orgCode={}, outOrderSn={}, orderId={}",
                     command.orgCode(), command.outOrderSn(), command.orderId(), ex);
-            return CompletableFuture.completedFuture(redisUnavailable(command, "Redis 会话不可用"));
+            return CompletableFuture.completedFuture(
+                    AcceptRechargeOrderResult.redisUnavailable(command.orderId(), "Redis 会话不可用"));
         }
 
-        var luaArguments = AcceptRechargeOrderLuaArguments.from(
-                command,
-                keyBuilder,
-                Duration.ofDays(properties.getOrder().getPendingTtlDays()),
-                Duration.ofSeconds(properties.getV1().getNonceReplayTtlSeconds()));
-
         return session
-                .execute(scriptLoader.acceptRechargeOrderScript(), luaArguments.keys(), luaArguments.args())
-                .switchIfEmpty(Mono.just(redisUnavailable(command, "Lua 未返回结果")))
+                .execute(acceptScript, luaArguments.keys(), luaArguments.args())
+                .switchIfEmpty(Mono.just(AcceptRechargeOrderResult.redisUnavailable(
+                        command.orderId(), "Lua 未返回结果")))
                 .map(result -> result instanceof AcceptRechargeOrderResult acceptResult
                         ? acceptResult
                         : acceptResultMapper.map(result))
                 .doOnNext(result -> retainSessionOnlyForWrittenOrder(command, session, result))
                 .onErrorResume(ex -> {
                     closeQuietly(session);
-                    log.warn(
+                    log.error(
                             "Redis session接单Lua失败 orgCode={}, outOrderSn={}, orderId={}, requestHash={}",
                             command.orgCode(),
                             command.outOrderSn(),
@@ -109,7 +109,8 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                             command.requestHash(),
                             ex);
                     // TODO(D5B): Lua 超时、Redis BUSY 或状态未知时写 recharge_accept_anomaly 并触发核查；参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
-                    return Mono.just(redisUnavailable(command, "Redis Lua 执行失败"));
+                    return Mono.just(AcceptRechargeOrderResult.redisUnavailable(
+                            command.orderId(), "Redis Lua 执行失败"));
                 })
                 .toFuture();
     }
@@ -126,7 +127,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
 
         RechargeRedisSession session = pendingSessions.get(acceptResult.orderId());
         if (session == null) {
-            log.warn("Redis WAIT缺少接单session orgCode={}, outOrderSn={}, orderId={}",
+            log.error("Redis WAIT缺少接单session orgCode={}, outOrderSn={}, orderId={}",
                     command.orgCode(), command.outOrderSn(), acceptResult.orderId());
             return CompletableFuture.completedFuture(
                     ReplicationWaitResult.missed(0, "REDIS_SESSION_NOT_FOUND"));
@@ -145,7 +146,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 })
                 .onErrorResume(ex -> {
                     releaseSession(acceptResult.orderId());
-                    log.warn("Redis WAIT执行失败 orgCode={}, outOrderSn={}, orderId={}, replicas={}, timeoutMs={}",
+                    log.error("Redis WAIT执行失败 orgCode={}, outOrderSn={}, orderId={}, replicas={}, timeoutMs={}",
                             command.orgCode(),
                             command.outOrderSn(),
                             acceptResult.orderId(),
@@ -170,7 +171,9 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 log.error("打开Redis取消会话失败 orgCode={}, outOrderSn={}, orderId={}",
                         command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
                 return CompletableFuture.completedFuture(
-                        CancelUnconfirmedAcceptResult.failed("REDIS_SESSION_UNAVAILABLE", "Redis 会话不可用"));
+                        CancelUnconfirmedAcceptResult.failed(
+                                CancelUnconfirmedAcceptResult.FAIL_CODE_REDIS_SESSION_UNAVAILABLE,
+                                "Redis 会话不可用"));
             }
         }
         RechargeRedisSession sessionToClose = session;
@@ -189,9 +192,11 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 .map(RedisSessionAcceptReliabilityAdapter::toCancelResult)
                 .doFinally(signal -> closeQuietly(sessionToClose))
                 .onErrorResume(ex -> {
-                    log.warn("Redis取消未确认接单失败 orgCode={}, outOrderSn={}, orderId={}",
+                    log.error("Redis取消未确认接单失败 orgCode={}, outOrderSn={}, orderId={}",
                             command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
-                    return Mono.just(CancelUnconfirmedAcceptResult.failed("CANCEL_LUA_ERROR", "Redis 取消脚本执行失败"));
+                    return Mono.just(CancelUnconfirmedAcceptResult.failed(
+                            CancelUnconfirmedAcceptResult.FAIL_CODE_CANCEL_LUA_ERROR,
+                            "Redis 取消脚本执行失败"));
                 })
                 .toFuture();
     }
@@ -209,7 +214,9 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
             log.error("打开Redis持久化状态推进会话失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
                     command.orgCode(), command.outOrderSn(), acceptResult.orderId(), persistMessageId, ex);
             return CompletableFuture.completedFuture(
-                    MarkPersistQueuedResult.failed("REDIS_SESSION_UNAVAILABLE", "Redis 会话不可用"));
+                    MarkPersistQueuedResult.failed(
+                            MarkPersistQueuedResult.FAIL_CODE_REDIS_SESSION_UNAVAILABLE,
+                            "Redis 会话不可用"));
         }
         RechargeRedisSession sessionToClose = session;
         List<String> args = List.of(
@@ -222,9 +229,11 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 .map(RedisSessionAcceptReliabilityAdapter::toMarkResult)
                 .doFinally(signal -> closeQuietly(sessionToClose))
                 .onErrorResume(ex -> {
-                    log.warn("Redis持久化状态推进失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+                    log.error("Redis持久化状态推进失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
                             command.orgCode(), command.outOrderSn(), acceptResult.orderId(), persistMessageId, ex);
-                    return Mono.just(MarkPersistQueuedResult.failed("MARK_LUA_ERROR", "Redis 状态推进脚本执行失败"));
+                    return Mono.just(MarkPersistQueuedResult.failed(
+                            MarkPersistQueuedResult.FAIL_CODE_MARK_LUA_ERROR,
+                            "Redis 状态推进脚本执行失败"));
                 })
                 .toFuture();
     }
@@ -233,6 +242,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
     public CompletionStage<MarkPersistStateResult> markDbPersisted(
             AcceptRechargeOrderCommand command,
             AcceptRechargeOrderResult acceptResult,
+            long persistedVersion,
             long nowEpochMillis) {
         RechargeRedisSession session;
         try {
@@ -241,13 +251,20 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
             log.error("打开Redis落库完成标记会话失败 orgCode={}, outOrderSn={}, orderId={}",
                     command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
             return CompletableFuture.completedFuture(
-                    MarkPersistStateResult.failed("REDIS_SESSION_UNAVAILABLE", "Redis 会话不可用"));
+                    MarkPersistStateResult.failed(
+                            MarkPersistStateResult.FAIL_CODE_REDIS_SESSION_UNAVAILABLE,
+                            "Redis 会话不可用"));
         }
         RechargeRedisSession sessionToClose = session;
         long terminalTtlSeconds = Duration.ofHours(Math.max(1, properties.getOrder().getTerminalTtlHours())).toSeconds();
+        /*
+         * persistedVersion 对应本次已落 MySQL 的 Redis order_version。Lua 会比较 Redis 当前版本：
+         * 版本未变化时清 pending；Redis 已有更新版本时只推进 persisted_version，继续保留 pending 等待补刷。
+         */
         List<String> args = List.of(
                 command.orgCode(),
                 acceptResult.orderId(),
+                Long.toString(Math.max(0, persistedVersion)),
                 Long.toString(nowEpochMillis),
                 Long.toString(terminalTtlSeconds));
         return session
@@ -255,9 +272,11 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 .map(RedisSessionAcceptReliabilityAdapter::toPersistStateMarkResult)
                 .doFinally(signal -> closeQuietly(sessionToClose))
                 .onErrorResume(ex -> {
-                    log.warn("Redis落库完成状态推进失败 orgCode={}, outOrderSn={}, orderId={}",
+                    log.error("Redis落库完成状态推进失败 orgCode={}, outOrderSn={}, orderId={}",
                             command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
-                    return Mono.just(MarkPersistStateResult.failed("MARK_DB_PERSISTED_LUA_ERROR", "Redis 落库完成标记失败"));
+                    return Mono.just(MarkPersistStateResult.failed(
+                            MarkPersistStateResult.FAIL_CODE_MARK_DB_PERSISTED_LUA_ERROR,
+                            "Redis 落库完成标记失败"));
                 })
                 .toFuture();
     }
@@ -278,7 +297,9 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
             log.error("打开Redis落库失败标记会话失败 orgCode={}, outOrderSn={}, orderId={}",
                     command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
             return CompletableFuture.completedFuture(
-                    MarkPersistStateResult.failed("REDIS_SESSION_UNAVAILABLE", "Redis 会话不可用"));
+                    MarkPersistStateResult.failed(
+                            MarkPersistStateResult.FAIL_CODE_REDIS_SESSION_UNAVAILABLE,
+                            "Redis 会话不可用"));
         }
         RechargeRedisSession sessionToClose = session;
         /*
@@ -298,9 +319,11 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 .map(RedisSessionAcceptReliabilityAdapter::toPersistStateMarkResult)
                 .doFinally(signal -> closeQuietly(sessionToClose))
                 .onErrorResume(ex -> {
-                    log.warn("Redis落库失败状态推进失败 orgCode={}, outOrderSn={}, orderId={}, failCode={}",
+                    log.error("Redis落库失败状态推进失败 orgCode={}, outOrderSn={}, orderId={}, failCode={}",
                             command.orgCode(), command.outOrderSn(), acceptResult.orderId(), failCode, ex);
-                    return Mono.just(MarkPersistStateResult.failed("MARK_PERSIST_FAILED_LUA_ERROR", "Redis 落库失败标记失败"));
+                    return Mono.just(MarkPersistStateResult.failed(
+                            MarkPersistStateResult.FAIL_CODE_MARK_PERSIST_FAILED_LUA_ERROR,
+                            "Redis 落库失败标记失败"));
                 })
                 .toFuture();
     }
@@ -364,20 +387,6 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
             fields.put(String.valueOf(values.get(index)), String.valueOf(values.get(index + 1)));
         }
         return fields;
-    }
-
-    private static AcceptRechargeOrderResult redisUnavailable(
-            AcceptRechargeOrderCommand command,
-            String failReason) {
-        return new AcceptRechargeOrderResult(
-                AcceptRechargeOrderStatus.REDIS_UNAVAILABLE,
-                command.orderId(),
-                "",
-                "REDIS_UNAVAILABLE",
-                failReason,
-                false,
-                false,
-                0);
     }
 
     private static void closeQuietly(RechargeRedisSession session) {

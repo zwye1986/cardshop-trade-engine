@@ -101,6 +101,11 @@ public record PersistOrderSnapshot(
                 text(snapshot, "product_name", ""),
                 longValue(snapshot, "product_value", 0L),
                 intValue(snapshot, "product_type", 1),
+                /*
+                 * TODO(D7B/D8): 用生产 mc_order.coupon_type 分布确认旧 MQ 消息缺失 coupon_type 时的下游影响；
+                 * 参见 docs/交行直充业务系统详细设计.md「20.13.8 异步落库 Consumer」。当前保留空值而非写 UNKNOWN，
+                 * 避免旧卡管按 url/code/codekey 路由时误识别一个不存在的卡密类型。
+                 */
                 text(snapshot, "coupon_type", ""),
                 text(snapshot, "supplier_channel", ""),
                 text(snapshot, "request_hash", message.requestHash()),

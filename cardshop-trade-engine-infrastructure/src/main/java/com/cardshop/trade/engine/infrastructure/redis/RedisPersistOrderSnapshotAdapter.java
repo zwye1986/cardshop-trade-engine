@@ -60,35 +60,50 @@ public class RedisPersistOrderSnapshotAdapter implements PersistOrderSnapshotPor
                     fields.get("order_id"));
             return Optional.empty();
         }
-        return Optional.of(new PersistOrderSnapshot(
-                text(fields, "org_code", orgCode),
-                text(fields, "app_id", ""),
-                text(fields, "order_id", orderId),
-                text(fields, "out_order_sn", outOrderSn),
-                text(fields, "product_id", ""),
-                text(fields, "selected_product_id", ""),
-                text(fields, "account", ""),
-                text(fields, "notify_url", ""),
-                intValue(fields, "num", 1),
-                longValue(fields, "order_price", 0L),
-                text(fields, "product_name", ""),
-                longValue(fields, "product_value", 0L),
-                intValue(fields, "product_type", 1),
-                text(fields, "coupon_type", ""),
-                text(fields, "supplier_channel", ""),
-                text(fields, "request_hash", ""),
-                text(fields, "request_hash_version", "v1"),
-                text(fields, "request_hash_alg", "SHA-256"),
-                text(fields, "order_status", ""),
-                text(fields, "validation_status", ""),
-                text(fields, "fail_code", ""),
-                text(fields, "fail_reason", ""),
-                bool(fields, "dispatch_allowed", false),
-                bool(fields, "balance_reserved", false),
-                text(fields, "persist_status", ""),
-                longValue(fields, "order_version", 1L),
-                longValue(fields, "persisted_version", 0L),
-                intValue(fields, "mq_publish_count", 0)));
+        try {
+            return Optional.of(new PersistOrderSnapshot(
+                    text(fields, "org_code", orgCode),
+                    text(fields, "app_id", ""),
+                    text(fields, "order_id", orderId),
+                    text(fields, "out_order_sn", outOrderSn),
+                    text(fields, "product_id", ""),
+                    text(fields, "selected_product_id", ""),
+                    text(fields, "account", ""),
+                    text(fields, "notify_url", ""),
+                    intValue(fields, "num", 1),
+                    longValue(fields, "order_price", 0L),
+                    text(fields, "product_name", ""),
+                    longValue(fields, "product_value", 0L),
+                    intValue(fields, "product_type", 1),
+                    text(fields, "coupon_type", ""),
+                    text(fields, "supplier_channel", ""),
+                    text(fields, "request_hash", ""),
+                    text(fields, "request_hash_version", "v1"),
+                    text(fields, "request_hash_alg", "SHA-256"),
+                    text(fields, "order_status", ""),
+                    text(fields, "validation_status", ""),
+                    text(fields, "fail_code", ""),
+                    text(fields, "fail_reason", ""),
+                    bool(fields, "dispatch_allowed", false),
+                    bool(fields, "balance_reserved", false),
+                    text(fields, "persist_status", ""),
+                    longValue(fields, "order_version", 1L),
+                    longValue(fields, "persisted_version", 0L),
+                    intValue(fields, "mq_publish_count", 0)));
+        } catch (NumericFieldParseException ex) {
+            log.error("Redis落库快照数字字段解析失败 orgCode={}, outOrderSn={}, orderId={}, field={}, rawValue={}",
+                    orgCode,
+                    outOrderSn,
+                    orderId,
+                    ex.fieldName(),
+                    ex.rawValue(),
+                    ex);
+            return Optional.empty();
+        } catch (RuntimeException ex) {
+            log.error("Redis落库快照映射失败 orgCode={}, outOrderSn={}, orderId={}",
+                    orgCode, outOrderSn, orderId, ex);
+            return Optional.empty();
+        }
     }
 
     private static String text(Map<String, String> fields, String key, String fallback) {
@@ -98,12 +113,20 @@ public class RedisPersistOrderSnapshotAdapter implements PersistOrderSnapshotPor
 
     private static long longValue(Map<String, String> fields, String key, long fallback) {
         String value = fields.get(key);
-        return StringUtils.hasText(value) ? Long.parseLong(value) : fallback;
+        try {
+            return StringUtils.hasText(value) ? Long.parseLong(value) : fallback;
+        } catch (NumberFormatException ex) {
+            throw new NumericFieldParseException(key, value, ex);
+        }
     }
 
     private static int intValue(Map<String, String> fields, String key, int fallback) {
         String value = fields.get(key);
-        return StringUtils.hasText(value) ? Integer.parseInt(value) : fallback;
+        try {
+            return StringUtils.hasText(value) ? Integer.parseInt(value) : fallback;
+        } catch (NumberFormatException ex) {
+            throw new NumericFieldParseException(key, value, ex);
+        }
     }
 
     private static boolean bool(Map<String, String> fields, String key, boolean fallback) {
@@ -112,6 +135,27 @@ public class RedisPersistOrderSnapshotAdapter implements PersistOrderSnapshotPor
             return fallback;
         }
         return "1".equals(value) || "true".equalsIgnoreCase(value);
+    }
+
+    private static final class NumericFieldParseException extends RuntimeException {
+
+        private final String fieldName;
+        private final String rawValue;
+
+        private NumericFieldParseException(String fieldName, String rawValue, NumberFormatException cause) {
+            super("Redis order snapshot numeric field parse failed: field=%s, rawValue=%s"
+                    .formatted(fieldName, rawValue), cause);
+            this.fieldName = fieldName;
+            this.rawValue = rawValue;
+        }
+
+        private String fieldName() {
+            return fieldName;
+        }
+
+        private String rawValue() {
+            return rawValue;
+        }
     }
 
     private static final class ReactiveRedisPersistOrderSnapshotOperations implements RedisRechargeOrderQueryOperations {

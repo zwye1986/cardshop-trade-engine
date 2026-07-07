@@ -1,8 +1,13 @@
 package com.cardshop.trade.engine.application.recharge;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -17,22 +22,46 @@ public class PersistRechargeOrderConsumerService {
 
     private static final Logger log = LoggerFactory.getLogger(PersistRechargeOrderConsumerService.class);
     private static final String MYSQL_PERSIST_FAILED = "MYSQL_PERSIST_FAILED";
+    private static final String REDIS_MARK_TIMEOUT = "REDIS_MARK_TIMEOUT";
+    private static final String REDIS_MARK_INTERRUPTED = "REDIS_MARK_INTERRUPTED";
+    private static final String REDIS_MARK_EXCEPTION = "REDIS_MARK_EXCEPTION";
     private static final long RETRY_DELAY_MILLIS = 60_000L;
+    private static final Duration DEFAULT_REDIS_MARK_TIMEOUT = Duration.ofSeconds(3);
+    private static final int MAX_FAIL_REASON_LENGTH = 500;
 
     private final PersistOrderSnapshotPort snapshotPort;
     private final RechargeOrderPersistencePort persistencePort;
     private final RechargeAcceptReliabilityPort reliabilityPort;
     private final Clock clock;
+    private final Duration redisMarkTimeout;
 
     public PersistRechargeOrderConsumerService(
             PersistOrderSnapshotPort snapshotPort,
             RechargeOrderPersistencePort persistencePort,
             RechargeAcceptReliabilityPort reliabilityPort,
             Clock clock) {
+        this(snapshotPort, persistencePort, reliabilityPort, clock, DEFAULT_REDIS_MARK_TIMEOUT);
+    }
+
+    /**
+     * 创建异步落库 Consumer 核心服务。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+     * `redisMarkTimeout` 只约束 MySQL 事务之后的 Redis 状态推进调用，避免 RabbitMQ consumer 线程因
+     * Redis 客户端 hang 住而无限阻塞；MySQL 已提交后的 `markDbPersisted` 超时会 ack 当前消息并交给补偿修复，
+     * MySQL 失败后的 `markPersistFailed` 超时则保持当前消息可重试。
+     */
+    PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            Clock clock,
+            Duration redisMarkTimeout) {
         this.snapshotPort = Objects.requireNonNull(snapshotPort, "snapshotPort must not be null");
         this.persistencePort = Objects.requireNonNull(persistencePort, "persistencePort must not be null");
         this.reliabilityPort = Objects.requireNonNull(reliabilityPort, "reliabilityPort must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.redisMarkTimeout = positiveTimeout(redisMarkTimeout);
     }
 
     /**
@@ -59,11 +88,12 @@ public class PersistRechargeOrderConsumerService {
                     message.messageId(),
                     selected.persistSource(),
                     ex);
-            markPersistFailed(message, selected.snapshot(), ex);
+            String failReason = truncateFailReason(ex.getMessage());
+            markPersistFailed(message, selected.snapshot(), failReason);
             return PersistRechargeOrderResult.persistFailed(
                     selected.persistSource(),
                     MYSQL_PERSIST_FAILED,
-                    ex.getMessage());
+                    failReason);
         }
 
         MarkPersistStateResult markResult = markDbPersisted(message, selected.snapshot());
@@ -110,13 +140,52 @@ public class PersistRechargeOrderConsumerService {
             PersistTradeOrderMessage message,
             PersistOrderSnapshot snapshot) {
         long now = clock.millis();
+        CompletableFuture<MarkPersistStateResult> markFuture = null;
         try {
-            return reliabilityPort.markDbPersisted(
+            /*
+             * 设计要求 persisted_version 表示“已成功写入 MySQL 的 Redis 订单版本”。
+             * 因此这里传本次落库快照的 orderVersion，而不是 MQ 重试次数；Lua 会在 Redis 当前版本更新时
+             * 只推进 persisted_version 并保留 pending，等待补刷最新版本。
+             */
+            long persistedVersion = snapshot.orderVersion();
+            markFuture = reliabilityPort.markDbPersisted(
                             snapshot.toAcceptCommand(now, now + RETRY_DELAY_MILLIS),
                             snapshot.toAcceptResult(),
+                            persistedVersion,
                             now)
-                    .toCompletableFuture()
-                    .join();
+                    .toCompletableFuture();
+            return markFuture.get(redisMarkTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException ex) {
+            cancelRedisMarkFuture(markFuture);
+            log.error("Redis订单markDbPersisted调用超时 orgCode={}, outOrderSn={}, orderId={}, messageId={}, timeoutMs={}",
+                    message.orgCode(),
+                    message.outOrderSn(),
+                    message.orderId(),
+                    message.messageId(),
+                    redisMarkTimeout.toMillis(),
+                    ex);
+            return MarkPersistStateResult.failed(
+                    REDIS_MARK_TIMEOUT,
+                    "markDbPersisted timeout after %dms".formatted(redisMarkTimeout.toMillis()));
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            cancelRedisMarkFuture(markFuture);
+            log.error("Redis订单markDbPersisted等待被中断 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+                    message.orgCode(),
+                    message.outOrderSn(),
+                    message.orderId(),
+                    message.messageId(),
+                    ex);
+            return MarkPersistStateResult.failed(REDIS_MARK_INTERRUPTED, "markDbPersisted interrupted");
+        } catch (ExecutionException ex) {
+            Throwable cause = rootCause(ex);
+            log.error("Redis订单markDbPersisted调用异常 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+                    message.orgCode(),
+                    message.outOrderSn(),
+                    message.orderId(),
+                    message.messageId(),
+                    cause);
+            return MarkPersistStateResult.failed(REDIS_MARK_EXCEPTION, truncateFailReason(cause.getMessage()));
         } catch (RuntimeException ex) {
             log.error("Redis订单markDbPersisted调用异常 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
                     message.orgCode(),
@@ -124,26 +193,53 @@ public class PersistRechargeOrderConsumerService {
                     message.orderId(),
                     message.messageId(),
                     ex);
-            return MarkPersistStateResult.failed("REDIS_MARK_EXCEPTION", ex.getMessage());
+            return MarkPersistStateResult.failed(REDIS_MARK_EXCEPTION, truncateFailReason(ex.getMessage()));
         }
     }
 
     private void markPersistFailed(
             PersistTradeOrderMessage message,
             PersistOrderSnapshot snapshot,
-            RuntimeException cause) {
+            String failReason) {
         long now = clock.millis();
+        CompletableFuture<MarkPersistStateResult> markFuture = null;
         try {
-            reliabilityPort.markPersistFailed(
+            markFuture = reliabilityPort.markPersistFailed(
                             snapshot.toAcceptCommand(now, now + RETRY_DELAY_MILLIS),
                             snapshot.toAcceptResult(),
                             MYSQL_PERSIST_FAILED,
-                            cause.getMessage(),
+                            failReason,
                             1,
                             now + RETRY_DELAY_MILLIS,
                             now)
-                    .toCompletableFuture()
-                    .join();
+                    .toCompletableFuture();
+            markFuture.get(redisMarkTimeout.toMillis(), TimeUnit.MILLISECONDS);
+        } catch (TimeoutException ex) {
+            cancelRedisMarkFuture(markFuture);
+            log.error("Redis订单异步落库失败后markPersistFailed超时 orgCode={}, outOrderSn={}, orderId={}, messageId={}, timeoutMs={}",
+                    message.orgCode(),
+                    message.outOrderSn(),
+                    message.orderId(),
+                    message.messageId(),
+                    redisMarkTimeout.toMillis(),
+                    ex);
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            cancelRedisMarkFuture(markFuture);
+            log.error("Redis订单异步落库失败后markPersistFailed等待被中断 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+                    message.orgCode(),
+                    message.outOrderSn(),
+                    message.orderId(),
+                    message.messageId(),
+                    ex);
+        } catch (ExecutionException ex) {
+            Throwable cause = rootCause(ex);
+            log.error("Redis订单异步落库失败后markPersistFailed也失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+                    message.orgCode(),
+                    message.outOrderSn(),
+                    message.orderId(),
+                    message.messageId(),
+                    cause);
         } catch (RuntimeException markEx) {
             log.error("Redis订单异步落库失败后markPersistFailed也失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
                     message.orgCode(),
@@ -152,6 +248,40 @@ public class PersistRechargeOrderConsumerService {
                     message.messageId(),
                     markEx);
         }
+    }
+
+    private static void cancelRedisMarkFuture(CompletableFuture<MarkPersistStateResult> markFuture) {
+        if (markFuture == null || markFuture.isDone()) {
+            return;
+        }
+        /*
+         * 参见 docs/交行直充业务系统详细设计.md「20.13.8 异步落库 Consumer」。
+         * consumer 线程超时返回后，底层 Redis 调用可能仍挂起；显式取消用于触发适配器 Reactor 链路的
+         * doFinally，释放同 session Redis 连接，避免高频超时继续耗尽连接池。
+         */
+        markFuture.cancel(true);
+    }
+
+    private static Duration positiveTimeout(Duration timeout) {
+        Objects.requireNonNull(timeout, "redisMarkTimeout must not be null");
+        if (timeout.isZero() || timeout.isNegative()) {
+            throw new IllegalArgumentException("redisMarkTimeout must be positive");
+        }
+        return timeout;
+    }
+
+    private static Throwable rootCause(ExecutionException exception) {
+        return exception.getCause() == null ? exception : exception.getCause();
+    }
+
+    private static String truncateFailReason(String reason) {
+        if (reason == null || reason.isBlank()) {
+            return "";
+        }
+        if (reason.length() <= MAX_FAIL_REASON_LENGTH) {
+            return reason;
+        }
+        return reason.substring(0, MAX_FAIL_REASON_LENGTH) + "...[truncated]";
     }
 
     private record SelectedSnapshot(PersistOrderSnapshot snapshot, PersistSource persistSource) {

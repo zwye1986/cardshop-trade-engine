@@ -3,6 +3,7 @@ package com.cardshop.trade.engine.application.recharge;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -107,6 +108,72 @@ class PersistRechargeOrderConsumerServiceTest {
         assertThat(reliabilityPort.markDbPersistedCalls).isZero();
         assertThat(reliabilityPort.markPersistFailedCalls).isEqualTo(1);
         assertThat(reliabilityPort.lastPersistFailedReason).contains("db unavailable");
+    }
+
+    @Test
+    void returnsAckedRedisMarkFailureWhenMarkDbPersistedTimesOutAfterMysqlCommit() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        reliabilityPort.markDbPersistedFuture = new CompletableFuture<>();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                reliabilityPort,
+                CLOCK,
+                Duration.ofMillis(10));
+
+        PersistRechargeOrderResult result = service.persist(message(1L));
+
+        assertThat(result.status()).isEqualTo(PersistRechargeOrderStatus.PERSISTED_REDIS_MARK_FAILED);
+        assertThat(result.shouldAck()).isTrue();
+        assertThat(result.failCode()).isEqualTo(PersistRechargeOrderResult.FAIL_CODE_REDIS_MARK_DB_PERSISTED_FAILED);
+        assertThat(result.failReason()).contains("timeout");
+        assertThat(reliabilityPort.markDbPersistedCalls).isEqualTo(1);
+        assertThat(reliabilityPort.markPersistFailedCalls).isZero();
+        assertThat(reliabilityPort.markDbPersistedFuture.toCompletableFuture()).isCancelled();
+    }
+
+    @Test
+    void cancelsMarkPersistFailedFutureWhenRedisMarkTimesOutAfterMysqlFailure() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        persistencePort.failure = new IllegalStateException("db unavailable");
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        reliabilityPort.markPersistFailedFuture = new CompletableFuture<>();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                reliabilityPort,
+                CLOCK,
+                Duration.ofMillis(10));
+
+        PersistRechargeOrderResult result = service.persist(message(1L));
+
+        assertThat(result.status()).isEqualTo(PersistRechargeOrderStatus.PERSIST_FAILED);
+        assertThat(result.shouldAck()).isFalse();
+        assertThat(reliabilityPort.markPersistFailedCalls).isEqualTo(1);
+        assertThat(reliabilityPort.markPersistFailedFuture.toCompletableFuture()).isCancelled();
+    }
+
+    @Test
+    void truncatesMysqlExceptionReasonBeforeWritingPersistFailedState() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        persistencePort.failure = new IllegalStateException("x".repeat(1_500));
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                reliabilityPort,
+                CLOCK);
+
+        PersistRechargeOrderResult result = service.persist(message(1L));
+
+        assertThat(result.status()).isEqualTo(PersistRechargeOrderStatus.PERSIST_FAILED);
+        assertThat(result.failReason()).endsWith("...[truncated]");
+        assertThat(result.failReason()).hasSizeLessThanOrEqualTo(520);
+        assertThat(reliabilityPort.lastPersistFailedReason).isEqualTo(result.failReason());
     }
 
     private static PersistTradeOrderMessage message(long orderVersion) {
@@ -220,6 +287,10 @@ class PersistRechargeOrderConsumerServiceTest {
         private int markDbPersistedCalls;
         private int markPersistFailedCalls;
         private String lastPersistFailedReason;
+        private CompletionStage<MarkPersistStateResult> markDbPersistedFuture =
+                CompletableFuture.completedFuture(MarkPersistStateResult.success());
+        private CompletionStage<MarkPersistStateResult> markPersistFailedFuture =
+                CompletableFuture.completedFuture(MarkPersistStateResult.success());
 
         @Override
         public CompletionStage<ReplicationWaitResult> waitForReplication(
@@ -249,10 +320,11 @@ class PersistRechargeOrderConsumerServiceTest {
         public CompletionStage<MarkPersistStateResult> markDbPersisted(
                 AcceptRechargeOrderCommand command,
                 AcceptRechargeOrderResult acceptResult,
+                long persistedVersion,
                 long nowEpochMillis) {
             events.add("markDbPersisted");
             markDbPersistedCalls++;
-            return CompletableFuture.completedFuture(MarkPersistStateResult.success());
+            return markDbPersistedFuture;
         }
 
         @Override
@@ -267,7 +339,7 @@ class PersistRechargeOrderConsumerServiceTest {
             events.add("markPersistFailed");
             markPersistFailedCalls++;
             lastPersistFailedReason = failReason;
-            return CompletableFuture.completedFuture(MarkPersistStateResult.success());
+            return markPersistFailedFuture;
         }
     }
 }

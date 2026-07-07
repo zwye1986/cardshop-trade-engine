@@ -12,6 +12,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrder
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -44,6 +45,8 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.order.getDataStatus()).isEqualTo("PROCESSED");
         assertThat(store.order.getCallbackUrl()).isEqualTo("https://merchant.example/callback");
         assertThat(store.order.getCouponType()).isEqualTo("codekey");
+        assertThat(store.order.getCreateTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
+        assertThat(store.order.getEditTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
 
         assertThat(store.ext.getOrderId()).isEqualTo("ORDER-1001");
         assertThat(store.ext.getPersistMsgId()).isEqualTo("persist-ORDER-1001-01");
@@ -54,6 +57,8 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.ext.getPersistedVersion()).isEqualTo(1L);
         assertThat(store.ext.getDispatchAllowed()).isTrue();
         assertThat(store.ext.getBalanceReserved()).isTrue();
+        assertThat(store.ext.getCreatedAt()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
+        assertThat(store.ext.getUpdatedAt()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
 
         assertThat(store.outbox.getEventId()).isEqualTo("dispatch-ORDER-1001");
         assertThat(store.outbox.getEventType()).isEqualTo(OutboxEventType.SUPPLIER_DISPATCH.name());
@@ -61,6 +66,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.outbox.getRetryCount()).isZero();
         assertThat(store.outbox.getMaxRetryCount()).isEqualTo(10);
         assertThat(store.outbox.getShardKey()).isEqualTo("dispatch-ORDER-1001");
+        assertThat(store.outbox.getNextRetryTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
         assertThat(store.outbox.getPayload())
                 .contains("\"order_id\":\"ORDER-1001\"")
                 .contains("\"supplier_channel\":\"BOCOM\"");

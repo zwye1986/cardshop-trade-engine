@@ -13,6 +13,9 @@ package com.cardshop.trade.engine.application.recharge;
  */
 public record CancelUnconfirmedAcceptResult(boolean rollbackConfirmed, String failCode, String failReason) {
 
+    public static final String FAIL_CODE_REDIS_SESSION_UNAVAILABLE = "REDIS_SESSION_UNAVAILABLE";
+    public static final String FAIL_CODE_CANCEL_LUA_ERROR = "CANCEL_LUA_ERROR";
+
     public CancelUnconfirmedAcceptResult {
         failCode = failCode == null ? "" : failCode;
         failReason = failReason == null ? "" : failReason;

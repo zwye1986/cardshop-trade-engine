@@ -704,6 +704,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         public CompletableFuture<MarkPersistStateResult> markDbPersisted(
                 AcceptRechargeOrderCommand command,
                 AcceptRechargeOrderResult acceptResult,
+                long persistedVersion,
                 long nowEpochMillis) {
             return CompletableFuture.completedFuture(MarkPersistStateResult.success());
         }

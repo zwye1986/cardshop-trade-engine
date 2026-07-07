@@ -3,7 +3,6 @@ package com.cardshop.trade.engine.infrastructure.redis;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
-import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import java.time.Duration;
@@ -56,15 +55,7 @@ public class RedisAcceptRechargeOrderAdapter implements AcceptRechargeOrderPort 
     @Override
     public CompletionStage<AcceptRechargeOrderResult> accept(AcceptRechargeOrderCommand command) {
         if (!properties.getRedis().isWriteEnabled() || !redisHaGuardPort.isWriteAllowed()) {
-            return CompletableFuture.completedFuture(new AcceptRechargeOrderResult(
-                    AcceptRechargeOrderStatus.REDIS_WRITE_DISABLED,
-                    command.orderId(),
-                    "",
-                    "REDIS_WRITE_DISABLED",
-                    "Redis 写入开关关闭",
-                    false,
-                    false,
-                    0));
+            return CompletableFuture.completedFuture(AcceptRechargeOrderResult.redisWriteDisabled(command.orderId()));
         }
 
         var luaArguments = AcceptRechargeOrderLuaArguments.from(
@@ -75,12 +66,13 @@ public class RedisAcceptRechargeOrderAdapter implements AcceptRechargeOrderPort 
 
         return scriptExecutor
                 .execute(scriptLoader.acceptRechargeOrderScript(), luaArguments.keys(), luaArguments.args())
-                .switchIfEmpty(Mono.just(redisUnavailable(command, "Lua 未返回结果")))
+                .switchIfEmpty(Mono.just(AcceptRechargeOrderResult.redisUnavailable(
+                        command.orderId(), "Lua 未返回结果")))
                 .map(result -> result instanceof AcceptRechargeOrderResult acceptResult
                         ? acceptResult
                         : resultMapper.map(result))
                 .onErrorResume(ex -> {
-                    log.warn(
+                    log.error(
                             "accept recharge order by redis lua failed, orgCode={}, outOrderSn={}, orderId={}, requestHash={}",
                             command.orgCode(),
                             command.outOrderSn(),
@@ -88,21 +80,9 @@ public class RedisAcceptRechargeOrderAdapter implements AcceptRechargeOrderPort 
                             command.requestHash(),
                             ex);
                     // TODO(D5B): Lua 超时、Redis BUSY 或状态未知时写 recharge_accept_anomaly 并触发核查；参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
-                    return Mono.just(redisUnavailable(command, "Redis Lua 执行失败"));
+                    return Mono.just(AcceptRechargeOrderResult.redisUnavailable(
+                            command.orderId(), "Redis Lua 执行失败"));
                 })
                 .toFuture();
-    }
-
-    private static AcceptRechargeOrderResult redisUnavailable(
-            AcceptRechargeOrderCommand command, String failReason) {
-        return new AcceptRechargeOrderResult(
-                AcceptRechargeOrderStatus.REDIS_UNAVAILABLE,
-                command.orderId(),
-                "",
-                "REDIS_UNAVAILABLE",
-                failReason,
-                false,
-                false,
-                0);
     }
 }

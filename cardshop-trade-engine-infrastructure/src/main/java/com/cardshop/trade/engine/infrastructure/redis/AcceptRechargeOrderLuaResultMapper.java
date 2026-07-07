@@ -36,6 +36,7 @@ final class AcceptRechargeOrderLuaResultMapper {
         Map<String, String> values = new HashMap<>();
         if (!(rawResult instanceof List<?> list)) {
             values.put("code", "UNKNOWN");
+            values.put("fail_code", AcceptRechargeOrderResult.FAIL_CODE_UNKNOWN);
             values.put("fail_reason", "Lua 返回结构不是数组");
             return values;
         }

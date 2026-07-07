@@ -708,6 +708,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         public CompletionStage<MarkPersistStateResult> markDbPersisted(
                 AcceptRechargeOrderCommand command,
                 AcceptRechargeOrderResult acceptResult,
+                long persistedVersion,
                 long nowEpochMillis) {
             return CompletableFuture.completedFuture(MarkPersistStateResult.success());
         }

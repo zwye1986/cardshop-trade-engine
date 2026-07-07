@@ -66,4 +66,23 @@ class RedisPersistOrderSnapshotAdapterTest {
 
         assertThat(adapter.findLatestSnapshot("A36", "OUT-1001", "ORDER-1001")).isEmpty();
     }
+
+    @Test
+    void returnsEmptyWhenRedisNumericFieldIsMalformed() {
+        RedisPersistOrderSnapshotAdapter adapter = new RedisPersistOrderSnapshotAdapter(
+                key -> Map.ofEntries(
+                        Map.entry("order_id", "ORDER-1001"),
+                        Map.entry("org_code", "A36"),
+                        Map.entry("out_order_sn", "OUT-1001"),
+                        Map.entry("product_id", "PARENT-100"),
+                        Map.entry("selected_product_id", "SKU-100"),
+                        Map.entry("account", "13800138000"),
+                        Map.entry("notify_url", "https://merchant.example/callback"),
+                        Map.entry("num", "N/A"),
+                        Map.entry("request_hash", "request-hash-1001"),
+                        Map.entry("order_version", "1")),
+                new RechargeRedisKeyBuilder("cardshop:trade", 128));
+
+        assertThat(adapter.findLatestSnapshot("A36", "OUT-1001", "ORDER-1001")).isEmpty();
+    }
 }

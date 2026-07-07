@@ -69,8 +69,26 @@ class RechargeRedisScriptLoaderTest {
         assertThat(script.getScriptAsString())
                 .contains("mark_db_persisted.lua")
                 .contains("DB_PERSISTED")
+                .contains("persisted_version")
+                .contains("currentOrderVersion > nextPersistedVersion")
                 .contains("ZREM', KEYS[3]")
                 .contains("ZREM', KEYS[6]");
+    }
+
+    @Test
+    void markDbPersistedKeepsPendingWhenRedisOrderHasNewerVersion() {
+        var loader = new RechargeRedisScriptLoader();
+
+        String script = loader.markDbPersistedScript().getScriptAsString();
+        int newerVersionBranch = script.indexOf("if currentOrderVersion > nextPersistedVersion then");
+        int keepPendingReturn = script.indexOf("return result('MARKED', '', '')", newerVersionBranch);
+        int removePendingMember = script.indexOf("redis.call('ZREM', KEYS[3], orderId)", newerVersionBranch);
+
+        assertThat(newerVersionBranch).isNotNegative();
+        assertThat(keepPendingReturn).isGreaterThan(newerVersionBranch);
+        assertThat(removePendingMember)
+                .describedAs("Redis 当前版本高于本次落库版本时必须保留 pending，等待补刷新版本")
+                .isGreaterThan(keepPendingReturn);
     }
 
     @Test

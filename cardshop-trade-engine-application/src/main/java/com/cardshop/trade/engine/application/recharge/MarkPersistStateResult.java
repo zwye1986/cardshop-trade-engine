@@ -13,6 +13,10 @@ package com.cardshop.trade.engine.application.recharge;
  */
 public record MarkPersistStateResult(boolean marked, String failCode, String failReason) {
 
+    public static final String FAIL_CODE_REDIS_SESSION_UNAVAILABLE = "REDIS_SESSION_UNAVAILABLE";
+    public static final String FAIL_CODE_MARK_DB_PERSISTED_LUA_ERROR = "MARK_DB_PERSISTED_LUA_ERROR";
+    public static final String FAIL_CODE_MARK_PERSIST_FAILED_LUA_ERROR = "MARK_PERSIST_FAILED_LUA_ERROR";
+
     public MarkPersistStateResult {
         failCode = failCode == null ? "" : failCode;
         failReason = failReason == null ? "" : failReason;

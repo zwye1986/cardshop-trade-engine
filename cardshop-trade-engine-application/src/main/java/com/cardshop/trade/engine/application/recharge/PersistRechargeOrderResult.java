@@ -19,6 +19,8 @@ public record PersistRechargeOrderResult(
         String failCode,
         String failReason) {
 
+    public static final String FAIL_CODE_REDIS_MARK_DB_PERSISTED_FAILED = "REDIS_MARK_DB_PERSISTED_FAILED";
+
     public PersistRechargeOrderResult {
         failCode = failCode == null ? "" : failCode;
         failReason = failReason == null ? "" : failReason;
@@ -38,7 +40,7 @@ public record PersistRechargeOrderResult(
                 PersistRechargeOrderStatus.PERSISTED_REDIS_MARK_FAILED,
                 persistSource,
                 true,
-                "REDIS_MARK_DB_PERSISTED_FAILED",
+                FAIL_CODE_REDIS_MARK_DB_PERSISTED_FAILED,
                 failReason);
     }
 

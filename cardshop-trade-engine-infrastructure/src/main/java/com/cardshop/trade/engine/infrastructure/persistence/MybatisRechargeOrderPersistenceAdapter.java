@@ -15,7 +15,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutbo
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
-import java.time.ZoneOffset;
+import java.time.ZoneId;
 import java.util.Map;
 import java.util.Objects;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,6 +33,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
     private static final int ORDER_STATUS_PROCESSING = 2;
     private static final int ORDER_STATUS_FAILED = 6;
     private static final int DEFAULT_MAX_RETRY_COUNT = 10;
+    private static final ZoneId LEGACY_CARDSHOP_DB_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final McOrderPersistWriter orderWriter;
     private final RechargeOrderExtPersistWriter extWriter;
@@ -122,6 +123,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
         ext.setPersistStatus(PersistStatus.DB_PERSISTED.name());
         ext.setPersistSource(aggregate.persistSource().name());
         ext.setRedisOrderVersion(snapshot.orderVersion());
+        // persisted_version 是“已成功写入 MySQL 的 Redis 订单版本”，必须随 order_version 单调前进。
         ext.setPersistedVersion(snapshot.orderVersion());
         ext.setValidationStatus(snapshot.validationStatus());
         ext.setDispatchAllowed(snapshot.dispatchAllowed());
@@ -193,7 +195,13 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
     }
 
     private static LocalDateTime persistedAt(OrderPersistAggregate aggregate) {
-        return LocalDateTime.ofInstant(aggregate.persistedAt(), ZoneOffset.UTC);
+        /*
+         * docs/交行直充业务系统详细设计.md「20.13.8 异步落库 Consumer」
+         * mc_order/recharge_order_ext/recharge_outbox 使用 MySQL datetime 字面值，旧卡管库按 Asia/Shanghai
+         * 读写和展示时间。这里将 Instant 转成本地业务时区的 LocalDateTime，避免补偿任务按 next_retry_time
+         * 扫描时比真实时间偏移 8 小时。
+         */
+        return LocalDateTime.ofInstant(aggregate.persistedAt(), LEGACY_CARDSHOP_DB_ZONE);
     }
 
 }

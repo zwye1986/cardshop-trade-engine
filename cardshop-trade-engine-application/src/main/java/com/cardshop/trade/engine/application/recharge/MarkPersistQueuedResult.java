@@ -13,6 +13,9 @@ package com.cardshop.trade.engine.application.recharge;
  */
 public record MarkPersistQueuedResult(boolean marked, String failCode, String failReason) {
 
+    public static final String FAIL_CODE_REDIS_SESSION_UNAVAILABLE = "REDIS_SESSION_UNAVAILABLE";
+    public static final String FAIL_CODE_MARK_LUA_ERROR = "MARK_LUA_ERROR";
+
     public MarkPersistQueuedResult {
         failCode = failCode == null ? "" : failCode;
         failReason = failReason == null ? "" : failReason;

@@ -121,6 +121,7 @@ class TradeEngineReliabilityConfigurationTest {
         public java.util.concurrent.CompletionStage<MarkPersistStateResult> markDbPersisted(
                 AcceptRechargeOrderCommand command,
                 AcceptRechargeOrderResult acceptResult,
+                long persistedVersion,
                 long nowEpochMillis) {
             return java.util.concurrent.CompletableFuture.completedFuture(MarkPersistStateResult.success());
         }

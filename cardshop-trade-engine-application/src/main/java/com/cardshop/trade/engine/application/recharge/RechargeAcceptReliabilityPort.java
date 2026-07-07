@@ -38,12 +38,15 @@ public interface RechargeAcceptReliabilityPort {
     /**
      * MySQL 事务提交成功后，标记 Redis 订单已完成持久化。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。该方法必须同时清理
-     * pending 和 org_index，避免补投任务重复投递已落库订单。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」和
+     * {@code docs/交行直充业务系统高可用方案设计.md}「14.2 Redis 与 MySQL 版本博弈」。
+     * `persistedVersion` 是本次已成功写入 MySQL 的 Redis `order_version`：Redis 当前版本没有更新时才清理
+     * pending 和 org_index；如果 Redis 已有更高版本，本方法只能推进 `persisted_version` 并保留补刷入口。
      */
     CompletionStage<MarkPersistStateResult> markDbPersisted(
             AcceptRechargeOrderCommand command,
             AcceptRechargeOrderResult acceptResult,
+            long persistedVersion,
             long nowEpochMillis);
 
     /**

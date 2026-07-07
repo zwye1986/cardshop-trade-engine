@@ -27,12 +27,51 @@ public record AcceptRechargeOrderResult(
         boolean balanceReserved,
         long orderVersion) {
 
+    public static final String FAIL_CODE_REDIS_WRITE_DISABLED = AcceptRechargeOrderStatus.REDIS_WRITE_DISABLED.name();
+    public static final String FAIL_CODE_REDIS_UNAVAILABLE = AcceptRechargeOrderStatus.REDIS_UNAVAILABLE.name();
+    public static final String FAIL_CODE_UNKNOWN = AcceptRechargeOrderStatus.UNKNOWN.name();
+
     public AcceptRechargeOrderResult {
         status = Objects.requireNonNull(status, "status");
         orderId = orderId == null ? "" : orderId;
         validationStatus = validationStatus == null ? "" : validationStatus;
         failCode = failCode == null ? "" : failCode;
         failReason = failReason == null ? "" : failReason;
+    }
+
+    /**
+     * Redis 写入开关或 HA Guard 已关闭时的统一失败结果。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。该失败发生在 Lua 写入前，
+     * 因此 `orderWritten=false`，调用方不能执行 WAIT、MQ confirm 或作废回滚。
+     */
+    public static AcceptRechargeOrderResult redisWriteDisabled(String orderId) {
+        return new AcceptRechargeOrderResult(
+                AcceptRechargeOrderStatus.REDIS_WRITE_DISABLED,
+                orderId,
+                "",
+                FAIL_CODE_REDIS_WRITE_DISABLED,
+                "Redis 写入开关关闭",
+                false,
+                false,
+                0);
+    }
+
+    /**
+     * Redis 客户端、session 或 Lua 调用不可用时的统一失败结果。
+     *
+     * <p>该失败码用于 fail-closed 路径，避免不同适配器散落硬编码字符串导致接口语义漂移。
+     */
+    public static AcceptRechargeOrderResult redisUnavailable(String orderId, String failReason) {
+        return new AcceptRechargeOrderResult(
+                AcceptRechargeOrderStatus.REDIS_UNAVAILABLE,
+                orderId,
+                "",
+                FAIL_CODE_REDIS_UNAVAILABLE,
+                failReason,
+                false,
+                false,
+                0);
     }
 
     /**
