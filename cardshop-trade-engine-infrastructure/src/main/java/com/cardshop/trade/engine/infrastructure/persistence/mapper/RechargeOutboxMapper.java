@@ -7,6 +7,7 @@ import com.cardshop.trade.engine.domain.order.TaskStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
 import java.time.LocalDateTime;
 import java.util.List;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 
 /**
@@ -17,6 +18,57 @@ import org.apache.ibatis.annotations.Mapper;
  */
 @Mapper
 public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
+
+    /**
+     * 幂等写入可靠事件。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+     * Persist Consumer 可能因为 RabbitMQ 重投重复处理同一订单，`SUPPLIER_DISPATCH` outbox 必须按
+     * `event_id` 幂等插入，避免唯一键冲突被误判为数据库故障。
+     */
+    @Insert("""
+            insert into recharge_outbox (
+              event_id,
+              event_type,
+              org_code,
+              order_id,
+              out_order_sn,
+              payload,
+              status,
+              retry_count,
+              max_retry_count,
+              next_retry_time,
+              locked_by,
+              locked_until,
+              version,
+              last_error,
+              shard_key,
+              created_at,
+              updated_at
+            )
+            values (
+              #{eventId},
+              #{eventType},
+              #{orgCode},
+              #{orderId},
+              #{outOrderSn},
+              #{payload},
+              #{status},
+              #{retryCount},
+              #{maxRetryCount},
+              #{nextRetryTime},
+              #{lockedBy},
+              #{lockedUntil},
+              #{version},
+              #{lastError},
+              #{shardKey},
+              #{createdAt},
+              #{updatedAt}
+            )
+            on duplicate key update
+              event_id = event_id
+            """)
+    int insertIfAbsent(RechargeOutboxDO outbox);
 
     /**
      * 扫描到期事件和租约失效事件。

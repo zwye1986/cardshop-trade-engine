@@ -1,0 +1,273 @@
+package com.cardshop.trade.engine.application.recharge;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import org.junit.jupiter.api.Test;
+
+/**
+ * Redis/MQ 到 MySQL 异步落库 Consumer 核心编排测试。
+ *
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * D7A 先验证不绑定 RabbitMQ listener 的核心服务：快照选择、事务写库端口调用和 Redis mark 调用顺序。
+ */
+class PersistRechargeOrderConsumerServiceTest {
+
+    private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-07-07T01:30:00Z"), ZoneOffset.UTC);
+
+    @Test
+    void persistsMqInitialSnapshotAndMarksRedisAfterMysqlCommit() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                reliabilityPort,
+                CLOCK);
+
+        PersistRechargeOrderResult result = service.persist(message(1L));
+
+        assertThat(result.status()).isEqualTo(PersistRechargeOrderStatus.PERSISTED);
+        assertThat(result.shouldAck()).isTrue();
+        assertThat(persistencePort.lastAggregate.persistSource()).isEqualTo(PersistSource.MQ_SNAPSHOT_FALLBACK);
+        assertThat(persistencePort.lastAggregate.snapshot().productName()).isEqualTo("交行话费100元");
+        assertThat(reliabilityPort.markDbPersistedCalls).isEqualTo(1);
+        assertThat(reliabilityPort.markPersistFailedCalls).isZero();
+        assertThat(persistencePort.events).containsExactly("persist");
+        assertThat(reliabilityPort.events).containsExactly("markDbPersisted");
+    }
+
+    @Test
+    void prefersRedisSnapshotWhenRedisHasNewerOrderVersion() {
+        PersistOrderSnapshot redisSnapshot = snapshot(2L, "Redis更新商品名", true);
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.of(redisSnapshot));
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                reliabilityPort,
+                CLOCK);
+
+        PersistRechargeOrderResult result = service.persist(message(1L));
+
+        assertThat(result.status()).isEqualTo(PersistRechargeOrderStatus.PERSISTED);
+        assertThat(persistencePort.lastAggregate.persistSource()).isEqualTo(PersistSource.REDIS_SNAPSHOT);
+        assertThat(persistencePort.lastAggregate.snapshot().orderVersion()).isEqualTo(2L);
+        assertThat(persistencePort.lastAggregate.snapshot().productName()).isEqualTo("Redis更新商品名");
+    }
+
+    @Test
+    void fallsBackToMqInitialSnapshotWhenRedisSnapshotReadFails() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        snapshotPort.failure = new IllegalStateException("redis snapshot malformed");
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                reliabilityPort,
+                CLOCK);
+
+        PersistRechargeOrderResult result = service.persist(message(1L));
+
+        assertThat(result.status()).isEqualTo(PersistRechargeOrderStatus.PERSISTED);
+        assertThat(result.shouldAck()).isTrue();
+        assertThat(persistencePort.lastAggregate.persistSource()).isEqualTo(PersistSource.MQ_SNAPSHOT_FALLBACK);
+        assertThat(persistencePort.lastAggregate.snapshot().productName()).isEqualTo("交行话费100元");
+        assertThat(reliabilityPort.markDbPersistedCalls).isEqualTo(1);
+    }
+
+    @Test
+    void marksPersistFailedAndKeepsMessageRetryableWhenMysqlWriteFails() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        persistencePort.failure = new IllegalStateException("db unavailable");
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                reliabilityPort,
+                CLOCK);
+
+        PersistRechargeOrderResult result = service.persist(message(1L));
+
+        assertThat(result.status()).isEqualTo(PersistRechargeOrderStatus.PERSIST_FAILED);
+        assertThat(result.shouldAck()).isFalse();
+        assertThat(result.failCode()).isEqualTo("MYSQL_PERSIST_FAILED");
+        assertThat(reliabilityPort.markDbPersistedCalls).isZero();
+        assertThat(reliabilityPort.markPersistFailedCalls).isEqualTo(1);
+        assertThat(reliabilityPort.lastPersistFailedReason).contains("db unavailable");
+    }
+
+    private static PersistTradeOrderMessage message(long orderVersion) {
+        return new PersistTradeOrderMessage(
+                "persist-ORDER-1001-01",
+                "A36",
+                "ORDER-1001",
+                "OUT-1001",
+                "request-hash-1001",
+                orderVersion,
+                Map.ofEntries(
+                        Map.entry("order_id", "ORDER-1001"),
+                        Map.entry("org_code", "A36"),
+                        Map.entry("app_id", "app-gray"),
+                        Map.entry("out_order_sn", "OUT-1001"),
+                        Map.entry("product_id", "PARENT-100"),
+                        Map.entry("selected_product_id", "SKU-100"),
+                        Map.entry("account", "13800138000"),
+                        Map.entry("notify_url", "https://merchant.example/callback"),
+                        Map.entry("num", 1),
+                        Map.entry("order_price", 5200L),
+                        Map.entry("product_name", "交行话费100元"),
+                        Map.entry("product_value", 10000L),
+                        Map.entry("product_type", 1),
+                        Map.entry("coupon_type", "1"),
+                        Map.entry("supplier_channel", "BOCOM"),
+                        Map.entry("request_hash", "request-hash-1001"),
+                        Map.entry("request_hash_version", "v1"),
+                        Map.entry("request_hash_alg", "SHA-256"),
+                        Map.entry("order_status", "ACCEPTED"),
+                        Map.entry("validation_status", "PASSED"),
+                        Map.entry("fail_code", ""),
+                        Map.entry("fail_reason", ""),
+                        Map.entry("dispatch_allowed", true),
+                        Map.entry("balance_reserved", true),
+                        Map.entry("persist_status", "PERSIST_QUEUED"),
+                        Map.entry("order_version", orderVersion),
+                        Map.entry("persisted_version", 0L),
+                        Map.entry("mq_publish_count", 1)));
+    }
+
+    private static PersistOrderSnapshot snapshot(long orderVersion, String productName, boolean dispatchAllowed) {
+        return new PersistOrderSnapshot(
+                "A36",
+                "app-gray",
+                "ORDER-1001",
+                "OUT-1001",
+                "PARENT-100",
+                "SKU-100",
+                "13800138000",
+                "https://merchant.example/callback",
+                1,
+                5200L,
+                productName,
+                10000L,
+                1,
+                "1",
+                "BOCOM",
+                "request-hash-1001",
+                "v1",
+                "SHA-256",
+                "ACCEPTED",
+                "PASSED",
+                "",
+                "",
+                dispatchAllowed,
+                dispatchAllowed,
+                "PERSIST_QUEUED",
+                orderVersion,
+                0L,
+                1);
+    }
+
+    private static final class RecordingSnapshotPort implements PersistOrderSnapshotPort {
+
+        private final Optional<PersistOrderSnapshot> snapshot;
+        private RuntimeException failure;
+
+        private RecordingSnapshotPort(Optional<PersistOrderSnapshot> snapshot) {
+            this.snapshot = snapshot;
+        }
+
+        @Override
+        public Optional<PersistOrderSnapshot> findLatestSnapshot(String orgCode, String outOrderSn, String orderId) {
+            if (failure != null) {
+                throw failure;
+            }
+            return snapshot;
+        }
+    }
+
+    private static final class RecordingPersistencePort implements RechargeOrderPersistencePort {
+
+        private final List<String> events = new ArrayList<>();
+        private OrderPersistAggregate lastAggregate;
+        private RuntimeException failure;
+
+        @Override
+        public void persist(OrderPersistAggregate aggregate) {
+            events.add("persist");
+            lastAggregate = aggregate;
+            if (failure != null) {
+                throw failure;
+            }
+        }
+    }
+
+    private static final class RecordingReliabilityPort implements RechargeAcceptReliabilityPort {
+
+        private final List<String> events = new ArrayList<>();
+        private int markDbPersistedCalls;
+        private int markPersistFailedCalls;
+        private String lastPersistFailedReason;
+
+        @Override
+        public CompletionStage<ReplicationWaitResult> waitForReplication(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult) {
+            throw new UnsupportedOperationException("D7A consumer does not call WAIT");
+        }
+
+        @Override
+        public CompletionStage<CancelUnconfirmedAcceptResult> cancelUnconfirmedAccept(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult,
+                String reason) {
+            throw new UnsupportedOperationException("D7A consumer does not cancel accept");
+        }
+
+        @Override
+        public CompletionStage<MarkPersistQueuedResult> markPersistQueued(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult,
+                String persistMessageId,
+                int publishCount) {
+            throw new UnsupportedOperationException("D7A consumer does not mark queued");
+        }
+
+        @Override
+        public CompletionStage<MarkPersistStateResult> markDbPersisted(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult,
+                long nowEpochMillis) {
+            events.add("markDbPersisted");
+            markDbPersistedCalls++;
+            return CompletableFuture.completedFuture(MarkPersistStateResult.success());
+        }
+
+        @Override
+        public CompletionStage<MarkPersistStateResult> markPersistFailed(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult,
+                String failCode,
+                String failReason,
+                int retryCount,
+                long nextRetryEpochMillis,
+                long nowEpochMillis) {
+            events.add("markPersistFailed");
+            markPersistFailedCalls++;
+            lastPersistFailedReason = failReason;
+            return CompletableFuture.completedFuture(MarkPersistStateResult.success());
+        }
+    }
+}

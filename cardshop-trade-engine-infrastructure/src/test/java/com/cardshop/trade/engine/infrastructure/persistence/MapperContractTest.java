@@ -42,6 +42,12 @@ class MapperContractTest {
                 .contains("values(persist_status) in ('DB_PERSISTED', 'MANUAL_REQUIRED')")
                 .contains("persisted_version = greatest(persisted_version, values(persisted_version))")
                 .contains("redis_order_version = greatest(redis_order_version, values(redis_order_version))");
+        assertThat(mapper.indexOf("persist_source = case"))
+                .as("persist_source 要在 persist_status 之前赋值，避免 MySQL 顺序求值看到已更新状态")
+                .isLessThan(mapper.indexOf("persist_status = case"));
+        assertThat(mapper.indexOf("last_error = case"))
+                .as("last_error 要在 persisted_version 之前赋值，避免同一 UPDATE 内版本先被 greatest 改写")
+                .isLessThan(mapper.indexOf("persisted_version = greatest"));
     }
 
     @Test

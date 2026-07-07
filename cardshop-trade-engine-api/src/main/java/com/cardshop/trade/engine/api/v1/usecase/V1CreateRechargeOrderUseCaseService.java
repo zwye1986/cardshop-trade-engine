@@ -284,6 +284,11 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 Map.entry("notify_url", command.notifyUrl()),
                 Map.entry("num", command.num()),
                 Map.entry("order_price", command.orderAmountCent()),
+                Map.entry("product_name", command.productName()),
+                Map.entry("product_value", command.productValueCent()),
+                Map.entry("product_type", command.productType()),
+                Map.entry("coupon_type", command.couponType()),
+                Map.entry("supplier_channel", command.supplierChannel()),
                 Map.entry("validation_status", acceptResult.validationStatus()),
                 Map.entry("fail_code", acceptResult.failCode()),
                 Map.entry("fail_reason", acceptResult.failReason()),
@@ -291,7 +296,9 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 Map.entry("balance_reserved", acceptResult.balanceReserved()),
                 Map.entry("persist_status", PERSIST_STATUS_PENDING_MQ),
                 Map.entry("order_version", acceptResult.orderVersion()),
-                Map.entry("request_hash", command.requestHash()));
+                Map.entry("request_hash", command.requestHash()),
+                Map.entry("request_hash_version", command.requestHashVersion()),
+                Map.entry("request_hash_alg", command.requestHashAlg()));
         return new PersistTradeOrderMessage(
                 messageId,
                 command.orgCode(),

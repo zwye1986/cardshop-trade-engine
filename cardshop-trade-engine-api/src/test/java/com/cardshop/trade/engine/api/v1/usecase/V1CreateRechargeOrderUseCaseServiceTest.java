@@ -337,7 +337,14 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         assertThat(publisher.lastMessage.outOrderSn()).isEqualTo("OUT-RELIABLE");
         assertThat(publisher.lastMessage.initialOrderSnapshot())
                 .containsEntry("order_id", "202607051337458961474292")
-                .containsEntry("persist_status", "PENDING_MQ");
+                .containsEntry("persist_status", "PENDING_MQ")
+                .containsEntry("product_name", "话费50元")
+                .containsEntry("product_value", 5000L)
+                .containsEntry("product_type", 1)
+                .containsEntry("coupon_type", "codekey")
+                .containsEntry("supplier_channel", "TF_KA")
+                .containsEntry("request_hash_version", "v1")
+                .containsEntry("request_hash_alg", "SHA-256");
         assertThat(reliabilityPort.lastPersistMessageId).isEqualTo(publisher.lastMessage.messageId());
     }
 

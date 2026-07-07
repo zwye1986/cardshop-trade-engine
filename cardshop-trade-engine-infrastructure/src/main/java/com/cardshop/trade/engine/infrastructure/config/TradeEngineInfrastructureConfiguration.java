@@ -4,7 +4,9 @@ import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
+import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
@@ -12,12 +14,15 @@ import com.cardshop.trade.engine.infrastructure.mq.RabbitTemplatePersistMessageO
 import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyRecordAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.LettuceRechargeRedisSessionFactory;
 import com.cardshop.trade.engine.infrastructure.redis.InMemoryRedisHaGuard;
+import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisAcceptRechargeOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
@@ -174,5 +179,42 @@ public class TradeEngineInfrastructureConfiguration {
         return new FallbackRechargeOrderQueryAdapter(
                 redisQueryPort,
                 new MybatisRechargeOrderQueryAdapter(orderMapper, extMapper));
+    }
+
+    /**
+     * 装配 Persist Consumer 使用的 Redis 完整订单快照端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。该端口读取完整
+     * Redis hash，不复用查单端口，避免查单 DTO 字段不足导致 MySQL 兜底落库信息缺失。
+     */
+    @Bean
+    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
+    @ConditionalOnMissingBean(PersistOrderSnapshotPort.class)
+    public PersistOrderSnapshotPort persistOrderSnapshotPort(
+            ReactiveStringRedisTemplate redisTemplate,
+            RechargeRedisKeyBuilder keyBuilder,
+            TradeEngineProperties properties) {
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
+        return new RedisPersistOrderSnapshotAdapter(
+                redisTemplate,
+                keyBuilder,
+                java.time.Duration.ofMillis(timeoutMs));
+    }
+
+    /**
+     * 装配 MySQL 异步落库端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+     * 三个 Mapper 同时存在时才启用，确保事务内能完整写 `mc_order`、`recharge_order_ext` 和 outbox。
+     */
+    @Bean
+    @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class, RechargeOutboxMapper.class})
+    @ConditionalOnMissingBean(RechargeOrderPersistencePort.class)
+    public RechargeOrderPersistencePort rechargeOrderPersistencePort(
+            McOrderMapper orderMapper,
+            RechargeOrderExtMapper extMapper,
+            RechargeOutboxMapper outboxMapper,
+            ObjectMapper objectMapper) {
+        return new MybatisRechargeOrderPersistenceAdapter(orderMapper, extMapper, outboxMapper, objectMapper);
     }
 }

@@ -2,8 +2,13 @@ package com.cardshop.trade.engine.bootstrap.config;
 
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyAutoCheckService;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
+import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
+import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
+import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.job.recharge.AcceptAnomalyAutoCheckJob;
+import java.time.Clock;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -46,5 +51,26 @@ public class TradeEngineReliabilityConfiguration {
     public AcceptAnomalyAutoCheckJob acceptAnomalyAutoCheckJob(
             AcceptAnomalyAutoCheckService autoCheckService) {
         return new AcceptAnomalyAutoCheckJob(autoCheckService);
+    }
+
+    /**
+     * Redis/MQ 到 MySQL 的异步落库 Consumer 核心服务。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。D7A 先装配
+     * 不依赖 RabbitMQ listener 的核心服务，后续真实 `@RabbitListener` 只负责反序列化消息和按结果 ack/nack。
+     */
+    @Bean
+    @ConditionalOnBean({RechargeOrderPersistencePort.class, RechargeAcceptReliabilityPort.class})
+    @ConditionalOnMissingBean(PersistRechargeOrderConsumerService.class)
+    public PersistRechargeOrderConsumerService persistRechargeOrderConsumerService(
+            org.springframework.beans.factory.ObjectProvider<PersistOrderSnapshotPort> snapshotPortProvider,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            Clock clock) {
+        return new PersistRechargeOrderConsumerService(
+                snapshotPortProvider.getIfAvailable(PersistOrderSnapshotPort::noop),
+                persistencePort,
+                reliabilityPort,
+                clock);
     }
 }

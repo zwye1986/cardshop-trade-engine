@@ -4,18 +4,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
+import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.InMemoryRedisHaGuard;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptLoader;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptExecutor;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisSessionFactory;
+import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Proxy;
@@ -23,6 +28,8 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import reactor.core.publisher.Mono;
+
+import static org.mockito.Mockito.mock;
 
 /**
  * 基础设施自动配置测试。
@@ -72,7 +79,7 @@ class TradeEngineInfrastructureConfigurationTest {
     @Test
     void createsRedisOnlyOrderQueryPortWhenMysqlMappersAreMissing() {
         contextRunner
-                .withBean(ReactiveStringRedisTemplate.class, () -> null)
+                .withBean(ReactiveStringRedisTemplate.class, () -> mock(ReactiveStringRedisTemplate.class))
                 .run(context -> {
                     assertThat(context).hasSingleBean(RechargeOrderQueryPort.class);
                     assertThat(context.getBean(RechargeOrderQueryPort.class))
@@ -83,13 +90,38 @@ class TradeEngineInfrastructureConfigurationTest {
     @Test
     void wrapsRedisOrderQueryPortWithMysqlFallbackWhenMappersExist() {
         contextRunner
-                .withBean(ReactiveStringRedisTemplate.class, () -> null)
+                .withBean(ReactiveStringRedisTemplate.class, () -> mock(ReactiveStringRedisTemplate.class))
                 .withBean(McOrderMapper.class, () -> mapperProxy(McOrderMapper.class))
                 .withBean(RechargeOrderExtMapper.class, () -> mapperProxy(RechargeOrderExtMapper.class))
                 .run(context -> {
                     assertThat(context).hasSingleBean(RechargeOrderQueryPort.class);
                     assertThat(context.getBean(RechargeOrderQueryPort.class))
                             .isInstanceOf(FallbackRechargeOrderQueryAdapter.class);
+                });
+    }
+
+    @Test
+    void createsPersistOrderSnapshotPortWhenRedisTemplateExists() {
+        contextRunner
+                .withBean(ReactiveStringRedisTemplate.class, () -> mock(ReactiveStringRedisTemplate.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(PersistOrderSnapshotPort.class);
+                    assertThat(context.getBean(PersistOrderSnapshotPort.class))
+                            .isInstanceOf(RedisPersistOrderSnapshotAdapter.class);
+                });
+    }
+
+    @Test
+    void createsRechargeOrderPersistencePortWhenMappersExist() {
+        contextRunner
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(McOrderMapper.class, () -> mapperProxy(McOrderMapper.class))
+                .withBean(RechargeOrderExtMapper.class, () -> mapperProxy(RechargeOrderExtMapper.class))
+                .withBean(RechargeOutboxMapper.class, () -> mapperProxy(RechargeOutboxMapper.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargeOrderPersistencePort.class);
+                    assertThat(context.getBean(RechargeOrderPersistencePort.class))
+                            .isInstanceOf(MybatisRechargeOrderPersistenceAdapter.class);
                 });
     }
 

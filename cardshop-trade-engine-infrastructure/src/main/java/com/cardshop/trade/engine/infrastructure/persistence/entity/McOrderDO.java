@@ -161,10 +161,10 @@ public class McOrderDO {
     private String account;
 
     /**
-     * 卡券类型或直充兼容类型。
+     * 卡券类型或直充兼容类型，沿用旧系统 `url/code/codekey` 等字符串语义。
      */
     @TableField("coupon_type")
-    private Integer couponType;
+    private String couponType;
 
     /**
      * 订单类型。
@@ -376,11 +376,11 @@ public class McOrderDO {
         this.account = account;
     }
 
-    public Integer getCouponType() {
+    public String getCouponType() {
         return couponType;
     }
 
-    public void setCouponType(Integer couponType) {
+    public void setCouponType(String couponType) {
         this.couponType = couponType;
     }
 

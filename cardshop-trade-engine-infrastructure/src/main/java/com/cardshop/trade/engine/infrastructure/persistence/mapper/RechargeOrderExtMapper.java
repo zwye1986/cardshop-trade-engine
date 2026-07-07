@@ -64,6 +64,16 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
               #{updatedAt}
             )
             on duplicate key update
+              persist_source = case
+                when values(persisted_version) > persisted_version then values(persist_source)
+                when values(persisted_version) = persisted_version and persist_status <> 'DB_PERSISTED'
+                then values(persist_source)
+                else persist_source
+              end,
+              last_error = case
+                when values(persisted_version) >= persisted_version then values(last_error)
+                else last_error
+              end,
               persist_status = case
                 when values(persisted_version) > persisted_version then values(persist_status)
                 when values(persisted_version) = persisted_version
@@ -72,18 +82,8 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
                 then values(persist_status)
                 else persist_status
               end,
-              persist_source = case
-                when values(persisted_version) > persisted_version then values(persist_source)
-                when values(persisted_version) = persisted_version and persist_status <> 'DB_PERSISTED'
-                then values(persist_source)
-                else persist_source
-              end,
               persisted_version = greatest(persisted_version, values(persisted_version)),
               redis_order_version = greatest(redis_order_version, values(redis_order_version)),
-              last_error = case
-                when values(persisted_version) >= persisted_version then values(last_error)
-                else last_error
-              end,
               updated_at = values(updated_at)
             """)
     int insertOrUpdatePersistState(RechargeOrderExtDO ext);
