@@ -20,15 +20,23 @@ public class RechargeRedisScriptLoader {
             "redis/lua/cancel_unconfirmed_accept.lua";
     private static final String MARK_PERSIST_QUEUED_SCRIPT =
             "redis/lua/mark_persist_queued.lua";
+    private static final String MARK_DB_PERSISTED_SCRIPT =
+            "redis/lua/mark_db_persisted.lua";
+    private static final String MARK_PERSIST_FAILED_SCRIPT =
+            "redis/lua/mark_persist_failed.lua";
 
     private final RedisScript<List> acceptRechargeOrderScript;
     private final RedisScript<List> cancelUnconfirmedAcceptScript;
     private final RedisScript<List> markPersistQueuedScript;
+    private final RedisScript<List> markDbPersistedScript;
+    private final RedisScript<List> markPersistFailedScript;
 
     public RechargeRedisScriptLoader() {
         this.acceptRechargeOrderScript = load(ACCEPT_RECHARGE_ORDER_SCRIPT);
         this.cancelUnconfirmedAcceptScript = load(CANCEL_UNCONFIRMED_ACCEPT_SCRIPT);
         this.markPersistQueuedScript = load(MARK_PERSIST_QUEUED_SCRIPT);
+        this.markDbPersistedScript = load(MARK_DB_PERSISTED_SCRIPT);
+        this.markPersistFailedScript = load(MARK_PERSIST_FAILED_SCRIPT);
     }
 
     public RedisScript<List> acceptRechargeOrderScript() {
@@ -41,6 +49,14 @@ public class RechargeRedisScriptLoader {
 
     public RedisScript<List> markPersistQueuedScript() {
         return markPersistQueuedScript;
+    }
+
+    public RedisScript<List> markDbPersistedScript() {
+        return markDbPersistedScript;
+    }
+
+    public RedisScript<List> markPersistFailedScript() {
+        return markPersistFailedScript;
     }
 
     private static RedisScript<List> load(String location) {

@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.api.v1.security;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -16,6 +18,8 @@ import java.time.Instant;
  */
 @Component
 public class V1TimestampValidator {
+
+    private static final Logger log = LoggerFactory.getLogger(V1TimestampValidator.class);
 
     private final V1TimestampSettings settings;
     private final Clock clock;
@@ -62,6 +66,7 @@ public class V1TimestampValidator {
             }
             return Instant.ofEpochMilli(Long.parseLong(trimmed));
         } catch (NumberFormatException ex) {
+            log.error("V1 timestamp解析失败 timestampLength={}", trimmed.length(), ex);
             return null;
         }
     }

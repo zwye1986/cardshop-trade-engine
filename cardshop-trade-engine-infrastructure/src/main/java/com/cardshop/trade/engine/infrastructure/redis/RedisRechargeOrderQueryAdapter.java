@@ -44,7 +44,7 @@ public class RedisRechargeOrderQueryAdapter implements RechargeOrderQueryPort {
         try {
             fields = queryOperations.entries(key);
         } catch (RuntimeException ex) {
-            log.warn("Redis查单读取订单快照失败 orgCode={}, outOrderSn={}", orgCode, outOrderSn, ex);
+            log.error("Redis查单读取订单快照失败 orgCode={}, outOrderSn={}", orgCode, outOrderSn, ex);
             return Optional.empty();
         }
         if (fields.isEmpty() || !StringUtils.hasText(fields.get("order_id"))) {

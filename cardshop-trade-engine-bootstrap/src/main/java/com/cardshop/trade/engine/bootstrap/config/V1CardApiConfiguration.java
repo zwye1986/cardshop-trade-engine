@@ -14,6 +14,7 @@ import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
+import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.IssueV1TokenUseCase;
@@ -108,6 +109,7 @@ public class V1CardApiConfiguration {
             RechargeAcceptReliabilityPort rechargeAcceptReliabilityPort,
             PersistRechargeOrderMessagePublisher persistMessagePublisher,
             ObjectProvider<AcceptAnomalyRecordPort> acceptAnomalyRecordPortProvider,
+            ObjectProvider<RedisHaGuardPort> redisHaGuardPortProvider,
             RechargeOrderIdGenerator orderIdGenerator,
             Clock clock,
             V1RechargeAcceptSettings settings,
@@ -121,6 +123,7 @@ public class V1CardApiConfiguration {
                 rechargeAcceptReliabilityPort,
                 persistMessagePublisher,
                 acceptAnomalyRecordPortProvider.getIfAvailable(AcceptAnomalyRecordPort::noop),
+                redisHaGuardPortProvider.getIfAvailable(RedisHaGuardPort::noop),
                 orderIdGenerator,
                 clock,
                 settings,

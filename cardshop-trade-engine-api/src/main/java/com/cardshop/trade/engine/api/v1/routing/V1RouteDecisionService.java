@@ -3,6 +3,8 @@ package com.cardshop.trade.engine.api.v1.routing;
 import com.cardshop.trade.engine.api.v1.security.AuthenticatedMerchant;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
@@ -18,6 +20,7 @@ import java.util.Map;
 @Component
 public class V1RouteDecisionService {
 
+    private static final Logger log = LoggerFactory.getLogger(V1RouteDecisionService.class);
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
 
@@ -97,7 +100,10 @@ public class V1RouteDecisionService {
             Object camel = body.get("appId");
             Object value = snake == null ? camel : snake;
             return value == null ? null : String.valueOf(value).trim();
-        } catch (Exception ignored) {
+        } catch (Exception ex) {
+            log.error("V1灰度路由读取appId失败 rawBodyLength={}",
+                    rawBody.length(),
+                    ex);
             return null;
         }
     }

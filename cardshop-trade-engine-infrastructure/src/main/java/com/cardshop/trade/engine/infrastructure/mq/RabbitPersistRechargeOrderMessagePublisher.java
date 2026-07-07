@@ -15,6 +15,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.amqp.core.ReturnedMessage;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 
 /**
@@ -69,7 +70,7 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
         try {
             payload = objectMapper.writeValueAsString(message);
         } catch (JsonProcessingException ex) {
-            log.warn("Redis订单持久化消息序列化失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+            log.error("Redis订单持久化消息序列化失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
                     message.orgCode(), message.outOrderSn(), message.orderId(), message.messageId(), ex);
             return CompletableFuture.completedFuture(PersistMessagePublishResult.failed(
                     message.messageId(),
@@ -92,7 +93,7 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
                     payload,
                     correlationData);
         } catch (RuntimeException ex) {
-            log.warn("Redis订单持久化消息发送异常 orgCode={}, outOrderSn={}, orderId={}, messageId={}, attempt={}",
+            log.error("Redis订单持久化消息发送异常 orgCode={}, outOrderSn={}, orderId={}, messageId={}, attempt={}",
                     message.orgCode(), message.outOrderSn(), message.orderId(), message.messageId(), attempt, ex);
             return retryOrFail(message, payload, attempt, "PUBLISH_EXCEPTION", ex.getMessage());
         }
@@ -102,6 +103,27 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
                 .orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
                 .handle((confirm, ex) -> {
                     if (ex == null && confirm != null && confirm.isAck()) {
+                        ReturnedMessage returned = correlationData.getReturned();
+                        if (returned != null) {
+                            String failReason = "RabbitMQ mandatory return: replyCode=%d, replyText=%s, exchange=%s, routingKey=%s"
+                                    .formatted(
+                                            returned.getReplyCode(),
+                                            defaultText(returned.getReplyText(), "NO_ROUTE"),
+                                            returned.getExchange(),
+                                            returned.getRoutingKey());
+                            log.warn("Redis订单持久化消息mandatory return orgCode={}, outOrderSn={}, orderId={}, messageId={}, attempt={}, failReason={}",
+                                    message.orgCode(),
+                                    message.outOrderSn(),
+                                    message.orderId(),
+                                    message.messageId(),
+                                    attempt,
+                                    failReason);
+                            return PersistMessagePublishResult.failed(
+                                    message.messageId(),
+                                    attempt,
+                                    "MANDATORY_RETURN",
+                                    failReason);
+                        }
                         recordSuccess();
                         return PersistMessagePublishResult.confirmed(message.messageId(), attempt);
                     }
@@ -119,9 +141,35 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
                             failReason);
                     return PersistMessagePublishResult.failed(message.messageId(), attempt, failCode, failReason);
                 })
-                .thenCompose(result -> result.confirmed()
-                        ? CompletableFuture.completedFuture(result)
-                        : retryOrFail(message, payload, attempt, result.failCode(), result.failReason()));
+                .thenCompose(result -> handlePublishAttemptResult(message, payload, attempt, result));
+    }
+
+    private CompletionStage<PersistMessagePublishResult> handlePublishAttemptResult(
+            PersistTradeOrderMessage message,
+            String payload,
+            int attempt,
+            PersistMessagePublishResult result) {
+        if (result.confirmed()) {
+            return CompletableFuture.completedFuture(result);
+        }
+        if ("MANDATORY_RETURN".equals(result.failCode())) {
+            return failWithoutRetryForMandatoryReturn(result);
+        }
+        return retryOrFail(message, payload, attempt, result.failCode(), result.failReason());
+    }
+
+    /**
+     * mandatory return 说明 exchange 已接收发布动作，但 routing key 无法路由到持久化队列。
+     *
+     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「11. RabbitMQ 高可用设计」和
+     * 「14.3 Redis 成功但 MQ confirm 失败协议」。这类问题通常来自 exchange/queue 绑定或 routing key 配置错误，
+     * 不是短暂网络抖动；继续重试只会拉长下单响应并制造重复 return 日志，因此直接失败并计入 breaker，
+     * 让后续新订单在 Redis Lua 前 fail closed。
+     */
+    private CompletableFuture<PersistMessagePublishResult> failWithoutRetryForMandatoryReturn(
+            PersistMessagePublishResult result) {
+        recordFailure();
+        return CompletableFuture.completedFuture(result);
     }
 
     private CompletionStage<PersistMessagePublishResult> retryOrFail(

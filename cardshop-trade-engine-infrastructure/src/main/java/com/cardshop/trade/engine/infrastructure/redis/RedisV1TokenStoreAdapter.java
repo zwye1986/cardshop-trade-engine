@@ -42,7 +42,7 @@ public class RedisV1TokenStoreAdapter implements V1TokenStorePort {
         try {
             return tokenOperations.set(key(appId), token, ttl);
         } catch (Exception ex) {
-            log.warn("store V1 token failed, appId={}", appId, ex);
+            log.error("store V1 token failed, appId={}", appId, ex);
             return false;
         }
     }
@@ -55,7 +55,7 @@ public class RedisV1TokenStoreAdapter implements V1TokenStorePort {
         try {
             return tokenOperations.get(key(appId));
         } catch (Exception ex) {
-            log.warn("read V1 token failed, appId={}", appId, ex);
+            log.error("read V1 token failed, appId={}", appId, ex);
             return Optional.empty();
         }
     }

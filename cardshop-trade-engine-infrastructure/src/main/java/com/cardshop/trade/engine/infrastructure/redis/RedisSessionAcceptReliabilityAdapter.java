@@ -6,8 +6,10 @@ import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
 import com.cardshop.trade.engine.application.recharge.CancelUnconfirmedAcceptResult;
 import com.cardshop.trade.engine.application.recharge.MarkPersistQueuedResult;
+import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
+import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import java.time.Duration;
 import java.util.LinkedHashMap;
@@ -36,6 +38,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
     private final RechargeRedisKeyBuilder keyBuilder;
     private final RechargeRedisScriptLoader scriptLoader;
     private final TradeEngineProperties properties;
+    private final RedisHaGuardPort redisHaGuardPort;
     private final AcceptRechargeOrderLuaResultMapper acceptResultMapper = new AcceptRechargeOrderLuaResultMapper();
     private final Map<String, RechargeRedisSession> pendingSessions = new ConcurrentHashMap<>();
 
@@ -44,15 +47,25 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
             RechargeRedisKeyBuilder keyBuilder,
             RechargeRedisScriptLoader scriptLoader,
             TradeEngineProperties properties) {
+        this(sessionFactory, keyBuilder, scriptLoader, properties, RedisHaGuardPort.noop());
+    }
+
+    public RedisSessionAcceptReliabilityAdapter(
+            RechargeRedisSessionFactory sessionFactory,
+            RechargeRedisKeyBuilder keyBuilder,
+            RechargeRedisScriptLoader scriptLoader,
+            TradeEngineProperties properties,
+            RedisHaGuardPort redisHaGuardPort) {
         this.sessionFactory = sessionFactory;
         this.keyBuilder = keyBuilder;
         this.scriptLoader = scriptLoader;
         this.properties = properties;
+        this.redisHaGuardPort = redisHaGuardPort == null ? RedisHaGuardPort.noop() : redisHaGuardPort;
     }
 
     @Override
     public CompletionStage<AcceptRechargeOrderResult> accept(AcceptRechargeOrderCommand command) {
-        if (!properties.getRedis().isWriteEnabled()) {
+        if (!properties.getRedis().isWriteEnabled() || !redisHaGuardPort.isWriteAllowed()) {
             return CompletableFuture.completedFuture(new AcceptRechargeOrderResult(
                     AcceptRechargeOrderStatus.REDIS_WRITE_DISABLED,
                     command.orderId(),
@@ -68,7 +81,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         try {
             session = sessionFactory.openSession();
         } catch (RuntimeException ex) {
-            log.warn("打开Redis接单会话失败 orgCode={}, outOrderSn={}, orderId={}",
+            log.error("打开Redis接单会话失败 orgCode={}, outOrderSn={}, orderId={}",
                     command.orgCode(), command.outOrderSn(), command.orderId(), ex);
             return CompletableFuture.completedFuture(redisUnavailable(command, "Redis 会话不可用"));
         }
@@ -154,7 +167,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
             try {
                 session = sessionFactory.openSession();
             } catch (RuntimeException ex) {
-                log.warn("打开Redis取消会话失败 orgCode={}, outOrderSn={}, orderId={}",
+                log.error("打开Redis取消会话失败 orgCode={}, outOrderSn={}, orderId={}",
                         command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
                 return CompletableFuture.completedFuture(
                         CancelUnconfirmedAcceptResult.failed("REDIS_SESSION_UNAVAILABLE", "Redis 会话不可用"));
@@ -193,7 +206,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         try {
             session = sessionFactory.openSession();
         } catch (RuntimeException ex) {
-            log.warn("打开Redis持久化状态推进会话失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+            log.error("打开Redis持久化状态推进会话失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
                     command.orgCode(), command.outOrderSn(), acceptResult.orderId(), persistMessageId, ex);
             return CompletableFuture.completedFuture(
                     MarkPersistQueuedResult.failed("REDIS_SESSION_UNAVAILABLE", "Redis 会话不可用"));
@@ -212,6 +225,82 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                     log.warn("Redis持久化状态推进失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
                             command.orgCode(), command.outOrderSn(), acceptResult.orderId(), persistMessageId, ex);
                     return Mono.just(MarkPersistQueuedResult.failed("MARK_LUA_ERROR", "Redis 状态推进脚本执行失败"));
+                })
+                .toFuture();
+    }
+
+    @Override
+    public CompletionStage<MarkPersistStateResult> markDbPersisted(
+            AcceptRechargeOrderCommand command,
+            AcceptRechargeOrderResult acceptResult,
+            long nowEpochMillis) {
+        RechargeRedisSession session;
+        try {
+            session = sessionFactory.openSession();
+        } catch (RuntimeException ex) {
+            log.error("打开Redis落库完成标记会话失败 orgCode={}, outOrderSn={}, orderId={}",
+                    command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
+            return CompletableFuture.completedFuture(
+                    MarkPersistStateResult.failed("REDIS_SESSION_UNAVAILABLE", "Redis 会话不可用"));
+        }
+        RechargeRedisSession sessionToClose = session;
+        long terminalTtlSeconds = Duration.ofHours(Math.max(1, properties.getOrder().getTerminalTtlHours())).toSeconds();
+        List<String> args = List.of(
+                command.orgCode(),
+                acceptResult.orderId(),
+                Long.toString(nowEpochMillis),
+                Long.toString(terminalTtlSeconds));
+        return session
+                .execute(scriptLoader.markDbPersistedScript(), keyBuilder.markDbPersistedKeys(command), args)
+                .map(RedisSessionAcceptReliabilityAdapter::toPersistStateMarkResult)
+                .doFinally(signal -> closeQuietly(sessionToClose))
+                .onErrorResume(ex -> {
+                    log.warn("Redis落库完成状态推进失败 orgCode={}, outOrderSn={}, orderId={}",
+                            command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
+                    return Mono.just(MarkPersistStateResult.failed("MARK_DB_PERSISTED_LUA_ERROR", "Redis 落库完成标记失败"));
+                })
+                .toFuture();
+    }
+
+    @Override
+    public CompletionStage<MarkPersistStateResult> markPersistFailed(
+            AcceptRechargeOrderCommand command,
+            AcceptRechargeOrderResult acceptResult,
+            String failCode,
+            String failReason,
+            int retryCount,
+            long nextRetryEpochMillis,
+            long nowEpochMillis) {
+        RechargeRedisSession session;
+        try {
+            session = sessionFactory.openSession();
+        } catch (RuntimeException ex) {
+            log.error("打开Redis落库失败标记会话失败 orgCode={}, outOrderSn={}, orderId={}",
+                    command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
+            return CompletableFuture.completedFuture(
+                    MarkPersistStateResult.failed("REDIS_SESSION_UNAVAILABLE", "Redis 会话不可用"));
+        }
+        RechargeRedisSession sessionToClose = session;
+        /*
+         * 参数顺序必须与 mark_persist_failed.lua 保持一致。该脚本保留 pending，并刷新 next_retry_time，
+         * 让补偿任务继续扫描，而不是在 MySQL 短暂故障时丢失恢复入口。
+         */
+        List<String> args = List.of(
+                command.orgCode(),
+                acceptResult.orderId(),
+                Long.toString(nextRetryEpochMillis),
+                Long.toString(nowEpochMillis),
+                failCode == null ? "" : failCode,
+                failReason == null ? "" : failReason,
+                Integer.toString(Math.max(0, retryCount)));
+        return session
+                .execute(scriptLoader.markPersistFailedScript(), keyBuilder.markPersistFailedKeys(command), args)
+                .map(RedisSessionAcceptReliabilityAdapter::toPersistStateMarkResult)
+                .doFinally(signal -> closeQuietly(sessionToClose))
+                .onErrorResume(ex -> {
+                    log.warn("Redis落库失败状态推进失败 orgCode={}, outOrderSn={}, orderId={}, failCode={}",
+                            command.orgCode(), command.outOrderSn(), acceptResult.orderId(), failCode, ex);
+                    return Mono.just(MarkPersistStateResult.failed("MARK_PERSIST_FAILED_LUA_ERROR", "Redis 落库失败标记失败"));
                 })
                 .toFuture();
     }
@@ -257,6 +346,15 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         return MarkPersistQueuedResult.failed(code, fields.getOrDefault("fail_reason", code));
     }
 
+    private static MarkPersistStateResult toPersistStateMarkResult(Object rawResult) {
+        Map<String, String> fields = flatResult(rawResult);
+        String code = fields.getOrDefault("code", "MARK_FAILED");
+        if ("MARKED".equals(code)) {
+            return MarkPersistStateResult.success();
+        }
+        return MarkPersistStateResult.failed(code, fields.getOrDefault("fail_reason", code));
+    }
+
     private static Map<String, String> flatResult(Object rawResult) {
         if (!(rawResult instanceof List<?> values)) {
             return Map.of("code", String.valueOf(rawResult));
@@ -285,8 +383,9 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
     private static void closeQuietly(RechargeRedisSession session) {
         try {
             session.close();
-        } catch (RuntimeException ignored) {
-            // 关闭 Redis 会话失败不改变业务结果，连接池/客户端会在后续健康检查暴露真实故障。
+        } catch (RuntimeException ex) {
+            // 关闭 Redis 会话失败不改变业务结果，但必须记录 error 供连接池泄漏和客户端异常排查。
+            log.error("关闭Redis接单会话失败", ex);
         }
     }
 }

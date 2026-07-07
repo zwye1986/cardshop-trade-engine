@@ -11,6 +11,9 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessageProperties;
+import org.springframework.amqp.core.ReturnedMessage;
 import org.springframework.amqp.rabbit.connection.CorrelationData;
 
 /**
@@ -55,6 +58,21 @@ class RabbitPersistRechargeOrderMessagePublisherTest {
     }
 
     @Test
+    void treatsMandatoryReturnAsPublishFailureEvenWhenConfirmAckArrives() {
+        var operations = new RecordingRabbitPersistMessageOperations(true);
+        operations.returned = true;
+        var publisher = publisher(operations, properties(3, 500));
+
+        PersistMessagePublishResult result = publisher.publish(message()).toCompletableFuture().join();
+
+        assertThat(result.confirmed()).isFalse();
+        assertThat(result.failCode()).isEqualTo("MANDATORY_RETURN");
+        assertThat(result.failReason()).contains("NO_ROUTE");
+        assertThat(result.attemptCount()).isEqualTo(1);
+        assertThat(operations.calls).isEqualTo(1);
+    }
+
+    @Test
     void opensBreakerAfterConfiguredFailures() {
         var operations = new RecordingRabbitPersistMessageOperations(false);
         var properties = properties(1, 500);
@@ -65,6 +83,23 @@ class RabbitPersistRechargeOrderMessagePublisherTest {
         PersistMessagePublishResult result = publisher.publish(message()).toCompletableFuture().join();
 
         assertThat(result.confirmed()).isFalse();
+        assertThat(publisher.isAvailable()).isFalse();
+    }
+
+    @Test
+    void opensBreakerWhenBrokerIsUnavailableDuringPublish() {
+        var operations = new RecordingRabbitPersistMessageOperations(true);
+        operations.publishFailure = new IllegalStateException("broker unreachable");
+        var properties = properties(1, 500);
+        properties.getMq().getBreaker().setFailureThreshold(1);
+        properties.getMq().getBreaker().setOpenSeconds(30);
+        var publisher = publisher(operations, properties);
+
+        PersistMessagePublishResult result = publisher.publish(message()).toCompletableFuture().join();
+
+        assertThat(result.confirmed()).isFalse();
+        assertThat(result.failCode()).isEqualTo("PUBLISH_EXCEPTION");
+        assertThat(result.failReason()).contains("broker unreachable");
         assertThat(publisher.isAvailable()).isFalse();
     }
 
@@ -99,6 +134,8 @@ class RabbitPersistRechargeOrderMessagePublisherTest {
         private String exchange;
         private String routingKey;
         private String payload;
+        private boolean returned;
+        private RuntimeException publishFailure;
 
         private RecordingRabbitPersistMessageOperations(boolean ack) {
             this.ack = ack;
@@ -114,6 +151,17 @@ class RabbitPersistRechargeOrderMessagePublisherTest {
             this.exchange = exchange;
             this.routingKey = routingKey;
             this.payload = payload;
+            if (publishFailure != null) {
+                throw publishFailure;
+            }
+            if (returned) {
+                correlationData.setReturned(new ReturnedMessage(
+                        new Message(payload.getBytes(), new MessageProperties()),
+                        312,
+                        "NO_ROUTE",
+                        exchange,
+                        routingKey));
+            }
             correlationData.getFuture().complete(new CorrelationData.Confirm(ack, ack ? null : "nack-for-test"));
         }
     }

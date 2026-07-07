@@ -62,7 +62,10 @@ class DeploymentArtifactContractTest {
                 .contains("spring.data.redis")
                 .contains("data:")
                 .contains("redis:")
-                .contains("password: $(yaml_quote");
+                .contains("password: $(yaml_quote")
+                .contains("publisher-confirm-type: correlated")
+                .contains("publisher-returns: true")
+                .contains("mandatory: true");
 
         String envText = Files.readString(envExample);
         assertThat(envText)
@@ -94,6 +97,9 @@ class DeploymentArtifactContractTest {
                 .contains("redis:")
                 .contains("cardshop_test")
                 .contains("cardshop-trade-dev")
+                .contains("publisher-confirm-type: correlated")
+                .contains("publisher-returns: true")
+                .contains("mandatory: true")
                 .contains("password: <mysql-password>")
                 .contains("database: 15")
                 .contains("password: <cardshop-dev-redis-password>")

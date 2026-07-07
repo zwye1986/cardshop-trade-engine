@@ -72,6 +72,38 @@ class RechargeRedisKeyBuilderTest {
     }
 
     @Test
+    void markDbPersistedKeysUseStableOrderAndOrgIndexBucket() {
+        var builder = new RechargeRedisKeyBuilder("cardshop:trade", 128);
+        var command = sampleCommand();
+        int bucket = builder.pendingOrgBucket(command.orgCode());
+
+        assertThat(builder.markDbPersistedKeys(command))
+                .containsExactly(
+                        "cardshop:trade:recharge:{A36}:order:OUT-1001",
+                        "cardshop:trade:recharge:{A36}:idem:OUT-1001",
+                        "cardshop:trade:recharge:{A36}:persist:pending",
+                        "cardshop:trade:recharge:{A36}:order:event_index:202607051337458961474292",
+                        "cardshop:trade:recharge:{A36}:order:event:202607051337458961474292:3",
+                        "cardshop:trade:recharge:persist:pending:org_index:" + bucket);
+    }
+
+    @Test
+    void markPersistFailedKeysUseStableOrderAndOrgIndexBucket() {
+        var builder = new RechargeRedisKeyBuilder("cardshop:trade", 128);
+        var command = sampleCommand();
+        int bucket = builder.pendingOrgBucket(command.orgCode());
+
+        assertThat(builder.markPersistFailedKeys(command))
+                .containsExactly(
+                        "cardshop:trade:recharge:{A36}:order:OUT-1001",
+                        "cardshop:trade:recharge:{A36}:idem:OUT-1001",
+                        "cardshop:trade:recharge:{A36}:persist:pending",
+                        "cardshop:trade:recharge:{A36}:order:event_index:202607051337458961474292",
+                        "cardshop:trade:recharge:{A36}:order:event:202607051337458961474292:3",
+                        "cardshop:trade:recharge:persist:pending:org_index:" + bucket);
+    }
+
+    @Test
     void orderKeyUsesSameHashTagAsAcceptLua() {
         var builder = new RechargeRedisKeyBuilder("cardshop:trade", 128);
 

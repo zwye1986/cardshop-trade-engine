@@ -5,6 +5,8 @@ import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * `accept_recharge_order.lua` 返回值映射器。
@@ -13,6 +15,8 @@ import java.util.Map;
  * Lua 返回扁平 key-value 数组，Java 侧在这里集中做类型归一，避免接口层或用例层依赖 Redis 原始返回结构。
  */
 final class AcceptRechargeOrderLuaResultMapper {
+
+    private static final Logger log = LoggerFactory.getLogger(AcceptRechargeOrderLuaResultMapper.class);
 
     AcceptRechargeOrderResult map(Object rawResult) {
         Map<String, String> values = toMap(rawResult);
@@ -47,7 +51,8 @@ final class AcceptRechargeOrderLuaResultMapper {
         }
         try {
             return AcceptRechargeOrderStatus.valueOf(code);
-        } catch (IllegalArgumentException ignored) {
+        } catch (IllegalArgumentException ex) {
+            log.error("Redis接单Lua返回未知状态 code={}", code, ex);
             return AcceptRechargeOrderStatus.UNKNOWN;
         }
     }
@@ -58,7 +63,8 @@ final class AcceptRechargeOrderLuaResultMapper {
         }
         try {
             return Long.parseLong(value);
-        } catch (NumberFormatException ignored) {
+        } catch (NumberFormatException ex) {
+            log.error("Redis接单Lua订单版本解析失败 value={}", value, ex);
             return 0L;
         }
     }

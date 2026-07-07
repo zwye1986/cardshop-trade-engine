@@ -56,6 +56,18 @@ class MapperContractTest {
     }
 
     @Test
+    void acceptAnomalyCheckResultOnlyUpdatesOpenStatuses() throws IOException {
+        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeAcceptAnomalyMapper.java"));
+        String updateCheckResult = mapper.substring(mapper.indexOf("default int updateCheckResult"));
+
+        assertThat(updateCheckResult)
+                .contains("RechargeAcceptAnomalyDO::getAnomalyId, row.getAnomalyId())")
+                .contains("AcceptAnomalyStatus.INIT.name()")
+                .contains("AcceptAnomalyStatus.CHECKING.name()")
+                .contains("AcceptAnomalyStatus.MANUAL_REQUIRED.name()");
+    }
+
+    @Test
     void outboxMapperScansDueAndZombieEventsWithShardPredicate() throws IOException {
         String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeOutboxMapper.java"));
 

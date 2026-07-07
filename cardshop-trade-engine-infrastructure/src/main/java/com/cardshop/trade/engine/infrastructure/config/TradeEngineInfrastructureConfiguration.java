@@ -1,15 +1,23 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
+import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitTemplatePersistMessageOperations;
+import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyRecordAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderQueryAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.cardshop.trade.engine.infrastructure.redis.LettuceRechargeRedisSessionFactory;
+import com.cardshop.trade.engine.infrastructure.redis.InMemoryRedisHaGuard;
 import com.cardshop.trade.engine.infrastructure.redis.RedisAcceptRechargeOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
@@ -29,6 +37,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.beans.factory.ObjectProvider;
 
 /**
  * 基础设施层自动配置入口。
@@ -55,6 +64,12 @@ public class TradeEngineInfrastructureConfiguration {
     }
 
     @Bean
+    @ConditionalOnMissingBean(RedisHaGuardPort.class)
+    public RedisHaGuardPort redisHaGuardPort(TradeEngineProperties properties) {
+        return new InMemoryRedisHaGuard(properties, Clock.systemUTC());
+    }
+
+    @Bean
     @ConditionalOnBean(ReactiveStringRedisTemplate.class)
     public RechargeRedisScriptExecutor rechargeRedisScriptExecutor(ReactiveStringRedisTemplate redisTemplate) {
         return new SpringDataRechargeRedisScriptExecutor(redisTemplate);
@@ -72,8 +87,9 @@ public class TradeEngineInfrastructureConfiguration {
             RechargeRedisSessionFactory sessionFactory,
             RechargeRedisKeyBuilder keyBuilder,
             RechargeRedisScriptLoader scriptLoader,
-            TradeEngineProperties properties) {
-        return new RedisSessionAcceptReliabilityAdapter(sessionFactory, keyBuilder, scriptLoader, properties);
+            TradeEngineProperties properties,
+            RedisHaGuardPort redisHaGuardPort) {
+        return new RedisSessionAcceptReliabilityAdapter(sessionFactory, keyBuilder, scriptLoader, properties, redisHaGuardPort);
     }
 
     @Bean
@@ -83,8 +99,9 @@ public class TradeEngineInfrastructureConfiguration {
             RechargeRedisScriptExecutor scriptExecutor,
             RechargeRedisKeyBuilder keyBuilder,
             RechargeRedisScriptLoader scriptLoader,
-            TradeEngineProperties properties) {
-        return new RedisAcceptRechargeOrderAdapter(scriptExecutor, keyBuilder, scriptLoader, properties);
+            TradeEngineProperties properties,
+            RedisHaGuardPort redisHaGuardPort) {
+        return new RedisAcceptRechargeOrderAdapter(scriptExecutor, keyBuilder, scriptLoader, properties, redisHaGuardPort);
     }
 
     @Bean
@@ -114,6 +131,20 @@ public class TradeEngineInfrastructureConfiguration {
         return new MybatisAcceptAnomalyRecordAdapter(mapper, objectMapper, Clock.systemUTC());
     }
 
+    /**
+     * 装配接单异常自动核查仓储端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」和
+     * 「20.13.6 Redis Lua 下单结果」。该 Bean 只提供异常表读取与状态推进，自动核查服务由 bootstrap 层组装。
+     */
+    @Bean
+    @ConditionalOnBean(RechargeAcceptAnomalyMapper.class)
+    public AcceptAnomalyCheckRepositoryPort acceptAnomalyCheckRepositoryPort(
+            RechargeAcceptAnomalyMapper mapper,
+            ObjectMapper objectMapper) {
+        return new MybatisAcceptAnomalyCheckRepositoryAdapter(mapper, objectMapper, Clock.systemUTC());
+    }
+
     @Bean
     @ConditionalOnBean(ReactiveStringRedisTemplate.class)
     public V1TokenStorePort v1TokenStorePort(
@@ -127,11 +158,21 @@ public class TradeEngineInfrastructureConfiguration {
     public RechargeOrderQueryPort rechargeOrderQueryPort(
             ReactiveStringRedisTemplate redisTemplate,
             RechargeRedisKeyBuilder keyBuilder,
-            TradeEngineProperties properties) {
+            TradeEngineProperties properties,
+            ObjectProvider<McOrderMapper> orderMapperProvider,
+            ObjectProvider<RechargeOrderExtMapper> extMapperProvider) {
         int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
-        return new RedisRechargeOrderQueryAdapter(
+        RechargeOrderQueryPort redisQueryPort = new RedisRechargeOrderQueryAdapter(
                 redisTemplate,
                 keyBuilder,
                 java.time.Duration.ofMillis(timeoutMs));
+        McOrderMapper orderMapper = orderMapperProvider.getIfAvailable();
+        RechargeOrderExtMapper extMapper = extMapperProvider.getIfAvailable();
+        if (orderMapper == null || extMapper == null) {
+            return redisQueryPort;
+        }
+        return new FallbackRechargeOrderQueryAdapter(
+                redisQueryPort,
+                new MybatisRechargeOrderQueryAdapter(orderMapper, extMapper));
     }
 }

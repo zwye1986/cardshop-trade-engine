@@ -1,9 +1,11 @@
 package com.cardshop.trade.engine.infrastructure.persistence.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeAcceptAnomalyDO;
+import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
@@ -72,5 +74,65 @@ public interface RechargeAcceptAnomalyMapper extends BaseMapper<RechargeAcceptAn
                         AcceptAnomalyStatus.CHECKING.name(),
                         AcceptAnomalyStatus.MANUAL_REQUIRED.name())
                 .orderByDesc(RechargeAcceptAnomalyDO::getUpdatedAt));
+    }
+
+    /**
+     * 读取一批仍需自动核查的异常记录。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」。当前 D5B 表结构尚未包含
+     * `locked_until`，因此这里做固定上限保护，避免异常积压时单次任务扫出过大结果集；后续补租约字段时可升级为
+     * CAS claim。
+     */
+    default List<RechargeAcceptAnomalyDO> selectOpenForCheck(int limit) {
+        int safeLimit = Math.max(1, Math.min(limit, 500));
+        return selectList(new LambdaQueryWrapper<RechargeAcceptAnomalyDO>()
+                .in(
+                        RechargeAcceptAnomalyDO::getStatus,
+                        AcceptAnomalyStatus.INIT.name(),
+                        AcceptAnomalyStatus.CHECKING.name(),
+                        AcceptAnomalyStatus.MANUAL_REQUIRED.name())
+                .orderByAsc(RechargeAcceptAnomalyDO::getUpdatedAt)
+                .last("limit " + safeLimit));
+    }
+
+    /**
+     * 标记异常进入自动核查中。
+     */
+    default int markChecking(String anomalyId, LocalDateTime now) {
+        return update(null, new LambdaUpdateWrapper<RechargeAcceptAnomalyDO>()
+                .set(RechargeAcceptAnomalyDO::getStatus, AcceptAnomalyStatus.CHECKING.name())
+                .set(RechargeAcceptAnomalyDO::getUpdatedAt, now)
+                .eq(RechargeAcceptAnomalyDO::getAnomalyId, anomalyId)
+                .in(
+                        RechargeAcceptAnomalyDO::getStatus,
+                        AcceptAnomalyStatus.INIT.name(),
+                        AcceptAnomalyStatus.CHECKING.name(),
+                        AcceptAnomalyStatus.MANUAL_REQUIRED.name()));
+    }
+
+    /**
+     * 写入自动核查三方证据并推进最终状态。
+     *
+     * <p>自动核查可能由多个节点或多次任务并发触发。参见
+     * {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」：D5B 尚未引入 `locked_until`
+     * 租约字段，因此这里至少用状态条件保护终态记录，避免慢核查任务覆盖已经人工或自动 resolved 的结果。
+     */
+    default int updateCheckResult(RechargeAcceptAnomalyDO row) {
+        return update(null, new LambdaUpdateWrapper<RechargeAcceptAnomalyDO>()
+                .set(RechargeAcceptAnomalyDO::getStatus, row.getStatus())
+                .set(RechargeAcceptAnomalyDO::getRedisCheckResult, row.getRedisCheckResult())
+                .set(RechargeAcceptAnomalyDO::getMysqlCheckResult, row.getMysqlCheckResult())
+                .set(RechargeAcceptAnomalyDO::getMqCheckResult, row.getMqCheckResult())
+                .set(RechargeAcceptAnomalyDO::getResolution, row.getResolution())
+                .set(RechargeAcceptAnomalyDO::getResolvedBy, row.getResolvedBy())
+                .set(RechargeAcceptAnomalyDO::getResolvedAt, row.getResolvedAt())
+                .set(RechargeAcceptAnomalyDO::getLastError, row.getLastError())
+                .set(RechargeAcceptAnomalyDO::getUpdatedAt, row.getUpdatedAt())
+                .eq(RechargeAcceptAnomalyDO::getAnomalyId, row.getAnomalyId())
+                .in(
+                        RechargeAcceptAnomalyDO::getStatus,
+                        AcceptAnomalyStatus.INIT.name(),
+                        AcceptAnomalyStatus.CHECKING.name(),
+                        AcceptAnomalyStatus.MANUAL_REQUIRED.name()));
     }
 }

@@ -15,6 +15,12 @@ public class RabbitTemplatePersistMessageOperations implements RabbitPersistMess
 
     public RabbitTemplatePersistMessageOperations(RabbitTemplate rabbitTemplate) {
         this.rabbitTemplate = rabbitTemplate;
+        /*
+         * 参见 docs/交行直充业务系统详细设计.md「20.9 RabbitMQ 声明契约」。mandatory return 是确认
+         * exchange 存在但 routingKey 不可路由的唯一同步证据；不开 mandatory 时，broker 可能 ack publish，
+         * 但消息实际没有进入持久化队列。
+         */
+        this.rabbitTemplate.setMandatory(true);
     }
 
     @Override

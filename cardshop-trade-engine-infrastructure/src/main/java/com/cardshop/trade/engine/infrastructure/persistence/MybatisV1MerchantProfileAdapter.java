@@ -54,7 +54,7 @@ public class MybatisV1MerchantProfileAdapter implements V1MerchantProfilePort {
             McExtDepartDO merchant = reader.selectByAppIdAndAppSecret(appId, appSecret);
             return toProfile(merchant);
         } catch (TooManyResultsException ex) {
-            log.warn("V1 token credential lookup matched multiple merchants, appId={}, error={}",
+            log.error("V1 token credential lookup matched multiple merchants, appId={}, error={}",
                     appId, ex.getMessage());
             return Optional.empty();
         }

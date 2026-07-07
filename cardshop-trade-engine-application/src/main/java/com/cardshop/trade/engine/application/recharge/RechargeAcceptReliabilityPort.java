@@ -34,4 +34,29 @@ public interface RechargeAcceptReliabilityPort {
             AcceptRechargeOrderResult acceptResult,
             String persistMessageId,
             int publishCount);
+
+    /**
+     * MySQL 事务提交成功后，标记 Redis 订单已完成持久化。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。该方法必须同时清理
+     * pending 和 org_index，避免补投任务重复投递已落库订单。
+     */
+    CompletionStage<MarkPersistStateResult> markDbPersisted(
+            AcceptRechargeOrderCommand command,
+            AcceptRechargeOrderResult acceptResult,
+            long nowEpochMillis);
+
+    /**
+     * MySQL 事务或 Consumer 处理失败后，刷新 Redis 中的失败原因和下次重试时间。
+     *
+     * <p>失败状态不能删除 pending；否则 Redis 已受理但未落库的订单会失去补偿入口。
+     */
+    CompletionStage<MarkPersistStateResult> markPersistFailed(
+            AcceptRechargeOrderCommand command,
+            AcceptRechargeOrderResult acceptResult,
+            String failCode,
+            String failReason,
+            int retryCount,
+            long nextRetryEpochMillis,
+            long nowEpochMillis);
 }

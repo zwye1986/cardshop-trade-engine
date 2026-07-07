@@ -73,6 +73,9 @@ class ProfileResourceIsolationTest {
                 "spring.datasource.password");
         assertThat(dev.getProperty("trade.engine.redis.write-enabled")).isEqualTo("true");
         assertThat(dev.getProperty("spring.rabbitmq.virtual-host")).isEqualTo("cardshop-trade-dev");
+        assertThat(dev.getProperty("spring.rabbitmq.publisher-confirm-type")).isEqualTo("correlated");
+        assertThat(dev.getProperty("spring.rabbitmq.publisher-returns")).isEqualTo("true");
+        assertThat(dev.getProperty("spring.rabbitmq.template.mandatory")).isEqualTo("true");
         assertThat(dev.values())
                 .doesNotContain(
                         "jdbc:mysql://",
@@ -82,10 +85,25 @@ class ProfileResourceIsolationTest {
         assertThat(test.getProperty("spring.liquibase.enabled")).isEqualTo("true");
         assertThat(test.getProperty("trade.engine.redis.write-enabled")).isEqualTo("true");
         assertThat(test.getProperty("spring.rabbitmq.virtual-host")).isEqualTo("cardshop-trade-test");
+        assertThat(test.getProperty("spring.rabbitmq.publisher-confirm-type")).isEqualTo("correlated");
+        assertThat(test.getProperty("spring.rabbitmq.publisher-returns")).isEqualTo("true");
+        assertThat(test.getProperty("spring.rabbitmq.template.mandatory")).isEqualTo("true");
 
         assertThat(prod.getProperty("spring.liquibase.enabled")).isEqualTo("false");
         assertThat(prod.getProperty("trade.engine.redis.write-enabled")).isEqualTo("false");
         assertThat(prod.getProperty("spring.rabbitmq.virtual-host")).isEqualTo("cardshop-trade-prod");
+        assertThat(prod.getProperty("spring.rabbitmq.publisher-confirm-type")).isEqualTo("correlated");
+        assertThat(prod.getProperty("spring.rabbitmq.publisher-returns")).isEqualTo("true");
+        assertThat(prod.getProperty("spring.rabbitmq.template.mandatory")).isEqualTo("true");
+    }
+
+    @Test
+    void baseApplicationEnablesRabbitPublisherConfirmReturnAndMandatoryTemplate() {
+        Properties application = load("application.yml");
+
+        assertThat(application.getProperty("spring.rabbitmq.publisher-confirm-type")).isEqualTo("correlated");
+        assertThat(application.getProperty("spring.rabbitmq.publisher-returns")).isEqualTo("true");
+        assertThat(application.getProperty("spring.rabbitmq.template.mandatory")).isEqualTo("true");
     }
 
     private Properties load(String resourcePath) {

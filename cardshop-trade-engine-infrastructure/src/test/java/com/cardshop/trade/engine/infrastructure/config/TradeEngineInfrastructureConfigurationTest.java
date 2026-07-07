@@ -2,14 +2,26 @@ package com.cardshop.trade.engine.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
+import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
+import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
+import com.cardshop.trade.engine.infrastructure.redis.InMemoryRedisHaGuard;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptLoader;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptExecutor;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisSessionFactory;
+import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.lang.reflect.Proxy;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import reactor.core.publisher.Mono;
 
 /**
@@ -30,6 +42,8 @@ class TradeEngineInfrastructureConfigurationTest {
             assertThat(context).hasSingleBean(TradeEngineProperties.class);
             assertThat(context).hasSingleBean(RechargeRedisKeyBuilder.class);
             assertThat(context).hasSingleBean(RechargeRedisScriptLoader.class);
+            assertThat(context).hasSingleBean(RedisHaGuardPort.class);
+            assertThat(context.getBean(RedisHaGuardPort.class)).isInstanceOf(InMemoryRedisHaGuard.class);
             assertThat(context).doesNotHaveBean(AcceptRechargeOrderPort.class);
         });
     }
@@ -53,5 +67,50 @@ class TradeEngineInfrastructureConfigurationTest {
                     assertThat(context.getBean(AcceptRechargeOrderPort.class))
                             .isSameAs(context.getBean(RechargeAcceptReliabilityPort.class));
                 });
+    }
+
+    @Test
+    void createsRedisOnlyOrderQueryPortWhenMysqlMappersAreMissing() {
+        contextRunner
+                .withBean(ReactiveStringRedisTemplate.class, () -> null)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargeOrderQueryPort.class);
+                    assertThat(context.getBean(RechargeOrderQueryPort.class))
+                            .isInstanceOf(RedisRechargeOrderQueryAdapter.class);
+                });
+    }
+
+    @Test
+    void wrapsRedisOrderQueryPortWithMysqlFallbackWhenMappersExist() {
+        contextRunner
+                .withBean(ReactiveStringRedisTemplate.class, () -> null)
+                .withBean(McOrderMapper.class, () -> mapperProxy(McOrderMapper.class))
+                .withBean(RechargeOrderExtMapper.class, () -> mapperProxy(RechargeOrderExtMapper.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargeOrderQueryPort.class);
+                    assertThat(context.getBean(RechargeOrderQueryPort.class))
+                            .isInstanceOf(FallbackRechargeOrderQueryAdapter.class);
+                });
+    }
+
+    @Test
+    void createsAcceptAnomalyCheckRepositoryWhenMapperExists() {
+        contextRunner
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(RechargeAcceptAnomalyMapper.class, () -> mapperProxy(RechargeAcceptAnomalyMapper.class))
+                .run(context -> assertThat(context).hasSingleBean(AcceptAnomalyCheckRepositoryPort.class));
+    }
+
+    private static <T> T mapperProxy(Class<T> mapperType) {
+        Object proxy = Proxy.newProxyInstance(
+                mapperType.getClassLoader(),
+                new Class<?>[]{mapperType},
+                (ignored, method, args) -> {
+                    if (method.getReturnType().isPrimitive()) {
+                        return 0;
+                    }
+                    return null;
+                });
+        return mapperType.cast(proxy);
     }
 }

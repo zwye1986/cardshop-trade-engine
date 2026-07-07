@@ -25,6 +25,10 @@ spring:
     enabled: true
   rabbitmq:
     virtual-host: cardshop-trade-dev
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
 
 trade:
   engine:

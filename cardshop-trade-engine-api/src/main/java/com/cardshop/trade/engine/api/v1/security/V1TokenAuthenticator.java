@@ -3,6 +3,8 @@ package com.cardshop.trade.engine.api.v1.security;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
@@ -27,6 +29,7 @@ import java.util.Optional;
 @Component
 public class V1TokenAuthenticator {
 
+    private static final Logger log = LoggerFactory.getLogger(V1TokenAuthenticator.class);
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
     private static final String HMAC_SHA_512 = "HmacSHA512";
@@ -94,7 +97,8 @@ public class V1TokenAuthenticator {
                 orgCode = optionalText(payload.get("org_code"));
             }
             return Optional.of(new AuthenticatedMerchant(appId, orgCode));
-        } catch (Exception ignored) {
+        } catch (Exception ex) {
+            log.error("V1 token解析失败 tokenLength={}", token.length(), ex);
             return Optional.empty();
         }
     }
@@ -122,7 +126,8 @@ public class V1TokenAuthenticator {
         if (value instanceof String text && StringUtils.hasText(text)) {
             try {
                 return Long.parseLong(text);
-            } catch (NumberFormatException ignored) {
+            } catch (NumberFormatException ex) {
+                log.error("V1 token数值claim解析失败 valueLength={}", text.length(), ex);
                 return null;
             }
         }

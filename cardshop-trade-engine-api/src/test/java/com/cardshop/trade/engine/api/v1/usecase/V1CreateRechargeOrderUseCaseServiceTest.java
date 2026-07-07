@@ -14,11 +14,13 @@ import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
 import com.cardshop.trade.engine.application.recharge.CancelUnconfirmedAcceptResult;
 import com.cardshop.trade.engine.application.recharge.MarkPersistQueuedResult;
+import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
 import com.cardshop.trade.engine.application.recharge.PersistMessagePublishResult;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
+import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
 import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
@@ -27,7 +29,12 @@ import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
 import com.cardshop.trade.engine.application.v1.V1ProductSelection;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.domain.service.RequestHashCanonicalizer;
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -124,6 +131,33 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         assertThat(result.code()).isEqualTo("501");
         assertThat(result.msg()).isEqualTo("验签不合规！");
         assertThat(acceptPort.lastCommand).isNull();
+    }
+
+    @Test
+    void rejectsMalformedNotifyUrlWithoutErrorLogNoise() {
+        Logger logger = (Logger) LoggerFactory.getLogger(V1CreateRechargeOrderUseCaseService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            V1CardApiResult result = service.createRechargeOrder(
+                            new V1MerchantCommand(
+                                    "app-gray",
+                                    "A36",
+                                    rawBody("OUT-BAD-NOTIFY", "nonce-12345678901234567890123447", 1, "http://[")))
+                    .toCompletableFuture()
+                    .join();
+
+            assertThat(result.code()).isEqualTo("506");
+            assertThat(result.msg()).isEqualTo("notify_url格式不正确");
+            assertThat(acceptPort.lastCommand).isNull();
+            assertThat(appender.list)
+                    .extracting(ILoggingEvent::getLevel)
+                    .doesNotContain(Level.ERROR);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
     }
 
     @Test
@@ -261,6 +295,31 @@ class V1CreateRechargeOrderUseCaseServiceTest {
     }
 
     @Test
+    void rejectsBeforeRedisAcceptWhenRedisHaGuardClosed() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingPersistPublisher publisher = new RecordingPersistPublisher();
+        RecordingRedisHaGuard redisHaGuard = new RecordingRedisHaGuard();
+        redisHaGuard.writeAllowed = false;
+        V1CreateRechargeOrderUseCaseService localService = service(
+                localAcceptPort,
+                reliabilityPort,
+                publisher,
+                AcceptAnomalyRecordPort.noop(),
+                redisHaGuard);
+
+        V1CardApiResult result = localService.createRechargeOrder(
+                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-REDIS-GUARD", "nonce-12345678901234567890123460", 1)))
+                .toCompletableFuture().join();
+
+        assertThat(result.code()).isEqualTo("500");
+        assertThat(result.msg()).isEqualTo("系统繁忙");
+        assertThat(localAcceptPort.lastCommand).isNull();
+        assertThat(reliabilityPort.waitCalls).isZero();
+        assertThat(publisher.publishCalls).isZero();
+    }
+
+    @Test
     void waitsPublishesAndMarksQueuedBeforeReturningAcceptedOrder() {
         CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
         RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
@@ -307,10 +366,16 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
         RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
         RecordingAcceptAnomalyPort anomalyPort = new RecordingAcceptAnomalyPort();
+        RecordingRedisHaGuard redisHaGuard = new RecordingRedisHaGuard();
         reliabilityPort.waitResult = ReplicationWaitResult.missed(0, "WAIT replicas not reached");
         reliabilityPort.cancelResult = CancelUnconfirmedAcceptResult.failed("CANCEL_FAILED", "订单状态不允许回滚");
         RecordingPersistPublisher publisher = new RecordingPersistPublisher();
-        V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher, anomalyPort);
+        V1CreateRechargeOrderUseCaseService localService = service(
+                localAcceptPort,
+                reliabilityPort,
+                publisher,
+                anomalyPort,
+                redisHaGuard);
 
         V1CardApiResult result = localService.createRechargeOrder(
                 new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-UNKNOWN", "nonce-12345678901234567890123455", 1)))
@@ -326,6 +391,11 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 .containsEntry("wait_reason", "WAIT replicas not reached")
                 .containsEntry("cancel_fail_code", "CANCEL_FAILED")
                 .containsEntry("cancel_fail_reason", "订单状态不允许回滚");
+        assertThat(redisHaGuard.closedReason).isEqualTo("WAIT_FAILED_CANCEL_FAILED");
+        assertThat(redisHaGuard.closedContext)
+                .containsEntry("org_code", "A36")
+                .containsEntry("out_order_sn", "OUT-WAIT-UNKNOWN")
+                .containsEntry("order_id", "202607051337458961474292");
     }
 
     @Test
@@ -482,7 +552,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
             RechargeAcceptReliabilityPort reliabilityPort,
             PersistRechargeOrderMessagePublisher publisher,
             AcceptAnomalyRecordPort anomalyRecordPort) {
-        return service(acceptPort, reliabilityPort, publisher, anomalyRecordPort, SYNC_EXECUTOR);
+        return service(acceptPort, reliabilityPort, publisher, anomalyRecordPort, RedisHaGuardPort.noop(), SYNC_EXECUTOR);
     }
 
     private static V1CreateRechargeOrderUseCaseService service(
@@ -490,6 +560,25 @@ class V1CreateRechargeOrderUseCaseServiceTest {
             RechargeAcceptReliabilityPort reliabilityPort,
             PersistRechargeOrderMessagePublisher publisher,
             AcceptAnomalyRecordPort anomalyRecordPort,
+            RedisHaGuardPort redisHaGuardPort) {
+        return service(acceptPort, reliabilityPort, publisher, anomalyRecordPort, redisHaGuardPort, SYNC_EXECUTOR);
+    }
+
+    private static V1CreateRechargeOrderUseCaseService service(
+            AcceptRechargeOrderPort acceptPort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            PersistRechargeOrderMessagePublisher publisher,
+            AcceptAnomalyRecordPort anomalyRecordPort,
+            Executor tradeDbTaskExecutor) {
+        return service(acceptPort, reliabilityPort, publisher, anomalyRecordPort, RedisHaGuardPort.noop(), tradeDbTaskExecutor);
+    }
+
+    private static V1CreateRechargeOrderUseCaseService service(
+            AcceptRechargeOrderPort acceptPort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            PersistRechargeOrderMessagePublisher publisher,
+            AcceptAnomalyRecordPort anomalyRecordPort,
+            RedisHaGuardPort redisHaGuardPort,
             Executor tradeDbTaskExecutor) {
         return new V1CreateRechargeOrderUseCaseService(
                 precheckService(),
@@ -510,6 +599,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 reliabilityPort,
                 publisher,
                 anomalyRecordPort,
+                redisHaGuardPort,
                 () -> "202607051337458961474292",
                 CLOCK,
                 new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
@@ -517,9 +607,13 @@ class V1CreateRechargeOrderUseCaseServiceTest {
     }
 
     private static String validRawBody(String outOrderSn, String nonceStr, int num) {
-        String signSource = "account=18186222336,aesKey=AES-KEY,nonce_str=%s,notify_url=http://notify,num=%d,"
+        return rawBody(outOrderSn, nonceStr, num, "http://notify");
+    }
+
+    private static String rawBody(String outOrderSn, String nonceStr, int num, String notifyUrl) {
+        String signSource = "account=18186222336,aesKey=AES-KEY,nonce_str=%s,notify_url=%s,num=%d,"
                 + "out_order_sn=%s,product_id=73301280,timestamp=1783224958";
-        String sign = new V1Sm3SignatureVerifier().digestHex(signSource.formatted(nonceStr, num, outOrderSn));
+        String sign = new V1Sm3SignatureVerifier().digestHex(signSource.formatted(nonceStr, notifyUrl, num, outOrderSn));
         return """
                 {
                   "product_id": "73301280",
@@ -527,13 +621,13 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                   "account": "18186222336",
                   "timestamp": "1783224958",
                   "nonce_str": "%s",
-                  "notify_url": "http://notify",
+                  "notify_url": "%s",
                   "num": %d,
                   "order_price": 5200,
                   "product_type": 1,
                   "sign": "%s"
                 }
-                """.formatted(outOrderSn, nonceStr, num, sign);
+                """.formatted(outOrderSn, nonceStr, notifyUrl, num, sign);
     }
 
     private static final class CapturingAcceptPort implements AcceptRechargeOrderPort {
@@ -598,6 +692,26 @@ class V1CreateRechargeOrderUseCaseServiceTest {
             lastPersistMessageId = persistMessageId;
             return CompletableFuture.completedFuture(markResult);
         }
+
+        @Override
+        public CompletableFuture<MarkPersistStateResult> markDbPersisted(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult,
+                long nowEpochMillis) {
+            return CompletableFuture.completedFuture(MarkPersistStateResult.success());
+        }
+
+        @Override
+        public CompletableFuture<MarkPersistStateResult> markPersistFailed(
+                AcceptRechargeOrderCommand command,
+                AcceptRechargeOrderResult acceptResult,
+                String failCode,
+                String failReason,
+                int retryCount,
+                long nextRetryEpochMillis,
+                long nowEpochMillis) {
+            return CompletableFuture.completedFuture(MarkPersistStateResult.success());
+        }
     }
 
     private static final class RecordingPersistPublisher implements PersistRechargeOrderMessagePublisher {
@@ -651,6 +765,25 @@ class V1CreateRechargeOrderUseCaseServiceTest {
 
         private boolean awaitRecord(Duration timeout) throws InterruptedException {
             return recordLatch.await(timeout.toMillis(), TimeUnit.MILLISECONDS);
+        }
+    }
+
+    private static final class RecordingRedisHaGuard implements RedisHaGuardPort {
+
+        private boolean writeAllowed = true;
+        private String closedReason;
+        private Map<String, Object> closedContext = Map.of();
+
+        @Override
+        public boolean isWriteAllowed() {
+            return writeAllowed;
+        }
+
+        @Override
+        public void closeWrite(String reason, Map<String, Object> context) {
+            this.writeAllowed = false;
+            this.closedReason = reason;
+            this.closedContext = context;
         }
     }
 

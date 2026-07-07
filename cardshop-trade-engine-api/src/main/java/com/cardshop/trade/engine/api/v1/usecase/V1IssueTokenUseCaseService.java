@@ -10,6 +10,8 @@ import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.util.StringUtils;
 
 import java.nio.charset.StandardCharsets;
@@ -26,6 +28,8 @@ import java.util.Optional;
  * claim key {@code order_token_key:}、Redis key {@code token:app_id:{appId}}。
  */
 public class V1IssueTokenUseCaseService implements IssueV1TokenUseCase {
+
+    private static final Logger log = LoggerFactory.getLogger(V1IssueTokenUseCaseService.class);
 
     private final V1MerchantProfilePort merchantProfilePort;
     private final V1TokenStorePort tokenStorePort;
@@ -77,7 +81,8 @@ public class V1IssueTokenUseCaseService implements IssueV1TokenUseCase {
         }
         try {
             return objectMapper.readValue(rawBody, V1IssueTokenRequest.class);
-        } catch (Exception ignored) {
+        } catch (Exception ex) {
+            log.error("V1 Token生成请求解码失败 rawBodyLength={}", rawBody.length(), ex);
             return null;
         }
     }

@@ -82,6 +82,26 @@ public final class RechargeRedisKeyBuilder {
     }
 
     /**
+     * 构造 `mark_db_persisted.lua` 所需 KEYS。
+     *
+     * <p>参见详细设计「20.13.8 MySQL 异步落库」。Consumer 事务提交后必须原子推进 Redis
+     * `persist_status=DB_PERSISTED`，并同时清理 pending 与 org_index，避免补投任务重复投递已经落库的订单。
+     */
+    public List<String> markDbPersistedKeys(AcceptRechargeOrderCommand command) {
+        return persistCompletionKeys(command);
+    }
+
+    /**
+     * 构造 `mark_persist_failed.lua` 所需 KEYS。
+     *
+     * <p>参见详细设计「20.13.8 MySQL 异步落库」。落库失败时不能删除 pending，只能刷新失败原因和下次重试时间，
+     * 让补偿任务继续基于 pending/org_index 扫描。
+     */
+    public List<String> markPersistFailedKeys(AcceptRechargeOrderCommand command) {
+        return persistCompletionKeys(command);
+    }
+
+    /**
      * 构造查单/作废入口读取的 Redis 订单快照 key。
      *
      * <p>参见详细设计「20.13.10 查单设计」。接口层只知道商户订单号，因此 Redis 查询必须基于
@@ -105,6 +125,18 @@ public final class RechargeRedisKeyBuilder {
 
     private String key(String suffix) {
         return keyPrefix + ":" + suffix;
+    }
+
+    private List<String> persistCompletionKeys(AcceptRechargeOrderCommand command) {
+        String orgTag = orgTag(command.orgCode());
+        int bucket = pendingOrgBucket(command.orgCode());
+        return List.of(
+                key("recharge:" + orgTag + ":order:" + command.outOrderSn()),
+                key("recharge:" + orgTag + ":idem:" + command.outOrderSn()),
+                key("recharge:" + orgTag + ":persist:pending"),
+                key("recharge:" + orgTag + ":order:event_index:" + command.orderId()),
+                key("recharge:" + orgTag + ":order:event:" + command.orderId() + ":3"),
+                key("recharge:persist:pending:org_index:" + bucket));
     }
 
     private static String orgTag(String orgCode) {

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
+import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import java.util.List;
@@ -28,6 +29,23 @@ class RedisAcceptRechargeOrderAdapterTest {
                 new RechargeRedisKeyBuilder("cardshop:trade", 128),
                 new RechargeRedisScriptLoader(),
                 properties);
+
+        var result = adapter.accept(sampleCommand()).toCompletableFuture().join();
+
+        assertThat(result.status()).isEqualTo(AcceptRechargeOrderStatus.REDIS_WRITE_DISABLED);
+        assertThat(result.orderWritten()).isFalse();
+        assertThat(executor.calls).isZero();
+    }
+
+    @Test
+    void returnsWriteDisabledWithoutCallingRedisWhenHaGuardClosed() {
+        var executor = new RecordingScriptExecutor(Mono.error(new AssertionError("should not call redis")));
+        var adapter = new RedisAcceptRechargeOrderAdapter(
+                executor,
+                new RechargeRedisKeyBuilder("cardshop:trade", 128),
+                new RechargeRedisScriptLoader(),
+                properties(true),
+                closedGuard());
 
         var result = adapter.accept(sampleCommand()).toCompletableFuture().join();
 
@@ -68,6 +86,19 @@ class RedisAcceptRechargeOrderAdapterTest {
         var properties = new TradeEngineProperties();
         properties.getRedis().setWriteEnabled(writeEnabled);
         return properties;
+    }
+
+    private static RedisHaGuardPort closedGuard() {
+        return new RedisHaGuardPort() {
+            @Override
+            public boolean isWriteAllowed() {
+                return false;
+            }
+
+            @Override
+            public void closeWrite(String reason, java.util.Map<String, Object> context) {
+            }
+        };
     }
 
     private static AcceptRechargeOrderCommand sampleCommand() {

@@ -57,4 +57,49 @@ class RechargeRedisScriptLoaderTest {
                 .contains("persist_msg_id")
                 .doesNotContain("ZREM");
     }
+
+    @Test
+    void loadsMarkDbPersistedScriptFromClasspath() {
+        var loader = new RechargeRedisScriptLoader();
+
+        var script = loader.markDbPersistedScript();
+
+        assertThat(script.getResultType()).isEqualTo(List.class);
+        assertThat(script.getSha1()).isNotBlank();
+        assertThat(script.getScriptAsString())
+                .contains("mark_db_persisted.lua")
+                .contains("DB_PERSISTED")
+                .contains("ZREM', KEYS[3]")
+                .contains("ZREM', KEYS[6]");
+    }
+
+    @Test
+    void markDbPersistedRefreshesOrgIndexBeforeReturningWhenOrderSnapshotIsMissing() {
+        var loader = new RechargeRedisScriptLoader();
+
+        String script = loader.markDbPersistedScript().getScriptAsString();
+        int missingOrderBranch = script.indexOf("if redis.call('EXISTS', KEYS[1]) == 0 then");
+        int removePendingMember = script.indexOf("redis.call('ZREM', KEYS[3], orderId)", missingOrderBranch);
+        int refreshOrgIndex = script.indexOf("refreshPendingOrgIndex()", missingOrderBranch);
+        int returnOrderNotFound = script.indexOf("return result('MARK_FAILED', 'ORDER_NOT_FOUND'", missingOrderBranch);
+
+        assertThat(missingOrderBranch).isNotNegative();
+        assertThat(removePendingMember).isBetween(missingOrderBranch, returnOrderNotFound);
+        assertThat(refreshOrgIndex).isBetween(removePendingMember, returnOrderNotFound);
+    }
+
+    @Test
+    void loadsMarkPersistFailedScriptFromClasspath() {
+        var loader = new RechargeRedisScriptLoader();
+
+        var script = loader.markPersistFailedScript();
+
+        assertThat(script.getResultType()).isEqualTo(List.class);
+        assertThat(script.getSha1()).isNotBlank();
+        assertThat(script.getScriptAsString())
+                .contains("mark_persist_failed.lua")
+                .contains("PERSIST_FAILED")
+                .contains("last_error")
+                .contains("ZADD', KEYS[3]");
+    }
 }

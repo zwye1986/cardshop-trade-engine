@@ -9,6 +9,8 @@ import com.cardshop.trade.engine.api.v1.security.V1SignatureVerifyResult;
 import com.cardshop.trade.engine.api.v1.security.V1Sm3SignatureVerifier;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampValidator;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampVerifyResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.function.BiFunction;
@@ -22,6 +24,8 @@ import java.util.function.Function;
  */
 @Component
 public class V1ProtocolPrecheckService {
+
+    private static final Logger log = LoggerFactory.getLogger(V1ProtocolPrecheckService.class);
 
     private final V1RequestBodyCodec bodyCodec;
     private final V1TimestampValidator timestampValidator;
@@ -99,6 +103,12 @@ public class V1ProtocolPrecheckService {
                     ? bodyCodec.decodeSm4(rawBody, merchant.aesKey(), payloadType)
                     : bodyCodec.decodePlain(rawBody, payloadType);
         } catch (V1RequestBodyDecodeException ex) {
+            log.error("V1协议请求体解码失败 payloadType={}, sm4Enabled={}, appId={}, orgCode={}",
+                    payloadType.getSimpleName(),
+                    settings.requestSm4Enabled(),
+                    merchant.appId(),
+                    merchant.orgCode(),
+                    ex);
             return V1ProtocolPrecheckResult.invalid(settings.requestSm4Enabled() ? "DECRYPT_FAILED" : "REQUEST_BODY_INVALID");
         }
 

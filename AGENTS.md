@@ -45,6 +45,8 @@ Temporarily unimplemented functionality must be marked with a `TODO` comment at 
 
 Prefer Java 21 language and library features where they make the code clearer, safer, or simpler. Key business, routing, Redis, MQ, MySQL, and compensation paths must log enough context to support production troubleshooting, without writing secrets or sensitive payloads.
 
+Production code must not silently swallow caught exceptions. Any `catch` block that handles, degrades, retries, or returns a fallback instead of immediately rethrowing must write an `error` log with the exception stack and enough non-sensitive business context to troubleshoot the failure. If the exception is immediately rethrown or wrapped and rethrown, do not duplicate logs at the same layer.
+
 ## Testing Guidelines
 
 Tests use JUnit 5, Spring Boot Test, AssertJ, and Maven Surefire. Name unit and slice tests `*Test` and mirror the production package path. Add focused tests near the changed module; use `cardshop-trade-engine-test-support` only for reusable fixtures.

@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
+import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import java.time.Duration;
@@ -96,9 +97,80 @@ class RedisSessionAcceptReliabilityAdapterTest {
     }
 
     @Test
+    void opensShortSessionForMarkDbPersistedAfterMysqlCommit() {
+        var sessionFactory = new RecordingSessionFactory(List.of(
+                Mono.just(List.of("code", "MARKED", "order_id", "202607051337458961474292"))));
+        var adapter = adapter(sessionFactory, properties(true, 1, 100));
+
+        var result = adapter
+                .markDbPersisted(sampleCommand(), acceptedResult(), 1783224999000L)
+                .toCompletableFuture()
+                .join();
+
+        RecordingSession session = sessionFactory.sessions.getFirst();
+        assertThat(result.marked()).isTrue();
+        assertThat(session.executedScripts).extracting(RedisScript::getScriptAsString)
+                .anySatisfy(script -> assertThat(script).contains("mark_db_persisted.lua"));
+        assertThat(session.lastArgs)
+                .containsExactly("A36", "202607051337458961474292", "1783224999000", "259200");
+        assertThat(session.closed).isTrue();
+    }
+
+    @Test
+    void opensShortSessionForMarkPersistFailedAfterMysqlError() {
+        var sessionFactory = new RecordingSessionFactory(List.of(
+                Mono.just(List.of("code", "MARKED", "order_id", "202607051337458961474292"))));
+        var adapter = adapter(sessionFactory, properties(true, 1, 100));
+
+        var result = adapter
+                .markPersistFailed(
+                        sampleCommand(),
+                        acceptedResult(),
+                        "MYSQL_DEADLOCK",
+                        "deadlock found",
+                        3,
+                        1783225555000L,
+                        1783224999000L)
+                .toCompletableFuture()
+                .join();
+
+        RecordingSession session = sessionFactory.sessions.getFirst();
+        assertThat(result.marked()).isTrue();
+        assertThat(session.executedScripts).extracting(RedisScript::getScriptAsString)
+                .anySatisfy(script -> assertThat(script).contains("mark_persist_failed.lua"));
+        assertThat(session.lastArgs)
+                .containsExactly(
+                        "A36",
+                        "202607051337458961474292",
+                        "1783225555000",
+                        "1783224999000",
+                        "MYSQL_DEADLOCK",
+                        "deadlock found",
+                        "3");
+        assertThat(session.closed).isTrue();
+    }
+
+    @Test
     void returnsWriteDisabledWithoutOpeningRedisSessionWhenSwitchClosed() {
         var sessionFactory = new RecordingSessionFactory(List.of());
         var adapter = adapter(sessionFactory, properties(false, 1, 100));
+
+        AcceptRechargeOrderResult result = adapter.accept(sampleCommand()).toCompletableFuture().join();
+
+        assertThat(result.status()).isEqualTo(AcceptRechargeOrderStatus.REDIS_WRITE_DISABLED);
+        assertThat(result.orderWritten()).isFalse();
+        assertThat(sessionFactory.sessions).isEmpty();
+    }
+
+    @Test
+    void returnsWriteDisabledWithoutOpeningRedisSessionWhenHaGuardClosed() {
+        var sessionFactory = new RecordingSessionFactory(List.of());
+        var adapter = new RedisSessionAcceptReliabilityAdapter(
+                sessionFactory,
+                new RechargeRedisKeyBuilder("cardshop:trade", 128),
+                new RechargeRedisScriptLoader(),
+                properties(true, 1, 100),
+                closedGuard());
 
         AcceptRechargeOrderResult result = adapter.accept(sampleCommand()).toCompletableFuture().join();
 
@@ -123,6 +195,19 @@ class RedisSessionAcceptReliabilityAdapterTest {
         properties.getRedis().setWaitReplicas(waitReplicas);
         properties.getRedis().setWaitTimeoutMs(waitTimeoutMs);
         return properties;
+    }
+
+    private static RedisHaGuardPort closedGuard() {
+        return new RedisHaGuardPort() {
+            @Override
+            public boolean isWriteAllowed() {
+                return false;
+            }
+
+            @Override
+            public void closeWrite(String reason, java.util.Map<String, Object> context) {
+            }
+        };
     }
 
     private static List<String> acceptedLuaResult() {

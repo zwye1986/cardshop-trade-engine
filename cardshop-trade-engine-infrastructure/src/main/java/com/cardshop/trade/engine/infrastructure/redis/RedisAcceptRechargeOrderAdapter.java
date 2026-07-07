@@ -4,6 +4,7 @@ import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
+import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
@@ -29,21 +30,32 @@ public class RedisAcceptRechargeOrderAdapter implements AcceptRechargeOrderPort 
     private final RechargeRedisScriptLoader scriptLoader;
     private final AcceptRechargeOrderLuaResultMapper resultMapper = new AcceptRechargeOrderLuaResultMapper();
     private final TradeEngineProperties properties;
+    private final RedisHaGuardPort redisHaGuardPort;
 
     public RedisAcceptRechargeOrderAdapter(
             RechargeRedisScriptExecutor scriptExecutor,
             RechargeRedisKeyBuilder keyBuilder,
             RechargeRedisScriptLoader scriptLoader,
             TradeEngineProperties properties) {
+        this(scriptExecutor, keyBuilder, scriptLoader, properties, RedisHaGuardPort.noop());
+    }
+
+    public RedisAcceptRechargeOrderAdapter(
+            RechargeRedisScriptExecutor scriptExecutor,
+            RechargeRedisKeyBuilder keyBuilder,
+            RechargeRedisScriptLoader scriptLoader,
+            TradeEngineProperties properties,
+            RedisHaGuardPort redisHaGuardPort) {
         this.scriptExecutor = scriptExecutor;
         this.keyBuilder = keyBuilder;
         this.scriptLoader = scriptLoader;
         this.properties = properties;
+        this.redisHaGuardPort = redisHaGuardPort == null ? RedisHaGuardPort.noop() : redisHaGuardPort;
     }
 
     @Override
     public CompletionStage<AcceptRechargeOrderResult> accept(AcceptRechargeOrderCommand command) {
-        if (!properties.getRedis().isWriteEnabled()) {
+        if (!properties.getRedis().isWriteEnabled() || !redisHaGuardPort.isWriteAllowed()) {
             return CompletableFuture.completedFuture(new AcceptRechargeOrderResult(
                     AcceptRechargeOrderStatus.REDIS_WRITE_DISABLED,
                     command.orderId(),

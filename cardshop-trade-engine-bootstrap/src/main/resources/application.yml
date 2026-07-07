@@ -4,6 +4,11 @@ server:
 spring:
   main:
     web-application-type: reactive
+  rabbitmq:
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
   liquibase:
     change-log: classpath:/db/changelog/db.changelog-master.yaml
 
