@@ -41,6 +41,8 @@ Before implementing interfaces covered by `docs/交行直充接口技术文档-V
 
 If requirements, interface semantics, legacy behavior, or design details are ambiguous or unclear, stop and confirm with the user before implementing that part.
 
+When performing integration tests or joint debugging tests, use `docs/集成测试.md` as the execution record. For the first such test, create the document and record the concrete test steps, environment/profile, Nacos DataIds, middleware configuration, request data scope, verification commands, and result evidence. For every later integration or joint debugging test, update the same document with the latest execution date, scope, configuration changes, evidence, conclusion, and follow-up issues.
+
 Code must include detailed Chinese comments for important classes, methods, flows, and non-obvious decisions. Comments should link to the relevant section in `docs/交行直充业务系统详细设计.md`. DTO class comments and field comments must stay consistent with the corresponding DDL `COMMENT` text.
 
 Temporarily unimplemented functionality must be marked with a `TODO` comment at the corresponding code location. The comment must briefly state what remains to be implemented and link to the relevant section in `docs/交行直充业务系统详细设计.md` or `docs/交行直充业务系统高可用方案设计.md`.

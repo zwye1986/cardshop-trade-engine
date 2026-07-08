@@ -7,8 +7,12 @@ import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsum
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
+import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.cardshop.trade.engine.job.recharge.AcceptAnomalyAutoCheckJob;
 import java.time.Clock;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -58,6 +62,9 @@ public class TradeEngineReliabilityConfiguration {
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。D7A 先装配
      * 不依赖 RabbitMQ listener 的核心服务，后续真实 `@RabbitListener` 只负责反序列化消息和按结果 ack/nack。
+     * 该 Bean 覆盖显式提供 MySQL 落库端口的 slice test 或局部上下文；真实 dev/test/prod 中
+     * {@link RechargeOrderPersistencePort} 可能由 MyBatis 后置自动配置创建，因此最终兜底由
+     * {@link TradeEngineConsumerAutoConfiguration} 在依赖端口就绪后完成。
      */
     @Bean
     @ConditionalOnBean({RechargeOrderPersistencePort.class, RechargeAcceptReliabilityPort.class})
@@ -72,5 +79,36 @@ public class TradeEngineReliabilityConfiguration {
                 persistencePort,
                 reliabilityPort,
                 clock);
+    }
+
+    /**
+     * RabbitMQ 异步落库 listener 的 bootstrap 侧轻量装配。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」和
+     * 「20.13.8 异步落库 Consumer」。基础设施配置类中也有 listener 装配方法，但它依赖
+     * {@link PersistRechargeOrderConsumerService}；当 infrastructure 配置先于本配置类解析时，
+     * {@code @ConditionalOnBean(PersistRechargeOrderConsumerService.class)} 会在 Consumer Bean 注册前被判定为不满足，
+     * 结果就是应用启动健康但 RabbitMQ 没有 consumer，也不会在管理端看到 AMQP 连接。
+     *
+     * <p>这个 Bean 只覆盖 slice test 或特殊上下文里显式提供 {@link RabbitTemplate} 的场景。真实 dev/test/prod 中
+     * RabbitTemplate 来自 Spring Boot 的 Rabbit 自动配置，普通 {@code @Configuration} 仍可能早于 RabbitTemplate
+     * BeanDefinition 被解析；因此最终兜底在 {@link TradeEngineRabbitListenerAutoConfiguration} 中完成。若基础设施层或
+     * 后置自动配置已成功创建 listener，{@link ConditionalOnMissingBean} 会自动退让，保证全局只有一个消费入口。
+     */
+    @Bean
+    @ConditionalOnBean({RabbitTemplate.class, PersistRechargeOrderConsumerService.class})
+    @ConditionalOnMissingBean(RabbitPersistRechargeOrderMessageListener.class)
+    public RabbitPersistRechargeOrderMessageListener rabbitPersistRechargeOrderMessageListener(
+            ObjectMapper objectMapper,
+            PersistRechargeOrderConsumerService consumerService,
+            RabbitTemplate rabbitTemplate,
+            TradeEngineProperties properties) {
+        return new RabbitPersistRechargeOrderMessageListener(
+                objectMapper,
+                consumerService,
+                rabbitTemplate,
+                properties.getMq().getPersistRetryExchange(),
+                properties.getMq().getPersistRetryRoutingKey(),
+                properties.getMq().getConsumerMaxRetry());
     }
 }

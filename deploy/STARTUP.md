@@ -30,6 +30,16 @@ secrets such as `NACOS_PASSWORD`, `SPRING_RABBITMQ_PASSWORD`, and
 MySQL, Redis, XXL-Job, gray routing lists, supplier settings, and business
 switches should be managed by Nacos to avoid per-server configuration drift.
 
+`config/.<profile>.env` is loaded by Bash. Wrap values that contain shell
+metacharacters such as `$`, `!`, spaces, backticks, `&`, `|`, `;`, `<`, or `>` in
+single quotes. This is especially important for the legacy V1 JWT secret copied
+from old cardshop `TokenUtils`, because it may contain `$` characters:
+
+```bash
+V1_CARDAPI_JWT_SECRET='<legacy-token-utils-secret>'
+NACOS_PASSWORD='<nacos-password-if-it-contains-shell-metacharacters>'
+```
+
 For dev, use namespace `cardshop-trade-engine-dev` and group
 `TRADE_ENGINE_DEV`. The dev datasource points to the shared legacy cardshop
 test database `cardshop_test`, and Redis connection values should match the

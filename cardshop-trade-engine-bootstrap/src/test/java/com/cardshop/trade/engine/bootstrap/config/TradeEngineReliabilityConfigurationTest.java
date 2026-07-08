@@ -18,10 +18,18 @@ import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePo
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.job.recharge.AcceptAnomalyAutoCheckJob;
+import com.cardshop.trade.engine.infrastructure.config.TradeEngineInfrastructureConfiguration;
+import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
+import java.lang.reflect.Proxy;
 import java.time.Clock;
 import java.util.List;
+import java.util.concurrent.Executor;
 import org.junit.jupiter.api.Test;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.rabbit.listener.MessageListenerContainer;
+import org.springframework.amqp.rabbit.listener.RabbitListenerContainerFactory;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
 
 /**
  * 交易可靠性补偿服务装配测试。
@@ -61,6 +69,19 @@ class TradeEngineReliabilityConfigurationTest {
                 .withBean(RechargeAcceptReliabilityPort.class, StubReliabilityPort::new)
                 .withBean(Clock.class, Clock::systemUTC)
                 .run(context -> assertThat(context).hasSingleBean(PersistRechargeOrderConsumerService.class));
+    }
+
+    @Test
+    void registersRabbitPersistListenerWhenConsumerComesFromReliabilityConfiguration() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(
+                        TradeEngineInfrastructureConfiguration.class,
+                        RabbitListenerDependencyBeans.class,
+                        TradeEngineReliabilityConfiguration.class)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(PersistRechargeOrderConsumerService.class);
+                    assertThat(context).hasSingleBean(RabbitPersistRechargeOrderMessageListener.class);
+                });
     }
 
     private static final class StubRepository implements AcceptAnomalyCheckRepositoryPort {
@@ -137,5 +158,55 @@ class TradeEngineReliabilityConfigurationTest {
                 long nowEpochMillis) {
             return java.util.concurrent.CompletableFuture.completedFuture(MarkPersistStateResult.success());
         }
+    }
+
+    @org.springframework.boot.test.context.TestConfiguration
+    static class RabbitListenerDependencyBeans {
+
+        @Bean
+        RabbitTemplate rabbitTemplate() {
+            return new TestRabbitTemplate();
+        }
+
+        @Bean
+        Executor tradeMqConfirmTaskExecutor() {
+            return Runnable::run;
+        }
+
+        @Bean
+        RabbitListenerContainerFactory<MessageListenerContainer> rabbitListenerContainerFactory() {
+            return ignored -> interfaceProxy(MessageListenerContainer.class);
+        }
+
+        @Bean
+        RechargeOrderPersistencePort rechargeOrderPersistencePort() {
+            return aggregate -> {
+            };
+        }
+    }
+
+    private static final class TestRabbitTemplate extends RabbitTemplate {
+
+        @Override
+        public void afterPropertiesSet() {
+            // 装配测试只需要 RabbitTemplate bean 存在，不需要真实 RabbitMQ ConnectionFactory。
+        }
+    }
+
+    private static <T> T interfaceProxy(Class<T> type) {
+        Object proxy = Proxy.newProxyInstance(
+                type.getClassLoader(),
+                new Class<?>[]{type},
+                (ignored, method, args) -> {
+                    Class<?> returnType = method.getReturnType();
+                    if (returnType == boolean.class) {
+                        return false;
+                    }
+                    if (returnType.isPrimitive()) {
+                        return 0;
+                    }
+                    return null;
+                });
+        return type.cast(proxy);
     }
 }

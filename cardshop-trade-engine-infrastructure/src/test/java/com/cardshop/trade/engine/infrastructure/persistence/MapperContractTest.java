@@ -74,6 +74,32 @@ class MapperContractTest {
     }
 
     @Test
+    void v1RuntimeReadersUseExplicitSingleTableSelectSql() throws IOException {
+        String merchantMapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/McExtDepartMapper.java"));
+        String departProductMapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/McDepartProductMapper.java"));
+        String productMapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/McProductMapper.java"));
+
+        assertThat(merchantMapper)
+                .contains("@Select")
+                .contains("from mc_ext_depart")
+                .doesNotContain("selectOne(")
+                .doesNotContain("LambdaQueryWrapper")
+                .doesNotContainIgnoringCase(" join ");
+        assertThat(departProductMapper)
+                .contains("@Select")
+                .contains("from mc_depart_product")
+                .doesNotContain("selectList(")
+                .doesNotContain("LambdaQueryWrapper")
+                .doesNotContainIgnoringCase(" join ");
+        assertThat(productMapper)
+                .contains("@Select")
+                .contains("from mc_product")
+                .doesNotContain("selectList(")
+                .doesNotContain("LambdaQueryWrapper")
+                .doesNotContainIgnoringCase(" join ");
+    }
+
+    @Test
     void mcDepartRecordMapperUsesLegacySingleTableColumns() throws IOException {
         String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/McDepartRecordMapper.java"));
 

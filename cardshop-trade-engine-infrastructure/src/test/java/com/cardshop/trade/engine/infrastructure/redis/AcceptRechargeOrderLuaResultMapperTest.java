@@ -3,6 +3,7 @@ package com.cardshop.trade.engine.infrastructure.redis;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -38,11 +39,55 @@ class AcceptRechargeOrderLuaResultMapperTest {
     }
 
     @Test
+    void mapsLettuceByteArrayLuaResultToApplicationResult() {
+        var result = mapper.map(List.of(
+                bytes("code"), bytes("ACCEPTED"),
+                bytes("order_id"), bytes("202607080949364037187392"),
+                bytes("validation_status"), bytes("PASSED"),
+                bytes("fail_code"), bytes(""),
+                bytes("fail_reason"), bytes(""),
+                bytes("dispatch_allowed"), bytes("1"),
+                bytes("balance_reserved"), bytes("1"),
+                bytes("order_version"), bytes("1")));
+
+        assertThat(result.status()).isEqualTo(AcceptRechargeOrderStatus.ACCEPTED);
+        assertThat(result.orderId()).isEqualTo("202607080949364037187392");
+        assertThat(result.dispatchAllowed()).isTrue();
+        assertThat(result.balanceReserved()).isTrue();
+        assertThat(result.orderWritten()).isTrue();
+        assertThat(result.orderVersion()).isEqualTo(1);
+    }
+
+    @Test
+    void mapsLettuceNestedMultiLuaResultToApplicationResult() {
+        var result = mapper.map(List.of(List.of(
+                "code", "ACCEPTED",
+                "order_id", "202607081143596723685593",
+                "validation_status", "PASSED",
+                "fail_code", "",
+                "fail_reason", "",
+                "dispatch_allowed", "1",
+                "balance_reserved", "1",
+                "order_version", "1")));
+
+        assertThat(result.status()).isEqualTo(AcceptRechargeOrderStatus.ACCEPTED);
+        assertThat(result.orderId()).isEqualTo("202607081143596723685593");
+        assertThat(result.dispatchAllowed()).isTrue();
+        assertThat(result.balanceReserved()).isTrue();
+        assertThat(result.orderWritten()).isTrue();
+        assertThat(result.orderVersion()).isEqualTo(1);
+    }
+
+    @Test
     void mapsUnknownStructureToConservativeUnknownResult() {
         var result = mapper.map("unexpected");
 
         assertThat(result.status()).isEqualTo(AcceptRechargeOrderStatus.UNKNOWN);
         assertThat(result.orderWritten()).isFalse();
         assertThat(result.failReason()).contains("Lua 返回结构不是数组");
+    }
+
+    private static byte[] bytes(String value) {
+        return value.getBytes(StandardCharsets.UTF_8);
     }
 }

@@ -3,26 +3,38 @@ package com.cardshop.trade.engine.infrastructure.config;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
+import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
+import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
+import com.cardshop.trade.engine.application.recharge.CancelUnconfirmedAcceptResult;
 import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
+import com.cardshop.trade.engine.application.recharge.MarkPersistQueuedResult;
+import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
 import com.cardshop.trade.engine.application.recharge.MerchantNotifyClientPort;
 import com.cardshop.trade.engine.application.recharge.MerchantNotifyPayloadSigner;
+import com.cardshop.trade.engine.application.recharge.PersistMessagePublishResult;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
+import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerService;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerSettings;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort;
+import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerSettings;
 import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
+import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.recharge.V1MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1ProductSelection;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
@@ -36,6 +48,11 @@ import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotif
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOutboxAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisV1MerchantProfileAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisV1ProductCandidateSelector;
+import com.cardshop.trade.engine.infrastructure.persistence.V1DepartProductReader;
+import com.cardshop.trade.engine.infrastructure.persistence.V1MerchantProfileReader;
+import com.cardshop.trade.engine.infrastructure.persistence.V1ProductReader;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
@@ -46,7 +63,6 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutbo
 import com.cardshop.trade.engine.infrastructure.redis.LettuceRechargeRedisSessionFactory;
 import com.cardshop.trade.engine.infrastructure.redis.InMemoryRedisHaGuard;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
-import com.cardshop.trade.engine.infrastructure.redis.RedisAcceptRechargeOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
@@ -61,8 +77,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.http.HttpClient;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Optional;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.Declarables;
@@ -82,6 +101,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import reactor.core.publisher.Mono;
 
 /**
  * 基础设施层自动配置入口。
@@ -112,8 +132,10 @@ public class TradeEngineInfrastructureConfiguration {
      * 声明异步落库 RabbitMQ 拓扑。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」。
-     * 主队列、retry queue 和 DLQ 均使用 Quorum Queue；主队列死信始终进入最终 DLQ，
+     * 主队列和 DLQ 使用 Quorum Queue；主队列死信始终进入最终 DLQ。retry queue 使用 classic durable queue，
      * 未耗尽重试次数的业务失败由 listener 发布到 retry exchange，retry queue 到期后通过 DLX 投回主 exchange。
+     * 当前 dev/test RabbitMQ 3.8.8 对 quorum queue 不接受 {@code x-message-ttl} 参数；若 retry queue 声明为
+     * quorum，会导致 RabbitAdmin 启动声明失败，进而出现应用健康但 RabbitMQ 无 consumer 的联调现象。
      * 该方法只创建 Spring AMQP 的声明对象，真正向 broker declare 由 RabbitAdmin 在具备 RabbitMQ 自动配置的环境中完成。
      */
     @Bean
@@ -139,7 +161,6 @@ public class TradeEngineInfrastructureConfiguration {
                 .build();
         Queue retryQueue = QueueBuilder
                 .durable(mq.getPersistRetryQueue())
-                .quorum()
                 .deadLetterExchange(mq.getPersistExchange())
                 .deadLetterRoutingKey(mq.getPersistRoutingKey())
                 .ttl(Math.max(1000, mq.getConsumerRetryDelayMs()))
@@ -182,19 +203,31 @@ public class TradeEngineInfrastructureConfiguration {
     }
 
     @Bean
-    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
-    public RechargeRedisScriptExecutor rechargeRedisScriptExecutor(ReactiveStringRedisTemplate redisTemplate) {
+    @ConditionalOnMissingBean(RechargeRedisScriptExecutor.class)
+    public RechargeRedisScriptExecutor rechargeRedisScriptExecutor(
+            ObjectProvider<ReactiveStringRedisTemplate> redisTemplateProvider) {
+        ReactiveStringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+        if (redisTemplate == null) {
+            return (script, keys, args) -> Mono.error(new IllegalStateException("ReactiveStringRedisTemplate 未装配"));
+        }
         return new SpringDataRechargeRedisScriptExecutor(redisTemplate);
     }
 
     @Bean
-    @ConditionalOnBean(LettuceConnectionFactory.class)
-    public RechargeRedisSessionFactory rechargeRedisSessionFactory(LettuceConnectionFactory connectionFactory) {
+    @ConditionalOnMissingBean(RechargeRedisSessionFactory.class)
+    public RechargeRedisSessionFactory rechargeRedisSessionFactory(
+            ObjectProvider<LettuceConnectionFactory> connectionFactoryProvider) {
+        LettuceConnectionFactory connectionFactory = connectionFactoryProvider.getIfAvailable();
+        if (connectionFactory == null) {
+            return () -> {
+                throw new IllegalStateException("LettuceConnectionFactory 未装配");
+            };
+        }
         return new LettuceRechargeRedisSessionFactory(connectionFactory);
     }
 
     @Bean
-    @ConditionalOnBean(RechargeRedisSessionFactory.class)
+    @ConditionalOnMissingBean({AcceptRechargeOrderPort.class, RechargeAcceptReliabilityPort.class})
     public RedisSessionAcceptReliabilityAdapter redisSessionAcceptReliabilityAdapter(
             RechargeRedisSessionFactory sessionFactory,
             RechargeRedisKeyBuilder keyBuilder,
@@ -205,24 +238,17 @@ public class TradeEngineInfrastructureConfiguration {
     }
 
     @Bean
-    @ConditionalOnBean(RechargeRedisScriptExecutor.class)
-    @ConditionalOnMissingBean(AcceptRechargeOrderPort.class)
-    public AcceptRechargeOrderPort acceptRechargeOrderPort(
-            RechargeRedisScriptExecutor scriptExecutor,
-            RechargeRedisKeyBuilder keyBuilder,
-            RechargeRedisScriptLoader scriptLoader,
-            TradeEngineProperties properties,
-            RedisHaGuardPort redisHaGuardPort) {
-        return new RedisAcceptRechargeOrderAdapter(scriptExecutor, keyBuilder, scriptLoader, properties, redisHaGuardPort);
-    }
-
-    @Bean
-    @ConditionalOnBean(RabbitTemplate.class)
+    @ConditionalOnMissingBean(PersistRechargeOrderMessagePublisher.class)
     public PersistRechargeOrderMessagePublisher persistRechargeOrderMessagePublisher(
-            RabbitTemplate rabbitTemplate,
+            ObjectProvider<RabbitTemplate> rabbitTemplateProvider,
             ObjectMapper objectMapper,
             TradeEngineProperties properties,
-            @Qualifier("tradeMqConfirmTaskExecutor") Executor mqConfirmExecutor) {
+            @Qualifier("tradeMqConfirmTaskExecutor") ObjectProvider<Executor> mqConfirmExecutorProvider) {
+        RabbitTemplate rabbitTemplate = rabbitTemplateProvider.getIfAvailable();
+        Executor mqConfirmExecutor = mqConfirmExecutorProvider.getIfAvailable();
+        if (rabbitTemplate == null || mqConfirmExecutor == null) {
+            return unavailablePersistRechargeOrderMessagePublisher();
+        }
         return new RabbitPersistRechargeOrderMessagePublisher(
                 new RabbitTemplatePersistMessageOperations(rabbitTemplate),
                 objectMapper,
@@ -283,11 +309,55 @@ public class TradeEngineInfrastructureConfiguration {
         return new MybatisAcceptAnomalyCheckRepositoryAdapter(mapper, objectMapper, Clock.systemUTC());
     }
 
+    /**
+     * 装配 V1 商户资料端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」。
+     * 这里使用配置类显式装配，而不是在适配器类上做条件组件扫描，避免 MyBatis Mapper
+     * 注册顺序导致条件过早判定为不满足，使 `/auth/getToken` 和灰度下单回落到未启用实现。
+     */
     @Bean
-    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
+    @ConditionalOnMissingBean(V1MerchantProfilePort.class)
+    public V1MerchantProfilePort v1MerchantProfilePort(ObjectProvider<V1MerchantProfileReader> readerProvider) {
+        V1MerchantProfileReader reader = readerProvider.getIfAvailable();
+        if (reader == null) {
+            return unavailableV1MerchantProfilePort();
+        }
+        return new MybatisV1MerchantProfileAdapter(reader);
+    }
+
+    /**
+     * 装配 V1 直充商品候选选择端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.5 商品选择规则」。
+     * 该端口依赖两个旧卡管单表 Reader，和商户资料端口一样放在配置类中按依赖显式启用。
+     */
+    @Bean
+    @ConditionalOnMissingBean(V1ProductCandidateSelector.class)
+    public V1ProductCandidateSelector v1ProductCandidateSelector(
+            ObjectProvider<V1DepartProductReader> departProductReaderProvider,
+            ObjectProvider<V1ProductReader> productReaderProvider) {
+        V1DepartProductReader departProductReader = departProductReaderProvider.getIfAvailable();
+        V1ProductReader productReader = productReaderProvider.getIfAvailable();
+        if (departProductReader == null || productReader == null) {
+            return (orgCode, parentProductId, account) -> V1ProductSelection.failed(
+                    parentProductId,
+                    "PRODUCT_READER_UNAVAILABLE",
+                    "商品资料读取端口未装配",
+                    1L);
+        }
+        return new MybatisV1ProductCandidateSelector(departProductReader, productReader);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(V1TokenStorePort.class)
     public V1TokenStorePort v1TokenStorePort(
-            ReactiveStringRedisTemplate redisTemplate,
+            ObjectProvider<ReactiveStringRedisTemplate> redisTemplateProvider,
             TradeEngineProperties properties) {
+        ReactiveStringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+        if (redisTemplate == null) {
+            return unavailableV1TokenStorePort();
+        }
         return new RedisV1TokenStoreAdapter(redisTemplate, properties);
     }
 
@@ -339,7 +409,9 @@ public class TradeEngineInfrastructureConfiguration {
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
      * 四个 Mapper 同时存在时才启用，确保事务内能完整写 `mc_order`、`recharge_order_ext`、
-     * `mc_depart_record(PRE_DEDUCT)` 和 outbox。
+     * `mc_depart_record(PRE_DEDUCT)` 和 outbox。该 Bean 主要覆盖显式提供 Mapper 的 slice test 或局部上下文；
+     * 真实 dev/test/prod 中 Mapper 来自 MyBatis 自动配置，最终兜底由
+     * {@link TradeEngineMybatisPersistenceAutoConfiguration} 在 MyBatis mapper scanner 完成后执行。
      */
     @Bean
     @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class, RechargeOutboxMapper.class, McDepartRecordMapper.class})
@@ -488,5 +560,76 @@ public class TradeEngineInfrastructureConfiguration {
                 new RechargeNotifyWorkerSettings(
                         Duration.ofSeconds(properties.getNotify().getClaimLeaseSeconds()),
                         Duration.ofSeconds(properties.getNotify().getRetryBackoffSeconds())));
+    }
+
+    /**
+     * RabbitMQ 依赖缺失时的不可用发布端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.5 下单服务实现细节」。
+     * 该兜底端口让应用保持可启动，但 {@link PersistRechargeOrderMessagePublisher#isAvailable()}
+     * 始终返回 false，使下单链路在写 Redis 前 fail closed，避免产生无法异步落库的订单事实。
+     */
+    private static PersistRechargeOrderMessagePublisher unavailablePersistRechargeOrderMessagePublisher() {
+        return new PersistRechargeOrderMessagePublisher() {
+            @Override
+            public boolean isAvailable() {
+                return false;
+            }
+
+            @Override
+            public CompletionStage<PersistMessagePublishResult> publish(PersistTradeOrderMessage message) {
+                String messageId = message == null ? "" : message.messageId();
+                return CompletableFuture.completedFuture(PersistMessagePublishResult.failed(
+                        messageId,
+                        1,
+                        "MQ_PUBLISHER_UNAVAILABLE",
+                        "RabbitMQ 发布端口未装配"));
+            }
+        };
+    }
+
+    /**
+     * 旧卡管商户资料 Reader 缺失时的不可用端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」。
+     * 这里返回空资料而不是抛异常，保证启动诊断可继续完成；Token、下单和回调签名会按商户资料缺失处理。
+     */
+    private static V1MerchantProfilePort unavailableV1MerchantProfilePort() {
+        return new V1MerchantProfilePort() {
+            @Override
+            public Optional<V1MerchantProfile> findByAppIdAndOrgCode(String appId, String orgCode) {
+                return Optional.empty();
+            }
+
+            @Override
+            public Optional<V1MerchantProfile> findByOrgCode(String orgCode) {
+                return Optional.empty();
+            }
+
+            @Override
+            public Optional<V1MerchantProfile> findByAppIdAndAppSecret(String appId, String appSecret) {
+                return Optional.empty();
+            }
+        };
+    }
+
+    /**
+     * Redis Token 存储缺失时的不可用端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.5 Token 生成接口」。
+     * 保存返回 false、读取返回空，让 `/auth/getToken` 在 Redis 未就绪时明确失败。
+     */
+    private static V1TokenStorePort unavailableV1TokenStorePort() {
+        return new V1TokenStorePort() {
+            @Override
+            public boolean storeIssuedToken(String appId, String token, Duration ttl) {
+                return false;
+            }
+
+            @Override
+            public Optional<String> findIssuedToken(String appId) {
+                return Optional.empty();
+            }
+        };
     }
 }

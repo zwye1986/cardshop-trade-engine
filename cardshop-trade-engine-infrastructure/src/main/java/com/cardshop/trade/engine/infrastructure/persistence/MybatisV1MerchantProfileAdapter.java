@@ -6,8 +6,6 @@ import com.cardshop.trade.engine.infrastructure.persistence.entity.McExtDepartDO
 import org.apache.ibatis.exceptions.TooManyResultsException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
-import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
 import java.util.Optional;
@@ -18,8 +16,6 @@ import java.util.Optional;
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」。
  * 该适配器只读商户安全资料，不写余额、不写订单，避免和旧卡管余额链路发生双写。
  */
-@Component
-@ConditionalOnBean(V1MerchantProfileReader.class)
 public class MybatisV1MerchantProfileAdapter implements V1MerchantProfilePort {
 
     private static final Logger log = LoggerFactory.getLogger(MybatisV1MerchantProfileAdapter.class);

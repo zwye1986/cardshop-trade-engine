@@ -5,8 +5,6 @@ import com.cardshop.trade.engine.application.v1.V1ProductSelection;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McDepartProductDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McProductDO;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
-import org.springframework.stereotype.Component;
 
 import java.util.Comparator;
 import java.util.List;
@@ -22,8 +20,6 @@ import java.util.stream.Collectors;
  * 旧卡管 `listByProductId` 通过多表关联取商户可售子商品；本实现拆成两次单表查询后在内存里组装，
  * 并按确定性规则选择候选，避免多节点因数据库默认顺序不同选到不同渠道。
  */
-@Component
-@ConditionalOnBean({V1DepartProductReader.class, V1ProductReader.class})
 public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSelector {
 
     private static final int DIRECT_RECHARGE_PRODUCT_TYPE = 1;

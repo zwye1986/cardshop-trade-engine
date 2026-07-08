@@ -91,30 +91,37 @@ public class V1CardApiConfiguration {
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
      * `AcceptAnomalyRecordPort` 是旁路能力：生产环境有 anomaly 表时写入核查入口，local profile
      * 或局部测试未装配该端口时退化为空实现，避免把“异常登记能力是否存在”变成下单 Bean 创建条件。
+     * 核心依赖使用 {@link ObjectProvider} 在 Bean 创建时判断，而不是用 {@code @ConditionalOnBean}：
+     * bootstrap 配置和 infrastructure 配置同属组件扫描，条件在配置解析期过早判断会使 dev 环境误注册 fallback。
      */
     @Bean
-    @ConditionalOnBean({
-            AcceptRechargeOrderPort.class,
-            RechargeAcceptReliabilityPort.class,
-            PersistRechargeOrderMessagePublisher.class,
-            V1MerchantProfilePort.class,
-            V1ProductCandidateSelector.class
-    })
     @ConditionalOnMissingBean(CreateRechargeOrderUseCase.class)
     public CreateRechargeOrderUseCase v1CreateRechargeOrderUseCase(
             V1ProtocolPrecheckService precheckService,
             RequestHashCanonicalizer requestHashCanonicalizer,
-            V1MerchantProfilePort merchantProfilePort,
-            V1ProductCandidateSelector productCandidateSelector,
-            AcceptRechargeOrderPort acceptRechargeOrderPort,
-            RechargeAcceptReliabilityPort rechargeAcceptReliabilityPort,
-            PersistRechargeOrderMessagePublisher persistMessagePublisher,
+            ObjectProvider<V1MerchantProfilePort> merchantProfilePortProvider,
+            ObjectProvider<V1ProductCandidateSelector> productCandidateSelectorProvider,
+            ObjectProvider<AcceptRechargeOrderPort> acceptRechargeOrderPortProvider,
+            ObjectProvider<RechargeAcceptReliabilityPort> rechargeAcceptReliabilityPortProvider,
+            ObjectProvider<PersistRechargeOrderMessagePublisher> persistMessagePublisherProvider,
             ObjectProvider<AcceptAnomalyRecordPort> acceptAnomalyRecordPortProvider,
             ObjectProvider<RedisHaGuardPort> redisHaGuardPortProvider,
             RechargeOrderIdGenerator orderIdGenerator,
             Clock clock,
             V1RechargeAcceptSettings settings,
             @org.springframework.beans.factory.annotation.Qualifier("tradeDbTaskExecutor") java.util.concurrent.Executor tradeDbTaskExecutor) {
+        V1MerchantProfilePort merchantProfilePort = merchantProfilePortProvider.getIfAvailable();
+        V1ProductCandidateSelector productCandidateSelector = productCandidateSelectorProvider.getIfAvailable();
+        AcceptRechargeOrderPort acceptRechargeOrderPort = acceptRechargeOrderPortProvider.getIfAvailable();
+        RechargeAcceptReliabilityPort rechargeAcceptReliabilityPort = rechargeAcceptReliabilityPortProvider.getIfAvailable();
+        PersistRechargeOrderMessagePublisher persistMessagePublisher = persistMessagePublisherProvider.getIfAvailable();
+        if (merchantProfilePort == null
+                || productCandidateSelector == null
+                || acceptRechargeOrderPort == null
+                || rechargeAcceptReliabilityPort == null
+                || persistMessagePublisher == null) {
+            return unavailableCreateRechargeOrderUseCase();
+        }
         return new V1CreateRechargeOrderUseCaseService(
                 precheckService,
                 requestHashCanonicalizer,
@@ -142,25 +149,27 @@ public class V1CardApiConfiguration {
     }
 
     @Bean
-    @ConditionalOnBean({V1MerchantProfilePort.class, V1TokenStorePort.class})
     @ConditionalOnMissingBean(IssueV1TokenUseCase.class)
     public IssueV1TokenUseCase v1IssueTokenUseCase(
-            V1MerchantProfilePort merchantProfilePort,
-            V1TokenStorePort tokenStorePort,
+            ObjectProvider<V1MerchantProfilePort> merchantProfilePortProvider,
+            ObjectProvider<V1TokenStorePort> tokenStorePortProvider,
             V1TokenSettings settings,
             Clock clock) {
+        // 参见详细设计「20.13.5 Token 生成接口」：真实签发依赖旧商户表和共享 Redis token key。
+        // 这里延迟到 Bean 创建期检查依赖，避免配置类解析顺序导致灰度环境误返回“Token生成暂未启用”。
+        V1MerchantProfilePort merchantProfilePort = merchantProfilePortProvider.getIfAvailable();
+        V1TokenStorePort tokenStorePort = tokenStorePortProvider.getIfAvailable();
+        if (merchantProfilePort == null || tokenStorePort == null) {
+            return unavailableIssueV1TokenUseCase();
+        }
         return new V1IssueTokenUseCaseService(merchantProfilePort, tokenStorePort, settings, clock);
     }
 
-    @Bean
-    @ConditionalOnMissingBean(IssueV1TokenUseCase.class)
-    public IssueV1TokenUseCase unavailableIssueV1TokenUseCase() {
+    private static IssueV1TokenUseCase unavailableIssueV1TokenUseCase() {
         return rawBody -> V1CardApiResult.unavailable("新交易引擎Token生成暂未启用");
     }
 
-    @Bean
-    @ConditionalOnMissingBean(CreateRechargeOrderUseCase.class)
-    public CreateRechargeOrderUseCase unavailableCreateRechargeOrderUseCase() {
+    private static CreateRechargeOrderUseCase unavailableCreateRechargeOrderUseCase() {
         // TODO(D3/D4): 当 Redis 接单端口或商户/商品查询端口未装配时保守拒绝；参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
         return command -> CompletableFuture.completedFuture(V1CardApiResult.unavailable("新交易引擎直充受理暂未启用"));
     }

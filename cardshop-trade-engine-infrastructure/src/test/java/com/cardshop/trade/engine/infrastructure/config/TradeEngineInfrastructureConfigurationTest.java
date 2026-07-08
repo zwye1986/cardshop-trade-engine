@@ -20,10 +20,17 @@ import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
 import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisV1MerchantProfileAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisV1ProductCandidateSelector;
+import com.cardshop.trade.engine.infrastructure.persistence.V1DepartProductReader;
+import com.cardshop.trade.engine.infrastructure.persistence.V1MerchantProfileReader;
+import com.cardshop.trade.engine.infrastructure.persistence.V1ProductReader;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
@@ -36,9 +43,13 @@ import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptExecuto
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisSessionFactory;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.SpringDataRechargeRedisScriptExecutor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.lang.reflect.Proxy;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.function.Predicate;
@@ -53,6 +64,7 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.RabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.listener.MessageListenerContainer;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.context.annotation.Bean;
 import org.springframework.data.redis.connection.ReactiveRedisConnection;
 import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
@@ -85,15 +97,21 @@ class TradeEngineInfrastructureConfigurationTest {
             assertThat(context).hasSingleBean(RechargeRedisScriptLoader.class);
             assertThat(context).hasSingleBean(RedisHaGuardPort.class);
             assertThat(context.getBean(RedisHaGuardPort.class)).isInstanceOf(InMemoryRedisHaGuard.class);
-            assertThat(context).doesNotHaveBean(AcceptRechargeOrderPort.class);
+            assertThat(context).hasSingleBean(AcceptRechargeOrderPort.class);
+            assertThat(context).hasSingleBean(RechargeAcceptReliabilityPort.class);
+            assertThat(context.getBean(AcceptRechargeOrderPort.class))
+                    .isInstanceOf(RedisSessionAcceptReliabilityAdapter.class)
+                    .isSameAs(context.getBean(RechargeAcceptReliabilityPort.class));
         });
     }
 
     @Test
-    void createsAcceptPortOnlyWhenRedisScriptExecutorExists() {
-        contextRunner
-                .withBean(RechargeRedisScriptExecutor.class, () -> (script, keys, args) -> Mono.empty())
-                .run(context -> assertThat(context).hasSingleBean(AcceptRechargeOrderPort.class));
+    void createsScriptExecutorFallbackWithoutRedisClient() {
+        contextRunner.run(context -> {
+            assertThat(context).hasSingleBean(RechargeRedisScriptExecutor.class);
+            assertThat(context.getBean(RechargeRedisScriptExecutor.class))
+                    .isNotInstanceOf(SpringDataRechargeRedisScriptExecutor.class);
+        });
     }
 
     @Test
@@ -146,6 +164,63 @@ class TradeEngineInfrastructureConfigurationTest {
     }
 
     @Test
+    void createsV1TokenStorePortWhenRedisTemplateExists() {
+        contextRunner
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(V1TokenStorePort.class);
+                    assertThat(context.getBean(V1TokenStorePort.class))
+                            .isInstanceOf(RedisV1TokenStoreAdapter.class);
+                });
+    }
+
+    @Test
+    void createsV1MerchantProfilePortWhenReaderExists() {
+        contextRunner
+                .withBean(V1MerchantProfileReader.class, () -> (appId, orgCode) -> null)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(V1MerchantProfilePort.class);
+                    assertThat(context.getBean(V1MerchantProfilePort.class))
+                            .isInstanceOf(MybatisV1MerchantProfileAdapter.class);
+                });
+    }
+
+    @Test
+    void createsV1ProductCandidateSelectorWhenReadersExist() {
+        contextRunner
+                .withBean(V1DepartProductReader.class, () -> (orgCode, parentProductId) -> List.of())
+                .withBean(V1ProductReader.class, () -> productIds -> List.of())
+                .run(context -> {
+                    assertThat(context).hasSingleBean(V1ProductCandidateSelector.class);
+                    assertThat(context.getBean(V1ProductCandidateSelector.class))
+                            .isInstanceOf(MybatisV1ProductCandidateSelector.class);
+                });
+    }
+
+    @Test
+    void createsV1RedisAndMqPortsWhenDependenciesComeFromLaterConfiguration() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(
+                        TradeEngineInfrastructureConfiguration.class,
+                        LateInfrastructureDependencyBeans.class)
+                .run(context -> {
+                    assertThat(context.getBean(V1TokenStorePort.class))
+                            .isInstanceOf(RedisV1TokenStoreAdapter.class);
+                    assertThat(context.getBean(V1MerchantProfilePort.class))
+                            .isInstanceOf(MybatisV1MerchantProfileAdapter.class);
+                    assertThat(context.getBean(V1ProductCandidateSelector.class))
+                            .isInstanceOf(MybatisV1ProductCandidateSelector.class);
+                    assertThat(context.getBean(AcceptRechargeOrderPort.class))
+                            .isInstanceOf(RedisSessionAcceptReliabilityAdapter.class)
+                            .isSameAs(context.getBean(RechargeAcceptReliabilityPort.class));
+                    assertThat(context.getBean(PersistRechargeOrderMessagePublisher.class))
+                            .isInstanceOf(RabbitPersistRechargeOrderMessagePublisher.class);
+                    assertThat(context.getBean(RechargeRedisScriptExecutor.class))
+                            .isInstanceOf(SpringDataRechargeRedisScriptExecutor.class);
+                });
+    }
+
+    @Test
     void createsRechargeOrderPersistencePortWhenMappersExist() {
         contextRunner
                 .withBean(ObjectMapper.class, ObjectMapper::new)
@@ -188,7 +263,10 @@ class TradeEngineInfrastructureConfigurationTest {
         contextRunner
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(RabbitTemplate.class, TestRabbitTemplate::new)
-                .run(context -> assertThat(context).hasFailed());
+                .run(context -> {
+                    assertThat(context).hasSingleBean(PersistRechargeOrderMessagePublisher.class);
+                    assertThat(context.getBean(PersistRechargeOrderMessagePublisher.class).isAvailable()).isFalse();
+                });
     }
 
     @Test
@@ -247,7 +325,7 @@ class TradeEngineInfrastructureConfigurationTest {
             assertThat(queue.getArguments()).containsEntry("x-dead-letter-exchange", "recharge.persist.dlx");
             assertThat(queue.getArguments()).containsEntry("x-dead-letter-routing-key", "recharge.persist.mysql.dlq");
             assertThat(retryQueue.isDurable()).isTrue();
-            assertThat(retryQueue.getArguments()).containsEntry("x-queue-type", "quorum");
+            assertThat(retryQueue.getArguments()).doesNotContainKey("x-queue-type");
             assertThat(retryQueue.getArguments()).containsEntry("x-dead-letter-exchange", "recharge.persist.exchange");
             assertThat(retryQueue.getArguments()).containsEntry("x-dead-letter-routing-key", "recharge.persist.mysql");
             assertThat(retryQueue.getArguments()).containsEntry("x-message-ttl", 30000);
@@ -291,7 +369,7 @@ class TradeEngineInfrastructureConfigurationTest {
     }
 
     @Test
-    void doesNotCreateOutboxWorkerWhenMerchantProfilePortIsMissing() {
+    void createsOutboxWorkerWithFallbackMerchantProfilePortWhenReaderIsMissing() {
         contextRunner
                 .withBean(RechargeOutboxPort.class, () -> interfaceProxy(RechargeOutboxPort.class))
                 .withBean(RechargeFulfillmentOrderPort.class, () -> interfaceProxy(RechargeFulfillmentOrderPort.class))
@@ -299,7 +377,10 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
                 .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
                 .withBean(MerchantNotifyPayloadSigner.class, () -> interfaceProxy(MerchantNotifyPayloadSigner.class))
-                .run(context -> assertThat(context).doesNotHaveBean(RechargeOutboxWorkerService.class));
+                .run(context -> {
+                    assertThat(context).hasSingleBean(V1MerchantProfilePort.class);
+                    assertThat(context).hasSingleBean(RechargeOutboxWorkerService.class);
+                });
     }
 
     @Test
@@ -435,6 +516,40 @@ class TradeEngineInfrastructureConfigurationTest {
         @Override
         public void afterPropertiesSet() {
             // 装配测试只需要 RabbitTemplate bean 存在，不需要真实 RabbitMQ ConnectionFactory。
+        }
+    }
+
+    @org.springframework.boot.test.context.TestConfiguration
+    static class LateInfrastructureDependencyBeans {
+
+        @Bean
+        ReactiveStringRedisTemplate reactiveStringRedisTemplate() {
+            return redisTemplate();
+        }
+
+        @Bean
+        V1MerchantProfileReader v1MerchantProfileReader() {
+            return (appId, orgCode) -> null;
+        }
+
+        @Bean
+        V1DepartProductReader v1DepartProductReader() {
+            return (orgCode, parentProductId) -> List.of();
+        }
+
+        @Bean
+        V1ProductReader v1ProductReader() {
+            return productIds -> List.of();
+        }
+
+        @Bean
+        RabbitTemplate rabbitTemplate() {
+            return new TestRabbitTemplate();
+        }
+
+        @Bean
+        Executor tradeMqConfirmTaskExecutor() {
+            return Runnable::run;
         }
     }
 

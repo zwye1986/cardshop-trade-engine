@@ -1,0 +1,2 @@
+com.cardshop.trade.engine.bootstrap.config.TradeEngineConsumerAutoConfiguration
+com.cardshop.trade.engine.bootstrap.config.TradeEngineRabbitListenerAutoConfiguration

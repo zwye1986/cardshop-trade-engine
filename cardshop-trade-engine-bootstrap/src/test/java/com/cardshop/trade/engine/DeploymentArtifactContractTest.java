@@ -92,9 +92,14 @@ class DeploymentArtifactContractTest {
                 .contains("NACOS_GROUP=TRADE_ENGINE_DEV")
                 .contains("CARD_SHOP_TRADE_JAVA_HOME=");
         assertThat(envText)
-                .contains("NACOS_PASSWORD=change-me")
+                .contains("NACOS_PASSWORD='change-me'")
                 .contains("SPRING_RABBITMQ_HOST=<rabbitmq-host>")
                 .contains("SPRING_RABBITMQ_USERNAME=<rabbitmq-user>")
+                .contains("SPRING_RABBITMQ_PASSWORD='change-me'")
+                .contains("V1_CARDAPI_JWT_SECRET='change-me'")
+                .doesNotContain("NACOS_PASSWORD=change-me")
+                .doesNotContain("SPRING_RABBITMQ_PASSWORD=change-me")
+                .doesNotContain("V1_CARDAPI_JWT_SECRET=change-me")
                 .doesNotContain("SPRING_RABBITMQ_HOST=47.100.11.188")
                 .doesNotContain("SPRING_RABBITMQ_USERNAME=admin_cardshop")
                 .doesNotContain("MYSQL_PASSWORD=")
@@ -107,7 +112,8 @@ class DeploymentArtifactContractTest {
                 .contains("legacy cardshop dev Redis settings")
                 .contains("config/.<profile>.env")
                 .contains("./bin/start.sh start dev")
-                .doesNotContain("NACOS_PASSWORD=")
+                .contains("NACOS_PASSWORD='<nacos-password-if-it-contains-shell-metacharacters>'")
+                .doesNotContain("NACOS_PASSWORD=change-me")
                 .doesNotContain("MYSQL_PASSWORD=");
 
         String gitignoreText = Files.readString(gitignore);

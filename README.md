@@ -99,7 +99,7 @@ mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
 ./scripts/package.sh
 ```
 
-脚本会强制检测 JDK 21，并在 `dist/` 下生成 `cardshop-trade-engine-<version>.zip`。zip 内包含应用 jar、`bin/start.sh`、`config/env.example` 和 `STARTUP.md`。服务器解压后复制模板为对应的 `config/.<profile>.env`，从部署密钥系统填写 Nacos、RabbitMQ、端口、JDK、旧卡管代理地址、V1 JWT secret 和 JVM 参数；启动脚本只校验必填环境变量并导出给 Spring placeholder 读取，不把密钥写入 JVM argv，然后执行：
+脚本会强制检测 JDK 21，并在 `dist/` 下生成 `cardshop-trade-engine-<version>.zip`。zip 内包含应用 jar、`bin/start.sh`、`config/env.example` 和 `STARTUP.md`。服务器解压后复制模板为对应的 `config/.<profile>.env`，从部署密钥系统填写 Nacos、RabbitMQ、端口、JDK、旧卡管代理地址、V1 JWT secret 和 JVM 参数；`.env` 会被 Bash `source` 读取，密码、JWT secret、API key 等同类密钥值必须用单引号包起来，尤其当值包含 `$`、`!`、空格、反引号、`&`、`|`、`;`、`<`、`>` 时。启动脚本只校验必填环境变量并导出给 Spring placeholder 读取，不把密钥写入 JVM argv，然后执行：
 
 ```bash
 ./bin/start.sh start dev

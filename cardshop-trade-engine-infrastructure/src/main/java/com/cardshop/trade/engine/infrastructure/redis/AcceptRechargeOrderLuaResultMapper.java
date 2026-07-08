@@ -4,6 +4,7 @@ import com.cardshop.trade.engine.application.logging.LogStormGuard;
 import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -56,10 +57,53 @@ final class AcceptRechargeOrderLuaResultMapper {
             values.put(FIELD_FAIL_REASON, "Lua 返回结构不是数组");
             return values;
         }
+        list = flattenSingleNestedList(list);
         for (int i = 0; i + 1 < list.size(); i += 2) {
-            values.put(String.valueOf(list.get(i)), String.valueOf(list.get(i + 1)));
+            String key = toRedisScalarString(list.get(i));
+            if (key == null || key.isBlank()) {
+                continue;
+            }
+            values.put(key, toRedisScalarString(list.get(i + 1)));
         }
         return values;
+    }
+
+    /**
+     * 兼容 Lettuce 原生 reactive `eval(..., ScriptOutputType.MULTI)` 的单元素嵌套数组返回。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」以及
+     * 「20.13.8 异步落库 Consumer」。`LettuceRechargeRedisSessionFactory` 为了在同一 Redis 连接上执行
+     * accept Lua 与 WAIT，使用 Lettuce 原生命令并对返回流执行 `collectList()`；真实 Redis 返回的 Lua 数组可能先作为
+     * 一个 MULTI 元素发出，收集后形态变成 `List<List<String>>`。若不在基础设施层展开，Java 会得到空字段映射，
+     * 把 Redis 已经写入的 `ACCEPTED` 误判为 `UNKNOWN`，进而跳过 WAIT/MQ confirm，形成 Redis `PENDING_MQ`
+     * 悬挂订单。这里仅展开“单元素且该元素仍是 List”的形态，避免把合法扁平 key-value 数组误改。
+     */
+    private static List<?> flattenSingleNestedList(List<?> list) {
+        if (list.size() == 1 && list.getFirst() instanceof List<?> nested) {
+            return nested;
+        }
+        return list;
+    }
+
+    /**
+     * 将 Redis Lua 返回的单个标量归一为 UTF-8 字符串。
+     *
+     * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」以及
+     * {@code docs/交行直充业务系统高可用方案设计.md}「14.3 Redis 成功但 MQ confirm 失败协议」。
+     * 这里不能直接使用 {@link String#valueOf(Object)}：不同 Redis 执行路径可能把 bulk string
+     * 返回成 {@code String}、{@code byte[]} 或数字类型。若 {@code byte[]} 被格式化成 JVM 对象标识
+     * （例如 {@code [B@...}），应用会把已经写入 Redis 的 {@code ACCEPTED} 误判为 {@code UNKNOWN}，
+     * 从而跳过 WAIT 与 RabbitMQ confirm，形成“Redis 有订单、接口返回系统繁忙、MySQL 无落库”的危险窗口。
+     * 因此所有 key/value 必须先在基础设施层完成类型归一，再交给应用层判断接单结果。
+     */
+    private static String toRedisScalarString(Object rawValue) {
+        if (rawValue == null) {
+            return null;
+        }
+        if (rawValue instanceof byte[] bytes) {
+            return new String(bytes, StandardCharsets.UTF_8);
+        }
+        return String.valueOf(rawValue);
     }
 
     private AcceptRechargeOrderStatus parseStatus(String code) {
