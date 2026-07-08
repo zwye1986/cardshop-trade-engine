@@ -19,6 +19,16 @@ import org.springframework.util.StringUtils;
 public class RedisRechargeOrderQueryAdapter implements RechargeOrderQueryPort {
 
     private static final Logger log = LoggerFactory.getLogger(RedisRechargeOrderQueryAdapter.class);
+    private static final String REDIS_TRUE = "1";
+    private static final String REDIS_FALSE = "0";
+    private static final String FIELD_ORDER_ID = "order_id";
+    private static final String FIELD_OUT_ORDER_SN = "out_order_sn";
+    private static final String FIELD_ORDER_STATUS = "order_status";
+    private static final String FIELD_PERSIST_STATUS = "persist_status";
+    private static final String FIELD_VALIDATION_STATUS = "validation_status";
+    private static final String FIELD_FAIL_CODE = "fail_code";
+    private static final String FIELD_FAIL_REASON = "fail_reason";
+    private static final String FIELD_DISPATCH_ALLOWED = "dispatch_allowed";
 
     private final RedisRechargeOrderQueryOperations queryOperations;
     private final RechargeRedisKeyBuilder keyBuilder;
@@ -47,18 +57,18 @@ public class RedisRechargeOrderQueryAdapter implements RechargeOrderQueryPort {
             log.error("Redis查单读取订单快照失败 orgCode={}, outOrderSn={}", orgCode, outOrderSn, ex);
             return Optional.empty();
         }
-        if (fields.isEmpty() || !StringUtils.hasText(fields.get("order_id"))) {
+        if (fields.isEmpty() || !StringUtils.hasText(fields.get(FIELD_ORDER_ID))) {
             return Optional.empty();
         }
         return Optional.of(new RechargeOrderSnapshot(
-                fields.getOrDefault("order_id", ""),
-                fields.getOrDefault("out_order_sn", outOrderSn),
-                fields.getOrDefault("order_status", ""),
-                fields.getOrDefault("persist_status", ""),
-                fields.getOrDefault("validation_status", ""),
-                fields.getOrDefault("fail_code", ""),
-                fields.getOrDefault("fail_reason", ""),
-                "1".equals(fields.getOrDefault("dispatch_allowed", "0"))));
+                fields.getOrDefault(FIELD_ORDER_ID, ""),
+                fields.getOrDefault(FIELD_OUT_ORDER_SN, outOrderSn),
+                fields.getOrDefault(FIELD_ORDER_STATUS, ""),
+                fields.getOrDefault(FIELD_PERSIST_STATUS, ""),
+                fields.getOrDefault(FIELD_VALIDATION_STATUS, ""),
+                fields.getOrDefault(FIELD_FAIL_CODE, ""),
+                fields.getOrDefault(FIELD_FAIL_REASON, ""),
+                REDIS_TRUE.equals(fields.getOrDefault(FIELD_DISPATCH_ALLOWED, REDIS_FALSE))));
     }
 
     private static final class ReactiveRedisRechargeOrderQueryOperations implements RedisRechargeOrderQueryOperations {

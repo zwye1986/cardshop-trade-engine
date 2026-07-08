@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.redis;
 
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
+import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import org.slf4j.Logger;
@@ -20,9 +22,12 @@ public class RedisV1TokenStoreAdapter implements V1TokenStorePort {
 
     private static final Logger log = LoggerFactory.getLogger(RedisV1TokenStoreAdapter.class);
     private static final Duration OPERATION_TIMEOUT = Duration.ofMillis(500);
+    private static final String LOG_EVENT_STORE_FAILED = "v1-token-store.store.failed";
+    private static final String LOG_EVENT_READ_FAILED = "v1-token-store.read.failed";
 
     private final RedisV1TokenOperations tokenOperations;
     private final TradeEngineProperties properties;
+    private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
     public RedisV1TokenStoreAdapter(ReactiveStringRedisTemplate redisTemplate, TradeEngineProperties properties) {
         this.tokenOperations = new ReactiveRedisV1TokenOperations(redisTemplate);
@@ -42,7 +47,14 @@ public class RedisV1TokenStoreAdapter implements V1TokenStorePort {
         try {
             return tokenOperations.set(key(appId), token, ttl);
         } catch (Exception ex) {
-            log.error("store V1 token failed, appId={}", appId, ex);
+            LogDecision decision = logStormGuard.shouldLog(LOG_EVENT_STORE_FAILED);
+            if (decision.shouldLog()) {
+                log.error("store V1 token failed, appId={}, occurrence={}, sampled={}",
+                        appId,
+                        decision.occurrence(),
+                        decision.sampledOccurrence(),
+                        ex);
+            }
             return false;
         }
     }
@@ -55,7 +67,14 @@ public class RedisV1TokenStoreAdapter implements V1TokenStorePort {
         try {
             return tokenOperations.get(key(appId));
         } catch (Exception ex) {
-            log.error("read V1 token failed, appId={}", appId, ex);
+            LogDecision decision = logStormGuard.shouldLog(LOG_EVENT_READ_FAILED);
+            if (decision.shouldLog()) {
+                log.error("read V1 token failed, appId={}, occurrence={}, sampled={}",
+                        appId,
+                        decision.occurrence(),
+                        decision.sampledOccurrence(),
+                        ex);
+            }
             return Optional.empty();
         }
     }

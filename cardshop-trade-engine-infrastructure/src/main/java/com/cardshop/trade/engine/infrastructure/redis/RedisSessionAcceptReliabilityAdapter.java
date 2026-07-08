@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.redis;
 
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
+import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
@@ -17,6 +19,7 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.script.RedisScript;
@@ -33,6 +36,21 @@ import reactor.core.publisher.Mono;
 public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrderPort, RechargeAcceptReliabilityPort {
 
     private static final Logger log = LoggerFactory.getLogger(RedisSessionAcceptReliabilityAdapter.class);
+    private static final String LOG_EVENT_ACCEPT_OPEN_SESSION_FAILED = "redis-session.accept.open-session.failed";
+    private static final String LOG_EVENT_ACCEPT_LUA_FAILED = "redis-session.accept.lua.failed";
+    private static final String LOG_EVENT_WAIT_SESSION_MISSING = "redis-session.wait.session-missing";
+    private static final String LOG_EVENT_WAIT_FAILED = "redis-session.wait.failed";
+    private static final String LOG_EVENT_CANCEL_OPEN_SESSION_FAILED = "redis-session.cancel.open-session.failed";
+    private static final String LOG_EVENT_CANCEL_LUA_FAILED = "redis-session.cancel.lua.failed";
+    private static final String LOG_EVENT_MARK_QUEUED_OPEN_SESSION_FAILED =
+            "redis-session.mark-queued.open-session.failed";
+    private static final String LOG_EVENT_MARK_QUEUED_LUA_FAILED = "redis-session.mark-queued.lua.failed";
+    private static final String LOG_EVENT_MARK_DB_OPEN_SESSION_FAILED = "redis-session.mark-db.open-session.failed";
+    private static final String LOG_EVENT_MARK_DB_LUA_FAILED = "redis-session.mark-db.lua.failed";
+    private static final String LOG_EVENT_MARK_FAILED_OPEN_SESSION_FAILED =
+            "redis-session.mark-failed.open-session.failed";
+    private static final String LOG_EVENT_MARK_FAILED_LUA_FAILED = "redis-session.mark-failed.lua.failed";
+    private static final String LOG_EVENT_CLOSE_SESSION_FAILED = "redis-session.close.failed";
 
     private final RechargeRedisSessionFactory sessionFactory;
     private final RechargeRedisKeyBuilder keyBuilder;
@@ -41,6 +59,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
     private final RedisHaGuardPort redisHaGuardPort;
     private final AcceptRechargeOrderLuaResultMapper acceptResultMapper = new AcceptRechargeOrderLuaResultMapper();
     private final Map<String, RechargeRedisSession> pendingSessions = new ConcurrentHashMap<>();
+    private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
     public RedisSessionAcceptReliabilityAdapter(
             RechargeRedisSessionFactory sessionFactory,
@@ -85,8 +104,14 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         try {
             session = sessionFactory.openSession();
         } catch (RuntimeException ex) {
-            log.error("打开Redis接单会话失败 orgCode={}, outOrderSn={}, orderId={}",
-                    command.orgCode(), command.outOrderSn(), command.orderId(), ex);
+            logSampledError(LOG_EVENT_ACCEPT_OPEN_SESSION_FAILED, decision -> log.error(
+                    "打开Redis接单会话失败 orgCode={}, outOrderSn={}, orderId={}, occurrence={}, sampled={}",
+                    command.orgCode(),
+                    command.outOrderSn(),
+                    command.orderId(),
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
             return CompletableFuture.completedFuture(
                     AcceptRechargeOrderResult.redisUnavailable(command.orderId(), "Redis 会话不可用"));
         }
@@ -100,14 +125,16 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                         : acceptResultMapper.map(result))
                 .doOnNext(result -> retainSessionOnlyForWrittenOrder(command, session, result))
                 .onErrorResume(ex -> {
-                    closeQuietly(session);
-                    log.error(
-                            "Redis session接单Lua失败 orgCode={}, outOrderSn={}, orderId={}, requestHash={}",
+                    closeWithErrorLog(session);
+                    logSampledError(LOG_EVENT_ACCEPT_LUA_FAILED, decision -> log.error(
+                            "Redis session接单Lua失败 orgCode={}, outOrderSn={}, orderId={}, requestHash={}, occurrence={}, sampled={}",
                             command.orgCode(),
                             command.outOrderSn(),
                             command.orderId(),
                             command.requestHash(),
-                            ex);
+                            decision.occurrence(),
+                            decision.sampledOccurrence(),
+                            ex));
                     // TODO(D5B): Lua 超时、Redis BUSY 或状态未知时写 recharge_accept_anomaly 并触发核查；参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
                     return Mono.just(AcceptRechargeOrderResult.redisUnavailable(
                             command.orderId(), "Redis Lua 执行失败"));
@@ -127,8 +154,13 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
 
         RechargeRedisSession session = pendingSessions.get(acceptResult.orderId());
         if (session == null) {
-            log.error("Redis WAIT缺少接单session orgCode={}, outOrderSn={}, orderId={}",
-                    command.orgCode(), command.outOrderSn(), acceptResult.orderId());
+            logSampledError(LOG_EVENT_WAIT_SESSION_MISSING, decision -> log.error(
+                    "Redis WAIT缺少接单session orgCode={}, outOrderSn={}, orderId={}, occurrence={}, sampled={}",
+                    command.orgCode(),
+                    command.outOrderSn(),
+                    acceptResult.orderId(),
+                    decision.occurrence(),
+                    decision.sampledOccurrence()));
             return CompletableFuture.completedFuture(
                     ReplicationWaitResult.missed(0, "REDIS_SESSION_NOT_FOUND"));
         }
@@ -146,13 +178,16 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 })
                 .onErrorResume(ex -> {
                     releaseSession(acceptResult.orderId());
-                    log.error("Redis WAIT执行失败 orgCode={}, outOrderSn={}, orderId={}, replicas={}, timeoutMs={}",
+                    logSampledError(LOG_EVENT_WAIT_FAILED, decision -> log.error(
+                            "Redis WAIT执行失败 orgCode={}, outOrderSn={}, orderId={}, replicas={}, timeoutMs={}, occurrence={}, sampled={}",
                             command.orgCode(),
                             command.outOrderSn(),
                             acceptResult.orderId(),
                             replicas,
                             timeout.toMillis(),
-                            ex);
+                            decision.occurrence(),
+                            decision.sampledOccurrence(),
+                            ex));
                     return Mono.just(ReplicationWaitResult.missed(0, "WAIT_ERROR"));
                 })
                 .toFuture();
@@ -168,8 +203,14 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
             try {
                 session = sessionFactory.openSession();
             } catch (RuntimeException ex) {
-                log.error("打开Redis取消会话失败 orgCode={}, outOrderSn={}, orderId={}",
-                        command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
+                logSampledError(LOG_EVENT_CANCEL_OPEN_SESSION_FAILED, decision -> log.error(
+                        "打开Redis取消会话失败 orgCode={}, outOrderSn={}, orderId={}, occurrence={}, sampled={}",
+                        command.orgCode(),
+                        command.outOrderSn(),
+                        acceptResult.orderId(),
+                        decision.occurrence(),
+                        decision.sampledOccurrence(),
+                        ex));
                 return CompletableFuture.completedFuture(
                         CancelUnconfirmedAcceptResult.failed(
                                 CancelUnconfirmedAcceptResult.FAIL_CODE_REDIS_SESSION_UNAVAILABLE,
@@ -190,10 +231,16 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                         keyBuilder.cancelUnconfirmedAcceptKeys(command),
                         args)
                 .map(RedisSessionAcceptReliabilityAdapter::toCancelResult)
-                .doFinally(signal -> closeQuietly(sessionToClose))
+                .doFinally(signal -> closeWithErrorLog(sessionToClose))
                 .onErrorResume(ex -> {
-                    log.error("Redis取消未确认接单失败 orgCode={}, outOrderSn={}, orderId={}",
-                            command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
+                    logSampledError(LOG_EVENT_CANCEL_LUA_FAILED, decision -> log.error(
+                            "Redis取消未确认接单失败 orgCode={}, outOrderSn={}, orderId={}, occurrence={}, sampled={}",
+                            command.orgCode(),
+                            command.outOrderSn(),
+                            acceptResult.orderId(),
+                            decision.occurrence(),
+                            decision.sampledOccurrence(),
+                            ex));
                     return Mono.just(CancelUnconfirmedAcceptResult.failed(
                             CancelUnconfirmedAcceptResult.FAIL_CODE_CANCEL_LUA_ERROR,
                             "Redis 取消脚本执行失败"));
@@ -211,8 +258,15 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         try {
             session = sessionFactory.openSession();
         } catch (RuntimeException ex) {
-            log.error("打开Redis持久化状态推进会话失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
-                    command.orgCode(), command.outOrderSn(), acceptResult.orderId(), persistMessageId, ex);
+            logSampledError(LOG_EVENT_MARK_QUEUED_OPEN_SESSION_FAILED, decision -> log.error(
+                    "打开Redis持久化状态推进会话失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}, occurrence={}, sampled={}",
+                    command.orgCode(),
+                    command.outOrderSn(),
+                    acceptResult.orderId(),
+                    persistMessageId,
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
             return CompletableFuture.completedFuture(
                     MarkPersistQueuedResult.failed(
                             MarkPersistQueuedResult.FAIL_CODE_REDIS_SESSION_UNAVAILABLE,
@@ -227,10 +281,17 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         return session
                 .execute(scriptLoader.markPersistQueuedScript(), keyBuilder.markPersistQueuedKeys(command), args)
                 .map(RedisSessionAcceptReliabilityAdapter::toMarkResult)
-                .doFinally(signal -> closeQuietly(sessionToClose))
+                .doFinally(signal -> closeWithErrorLog(sessionToClose))
                 .onErrorResume(ex -> {
-                    log.error("Redis持久化状态推进失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
-                            command.orgCode(), command.outOrderSn(), acceptResult.orderId(), persistMessageId, ex);
+                    logSampledError(LOG_EVENT_MARK_QUEUED_LUA_FAILED, decision -> log.error(
+                            "Redis持久化状态推进失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}, occurrence={}, sampled={}",
+                            command.orgCode(),
+                            command.outOrderSn(),
+                            acceptResult.orderId(),
+                            persistMessageId,
+                            decision.occurrence(),
+                            decision.sampledOccurrence(),
+                            ex));
                     return Mono.just(MarkPersistQueuedResult.failed(
                             MarkPersistQueuedResult.FAIL_CODE_MARK_LUA_ERROR,
                             "Redis 状态推进脚本执行失败"));
@@ -248,8 +309,14 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         try {
             session = sessionFactory.openSession();
         } catch (RuntimeException ex) {
-            log.error("打开Redis落库完成标记会话失败 orgCode={}, outOrderSn={}, orderId={}",
-                    command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
+            logSampledError(LOG_EVENT_MARK_DB_OPEN_SESSION_FAILED, decision -> log.error(
+                    "打开Redis落库完成标记会话失败 orgCode={}, outOrderSn={}, orderId={}, occurrence={}, sampled={}",
+                    command.orgCode(),
+                    command.outOrderSn(),
+                    acceptResult.orderId(),
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
             return CompletableFuture.completedFuture(
                     MarkPersistStateResult.failed(
                             MarkPersistStateResult.FAIL_CODE_REDIS_SESSION_UNAVAILABLE,
@@ -270,10 +337,16 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         return session
                 .execute(scriptLoader.markDbPersistedScript(), keyBuilder.markDbPersistedKeys(command), args)
                 .map(RedisSessionAcceptReliabilityAdapter::toPersistStateMarkResult)
-                .doFinally(signal -> closeQuietly(sessionToClose))
+                .doFinally(signal -> closeWithErrorLog(sessionToClose))
                 .onErrorResume(ex -> {
-                    log.error("Redis落库完成状态推进失败 orgCode={}, outOrderSn={}, orderId={}",
-                            command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
+                    logSampledError(LOG_EVENT_MARK_DB_LUA_FAILED, decision -> log.error(
+                            "Redis落库完成状态推进失败 orgCode={}, outOrderSn={}, orderId={}, occurrence={}, sampled={}",
+                            command.orgCode(),
+                            command.outOrderSn(),
+                            acceptResult.orderId(),
+                            decision.occurrence(),
+                            decision.sampledOccurrence(),
+                            ex));
                     return Mono.just(MarkPersistStateResult.failed(
                             MarkPersistStateResult.FAIL_CODE_MARK_DB_PERSISTED_LUA_ERROR,
                             "Redis 落库完成标记失败"));
@@ -294,8 +367,14 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         try {
             session = sessionFactory.openSession();
         } catch (RuntimeException ex) {
-            log.error("打开Redis落库失败标记会话失败 orgCode={}, outOrderSn={}, orderId={}",
-                    command.orgCode(), command.outOrderSn(), acceptResult.orderId(), ex);
+            logSampledError(LOG_EVENT_MARK_FAILED_OPEN_SESSION_FAILED, decision -> log.error(
+                    "打开Redis落库失败标记会话失败 orgCode={}, outOrderSn={}, orderId={}, occurrence={}, sampled={}",
+                    command.orgCode(),
+                    command.outOrderSn(),
+                    acceptResult.orderId(),
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
             return CompletableFuture.completedFuture(
                     MarkPersistStateResult.failed(
                             MarkPersistStateResult.FAIL_CODE_REDIS_SESSION_UNAVAILABLE,
@@ -317,10 +396,17 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         return session
                 .execute(scriptLoader.markPersistFailedScript(), keyBuilder.markPersistFailedKeys(command), args)
                 .map(RedisSessionAcceptReliabilityAdapter::toPersistStateMarkResult)
-                .doFinally(signal -> closeQuietly(sessionToClose))
+                .doFinally(signal -> closeWithErrorLog(sessionToClose))
                 .onErrorResume(ex -> {
-                    log.error("Redis落库失败状态推进失败 orgCode={}, outOrderSn={}, orderId={}, failCode={}",
-                            command.orgCode(), command.outOrderSn(), acceptResult.orderId(), failCode, ex);
+                    logSampledError(LOG_EVENT_MARK_FAILED_LUA_FAILED, decision -> log.error(
+                            "Redis落库失败状态推进失败 orgCode={}, outOrderSn={}, orderId={}, failCode={}, occurrence={}, sampled={}",
+                            command.orgCode(),
+                            command.outOrderSn(),
+                            acceptResult.orderId(),
+                            failCode,
+                            decision.occurrence(),
+                            decision.sampledOccurrence(),
+                            ex));
                     return Mono.just(MarkPersistStateResult.failed(
                             MarkPersistStateResult.FAIL_CODE_MARK_PERSIST_FAILED_LUA_ERROR,
                             "Redis 落库失败标记失败"));
@@ -333,12 +419,12 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
             RechargeRedisSession session,
             AcceptRechargeOrderResult result) {
         if (!result.orderWritten()) {
-            closeQuietly(session);
+            closeWithErrorLog(session);
             return;
         }
         RechargeRedisSession previous = pendingSessions.put(result.orderId(), session);
         if (previous != null && previous != session) {
-            closeQuietly(previous);
+            closeWithErrorLog(previous);
             log.warn("Redis接单session被新会话覆盖 orgCode={}, outOrderSn={}, orderId={}",
                     command.orgCode(), command.outOrderSn(), result.orderId());
         }
@@ -347,7 +433,14 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
     private void releaseSession(String orderId) {
         RechargeRedisSession session = pendingSessions.remove(orderId);
         if (session != null) {
-            closeQuietly(session);
+            closeWithErrorLog(session);
+        }
+    }
+
+    private void logSampledError(String eventKey, Consumer<LogDecision> logger) {
+        LogDecision decision = logStormGuard.shouldLog(eventKey);
+        if (decision.shouldLog()) {
+            logger.accept(decision);
         }
     }
 
@@ -389,12 +482,19 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         return fields;
     }
 
-    private static void closeQuietly(RechargeRedisSession session) {
+    private void closeWithErrorLog(RechargeRedisSession session) {
         try {
             session.close();
         } catch (RuntimeException ex) {
-            // 关闭 Redis 会话失败不改变业务结果，但必须记录 error 供连接池泄漏和客户端异常排查。
-            log.error("关闭Redis接单会话失败", ex);
+            /*
+             * 关闭 Redis 会话失败不改变业务结果，但可能指向连接池泄漏或客户端异常。
+             * 该路径在 Redis 故障时可能按请求量触发，按 AGENTS.md 日志风暴规则只记录首条和采样条。
+             */
+            logSampledError(LOG_EVENT_CLOSE_SESSION_FAILED, decision -> log.error(
+                    "关闭Redis接单会话失败 occurrence={}, sampled={}",
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
         }
     }
 }

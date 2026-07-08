@@ -31,6 +31,8 @@ Use JDK 21 and Maven 3.9 or newer.
 
 Follow existing Spring Java style: four-space indentation, package names under `com.cardshop.trade.engine`, and descriptive class names such as `TradeEngineProperties`. Keep configuration properties kebab-cased under `trade.engine.*`. Prefer constructor injection for Spring components and keep cross-module dependencies aligned with the module responsibilities above.
 
+Avoid magic numbers and magic strings in production code. Extract repeated or business-significant literal values into clearly named constants, enums, configuration properties, or domain value objects, while leaving trivial local literals only when they are self-explanatory and not part of a business contract.
+
 ## Development Rules
 
 When implementation details require changing the agreed approach, update both design documents in `docs/` before changing code: `docs/交行直充业务系统高可用方案设计.md` and `docs/交行直充业务系统详细设计.md`.
@@ -46,6 +48,14 @@ Temporarily unimplemented functionality must be marked with a `TODO` comment at 
 Prefer Java 21 language and library features where they make the code clearer, safer, or simpler. Key business, routing, Redis, MQ, MySQL, and compensation paths must log enough context to support production troubleshooting, without writing secrets or sensitive payloads.
 
 Production code must not silently swallow caught exceptions. Any `catch` block that handles, degrades, retries, or returns a fallback instead of immediately rethrowing must write an `error` log with the exception stack and enough non-sensitive business context to troubleshoot the failure. If the exception is immediately rethrown or wrapped and rethrown, do not duplicate logs at the same layer.
+
+When logging exceptions, you must assess whether the log site sits on a high-frequency code path (such as per-request filters, message consumers, scheduled polling loops, hot retry branches) where repeated failures could produce an error log storm that overwhelms disk I/O, log collectors, or alerting systems. For such paths, apply at least one of the following mitigations:
+- Use `warn` level instead of `error` when the exception reflects an expected degraded condition rather than an unexpected internal fault.
+- Apply rate-limited logging (e.g. log every Nth occurrence, or suppress duplicates within a sliding window) while keeping enough sampled context for postmortem.
+- Write an aggregated `error` log on a separate low-frequency summary path (e.g. at batch-end or on a periodic health report) rather than per-occurrence.
+- Delegate the decision to a dedicated log-throttling utility shared across the codebase, with clear comments explaining why rate limiting is applied.
+
+The goal is to protect the production incident scene — enough evidence to diagnose the root cause — without letting the logging itself become a contributing factor to system degradation. When in doubt for a borderline path, default to `error` with a comment justifying the choice.
 
 ## Testing Guidelines
 

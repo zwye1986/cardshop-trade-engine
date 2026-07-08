@@ -1,5 +1,6 @@
 package com.cardshop.trade.engine.application.recharge;
 
+import com.cardshop.trade.engine.domain.order.PersistStatus;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import java.util.Map;
 import java.util.Objects;
@@ -70,6 +71,9 @@ public record PersistOrderSnapshot(
         long persistedVersion,
         int mqPublishCount) {
 
+    private static final String REDIS_TRUE = "1";
+    private static final String TEXT_TRUE = "true";
+
     public PersistOrderSnapshot {
         orgCode = requireText(orgCode, "orgCode");
         appId = defaultText(appId);
@@ -92,10 +96,12 @@ public record PersistOrderSnapshot(
         requestHashVersion = defaultText(requestHashVersion, "v1");
         requestHashAlg = defaultText(requestHashAlg, "SHA-256");
         orderStatus = defaultText(orderStatus, dispatchAllowed ? "ACCEPTED" : "VALIDATION_FAILED");
-        validationStatus = defaultText(validationStatus, dispatchAllowed ? "PASSED" : "FAILED");
+        validationStatus = defaultText(validationStatus, dispatchAllowed
+                ? ValidationStatus.PASSED.name()
+                : ValidationStatus.FAILED.name());
         failCode = defaultText(failCode);
         failReason = defaultText(failReason);
-        persistStatus = defaultText(persistStatus, "PERSIST_QUEUED");
+        persistStatus = defaultText(persistStatus, PersistStatus.PERSIST_QUEUED.name());
         if (orderVersion <= 0) {
             throw new IllegalArgumentException("orderVersion must be positive");
         }
@@ -114,8 +120,11 @@ public record PersistOrderSnapshot(
     public static PersistOrderSnapshot fromInitialSnapshot(PersistTradeOrderMessage message) {
         Objects.requireNonNull(message, "message must not be null");
         Map<String, Object> snapshot = message.initialOrderSnapshot();
-        String validationStatus = text(snapshot, "validation_status", "PASSED");
-        boolean dispatchAllowed = bool(snapshot, "dispatch_allowed", "PASSED".equals(validationStatus));
+        String validationStatus = text(snapshot, "validation_status", ValidationStatus.PASSED.name());
+        boolean dispatchAllowed = bool(
+                snapshot,
+                "dispatch_allowed",
+                ValidationStatus.PASSED.name().equals(validationStatus));
         return new PersistOrderSnapshot(
                 text(snapshot, "org_code", message.orgCode()),
                 text(snapshot, "app_id", ""),
@@ -146,7 +155,7 @@ public record PersistOrderSnapshot(
                 text(snapshot, "fail_reason", ""),
                 dispatchAllowed,
                 bool(snapshot, "balance_reserved", dispatchAllowed),
-                text(snapshot, "persist_status", "PERSIST_QUEUED"),
+                text(snapshot, "persist_status", PersistStatus.PERSIST_QUEUED.name()),
                 longValue(snapshot, "order_version", message.orderVersion()),
                 longValue(snapshot, "persisted_version", 0L),
                 intValue(snapshot, "mq_publish_count", 1));
@@ -189,7 +198,9 @@ public record PersistOrderSnapshot(
 
     AcceptRechargeOrderResult toAcceptResult() {
         return new AcceptRechargeOrderResult(
-                "PASSED".equals(validationStatus) ? AcceptRechargeOrderStatus.ACCEPTED : AcceptRechargeOrderStatus.ACCEPTED_FAILED,
+                ValidationStatus.PASSED.name().equals(validationStatus)
+                        ? AcceptRechargeOrderStatus.ACCEPTED
+                        : AcceptRechargeOrderStatus.ACCEPTED_FAILED,
                 orderId,
                 validationStatus,
                 failCode,
@@ -200,7 +211,7 @@ public record PersistOrderSnapshot(
     }
 
     private ValidationStatus validationStatusEnum() {
-        return "PASSED".equals(validationStatus) ? ValidationStatus.PASSED : ValidationStatus.FAILED;
+        return ValidationStatus.PASSED.name().equals(validationStatus) ? ValidationStatus.PASSED : ValidationStatus.FAILED;
     }
 
     private static String text(Map<String, Object> values, String key, String fallback) {
@@ -243,7 +254,7 @@ public record PersistOrderSnapshot(
             return fallback;
         }
         String text = String.valueOf(value);
-        return "1".equals(text) || "true".equalsIgnoreCase(text);
+        return REDIS_TRUE.equals(text) || TEXT_TRUE.equalsIgnoreCase(text);
     }
 
     private static String requireText(String value, String fieldName) {

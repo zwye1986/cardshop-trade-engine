@@ -3,6 +3,7 @@ package com.cardshop.trade.engine.api.v1.usecase;
 import com.cardshop.trade.engine.api.v1.dto.V1RechargeOrderInvalidRequest;
 import com.cardshop.trade.engine.api.v1.dto.V1RechargeOrderResponse;
 import com.cardshop.trade.engine.api.v1.protocol.V1MerchantSecurityProfile;
+import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolFailureReason;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckResult;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderUseCase;
@@ -15,6 +16,8 @@ import com.cardshop.trade.engine.application.v1.V1CardApiResultStatus;
 import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
+import com.cardshop.trade.engine.domain.order.PersistStatus;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,6 +33,7 @@ import org.springframework.util.StringUtils;
 public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrderUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(V1InvalidRechargeOrderUseCaseService.class);
+    private static final String ORDER_STATUS_DESC_PROCESSING = "处理中";
 
     private final V1ProtocolPrecheckService precheckService;
     private final V1MerchantProfilePort merchantProfilePort;
@@ -83,7 +87,7 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
             V1MerchantProfile merchant,
             V1RechargeOrderInvalidRequest request,
             RechargeOrderSnapshot snapshot) {
-        if (!"DB_PERSISTED".equals(defaultText(snapshot.persistStatus(), ""))) {
+        if (!PersistStatus.DB_PERSISTED.name().equals(defaultText(snapshot.persistStatus(), ""))) {
             return processing(snapshot);
         }
         /*
@@ -103,8 +107,8 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
         return V1CardApiResultStatus.SUCCESS.result(new V1RechargeOrderResponse(
                 snapshot.orderId(),
                 snapshot.outOrderSn(),
-                "2",
-                "处理中"));
+                Integer.toString(LegacyOrderStatusCode.ACCEPTED.code()),
+                ORDER_STATUS_DESC_PROCESSING));
     }
 
     private static boolean validRequest(V1RechargeOrderInvalidRequest request) {
@@ -116,9 +120,10 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
 
     private static V1CardApiResult protocolFailure(String reason) {
         return switch (reason) {
-            case "SIGN_FAILED" -> V1CardApiResultStatus.SIGN_FAILED.result("验签不合规！");
-            case "DECRYPT_FAILED" -> V1CardApiResultStatus.SIGN_FAILED.result();
-            case "TIMESTAMP_OUT_OF_RANGE" -> V1CardApiResultStatus.PARAM_ERROR.result("timestamp超出允许范围");
+            case V1ProtocolFailureReason.SIGN_FAILED -> V1CardApiResultStatus.SIGN_FAILED.result("验签不合规！");
+            case V1ProtocolFailureReason.DECRYPT_FAILED -> V1CardApiResultStatus.SIGN_FAILED.result();
+            case V1ProtocolFailureReason.TIMESTAMP_OUT_OF_RANGE ->
+                    V1CardApiResultStatus.PARAM_ERROR.result("timestamp超出允许范围");
             default -> V1CardApiResultStatus.PARAM_ERROR.result();
         };
     }

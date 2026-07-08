@@ -21,6 +21,8 @@ import org.springframework.util.StringUtils;
 public class RedisPersistOrderSnapshotAdapter implements PersistOrderSnapshotPort {
 
     private static final Logger log = LoggerFactory.getLogger(RedisPersistOrderSnapshotAdapter.class);
+    private static final String REDIS_TRUE = "1";
+    private static final String TEXT_TRUE = "true";
 
     private final RedisRechargeOrderQueryOperations queryOperations;
     private final RechargeRedisKeyBuilder keyBuilder;
@@ -134,7 +136,7 @@ public class RedisPersistOrderSnapshotAdapter implements PersistOrderSnapshotPor
         if (!StringUtils.hasText(value)) {
             return fallback;
         }
-        return "1".equals(value) || "true".equalsIgnoreCase(value);
+        return REDIS_TRUE.equals(value) || TEXT_TRUE.equalsIgnoreCase(value);
     }
 
     private static final class NumericFieldParseException extends RuntimeException {

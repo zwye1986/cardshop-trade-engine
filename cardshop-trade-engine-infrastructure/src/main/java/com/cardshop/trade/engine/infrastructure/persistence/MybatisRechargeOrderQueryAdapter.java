@@ -2,6 +2,9 @@ package com.cardshop.trade.engine.infrastructure.persistence;
 
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderSnapshot;
+import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
+import com.cardshop.trade.engine.domain.order.PersistStatus;
+import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
@@ -22,9 +25,6 @@ import org.springframework.util.StringUtils;
 public class MybatisRechargeOrderQueryAdapter implements RechargeOrderQueryPort {
 
     private static final Logger log = LoggerFactory.getLogger(MybatisRechargeOrderQueryAdapter.class);
-    private static final String PERSIST_STATUS_DB_PERSISTED = "DB_PERSISTED";
-    private static final String VALIDATION_STATUS_PASSED = "PASSED";
-    private static final String VALIDATION_STATUS_FAILED = "FAILED";
 
     private final McOrderQueryReader orderReader;
     private final RechargeOrderExtQueryReader extReader;
@@ -73,17 +73,17 @@ public class MybatisRechargeOrderQueryAdapter implements RechargeOrderQueryPort 
         int mysqlOrderStatus = order.getOrderStatus() == null ? 0 : order.getOrderStatus();
         String persistStatus = ext != null && StringUtils.hasText(ext.getPersistStatus())
                 ? ext.getPersistStatus()
-                : PERSIST_STATUS_DB_PERSISTED;
+                : PersistStatus.DB_PERSISTED.name();
         String validationStatus = ext != null && StringUtils.hasText(ext.getValidationStatus())
                 ? ext.getValidationStatus()
                 : validationStatusFromMysql(mysqlOrderStatus);
         boolean dispatchAllowed = ext != null && ext.getDispatchAllowed() != null
                 ? ext.getDispatchAllowed()
-                : mysqlOrderStatus != 6;
+                : mysqlOrderStatus != LegacyOrderStatusCode.FAILED.code();
         return new RechargeOrderSnapshot(
                 order.getOrderId(),
                 StringUtils.hasText(order.getOutOrderId()) ? order.getOutOrderId() : requestedOutOrderSn,
-                orderStatusFromMysql(mysqlOrderStatus),
+                LegacyOrderStatusCode.fromCode(mysqlOrderStatus).toQueryStatus(),
                 persistStatus,
                 validationStatus,
                 defaultText(order.getFailCode()),
@@ -91,22 +91,10 @@ public class MybatisRechargeOrderQueryAdapter implements RechargeOrderQueryPort 
                 dispatchAllowed);
     }
 
-    /**
-     * 将旧表数字状态归一成 API 层已使用的内部状态名，再由 V1 查单用例统一映射为协议 order_status。
-     */
-    private static String orderStatusFromMysql(int orderStatus) {
-        return switch (orderStatus) {
-            case 12 -> "SUCCESS";
-            case 13 -> "SUPPLIER_ACCEPTED";
-            case 11 -> "REFUNDED";
-            case 6 -> "FAILED";
-            case 2 -> "ACCEPTED";
-            default -> "UNKNOWN";
-        };
-    }
-
     private static String validationStatusFromMysql(int orderStatus) {
-        return orderStatus == 6 ? VALIDATION_STATUS_FAILED : VALIDATION_STATUS_PASSED;
+        return orderStatus == LegacyOrderStatusCode.FAILED.code()
+                ? ValidationStatus.FAILED.name()
+                : ValidationStatus.PASSED.name();
     }
 
     private static String defaultText(String value) {

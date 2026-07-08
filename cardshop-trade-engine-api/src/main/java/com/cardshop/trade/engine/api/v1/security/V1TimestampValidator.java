@@ -1,5 +1,6 @@
 package com.cardshop.trade.engine.api.v1.security;
 
+import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolFailureReason;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -40,14 +41,14 @@ public class V1TimestampValidator {
     public V1TimestampVerifyResult validate(String timestampText) {
         Instant timestamp = parse(timestampText);
         if (timestamp == null) {
-            return V1TimestampVerifyResult.invalid("TIMESTAMP_INVALID");
+            return V1TimestampVerifyResult.invalid(V1ProtocolFailureReason.TIMESTAMP_INVALID);
         }
         Instant now = clock.instant();
         Duration distance = timestamp.isAfter(now)
                 ? Duration.between(now, timestamp)
                 : Duration.between(timestamp, now);
         if (distance.compareTo(settings.allowedSkew()) > 0) {
-            return V1TimestampVerifyResult.invalid("TIMESTAMP_OUT_OF_RANGE");
+            return V1TimestampVerifyResult.invalid(V1ProtocolFailureReason.TIMESTAMP_OUT_OF_RANGE);
         }
         return V1TimestampVerifyResult.valid(timestamp);
     }

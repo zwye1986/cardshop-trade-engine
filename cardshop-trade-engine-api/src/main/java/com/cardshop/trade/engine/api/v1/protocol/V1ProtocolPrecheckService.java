@@ -9,6 +9,8 @@ import com.cardshop.trade.engine.api.v1.security.V1SignatureVerifyResult;
 import com.cardshop.trade.engine.api.v1.security.V1Sm3SignatureVerifier;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampValidator;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampVerifyResult;
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
+import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -26,11 +28,13 @@ import java.util.function.Function;
 public class V1ProtocolPrecheckService {
 
     private static final Logger log = LoggerFactory.getLogger(V1ProtocolPrecheckService.class);
+    private static final String LOG_EVENT_DECODE_FAILED = "v1-protocol-precheck.decode.failed";
 
     private final V1RequestBodyCodec bodyCodec;
     private final V1TimestampValidator timestampValidator;
     private final V1Sm3SignatureVerifier signatureVerifier;
     private final V1ProtocolSettings settings;
+    private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
     public V1ProtocolPrecheckService(
             V1RequestBodyCodec bodyCodec,
@@ -103,13 +107,20 @@ public class V1ProtocolPrecheckService {
                     ? bodyCodec.decodeSm4(rawBody, merchant.aesKey(), payloadType)
                     : bodyCodec.decodePlain(rawBody, payloadType);
         } catch (V1RequestBodyDecodeException ex) {
-            log.error("V1协议请求体解码失败 payloadType={}, sm4Enabled={}, appId={}, orgCode={}",
-                    payloadType.getSimpleName(),
-                    settings.requestSm4Enabled(),
-                    merchant.appId(),
-                    merchant.orgCode(),
-                    ex);
-            return V1ProtocolPrecheckResult.invalid(settings.requestSm4Enabled() ? "DECRYPT_FAILED" : "REQUEST_BODY_INVALID");
+            LogDecision decision = logStormGuard.shouldLog(LOG_EVENT_DECODE_FAILED);
+            if (decision.shouldLog()) {
+                log.error("V1协议请求体解码失败 payloadType={}, sm4Enabled={}, appId={}, orgCode={}, occurrence={}, sampled={}",
+                        payloadType.getSimpleName(),
+                        settings.requestSm4Enabled(),
+                        merchant.appId(),
+                        merchant.orgCode(),
+                        decision.occurrence(),
+                        decision.sampledOccurrence(),
+                        ex);
+            }
+            return V1ProtocolPrecheckResult.invalid(settings.requestSm4Enabled()
+                    ? V1ProtocolFailureReason.DECRYPT_FAILED
+                    : V1ProtocolFailureReason.REQUEST_BODY_INVALID);
         }
 
         V1TimestampVerifyResult timestampResult = timestampValidator.validate(timestampExtractor.apply(payload));
@@ -119,7 +130,7 @@ public class V1ProtocolPrecheckService {
 
         V1SignatureVerifyResult signatureResult = signatureVerifierFunction.apply(payload, merchant.aesKey());
         if (!signatureResult.valid()) {
-            return V1ProtocolPrecheckResult.invalid("SIGN_FAILED");
+            return V1ProtocolPrecheckResult.invalid(V1ProtocolFailureReason.SIGN_FAILED);
         }
         return V1ProtocolPrecheckResult.ok(payload);
     }

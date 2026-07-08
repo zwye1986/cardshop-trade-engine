@@ -4,9 +4,11 @@ import com.cardshop.trade.engine.application.recharge.OrderPersistAggregate;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshot;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.FulfillmentDispatchStatus;
+import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.domain.order.PersistStatus;
 import com.cardshop.trade.engine.domain.order.TaskStatus;
+import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McDepartRecordDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
@@ -35,8 +37,6 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
 
     private static final String DATA_STATUS_PROCESSED = "PROCESSED";
     private static final String PRE_DEDUCT_RECORD_TYPE = "1";
-    private static final int ORDER_STATUS_PROCESSING = 2;
-    private static final int ORDER_STATUS_FAILED = 6;
     private static final int DEFAULT_MAX_RETRY_COUNT = 10;
     private static final ZoneId LEGACY_CARDSHOP_DB_ZONE = ZoneId.of("Asia/Shanghai");
 
@@ -242,7 +242,9 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
     }
 
     private static int orderStatus(PersistOrderSnapshot snapshot) {
-        return "PASSED".equals(snapshot.validationStatus()) ? ORDER_STATUS_PROCESSING : ORDER_STATUS_FAILED;
+        return ValidationStatus.PASSED.name().equals(snapshot.validationStatus())
+                ? LegacyOrderStatusCode.ACCEPTED.code()
+                : LegacyOrderStatusCode.FAILED.code();
     }
 
     private static LocalDateTime persistedAt(OrderPersistAggregate aggregate) {

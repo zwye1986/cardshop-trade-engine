@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.redis;
 
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
+import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
 import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
 import java.time.Duration;
 import java.util.Objects;
@@ -18,9 +20,14 @@ public class RedisDirectRechargeFrequencyAdapter implements DirectRechargeFreque
 
     private static final Logger log = LoggerFactory.getLogger(RedisDirectRechargeFrequencyAdapter.class);
     private static final Duration DEFAULT_TIMEOUT = Duration.ofMillis(300);
+    private static final String FREQUENCY_KEY_PREFIX = "recharge:";
+    private static final String FREQUENCY_KEY_MIDDLE = ":deliver:frequency:";
+    private static final String LOG_EVENT_ACQUIRE_FAILED = "direct-recharge-frequency.acquire.failed";
+    private static final String LOG_EVENT_RELEASE_FAILED = "direct-recharge-frequency.release.failed";
 
     private final ReactiveStringRedisTemplate redisTemplate;
     private final Duration operationTimeout;
+    private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
     public RedisDirectRechargeFrequencyAdapter(ReactiveStringRedisTemplate redisTemplate, Duration operationTimeout) {
         this.redisTemplate = Objects.requireNonNull(redisTemplate, "redisTemplate must not be null");
@@ -48,7 +55,15 @@ public class RedisDirectRechargeFrequencyAdapter implements DirectRechargeFreque
             }
             return false;
         } catch (Exception ex) {
-            log.error("直充限频锁获取异常 orderId={}, key={}", orderId, key, ex);
+            LogDecision decision = logStormGuard.shouldLog(LOG_EVENT_ACQUIRE_FAILED);
+            if (decision.shouldLog()) {
+                log.error("直充限频锁获取异常 orderId={}, key={}, occurrence={}, sampled={}",
+                        orderId,
+                        key,
+                        decision.occurrence(),
+                        decision.sampledOccurrence(),
+                        ex);
+            }
             return true;
         }
     }
@@ -70,7 +85,15 @@ public class RedisDirectRechargeFrequencyAdapter implements DirectRechargeFreque
                 redisTemplate.delete(key).block(timeout());
             }
         } catch (Exception ex) {
-            log.error("直充限频锁释放异常 orderId={}, key={}", orderId, key, ex);
+            LogDecision decision = logStormGuard.shouldLog(LOG_EVENT_RELEASE_FAILED);
+            if (decision.shouldLog()) {
+                log.error("直充限频锁释放异常 orderId={}, key={}, occurrence={}, sampled={}",
+                        orderId,
+                        key,
+                        decision.occurrence(),
+                        decision.sampledOccurrence(),
+                        ex);
+            }
         }
     }
 
@@ -82,6 +105,6 @@ public class RedisDirectRechargeFrequencyAdapter implements DirectRechargeFreque
         if (!StringUtils.hasText(orgCode) || !StringUtils.hasText(account)) {
             return "";
         }
-        return "recharge:" + orgCode + ":deliver:frequency:" + account;
+        return FREQUENCY_KEY_PREFIX + orgCode + FREQUENCY_KEY_MIDDLE + account;
     }
 }

@@ -148,7 +148,7 @@ public class TradeEngineProperties {
         /**
          * Redis 写入总开关；生产默认关闭，完成灰度和高可用验证后才能开启。
          */
-        private boolean writeEnabled = true;
+        private boolean writeEnabled = false;
 
         /**
          * Redis WAIT 期望副本数，用于降低主从切换时已确认写丢失风险。

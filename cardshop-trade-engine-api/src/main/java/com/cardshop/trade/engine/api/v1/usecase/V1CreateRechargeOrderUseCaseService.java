@@ -1,6 +1,7 @@
 package com.cardshop.trade.engine.api.v1.usecase;
 
 import com.cardshop.trade.engine.api.v1.dto.V1RechargeCreateOrderRequest;
+import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolFailureReason;
 import com.cardshop.trade.engine.api.v1.protocol.V1MerchantSecurityProfile;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckResult;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
@@ -29,6 +30,8 @@ import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
 import com.cardshop.trade.engine.application.v1.V1ProductSelection;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
+import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
+import com.cardshop.trade.engine.domain.order.PersistStatus;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.domain.service.RequestHashCanonicalizer;
 import org.slf4j.Logger;
@@ -56,7 +59,14 @@ import java.util.concurrent.Executor;
 public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(V1CreateRechargeOrderUseCaseService.class);
-    private static final String PERSIST_STATUS_PENDING_MQ = "PENDING_MQ";
+    private static final String PERSIST_STATUS_PENDING_MQ = PersistStatus.PENDING_MQ.name();
+    private static final String HTTP_SCHEME = "http";
+    private static final String HTTPS_SCHEME = "https";
+    private static final String FAIL_CODE_MERCHANT_DISABLED = "MERCHANT_DISABLED";
+    private static final String FAIL_CODE_INVALID_NUM = "INVALID_NUM";
+    private static final String FAIL_CODE_BALANCE_NOT_ENOUGH = "BALANCE_NOT_ENOUGH";
+    private static final int DIRECT_RECHARGE_ORDER_NUM = 1;
+    private static final int NONCE_STR_LENGTH = 32;
     private static final int MAX_ACCEPT_ANOMALY_ID_LENGTH = 100;
 
     private final V1ProtocolPrecheckService precheckService;
@@ -392,10 +402,10 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             V1RechargeCreateOrderRequest request,
             V1ProductSelection productSelection) {
         if (!merchant.enabled()) {
-            return new BusinessFailure("MERCHANT_DISABLED", "商户已停用");
+            return new BusinessFailure(FAIL_CODE_MERCHANT_DISABLED, "商户已停用");
         }
-        if (!Integer.valueOf(1).equals(request.num())) {
-            return new BusinessFailure("INVALID_NUM", "直充产品仅支持单数量下单！");
+        if (request.num() == null || request.num() != DIRECT_RECHARGE_ORDER_NUM) {
+            return new BusinessFailure(FAIL_CODE_INVALID_NUM, "直充产品仅支持单数量下单！");
         }
         if (productSelection.validationStatus() == ValidationStatus.FAILED) {
             return new BusinessFailure(productSelection.failCode(), productSelection.failReason());
@@ -411,7 +421,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 || request.num() == null) {
             return "参数错误";
         }
-        if (request.nonceStr().length() != 32) {
+        if (request.nonceStr().length() != NONCE_STR_LENGTH) {
             return "nonce_str长度不正确";
         }
         if (!StringUtils.hasText(request.notifyUrl()) || !isHttpUrl(request.notifyUrl())) {
@@ -423,7 +433,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     private static boolean isHttpUrl(String value) {
         try {
             URI uri = URI.create(value);
-            return "http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme());
+            return HTTP_SCHEME.equalsIgnoreCase(uri.getScheme()) || HTTPS_SCHEME.equalsIgnoreCase(uri.getScheme());
         } catch (IllegalArgumentException ex) {
             /*
              * 这是商户请求参数校验路径，非法 URL 应返回 PARAM_ERROR，不应进入系统故障告警。
@@ -436,9 +446,10 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
 
     private static V1CardApiResult protocolFailure(String reason) {
         return switch (reason) {
-            case "SIGN_FAILED" -> V1CardApiResultStatus.SIGN_FAILED.result("验签不合规！");
-            case "DECRYPT_FAILED" -> V1CardApiResultStatus.SIGN_FAILED.result();
-            case "TIMESTAMP_OUT_OF_RANGE" -> V1CardApiResultStatus.PARAM_ERROR.result("timestamp超出允许范围");
+            case V1ProtocolFailureReason.SIGN_FAILED -> V1CardApiResultStatus.SIGN_FAILED.result("验签不合规！");
+            case V1ProtocolFailureReason.DECRYPT_FAILED -> V1CardApiResultStatus.SIGN_FAILED.result();
+            case V1ProtocolFailureReason.TIMESTAMP_OUT_OF_RANGE ->
+                    V1CardApiResultStatus.PARAM_ERROR.result("timestamp超出允许范围");
             default -> V1CardApiResultStatus.PARAM_ERROR.result();
         };
     }
@@ -647,12 +658,15 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     private static V1CardApiResult processingResult(String outOrderSn, AcceptRechargeOrderResult acceptResult) {
         return V1CardApiResultStatus.SYSTEM_BUSY.result(
                 "系统繁忙，请稍后查询订单状态",
-                Map.of("out_order_sn", outOrderSn, "order_status", "2"));
+                Map.of(
+                        "out_order_sn", outOrderSn,
+                        "order_status", Integer.toString(LegacyOrderStatusCode.ACCEPTED.code())));
     }
 
     private static V1CardApiResultStatus businessStatus(String failCode) {
         return switch (defaultText(failCode, "")) {
-            case "BALANCE_NOT_ENOUGH", "MERCHANT_DISABLED" -> V1CardApiResultStatus.BALANCE_OR_MERCHANT_FAILED;
+            case FAIL_CODE_BALANCE_NOT_ENOUGH, FAIL_CODE_MERCHANT_DISABLED ->
+                    V1CardApiResultStatus.BALANCE_OR_MERCHANT_FAILED;
             default -> V1CardApiResultStatus.BUSINESS_FAILED;
         };
     }

@@ -3,6 +3,7 @@ package com.cardshop.trade.engine.api.v1.usecase;
 import com.cardshop.trade.engine.api.v1.dto.V1RechargeOrderQueryRequest;
 import com.cardshop.trade.engine.api.v1.dto.V1RechargeOrderResponse;
 import com.cardshop.trade.engine.api.v1.protocol.V1MerchantSecurityProfile;
+import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolFailureReason;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckResult;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
 import com.cardshop.trade.engine.application.v1.QueryRechargeOrderUseCase;
@@ -13,6 +14,9 @@ import com.cardshop.trade.engine.application.v1.V1CardApiResultStatus;
 import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
+import com.cardshop.trade.engine.domain.order.PersistStatus;
+import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,6 +31,19 @@ import org.springframework.util.StringUtils;
 public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(V1QueryRechargeOrderUseCaseService.class);
+    private static final String ORDER_STATUS_VALIDATION_FAILED = "VALIDATION_FAILED";
+    private static final String ORDER_STATUS_ACCEPT_REJECTED = "ACCEPT_REJECTED";
+    private static final String ORDER_STATUS_SUPPLIER_FAILED = "SUPPLIER_FAILED";
+    private static final String ORDER_STATUS_PERSISTING = "PERSISTING";
+    private static final String ORDER_STATUS_WAIT = "WAIT";
+    private static final String ORDER_STATUS_WAIT_DISPATCH = "WAIT_DISPATCH";
+    private static final String ORDER_STATUS_FREQUENCY_WAIT = "FREQUENCY_WAIT";
+    private static final String ORDER_STATUS_DISPATCHING = "DISPATCHING";
+    private static final String ORDER_STATUS_DESC_PROCESSING = "处理中";
+    private static final String ORDER_STATUS_DESC_FAILED = "订单失败";
+    private static final String ORDER_STATUS_DESC_SUCCESS = "成功";
+    private static final String ORDER_STATUS_DESC_SUPPLIER_ACCEPTED = "充值中";
+    private static final String ORDER_STATUS_DESC_REFUNDED = "已退款";
 
     private final V1ProtocolPrecheckService precheckService;
     private final V1MerchantProfilePort merchantProfilePort;
@@ -84,37 +101,42 @@ public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUse
          * order_status 码表。这里特别避免把旧后台推送状态或核销 use_state 的 3 当成订单失败：
          * 失败订单对外是 6，核销作废才使用 use_state=3。
          */
-        if ("FAILED".equals(validationStatus)
-                || "VALIDATION_FAILED".equals(orderStatus)
-                || "ACCEPT_REJECTED".equals(orderStatus)) {
-            return new OrderView("6", defaultText(snapshot.failReason(), "订单失败"));
+        if (ValidationStatus.FAILED.name().equals(validationStatus)
+                || ORDER_STATUS_VALIDATION_FAILED.equals(orderStatus)
+                || ORDER_STATUS_ACCEPT_REJECTED.equals(orderStatus)) {
+            return orderView(
+                    LegacyOrderStatusCode.FAILED,
+                    defaultText(snapshot.failReason(), ORDER_STATUS_DESC_FAILED));
         }
-        if ("SUCCESS".equals(orderStatus)) {
-            return new OrderView("12", "成功");
+        if (LegacyOrderStatusCode.SUCCESS.toQueryStatus().equals(orderStatus)) {
+            return orderView(LegacyOrderStatusCode.SUCCESS, ORDER_STATUS_DESC_SUCCESS);
         }
-        if ("SUPPLIER_ACCEPTED".equals(orderStatus)) {
-            return new OrderView("13", "充值中");
+        if (LegacyOrderStatusCode.SUPPLIER_ACCEPTED.toQueryStatus().equals(orderStatus)) {
+            return orderView(LegacyOrderStatusCode.SUPPLIER_ACCEPTED, ORDER_STATUS_DESC_SUPPLIER_ACCEPTED);
         }
-        if ("REFUNDED".equals(orderStatus)) {
-            return new OrderView("11", "已退款");
+        if (LegacyOrderStatusCode.REFUNDED.toQueryStatus().equals(orderStatus)) {
+            return orderView(LegacyOrderStatusCode.REFUNDED, ORDER_STATUS_DESC_REFUNDED);
         }
-        if ("FAILED".equals(orderStatus) || "SUPPLIER_FAILED".equals(orderStatus)) {
-            return new OrderView("6", defaultText(snapshot.failReason(), "订单失败"));
+        if (LegacyOrderStatusCode.FAILED.toQueryStatus().equals(orderStatus)
+                || ORDER_STATUS_SUPPLIER_FAILED.equals(orderStatus)) {
+            return orderView(
+                    LegacyOrderStatusCode.FAILED,
+                    defaultText(snapshot.failReason(), ORDER_STATUS_DESC_FAILED));
         }
-        if (!"DB_PERSISTED".equals(persistStatus)
-                || "ACCEPTED".equals(orderStatus)
-                || "PERSISTING".equals(orderStatus)
-                || "WAIT".equals(orderStatus)
-                || "WAIT_DISPATCH".equals(orderStatus)
-                || "FREQUENCY_WAIT".equals(orderStatus)
-                || "DISPATCHING".equals(orderStatus)) {
-            return new OrderView("2", "处理中");
+        if (!PersistStatus.DB_PERSISTED.name().equals(persistStatus)
+                || LegacyOrderStatusCode.ACCEPTED.toQueryStatus().equals(orderStatus)
+                || ORDER_STATUS_PERSISTING.equals(orderStatus)
+                || ORDER_STATUS_WAIT.equals(orderStatus)
+                || ORDER_STATUS_WAIT_DISPATCH.equals(orderStatus)
+                || ORDER_STATUS_FREQUENCY_WAIT.equals(orderStatus)
+                || ORDER_STATUS_DISPATCHING.equals(orderStatus)) {
+            return orderView(LegacyOrderStatusCode.ACCEPTED, ORDER_STATUS_DESC_PROCESSING);
         }
         /*
          * 对未知内部态保持保守处理中，避免查单接口越权推进供应商查询或把未识别状态误报为终态。
          * 后续若新增内部状态，应在详细设计「20.13.10 查单设计」状态映射表先补充，再扩展这里。
          */
-        return new OrderView("2", "处理中");
+        return orderView(LegacyOrderStatusCode.ACCEPTED, ORDER_STATUS_DESC_PROCESSING);
     }
 
     private static boolean validRequest(V1RechargeOrderQueryRequest request) {
@@ -126,15 +148,20 @@ public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUse
 
     private static V1CardApiResult protocolFailure(String reason) {
         return switch (reason) {
-            case "SIGN_FAILED" -> V1CardApiResultStatus.SIGN_FAILED.result("验签不合规！");
-            case "DECRYPT_FAILED" -> V1CardApiResultStatus.SIGN_FAILED.result();
-            case "TIMESTAMP_OUT_OF_RANGE" -> V1CardApiResultStatus.PARAM_ERROR.result("timestamp超出允许范围");
+            case V1ProtocolFailureReason.SIGN_FAILED -> V1CardApiResultStatus.SIGN_FAILED.result("验签不合规！");
+            case V1ProtocolFailureReason.DECRYPT_FAILED -> V1CardApiResultStatus.SIGN_FAILED.result();
+            case V1ProtocolFailureReason.TIMESTAMP_OUT_OF_RANGE ->
+                    V1CardApiResultStatus.PARAM_ERROR.result("timestamp超出允许范围");
             default -> V1CardApiResultStatus.PARAM_ERROR.result();
         };
     }
 
     private static String defaultText(String value, String fallback) {
         return StringUtils.hasText(value) ? value : fallback;
+    }
+
+    private static OrderView orderView(LegacyOrderStatusCode status, String description) {
+        return new OrderView(Integer.toString(status.code()), description);
     }
 
     private record OrderView(String orderStatus, String orderStatusDesc) {

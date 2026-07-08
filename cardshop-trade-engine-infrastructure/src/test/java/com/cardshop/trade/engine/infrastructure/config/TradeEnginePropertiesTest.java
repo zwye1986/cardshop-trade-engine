@@ -24,8 +24,8 @@ class TradeEnginePropertiesTest {
         contextRunner.run(context -> {
             var properties = context.getBean(TradeEngineProperties.class);
 
-            // 默认值来自详细设计和高可用方案中的 D1 基线配置。
-            assertThat(properties.getRedis().isWriteEnabled()).isTrue();
+            // 默认值遵循生产 fail-closed：Redis 写入必须由 profile、Nacos 或部署密钥显式开启。
+            assertThat(properties.getRedis().isWriteEnabled()).isFalse();
             assertThat(properties.getRedis().getWaitReplicas()).isEqualTo(1);
             assertThat(properties.getRedis().getPendingOrgBucketCount()).isEqualTo(128);
             assertThat(properties.getRedis().getKeyPrefix()).isEqualTo("cardshop:trade");
@@ -55,7 +55,7 @@ class TradeEnginePropertiesTest {
     void bindsEnvironmentOverrides() {
         contextRunner
                 .withPropertyValues(
-                        "trade.engine.redis.write-enabled=false",
+                        "trade.engine.redis.write-enabled=true",
                         "trade.engine.redis.wait-replicas=2",
                         "trade.engine.mq.persist-queue=recharge.persist.mysql.gray.queue",
                         "trade.engine.mq.persist-dead-letter-exchange=recharge.persist.gray.dlx",
@@ -75,7 +75,7 @@ class TradeEnginePropertiesTest {
                     var properties = context.getBean(TradeEngineProperties.class);
 
                     // 环境覆盖验证用于保证 Nacos 灰度配置能被 Spring Boot 正确绑定。
-                    assertThat(properties.getRedis().isWriteEnabled()).isFalse();
+                    assertThat(properties.getRedis().isWriteEnabled()).isTrue();
                     assertThat(properties.getRedis().getWaitReplicas()).isEqualTo(2);
                     assertThat(properties.getMq().getPersistQueue()).isEqualTo("recharge.persist.mysql.gray.queue");
                     assertThat(properties.getMq().getPersistDeadLetterExchange()).isEqualTo("recharge.persist.gray.dlx");

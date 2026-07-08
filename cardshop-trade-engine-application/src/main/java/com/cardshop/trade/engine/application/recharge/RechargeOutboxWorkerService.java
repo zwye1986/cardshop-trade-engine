@@ -1,5 +1,6 @@
 package com.cardshop.trade.engine.application.recharge;
 
+import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import java.time.Clock;
 import java.time.LocalDateTime;
@@ -19,10 +20,10 @@ public class RechargeOutboxWorkerService {
 
     private static final Logger log = LoggerFactory.getLogger(RechargeOutboxWorkerService.class);
 
-    private static final int ORDER_STATUS_PROCESSING = 2;
-    private static final int ORDER_STATUS_FAILED = 6;
-    private static final int ORDER_STATUS_SUCCESS = 12;
-    private static final int ORDER_STATUS_RECHARGING = 13;
+    private static final int ORDER_STATUS_ACCEPTED = LegacyOrderStatusCode.ACCEPTED.code();
+    private static final int ORDER_STATUS_FAILED = LegacyOrderStatusCode.FAILED.code();
+    private static final int ORDER_STATUS_SUCCESS = LegacyOrderStatusCode.SUCCESS.code();
+    private static final int ORDER_STATUS_SUPPLIER_ACCEPTED = LegacyOrderStatusCode.SUPPLIER_ACCEPTED.code();
     private static final String DATA_STATUS_PROCESSING = "PROCESSING";
     private static final String DATA_STATUS_PROCESSED = "PROCESSED";
     private static final String DATA_STATUS_FREQUENCY_WAIT = "FREQUENCY_WAIT";
@@ -109,7 +110,7 @@ public class RechargeOutboxWorkerService {
             orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
                     order.orderId(),
                     FulfillmentDispatchStatus.FREQUENCY_WAIT,
-                    ORDER_STATUS_PROCESSING,
+                    ORDER_STATUS_ACCEPTED,
                     DATA_STATUS_FREQUENCY_WAIT,
                     null,
                     null,
@@ -122,7 +123,7 @@ public class RechargeOutboxWorkerService {
         orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
                 order.orderId(),
                 FulfillmentDispatchStatus.DISPATCHING,
-                ORDER_STATUS_PROCESSING,
+                ORDER_STATUS_ACCEPTED,
                 DATA_STATUS_PROCESSING,
                 null,
                 null,
@@ -158,7 +159,7 @@ public class RechargeOutboxWorkerService {
                         null,
                         null,
                         "供应商充值成功"));
-                createOrderStatusNotifyTask(order, "12");
+                createOrderStatusNotifyTask(order, LegacyOrderStatusCode.SUCCESS);
                 frequencyPort.releaseIfOwned(
                         order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
                 outboxPort.markSuccess(event);
@@ -168,7 +169,7 @@ public class RechargeOutboxWorkerService {
                 orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
                         order.orderId(),
                         FulfillmentDispatchStatus.SUPPLIER_ACCEPTED,
-                        ORDER_STATUS_RECHARGING,
+                        ORDER_STATUS_SUPPLIER_ACCEPTED,
                         DATA_STATUS_PROCESSING,
                         flowId,
                         null,
@@ -187,7 +188,7 @@ public class RechargeOutboxWorkerService {
                         response.responseCode(),
                         response.responseMessage(),
                         response.responseMessage()));
-                createOrderStatusNotifyTask(order, "6");
+                createOrderStatusNotifyTask(order, LegacyOrderStatusCode.FAILED);
                 frequencyPort.releaseIfOwned(
                         order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
                 outboxPort.markSuccess(event);
@@ -206,7 +207,7 @@ public class RechargeOutboxWorkerService {
         orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
                 order.orderId(),
                 FulfillmentDispatchStatus.CANCEL_REQUESTED,
-                ORDER_STATUS_RECHARGING,
+                ORDER_STATUS_SUPPLIER_ACCEPTED,
                 DATA_STATUS_PROCESSING,
                 null,
                 null,
@@ -237,16 +238,17 @@ public class RechargeOutboxWorkerService {
         return RechargeOutboxBatchResult.Outcome.FAILED;
     }
 
-    private void createOrderStatusNotifyTask(RechargeFulfillmentOrder order, String orderStatus) {
-        Map<String, String> payload = notifyPayloadSigner.signOrderStatus(order, orderStatus, clock.instant());
+    private void createOrderStatusNotifyTask(RechargeFulfillmentOrder order, LegacyOrderStatusCode orderStatus) {
+        String orderStatusCode = Integer.toString(orderStatus.code());
+        Map<String, String> payload = notifyPayloadSigner.signOrderStatus(order, orderStatusCode, clock.instant());
         notifyTaskPort.insertIfAbsent(new RechargeNotifyTaskDraft(
-                "notify-order-" + order.orderId() + "-" + orderStatus,
+                "notify-order-" + order.orderId() + "-" + orderStatusCode,
                 "ORDER_STATUS",
                 order.orgCode(),
                 order.orderId(),
                 order.outOrderSn(),
                 order.notifyUrl(),
-                orderStatus,
+                orderStatusCode,
                 payload,
                 DEFAULT_NOTIFY_MAX_RETRY_COUNT,
                 LocalDateTime.now(clock)));

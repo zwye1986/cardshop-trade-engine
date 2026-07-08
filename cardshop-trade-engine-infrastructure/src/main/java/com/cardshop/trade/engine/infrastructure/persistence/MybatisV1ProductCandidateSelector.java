@@ -26,6 +26,13 @@ import java.util.stream.Collectors;
 @ConditionalOnBean({V1DepartProductReader.class, V1ProductReader.class})
 public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSelector {
 
+    private static final int DIRECT_RECHARGE_PRODUCT_TYPE = 1;
+    private static final long DEFAULT_SORT_VALUE = 0L;
+    private static final long DEFAULT_PRODUCT_CONFIG_VERSION = 1L;
+    private static final int STOCK_CHANNEL_PRIORITY = 0;
+    private static final int DEFAULT_CHANNEL_PRIORITY = 99;
+    private static final String STOCK_CHANNEL = "stock";
+
     private final V1DepartProductReader departProductReader;
     private final V1ProductReader productReader;
 
@@ -64,7 +71,7 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
 
         Candidate selected = candidates.getFirst();
         V1ProductSelection snapshot = toSelection(parentProductId, selected, ValidationStatus.PASSED, "", "");
-        if (!Integer.valueOf(1).equals(selected.product().getType())) {
+        if (productType(selected.product()) != DIRECT_RECHARGE_PRODUCT_TYPE) {
             return toSelection(parentProductId, selected, ValidationStatus.FAILED, "NOT_RECHARGE_PRODUCT", "该商品不是直充产品！");
         }
         if (price(selected.departProduct()) < basePrice(selected.product())) {
@@ -111,7 +118,7 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
     }
 
     private static long sort(McDepartProductDO departProduct) {
-        return departProduct.getSort() == null ? 0L : departProduct.getSort();
+        return departProduct.getSort() == null ? DEFAULT_SORT_VALUE : departProduct.getSort();
     }
 
     private static long id(McDepartProductDO departProduct) {
@@ -131,11 +138,13 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
     }
 
     private static long version(McProductDO product) {
-        return product.getVersion() == null || product.getVersion() <= 0 ? 1L : product.getVersion();
+        return product.getVersion() == null || product.getVersion() <= 0
+                ? DEFAULT_PRODUCT_CONFIG_VERSION
+                : product.getVersion();
     }
 
     private static int channelPriority(String channel) {
-        return "stock".equalsIgnoreCase(channel) ? 0 : 99;
+        return STOCK_CHANNEL.equalsIgnoreCase(channel) ? STOCK_CHANNEL_PRIORITY : DEFAULT_CHANNEL_PRIORITY;
     }
 
     private static String defaultString(String value) {

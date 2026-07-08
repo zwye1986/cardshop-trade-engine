@@ -28,6 +28,7 @@ class DeploymentArtifactContractTest {
         Path gitignore = root.resolve(".gitignore");
         Path startupGuide = root.resolve("deploy/STARTUP.md");
         Path devNacosExample = root.resolve("deploy/nacos/cardshop-trade-engine-dev.example.yaml");
+        Path applicationYaml = root.resolve("cardshop-trade-engine-bootstrap/src/main/resources/application.yml");
 
         assertThat(packageScript).exists().isRegularFile();
         assertThat(startScript).exists().isRegularFile();
@@ -36,6 +37,7 @@ class DeploymentArtifactContractTest {
         assertThat(gitignore).exists().isRegularFile();
         assertThat(startupGuide).exists().isRegularFile();
         assertThat(devNacosExample).exists().isRegularFile();
+        assertThat(applicationYaml).exists().isRegularFile();
 
         String packageText = Files.readString(packageScript);
         assertThat(packageText)
@@ -85,12 +87,16 @@ class DeploymentArtifactContractTest {
         String envText = Files.readString(envExample);
         assertThat(envText)
                 .contains("APP_PROFILE=dev")
-                .contains("NACOS_SERVER_ADDR=47.117.130.100:8848")
+                .contains("NACOS_SERVER_ADDR=<nacos-host>:8848")
                 .contains("NACOS_NAMESPACE=cardshop-trade-engine-dev")
                 .contains("NACOS_GROUP=TRADE_ENGINE_DEV")
                 .contains("CARD_SHOP_TRADE_JAVA_HOME=");
         assertThat(envText)
                 .contains("NACOS_PASSWORD=change-me")
+                .contains("SPRING_RABBITMQ_HOST=<rabbitmq-host>")
+                .contains("SPRING_RABBITMQ_USERNAME=<rabbitmq-user>")
+                .doesNotContain("SPRING_RABBITMQ_HOST=47.100.11.188")
+                .doesNotContain("SPRING_RABBITMQ_USERNAME=admin_cardshop")
                 .doesNotContain("MYSQL_PASSWORD=")
                 .doesNotContain("jdbc:mysql://");
 
@@ -125,6 +131,14 @@ class DeploymentArtifactContractTest {
                 .contains("password: <cardshop-dev-redis-password>")
                 .doesNotContain("NACOS_PASSWORD=")
                 .doesNotContain("MYSQL_PASSWORD=");
+
+        String applicationYamlText = Files.readString(applicationYaml);
+        assertThat(applicationYamlText)
+                .contains("host: ${SPRING_RABBITMQ_HOST:}")
+                .contains("username: ${SPRING_RABBITMQ_USERNAME:}")
+                .contains("write-enabled: false")
+                .doesNotContain("SPRING_RABBITMQ_HOST:47.100.11.188")
+                .doesNotContain("SPRING_RABBITMQ_USERNAME:admin_cardshop");
     }
 
     @Test

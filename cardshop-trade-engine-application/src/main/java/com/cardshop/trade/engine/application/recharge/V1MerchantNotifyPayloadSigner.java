@@ -19,6 +19,14 @@ import org.bouncycastle.crypto.digests.SM3Digest;
  */
 public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigner {
 
+    private static final String SIGN_FIELD = "sign";
+    private static final String AES_KEY_FIELD = "aesKey";
+    private static final String WRITE_OFF_NONCE_STATUS = "writeoff";
+    private static final String WRITE_OFF_STATE_TYPE = "1";
+    private static final String WRITE_OFF_USE_STATE_CANCELLED = "2";
+    private static final int NONCE_HEX_LENGTH = 32;
+    private static final int SIGN_SOURCE_INITIAL_CAPACITY = 128;
+
     private final V1MerchantProfilePort merchantProfilePort;
 
     public V1MerchantNotifyPayloadSigner(V1MerchantProfilePort merchantProfilePort) {
@@ -40,7 +48,7 @@ public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigne
         payload.put("nonceStr", nonce);
         payload.put("orderStatus", normalize(orderStatus));
         payload.put("account", normalize(order.account()));
-        payload.put("sign", sign(payload, merchant.aesKey()));
+        payload.put(SIGN_FIELD, sign(payload, merchant.aesKey()));
         return payload;
     }
 
@@ -48,7 +56,7 @@ public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigne
     public Map<String, String> signWriteOff(RechargeFulfillmentOrder order, Instant invalidTime) {
         V1MerchantProfile merchant = merchant(order.orgCode());
         String timestamp = String.valueOf(invalidTime.getEpochSecond());
-        String nonce = nonce(order.orderId(), "writeoff", timestamp);
+        String nonce = nonce(order.orderId(), WRITE_OFF_NONCE_STATUS, timestamp);
         Map<String, String> payload = orderedPayload();
         payload.put("orderId", normalize(order.orderId()));
         payload.put("outOrderSn", normalize(order.outOrderSn()));
@@ -56,10 +64,10 @@ public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigne
         payload.put("nonceStr", nonce);
         payload.put("account", normalize(order.account()));
         payload.put("useTime", "");
-        payload.put("stateType", "1");
-        payload.put("useState", "2");
+        payload.put("stateType", WRITE_OFF_STATE_TYPE);
+        payload.put("useState", WRITE_OFF_USE_STATE_CANCELLED);
         payload.put("invalidTime", timestamp);
-        payload.put("sign", sign(payload, merchant.aesKey()));
+        payload.put(SIGN_FIELD, sign(payload, merchant.aesKey()));
         return payload;
     }
 
@@ -75,22 +83,22 @@ public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigne
     }
 
     private static String nonce(String orderId, String bizStatus, String timestamp) {
-        return digestHex(orderId + ":" + bizStatus + ":" + timestamp).substring(0, 32);
+        return digestHex(orderId + ":" + bizStatus + ":" + timestamp).substring(0, NONCE_HEX_LENGTH);
     }
 
     private static String sign(Map<String, String> payload, String aesKey) {
         TreeMap<String, String> params = new TreeMap<>();
         payload.forEach((key, value) -> {
-            if (!"sign".equals(key)) {
+            if (!SIGN_FIELD.equals(key)) {
                 params.put(key, normalize(value));
             }
         });
-        params.put("aesKey", normalize(aesKey));
+        params.put(AES_KEY_FIELD, normalize(aesKey));
         return digestHex(source(params));
     }
 
     private static String source(Map<String, String> params) {
-        StringBuilder builder = new StringBuilder(128);
+        StringBuilder builder = new StringBuilder(SIGN_SOURCE_INITIAL_CAPACITY);
         params.forEach((key, value) -> builder.append(key).append('=').append(value).append(','));
         if (!builder.isEmpty()) {
             builder.deleteCharAt(builder.length() - 1);

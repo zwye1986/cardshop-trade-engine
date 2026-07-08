@@ -71,6 +71,13 @@ class TradeEngineInfrastructureConfigurationTest {
             .withUserConfiguration(TradeEngineInfrastructureConfiguration.class);
 
     @Test
+    void defaultsRedisWritesToFailClosedUntilExplicitlyEnabled() {
+        TradeEngineProperties properties = new TradeEngineProperties();
+
+        assertThat(properties.getRedis().isWriteEnabled()).isFalse();
+    }
+
+    @Test
     void createsKeyBuilderAndScriptLoaderWithoutRedisClient() {
         contextRunner.run(context -> {
             assertThat(context).hasSingleBean(TradeEngineProperties.class);

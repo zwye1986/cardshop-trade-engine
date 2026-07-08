@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.redis;
 
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
+import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
 import java.util.HashMap;
@@ -17,27 +19,41 @@ import org.slf4j.LoggerFactory;
 final class AcceptRechargeOrderLuaResultMapper {
 
     private static final Logger log = LoggerFactory.getLogger(AcceptRechargeOrderLuaResultMapper.class);
+    private static final String LUA_TRUE = "1";
+    private static final String FIELD_CODE = "code";
+    private static final String FIELD_ORDER_ID = "order_id";
+    private static final String FIELD_VALIDATION_STATUS = "validation_status";
+    private static final String FIELD_FAIL_CODE = "fail_code";
+    private static final String FIELD_FAIL_REASON = "fail_reason";
+    private static final String FIELD_DISPATCH_ALLOWED = "dispatch_allowed";
+    private static final String FIELD_BALANCE_RESERVED = "balance_reserved";
+    private static final String FIELD_ORDER_VERSION = "order_version";
+    private static final String LUA_STATUS_UNKNOWN = "UNKNOWN";
+    private static final String LOG_EVENT_UNKNOWN_STATUS = "accept-lua-result.unknown-status";
+    private static final String LOG_EVENT_VERSION_PARSE_FAILED = "accept-lua-result.version-parse.failed";
+
+    private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
     AcceptRechargeOrderResult map(Object rawResult) {
         Map<String, String> values = toMap(rawResult);
-        AcceptRechargeOrderStatus status = parseStatus(values.get("code"));
+        AcceptRechargeOrderStatus status = parseStatus(values.get(FIELD_CODE));
         return new AcceptRechargeOrderResult(
                 status,
-                values.get("order_id"),
-                values.get("validation_status"),
-                values.get("fail_code"),
-                values.get("fail_reason"),
-                "1".equals(values.get("dispatch_allowed")),
-                "1".equals(values.get("balance_reserved")),
-                parseLong(values.get("order_version")));
+                values.get(FIELD_ORDER_ID),
+                values.get(FIELD_VALIDATION_STATUS),
+                values.get(FIELD_FAIL_CODE),
+                values.get(FIELD_FAIL_REASON),
+                LUA_TRUE.equals(values.get(FIELD_DISPATCH_ALLOWED)),
+                LUA_TRUE.equals(values.get(FIELD_BALANCE_RESERVED)),
+                parseLong(values.get(FIELD_ORDER_VERSION)));
     }
 
     private static Map<String, String> toMap(Object rawResult) {
         Map<String, String> values = new HashMap<>();
         if (!(rawResult instanceof List<?> list)) {
-            values.put("code", "UNKNOWN");
-            values.put("fail_code", AcceptRechargeOrderResult.FAIL_CODE_UNKNOWN);
-            values.put("fail_reason", "Lua 返回结构不是数组");
+            values.put(FIELD_CODE, LUA_STATUS_UNKNOWN);
+            values.put(FIELD_FAIL_CODE, AcceptRechargeOrderResult.FAIL_CODE_UNKNOWN);
+            values.put(FIELD_FAIL_REASON, "Lua 返回结构不是数组");
             return values;
         }
         for (int i = 0; i + 1 < list.size(); i += 2) {
@@ -46,26 +62,40 @@ final class AcceptRechargeOrderLuaResultMapper {
         return values;
     }
 
-    private static AcceptRechargeOrderStatus parseStatus(String code) {
+    private AcceptRechargeOrderStatus parseStatus(String code) {
         if (code == null || code.isBlank()) {
             return AcceptRechargeOrderStatus.UNKNOWN;
         }
         try {
             return AcceptRechargeOrderStatus.valueOf(code);
         } catch (IllegalArgumentException ex) {
-            log.error("Redis接单Lua返回未知状态 code={}", code, ex);
+            LogDecision decision = logStormGuard.shouldLog(LOG_EVENT_UNKNOWN_STATUS);
+            if (decision.shouldLog()) {
+                log.error("Redis接单Lua返回未知状态 code={}, occurrence={}, sampled={}",
+                        code,
+                        decision.occurrence(),
+                        decision.sampledOccurrence(),
+                        ex);
+            }
             return AcceptRechargeOrderStatus.UNKNOWN;
         }
     }
 
-    private static long parseLong(String value) {
+    private long parseLong(String value) {
         if (value == null || value.isBlank()) {
             return 0L;
         }
         try {
             return Long.parseLong(value);
         } catch (NumberFormatException ex) {
-            log.error("Redis接单Lua订单版本解析失败 value={}", value, ex);
+            LogDecision decision = logStormGuard.shouldLog(LOG_EVENT_VERSION_PARSE_FAILED);
+            if (decision.shouldLog()) {
+                log.error("Redis接单Lua订单版本解析失败 value={}, occurrence={}, sampled={}",
+                        value,
+                        decision.occurrence(),
+                        decision.sampledOccurrence(),
+                        ex);
+            }
             return 0L;
         }
     }

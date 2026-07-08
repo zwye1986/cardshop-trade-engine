@@ -2,6 +2,8 @@ package com.cardshop.trade.engine.api.v1.security;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
+import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +35,9 @@ public class V1TokenAuthenticator {
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
     private static final String HMAC_SHA_512 = "HmacSHA512";
+    private static final String LOG_EVENT_TOKEN_PARSE_FAILED = "v1-token-auth.parse.failed";
+    private static final String LOG_EVENT_NUMERIC_CLAIM_PARSE_FAILED = "v1-token-auth.numeric-claim.parse.failed";
+    private static final LogStormGuard LOG_STORM_GUARD = LogStormGuard.defaultGuard();
 
     private final V1TokenSettings settings;
     private final Clock clock;
@@ -98,7 +103,14 @@ public class V1TokenAuthenticator {
             }
             return Optional.of(new AuthenticatedMerchant(appId, orgCode));
         } catch (Exception ex) {
-            log.error("V1 token解析失败 tokenLength={}", token.length(), ex);
+            LogDecision decision = LOG_STORM_GUARD.shouldLog(LOG_EVENT_TOKEN_PARSE_FAILED);
+            if (decision.shouldLog()) {
+                log.error("V1 token解析失败 tokenLength={}, occurrence={}, sampled={}",
+                        token.length(),
+                        decision.occurrence(),
+                        decision.sampledOccurrence(),
+                        ex);
+            }
             return Optional.empty();
         }
     }
@@ -127,7 +139,14 @@ public class V1TokenAuthenticator {
             try {
                 return Long.parseLong(text);
             } catch (NumberFormatException ex) {
-                log.error("V1 token数值claim解析失败 valueLength={}", text.length(), ex);
+                LogDecision decision = LOG_STORM_GUARD.shouldLog(LOG_EVENT_NUMERIC_CLAIM_PARSE_FAILED);
+                if (decision.shouldLog()) {
+                    log.error("V1 token数值claim解析失败 valueLength={}, occurrence={}, sampled={}",
+                            text.length(),
+                            decision.occurrence(),
+                            decision.sampledOccurrence(),
+                            ex);
+                }
                 return null;
             }
         }

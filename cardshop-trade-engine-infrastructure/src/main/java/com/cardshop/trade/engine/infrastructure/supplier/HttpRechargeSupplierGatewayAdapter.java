@@ -1,9 +1,12 @@
 package com.cardshop.trade.engine.infrastructure.supplier;
 
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
+import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
 import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
 import com.cardshop.trade.engine.application.recharge.SupplierDispatchGatewayRequest;
 import com.cardshop.trade.engine.application.recharge.SupplierGatewayResponse;
 import com.cardshop.trade.engine.application.recharge.SupplierInvalidGatewayRequest;
+import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.URI;
@@ -26,10 +29,34 @@ import org.springframework.util.StringUtils;
 public class HttpRechargeSupplierGatewayAdapter implements RechargeSupplierGatewayPort {
 
     private static final Logger log = LoggerFactory.getLogger(HttpRechargeSupplierGatewayAdapter.class);
+    private static final int HTTP_SUCCESS_MIN = 200;
+    private static final int HTTP_SUCCESS_MAX_EXCLUSIVE = 300;
+    private static final Duration DEFAULT_SUPPLIER_TIMEOUT = Duration.ofSeconds(3);
+    private static final String HEADER_CONTENT_TYPE = "Content-Type";
+    private static final String CONTENT_TYPE_JSON = "application/json";
+    private static final String EMPTY_JSON = "{}";
+    private static final String FIELD_STATUS = "status";
+    private static final String FIELD_ORDER_STATUS = "order_status";
+    private static final String FIELD_CODE = "code";
+    private static final String FIELD_MESSAGE = "message";
+    private static final String FIELD_MSG = "msg";
+    private static final String FIELD_SUPPLIER_ORDER_ID = "supplier_order_id";
+    private static final String FIELD_SUPPLIER_ORDER_ID_CAMEL = "supplierOrderId";
+    private static final String STATUS_SUCCESS = "SUCCESS";
+    private static final String STATUS_PROCESSING = "PROCESSING";
+    private static final String STATUS_ACCEPTED = "ACCEPTED";
+    private static final String CODE_SUCCESS_HTTP = "200";
+    private static final String CODE_SUCCESS_ZERO = "0";
+    private static final String CODE_PROCESSING_HTTP = "202";
+    private static final String ORDER_STATUS_SUCCESS = Integer.toString(LegacyOrderStatusCode.SUCCESS.code());
+    private static final String ORDER_STATUS_SUPPLIER_ACCEPTED =
+            Integer.toString(LegacyOrderStatusCode.SUPPLIER_ACCEPTED.code());
+    private static final String LOG_EVENT_HTTP_EXCEPTION = "supplier-gateway.http.exception";
 
     private final Map<String, SupplierChannelEndpoint> channels;
     private final ObjectMapper objectMapper;
     private final HttpClient httpClient;
+    private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
     public HttpRechargeSupplierGatewayAdapter(
             Map<String, SupplierChannelEndpoint> channels,
@@ -48,7 +75,7 @@ public class HttpRechargeSupplierGatewayAdapter implements RechargeSupplierGatew
                     "",
                     "SUPPLIER_CHANNEL_NOT_CONFIGURED",
                     "supplier dispatch url not configured",
-                    "{}");
+                    EMPTY_JSON);
         }
         return post(endpoint.dispatchUrl(), endpoint.timeout(), Map.ofEntries(
                 Map.entry("supplier_request_id", request.supplierRequestId()),
@@ -69,7 +96,7 @@ public class HttpRechargeSupplierGatewayAdapter implements RechargeSupplierGatew
                     "",
                     "SUPPLIER_INVALID_NOT_CONFIGURED",
                     "supplier invalid url not configured",
-                    "{}");
+                    EMPTY_JSON);
         }
         return post(endpoint.invalidUrl(), endpoint.timeout(), Map.ofEntries(
                 Map.entry("supplier_request_id", request.supplierRequestId()),
@@ -84,26 +111,33 @@ public class HttpRechargeSupplierGatewayAdapter implements RechargeSupplierGatew
             String body = objectMapper.writeValueAsString(payload);
             HttpRequest request = HttpRequest.newBuilder(URI.create(url))
                     .timeout(timeout)
-                    .header("Content-Type", "application/json")
+                    .header(HEADER_CONTENT_TYPE, CONTENT_TYPE_JSON)
                     .POST(HttpRequest.BodyPublishers.ofString(body))
                     .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             return parseResponse(response.statusCode(), response.body());
         } catch (Exception ex) {
-            log.error("供应商HTTP调用异常 url={}", url, ex);
-            return SupplierGatewayResponse.failed("", "SUPPLIER_HTTP_EXCEPTION", ex.getMessage(), "{}");
+            LogDecision decision = logStormGuard.shouldLog(LOG_EVENT_HTTP_EXCEPTION);
+            if (decision.shouldLog()) {
+                log.error("供应商HTTP调用异常 url={}, occurrence={}, sampled={}",
+                        url,
+                        decision.occurrence(),
+                        decision.sampledOccurrence(),
+                        ex);
+            }
+            return SupplierGatewayResponse.failed("", "SUPPLIER_HTTP_EXCEPTION", ex.getMessage(), EMPTY_JSON);
         }
     }
 
     private SupplierGatewayResponse parseResponse(int statusCode, String body) throws java.io.IOException {
-        if (statusCode < 200 || statusCode >= 300) {
+        if (statusCode < HTTP_SUCCESS_MIN || statusCode >= HTTP_SUCCESS_MAX_EXCLUSIVE) {
             return SupplierGatewayResponse.failed("", String.valueOf(statusCode), "supplier http status not 2xx", body);
         }
-        JsonNode root = objectMapper.readTree(StringUtils.hasText(body) ? body : "{}");
-        String status = text(root, "status", text(root, "order_status", ""));
-        String code = text(root, "code", "");
-        String message = text(root, "message", text(root, "msg", ""));
-        String supplierOrderId = text(root, "supplier_order_id", text(root, "supplierOrderId", ""));
+        JsonNode root = objectMapper.readTree(StringUtils.hasText(body) ? body : EMPTY_JSON);
+        String status = text(root, FIELD_STATUS, text(root, FIELD_ORDER_STATUS, ""));
+        String code = text(root, FIELD_CODE, "");
+        String message = text(root, FIELD_MESSAGE, text(root, FIELD_MSG, ""));
+        String supplierOrderId = text(root, FIELD_SUPPLIER_ORDER_ID, text(root, FIELD_SUPPLIER_ORDER_ID_CAMEL, ""));
         if (isSuccess(status, code)) {
             return SupplierGatewayResponse.success(supplierOrderId, code, message, body);
         }
@@ -114,12 +148,17 @@ public class HttpRechargeSupplierGatewayAdapter implements RechargeSupplierGatew
     }
 
     private static boolean isSuccess(String status, String code) {
-        return "SUCCESS".equalsIgnoreCase(status) || "12".equals(status) || "200".equals(code) || "0".equals(code);
+        return STATUS_SUCCESS.equalsIgnoreCase(status)
+                || ORDER_STATUS_SUCCESS.equals(status)
+                || CODE_SUCCESS_HTTP.equals(code)
+                || CODE_SUCCESS_ZERO.equals(code);
     }
 
     private static boolean isProcessing(String status, String code) {
-        return "PROCESSING".equalsIgnoreCase(status) || "ACCEPTED".equalsIgnoreCase(status) || "13".equals(status)
-                || "202".equals(code);
+        return STATUS_PROCESSING.equalsIgnoreCase(status)
+                || STATUS_ACCEPTED.equalsIgnoreCase(status)
+                || ORDER_STATUS_SUPPLIER_ACCEPTED.equals(status)
+                || CODE_PROCESSING_HTTP.equals(code);
     }
 
     private static String text(JsonNode root, String field, String fallback) {
@@ -140,7 +179,7 @@ public class HttpRechargeSupplierGatewayAdapter implements RechargeSupplierGatew
 
         public SupplierChannelEndpoint {
             timeout = timeout == null || timeout.isZero() || timeout.isNegative()
-                    ? Duration.ofSeconds(3)
+                    ? DEFAULT_SUPPLIER_TIMEOUT
                     : timeout;
         }
     }

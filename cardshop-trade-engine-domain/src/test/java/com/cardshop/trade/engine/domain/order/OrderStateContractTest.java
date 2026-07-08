@@ -29,4 +29,26 @@ class OrderStateContractTest {
         assertThat(ValidationStatus.PASSED.allowsDispatch()).isTrue();
         assertThat(ValidationStatus.FAILED.allowsDispatch()).isFalse();
     }
+
+    @Test
+    void legacyOrderStatusCodesMatchOldCardshopContract() {
+        assertThat(LegacyOrderStatusCode.ACCEPTED.code()).isEqualTo(2);
+        assertThat(LegacyOrderStatusCode.FAILED.code()).isEqualTo(6);
+        assertThat(LegacyOrderStatusCode.REFUNDED.code()).isEqualTo(11);
+        assertThat(LegacyOrderStatusCode.SUCCESS.code()).isEqualTo(12);
+        assertThat(LegacyOrderStatusCode.SUPPLIER_ACCEPTED.code()).isEqualTo(13);
+    }
+
+    @Test
+    void legacyOrderStatusCodesMapToInternalQueryStatuses() {
+        assertThat(LegacyOrderStatusCode.fromCode(2)).isEqualTo(LegacyOrderStatusCode.ACCEPTED);
+        assertThat(LegacyOrderStatusCode.fromCode(6)).isEqualTo(LegacyOrderStatusCode.FAILED);
+        assertThat(LegacyOrderStatusCode.fromCode(11)).isEqualTo(LegacyOrderStatusCode.REFUNDED);
+        assertThat(LegacyOrderStatusCode.fromCode(12)).isEqualTo(LegacyOrderStatusCode.SUCCESS);
+        assertThat(LegacyOrderStatusCode.fromCode(13)).isEqualTo(LegacyOrderStatusCode.SUPPLIER_ACCEPTED);
+        assertThat(LegacyOrderStatusCode.fromCode(0)).isEqualTo(LegacyOrderStatusCode.UNKNOWN);
+        assertThat(LegacyOrderStatusCode.SUCCESS.toQueryStatus()).isEqualTo("SUCCESS");
+        assertThat(LegacyOrderStatusCode.SUPPLIER_ACCEPTED.toQueryStatus()).isEqualTo("SUPPLIER_ACCEPTED");
+        assertThat(LegacyOrderStatusCode.UNKNOWN.toQueryStatus()).isEqualTo("UNKNOWN");
+    }
 }

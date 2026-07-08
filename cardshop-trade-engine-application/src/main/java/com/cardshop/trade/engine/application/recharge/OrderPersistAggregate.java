@@ -1,5 +1,6 @@
 package com.cardshop.trade.engine.application.recharge;
 
+import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import java.time.Instant;
 import java.util.Objects;
 
@@ -35,7 +36,7 @@ public record OrderPersistAggregate(
      * 对失败订单不生成 `SUPPLIER_DISPATCH` outbox 的约束。
      */
     public boolean dispatchOutboxRequired() {
-        return snapshot.dispatchAllowed() && "PASSED".equals(snapshot.validationStatus());
+        return snapshot.dispatchAllowed() && ValidationStatus.PASSED.name().equals(snapshot.validationStatus());
     }
 
     private static String requireText(String value, String fieldName) {

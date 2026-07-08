@@ -1,5 +1,9 @@
 package com.cardshop.trade.engine.application.recharge;
 
+import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
+import com.cardshop.trade.engine.domain.order.PersistStatus;
+import com.cardshop.trade.engine.domain.order.ValidationStatus;
+
 /**
  * 供应商履约所需的订单事实快照。
  *
@@ -37,8 +41,8 @@ public record RechargeFulfillmentOrder(
 
     public boolean dispatchable() {
         return dispatchAllowed
-                && orderStatus == 2
-                && "DB_PERSISTED".equals(persistStatus)
-                && "PASSED".equals(validationStatus);
+                && orderStatus == LegacyOrderStatusCode.ACCEPTED.code()
+                && PersistStatus.DB_PERSISTED.name().equals(persistStatus)
+                && ValidationStatus.PASSED.name().equals(validationStatus);
     }
 }

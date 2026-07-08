@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.application.recharge;
 
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
+import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.Objects;
@@ -8,6 +10,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,6 +28,15 @@ public class PersistRechargeOrderConsumerService {
     private static final String REDIS_MARK_TIMEOUT = "REDIS_MARK_TIMEOUT";
     private static final String REDIS_MARK_INTERRUPTED = "REDIS_MARK_INTERRUPTED";
     private static final String REDIS_MARK_EXCEPTION = "REDIS_MARK_EXCEPTION";
+    private static final String LOG_EVENT_MYSQL_PERSIST_FAILED = "persist-consumer.mysql-persist.failed";
+    private static final String LOG_EVENT_REDIS_MARK_AFTER_MYSQL_FAILED = "persist-consumer.redis-mark.after-mysql.failed";
+    private static final String LOG_EVENT_REDIS_SNAPSHOT_READ_FAILED = "persist-consumer.redis-snapshot.read.failed";
+    private static final String LOG_EVENT_REDIS_MARK_DB_TIMEOUT = "persist-consumer.redis-mark-db.timeout";
+    private static final String LOG_EVENT_REDIS_MARK_DB_INTERRUPTED = "persist-consumer.redis-mark-db.interrupted";
+    private static final String LOG_EVENT_REDIS_MARK_DB_EXCEPTION = "persist-consumer.redis-mark-db.exception";
+    private static final String LOG_EVENT_REDIS_MARK_FAILED_TIMEOUT = "persist-consumer.redis-mark-failed.timeout";
+    private static final String LOG_EVENT_REDIS_MARK_FAILED_INTERRUPTED = "persist-consumer.redis-mark-failed.interrupted";
+    private static final String LOG_EVENT_REDIS_MARK_FAILED_EXCEPTION = "persist-consumer.redis-mark-failed.exception";
     private static final long RETRY_DELAY_MILLIS = 60_000L;
     private static final Duration DEFAULT_REDIS_MARK_TIMEOUT = Duration.ofSeconds(3);
     private static final int MAX_FAIL_REASON_LENGTH = 500;
@@ -34,6 +46,7 @@ public class PersistRechargeOrderConsumerService {
     private final RechargeAcceptReliabilityPort reliabilityPort;
     private final Clock clock;
     private final Duration redisMarkTimeout;
+    private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
     public PersistRechargeOrderConsumerService(
             PersistOrderSnapshotPort snapshotPort,
@@ -81,13 +94,16 @@ public class PersistRechargeOrderConsumerService {
         try {
             persistencePort.persist(aggregate);
         } catch (RuntimeException ex) {
-            log.error("Redis订单异步落MySQL失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}, persistSource={}",
+            logSampledError(LOG_EVENT_MYSQL_PERSIST_FAILED, decision -> log.error(
+                    "Redis订单异步落MySQL失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}, persistSource={}, occurrence={}, sampled={}",
                     message.orgCode(),
                     message.outOrderSn(),
                     message.orderId(),
                     message.messageId(),
                     selected.persistSource(),
-                    ex);
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
             String failReason = truncateFailReason(ex.getMessage());
             markPersistFailed(message, selected.snapshot(), failReason);
             return PersistRechargeOrderResult.persistFailed(
@@ -98,13 +114,16 @@ public class PersistRechargeOrderConsumerService {
 
         MarkPersistStateResult markResult = markDbPersisted(message, selected.snapshot());
         if (!markResult.marked()) {
-            log.error("Redis订单异步落MySQL成功但markDbPersisted失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}, failCode={}, failReason={}",
+            logSampledError(LOG_EVENT_REDIS_MARK_AFTER_MYSQL_FAILED, decision -> log.error(
+                    "Redis订单异步落MySQL成功但markDbPersisted失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}, failCode={}, failReason={}, occurrence={}, sampled={}",
                     message.orgCode(),
                     message.outOrderSn(),
                     message.orderId(),
                     message.messageId(),
                     markResult.failCode(),
-                    markResult.failReason());
+                    markResult.failReason(),
+                    decision.occurrence(),
+                    decision.sampledOccurrence()));
             return PersistRechargeOrderResult.persistedRedisMarkFailed(
                     selected.persistSource(),
                     markResult.failReason());
@@ -120,12 +139,15 @@ public class PersistRechargeOrderConsumerService {
                     message.outOrderSn(),
                     message.orderId());
         } catch (RuntimeException ex) {
-            log.error("Redis订单完整快照读取异常，退回MQ initialOrderSnapshot落库 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+            logSampledError(LOG_EVENT_REDIS_SNAPSHOT_READ_FAILED, decision -> log.error(
+                    "Redis订单完整快照读取异常，退回MQ initialOrderSnapshot落库 orgCode={}, outOrderSn={}, orderId={}, messageId={}, occurrence={}, sampled={}",
                     message.orgCode(),
                     message.outOrderSn(),
                     message.orderId(),
                     message.messageId(),
-                    ex);
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
             redisSnapshot = Optional.empty();
         }
         if (redisSnapshot.isPresent() && redisSnapshot.get().orderVersion() >= message.orderVersion()) {
@@ -157,42 +179,54 @@ public class PersistRechargeOrderConsumerService {
             return markFuture.get(redisMarkTimeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException ex) {
             cancelRedisMarkFuture(markFuture);
-            log.error("Redis订单markDbPersisted调用超时 orgCode={}, outOrderSn={}, orderId={}, messageId={}, timeoutMs={}",
+            logSampledError(LOG_EVENT_REDIS_MARK_DB_TIMEOUT, decision -> log.error(
+                    "Redis订单markDbPersisted调用超时 orgCode={}, outOrderSn={}, orderId={}, messageId={}, timeoutMs={}, occurrence={}, sampled={}",
                     message.orgCode(),
                     message.outOrderSn(),
                     message.orderId(),
                     message.messageId(),
                     redisMarkTimeout.toMillis(),
-                    ex);
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
             return MarkPersistStateResult.failed(
                     REDIS_MARK_TIMEOUT,
                     "markDbPersisted timeout after %dms".formatted(redisMarkTimeout.toMillis()));
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             cancelRedisMarkFuture(markFuture);
-            log.error("Redis订单markDbPersisted等待被中断 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+            logSampledError(LOG_EVENT_REDIS_MARK_DB_INTERRUPTED, decision -> log.error(
+                    "Redis订单markDbPersisted等待被中断 orgCode={}, outOrderSn={}, orderId={}, messageId={}, occurrence={}, sampled={}",
                     message.orgCode(),
                     message.outOrderSn(),
                     message.orderId(),
                     message.messageId(),
-                    ex);
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
             return MarkPersistStateResult.failed(REDIS_MARK_INTERRUPTED, "markDbPersisted interrupted");
         } catch (ExecutionException ex) {
             Throwable cause = rootCause(ex);
-            log.error("Redis订单markDbPersisted调用异常 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+            logSampledError(LOG_EVENT_REDIS_MARK_DB_EXCEPTION, decision -> log.error(
+                    "Redis订单markDbPersisted调用异常 orgCode={}, outOrderSn={}, orderId={}, messageId={}, occurrence={}, sampled={}",
                     message.orgCode(),
                     message.outOrderSn(),
                     message.orderId(),
                     message.messageId(),
-                    cause);
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    cause));
             return MarkPersistStateResult.failed(REDIS_MARK_EXCEPTION, truncateFailReason(cause.getMessage()));
         } catch (RuntimeException ex) {
-            log.error("Redis订单markDbPersisted调用异常 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+            logSampledError(LOG_EVENT_REDIS_MARK_DB_EXCEPTION, decision -> log.error(
+                    "Redis订单markDbPersisted调用异常 orgCode={}, outOrderSn={}, orderId={}, messageId={}, occurrence={}, sampled={}",
                     message.orgCode(),
                     message.outOrderSn(),
                     message.orderId(),
                     message.messageId(),
-                    ex);
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
             return MarkPersistStateResult.failed(REDIS_MARK_EXCEPTION, truncateFailReason(ex.getMessage()));
         }
     }
@@ -216,37 +250,56 @@ public class PersistRechargeOrderConsumerService {
             markFuture.get(redisMarkTimeout.toMillis(), TimeUnit.MILLISECONDS);
         } catch (TimeoutException ex) {
             cancelRedisMarkFuture(markFuture);
-            log.error("Redis订单异步落库失败后markPersistFailed超时 orgCode={}, outOrderSn={}, orderId={}, messageId={}, timeoutMs={}",
+            logSampledError(LOG_EVENT_REDIS_MARK_FAILED_TIMEOUT, decision -> log.error(
+                    "Redis订单异步落库失败后markPersistFailed超时 orgCode={}, outOrderSn={}, orderId={}, messageId={}, timeoutMs={}, occurrence={}, sampled={}",
                     message.orgCode(),
                     message.outOrderSn(),
                     message.orderId(),
                     message.messageId(),
                     redisMarkTimeout.toMillis(),
-                    ex);
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
         } catch (InterruptedException ex) {
             Thread.currentThread().interrupt();
             cancelRedisMarkFuture(markFuture);
-            log.error("Redis订单异步落库失败后markPersistFailed等待被中断 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+            logSampledError(LOG_EVENT_REDIS_MARK_FAILED_INTERRUPTED, decision -> log.error(
+                    "Redis订单异步落库失败后markPersistFailed等待被中断 orgCode={}, outOrderSn={}, orderId={}, messageId={}, occurrence={}, sampled={}",
                     message.orgCode(),
                     message.outOrderSn(),
                     message.orderId(),
                     message.messageId(),
-                    ex);
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
         } catch (ExecutionException ex) {
             Throwable cause = rootCause(ex);
-            log.error("Redis订单异步落库失败后markPersistFailed也失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+            logSampledError(LOG_EVENT_REDIS_MARK_FAILED_EXCEPTION, decision -> log.error(
+                    "Redis订单异步落库失败后markPersistFailed也失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}, occurrence={}, sampled={}",
                     message.orgCode(),
                     message.outOrderSn(),
                     message.orderId(),
                     message.messageId(),
-                    cause);
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    cause));
         } catch (RuntimeException markEx) {
-            log.error("Redis订单异步落库失败后markPersistFailed也失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
+            logSampledError(LOG_EVENT_REDIS_MARK_FAILED_EXCEPTION, decision -> log.error(
+                    "Redis订单异步落库失败后markPersistFailed也失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}, occurrence={}, sampled={}",
                     message.orgCode(),
                     message.outOrderSn(),
                     message.orderId(),
                     message.messageId(),
-                    markEx);
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    markEx));
+        }
+    }
+
+    private void logSampledError(String eventKey, Consumer<LogDecision> logger) {
+        LogDecision decision = logStormGuard.shouldLog(eventKey);
+        if (decision.shouldLog()) {
+            logger.accept(decision);
         }
     }
 
