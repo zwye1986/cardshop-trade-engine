@@ -34,6 +34,8 @@ class RechargeD2ChangelogContractTest {
                 .contains("0004-d2-add-direct-recharge-out-order-unique-key")
                 .contains("direct_recharge_out_order_key, count(*) as cnt")
                 .contains("uk_direct_recharge_out_order_key")
+                .contains("trade_engine_record_key varchar(191)")
+                .contains("uk_mc_depart_record_trade_engine_key")
                 .contains("create table if not exists recharge_order_ext")
                 .contains("create table if not exists recharge_outbox")
                 .contains("create table if not exists recharge_notify_task")
@@ -80,6 +82,10 @@ class RechargeD2ChangelogContractTest {
                         "0005-d2-create-recharge-order-ext",
                         "0006-d2-create-recharge-outbox",
                         "0007-d2-create-recharge-notify-task",
-                        "0008-d2-create-recharge-accept-anomaly");
+                        "0008-d2-create-recharge-accept-anomaly",
+                        "0009-d2-verify-mc-depart-record-balance-nullable",
+                        "0010-d7-add-mc-depart-record-trade-engine-key-column",
+                        "0011-d7-check-mc-depart-record-trade-engine-key-duplicates",
+                        "0012-d7-add-mc-depart-record-trade-engine-key-unique");
     }
 }

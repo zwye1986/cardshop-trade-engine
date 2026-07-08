@@ -6,9 +6,11 @@ import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePo
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.domain.order.PersistStatus;
 import com.cardshop.trade.engine.domain.order.TaskStatus;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.McDepartRecordDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
@@ -24,12 +26,14 @@ import org.springframework.transaction.annotation.Transactional;
  * 基于 MyBatis 的 Redis/MQ 订单落库适配器。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
- * 本类是 D7A 的事务边界：同一个事务内写 `mc_order`、`recharge_order_ext`，并在允许派单时写入
- * `SUPPLIER_DISPATCH` outbox。事务成功后由 application service 调用 Redis `markDbPersisted`。
+ * 本类是 D7/D8 的事务边界：同一个事务内写 `mc_order`、`recharge_order_ext`、必要的
+ * `mc_depart_record(PRE_DEDUCT)`，并在允许派单时写入 `SUPPLIER_DISPATCH` outbox。
+ * 事务成功后由 application service 调用 Redis `markDbPersisted`。
  */
 public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPersistencePort {
 
     private static final String DATA_STATUS_PROCESSED = "PROCESSED";
+    private static final String PRE_DEDUCT_RECORD_TYPE = "1";
     private static final int ORDER_STATUS_PROCESSING = 2;
     private static final int ORDER_STATUS_FAILED = 6;
     private static final int DEFAULT_MAX_RETRY_COUNT = 10;
@@ -38,24 +42,33 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
     private final McOrderPersistWriter orderWriter;
     private final RechargeOrderExtPersistWriter extWriter;
     private final RechargeOutboxPersistWriter outboxWriter;
+    private final McDepartRecordPersistWriter departRecordWriter;
     private final ObjectMapper objectMapper;
 
     public MybatisRechargeOrderPersistenceAdapter(
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             RechargeOutboxMapper outboxMapper,
+            McDepartRecordMapper departRecordMapper,
             ObjectMapper objectMapper) {
-        this(orderMapper::insertIfAbsent, extMapper::insertOrUpdatePersistState, outboxMapper::insertIfAbsent, objectMapper);
+        this(
+                orderMapper::insertIfAbsent,
+                extMapper::insertOrUpdatePersistState,
+                outboxMapper::insertIfAbsent,
+                departRecordMapper::insertIfAbsent,
+                objectMapper);
     }
 
     MybatisRechargeOrderPersistenceAdapter(
             McOrderPersistWriter orderWriter,
             RechargeOrderExtPersistWriter extWriter,
             RechargeOutboxPersistWriter outboxWriter,
+            McDepartRecordPersistWriter departRecordWriter,
             ObjectMapper objectMapper) {
         this.orderWriter = Objects.requireNonNull(orderWriter, "orderWriter must not be null");
         this.extWriter = Objects.requireNonNull(extWriter, "extWriter must not be null");
         this.outboxWriter = Objects.requireNonNull(outboxWriter, "outboxWriter must not be null");
+        this.departRecordWriter = Objects.requireNonNull(departRecordWriter, "departRecordWriter must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
     }
 
@@ -63,14 +76,26 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
      * 在一个数据库事务内写入订单事实、扩展状态和必要 outbox。
      *
      * <p>重复 MQ 消息会再次进入该方法，因此 Mapper 必须使用幂等 insert/upsert：
-     * `mc_order` 保持首次事实，`recharge_order_ext` 只前进版本，`recharge_outbox` 按 event_id 幂等。
+     * `mc_order` 保持首次事实并作为减少重复写的串行点（orderInserted == 1 才写资金流水），
+     * `recharge_order_ext` 只前进版本，资金流水按 `trade_engine_record_key` DB 唯一键兜底，
+     * `recharge_outbox` 按 event_id 幂等。
      */
     @Override
     @Transactional
     public void persist(OrderPersistAggregate aggregate) {
         Objects.requireNonNull(aggregate, "aggregate must not be null");
-        orderWriter.insertIfAbsent(toMcOrder(aggregate));
+        /*
+         * 以 mc_order 的唯一键 uk_direct_recharge_out_order_key 作为同订单落库的第一道串行点：
+         * insertIfAbsent 返回 1 表示本事务是首次落库该订单，返回 0 表示订单事实已由先前提交的事务写入。
+         * mc_order 与 mc_depart_record 在同一事务内提交，orderInserted == 1 时才尝试写 PRE_DEDUCT；
+         * 资金流水本身仍依赖 `trade_engine_record_key` 唯一键做最终幂等兜底。参见
+         * docs/交行直充业务系统详细设计.md「20.13.8 异步落库 Consumer」资金流水幂等约束。
+         */
+        int orderInserted = orderWriter.insertIfAbsent(toMcOrder(aggregate));
         extWriter.insertOrUpdatePersistState(toExt(aggregate));
+        if (orderInserted == 1 && preDeductRecordRequired(aggregate)) {
+            departRecordWriter.insertPreDeductIfAbsent(toPreDeductRecord(aggregate));
+        }
         if (aggregate.dispatchOutboxRequired()) {
             outboxWriter.insertIfAbsent(toDispatchOutbox(aggregate));
         }
@@ -136,6 +161,23 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
         return ext;
     }
 
+    private McDepartRecordDO toPreDeductRecord(OrderPersistAggregate aggregate) {
+        PersistOrderSnapshot snapshot = aggregate.snapshot();
+        McDepartRecordDO record = new McDepartRecordDO();
+        record.setOrgCode(snapshot.orgCode());
+        record.setBeforeBalance(null);
+        record.setBalance(null);
+        record.setCreateTime(persistedAt(aggregate));
+        record.setType(PRE_DEDUCT_RECORD_TYPE);
+        record.setOrderId(snapshot.orderId());
+        /*
+         * 测试库旧数据表明扣款流水使用 `type=1` 搭配正数 value，余额差额由
+         * before_balance/balance 体现。D7/D8 首期没有旧 MySQL 实时余额，所以只记录发生金额。
+         */
+        record.setValue(snapshot.orderPrice());
+        return record;
+    }
+
     private RechargeOutboxDO toDispatchOutbox(OrderPersistAggregate aggregate) {
         PersistOrderSnapshot snapshot = aggregate.snapshot();
         LocalDateTime persistedAt = persistedAt(aggregate);
@@ -159,6 +201,11 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
         outbox.setCreatedAt(persistedAt);
         outbox.setUpdatedAt(persistedAt);
         return outbox;
+    }
+
+    private static boolean preDeductRecordRequired(OrderPersistAggregate aggregate) {
+        PersistOrderSnapshot snapshot = aggregate.snapshot();
+        return aggregate.dispatchOutboxRequired() && snapshot.balanceReserved();
     }
 
     private String dispatchPayload(OrderPersistAggregate aggregate) {
@@ -219,4 +266,9 @@ interface RechargeOrderExtPersistWriter {
 interface RechargeOutboxPersistWriter {
 
     int insertIfAbsent(RechargeOutboxDO outbox);
+}
+
+interface McDepartRecordPersistWriter {
+
+    int insertPreDeductIfAbsent(McDepartRecordDO record);
 }

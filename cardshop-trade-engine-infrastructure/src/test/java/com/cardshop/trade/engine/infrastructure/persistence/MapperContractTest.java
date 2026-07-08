@@ -74,6 +74,24 @@ class MapperContractTest {
     }
 
     @Test
+    void mcDepartRecordMapperUsesLegacySingleTableColumns() throws IOException {
+        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/McDepartRecordMapper.java"));
+
+        assertThat(mapper)
+                .contains("insert into mc_depart_record")
+                .contains("before_balance")
+                .contains("create_time")
+                .contains("type")
+                .contains("`value`")
+                .contains("on duplicate key update")
+                .contains("order_id = order_id")
+                .doesNotContain(".last(\"limit 1\")")
+                .doesNotContain("record_type")
+                .doesNotContain("record_id")
+                .doesNotContainIgnoringCase(" join ");
+    }
+
+    @Test
     void outboxMapperScansDueAndZombieEventsWithShardPredicate() throws IOException {
         String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeOutboxMapper.java"));
 

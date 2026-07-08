@@ -7,6 +7,7 @@ import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshot;
 import com.cardshop.trade.engine.application.recharge.PersistSource;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.domain.order.TaskStatus;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.McDepartRecordDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
@@ -27,6 +28,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
     void writesAcceptedOrderExtAndSupplierDispatchOutbox() {
         RecordingStore store = new RecordingStore();
         MybatisRechargeOrderPersistenceAdapter adapter = new MybatisRechargeOrderPersistenceAdapter(
+                store,
                 store,
                 store,
                 store,
@@ -60,6 +62,14 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.ext.getCreatedAt()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
         assertThat(store.ext.getUpdatedAt()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
 
+        assertThat(store.departRecord.getOrgCode()).isEqualTo("A36");
+        assertThat(store.departRecord.getOrderId()).isEqualTo("ORDER-1001");
+        assertThat(store.departRecord.getType()).isEqualTo("1");
+        assertThat(store.departRecord.getValue()).isEqualTo(5200L);
+        assertThat(store.departRecord.getBeforeBalance()).isNull();
+        assertThat(store.departRecord.getBalance()).isNull();
+        assertThat(store.departRecord.getCreateTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
+
         assertThat(store.outbox.getEventId()).isEqualTo("dispatch-ORDER-1001");
         assertThat(store.outbox.getEventType()).isEqualTo(OutboxEventType.SUPPLIER_DISPATCH.name());
         assertThat(store.outbox.getStatus()).isEqualTo(TaskStatus.INIT.name());
@@ -79,6 +89,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
                 store,
                 store,
                 store,
+                store,
                 new ObjectMapper());
 
         adapter.persist(aggregate(snapshot("FAILED", false, "PRODUCT_NOT_ALLOWED", "商品无权限")));
@@ -88,7 +99,26 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.order.getFailReason()).isEqualTo("商品无权限");
         assertThat(store.ext.getValidationStatus()).isEqualTo("FAILED");
         assertThat(store.ext.getDispatchAllowed()).isFalse();
+        assertThat(store.departRecord).isNull();
         assertThat(store.outbox).isNull();
+    }
+
+    @Test
+    void skipsPreDeductRecordWhenOrderAlreadyExists() {
+        RecordingStore store = new RecordingStore();
+        store.nextOrderInsertResult = 0;
+        MybatisRechargeOrderPersistenceAdapter adapter = new MybatisRechargeOrderPersistenceAdapter(
+                store,
+                store,
+                store,
+                store,
+                new ObjectMapper());
+
+        adapter.persist(aggregate(snapshot("PASSED", true, "", "")));
+
+        assertThat(store.ext.getOrderId()).isEqualTo("ORDER-1001");
+        assertThat(store.departRecord).isNull();
+        assertThat(store.outbox.getEventId()).isEqualTo("dispatch-ORDER-1001");
     }
 
     private static OrderPersistAggregate aggregate(PersistOrderSnapshot snapshot) {
@@ -136,16 +166,21 @@ class MybatisRechargeOrderPersistenceAdapterTest {
     }
 
     private static final class RecordingStore
-            implements McOrderPersistWriter, RechargeOrderExtPersistWriter, RechargeOutboxPersistWriter {
+            implements McOrderPersistWriter,
+            RechargeOrderExtPersistWriter,
+            RechargeOutboxPersistWriter,
+            McDepartRecordPersistWriter {
 
         private McOrderDO order;
         private RechargeOrderExtDO ext;
         private RechargeOutboxDO outbox;
+        private McDepartRecordDO departRecord;
+        private int nextOrderInsertResult = 1;
 
         @Override
         public int insertIfAbsent(McOrderDO order) {
             this.order = order;
-            return 1;
+            return nextOrderInsertResult;
         }
 
         @Override
@@ -157,6 +192,12 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         @Override
         public int insertIfAbsent(RechargeOutboxDO outbox) {
             this.outbox = outbox;
+            return 1;
+        }
+
+        @Override
+        public int insertPreDeductIfAbsent(McDepartRecordDO record) {
+            this.departRecord = record;
             return 1;
         }
     }

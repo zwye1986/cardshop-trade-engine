@@ -1,12 +1,23 @@
 server:
-  port: ${SERVER_PORT:8080}
+  port: ${SERVER_PORT:10080}
 
 spring:
   main:
     web-application-type: reactive
   rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:47.100.11.188}
+    port: ${SPRING_RABBITMQ_PORT:5672}
+    username: ${SPRING_RABBITMQ_USERNAME:admin_cardshop}
+    password: ${SPRING_RABBITMQ_PASSWORD:}
+    virtual-host: ${SPRING_RABBITMQ_VIRTUAL_HOST:cardshop-trade-dev}
     publisher-confirm-type: correlated
     publisher-returns: true
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 50
+        concurrency: 4
+        max-concurrency: 16
     template:
       mandatory: true
   liquibase:
@@ -42,6 +53,15 @@ trade:
     mq:
       persist-exchange: recharge.persist.exchange
       persist-routing-key: recharge.persist.mysql
+      persist-queue: recharge.persist.mysql.queue
+      persist-dead-letter-exchange: recharge.persist.dlx
+      persist-dead-letter-queue: recharge.persist.mysql.dlq
+      persist-dead-letter-routing-key: recharge.persist.mysql.dlq
+      consumer-max-retry: 3
+      persist-retry-exchange: recharge.persist.retry.exchange
+      persist-retry-queue: recharge.persist.mysql.retry.queue
+      persist-retry-routing-key: recharge.persist.mysql.retry
+      consumer-retry-delay-ms: 30000
       publish-confirm-timeout-ms: 500
       publish-retry-times: 3
       confirm-worker-queue-capacity: 10000

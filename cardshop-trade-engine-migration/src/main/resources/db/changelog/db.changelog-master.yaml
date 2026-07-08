@@ -293,3 +293,130 @@ databaseChangeLog:
         - sql:
             sql: |
               drop table if exists recharge_accept_anomaly
+  - changeSet:
+      id: 0009-d2-verify-mc-depart-record-balance-nullable
+      author: codex
+      preConditions:
+        - onFail: HALT
+        - tableExists:
+            tableName: mc_depart_record
+        - columnExists:
+            tableName: mc_depart_record
+            columnName: before_balance
+        - columnExists:
+            tableName: mc_depart_record
+            columnName: balance
+        - sqlCheck:
+            expectedResult: "1"
+            sql: |
+              select count(*) from information_schema.columns
+              where table_schema = database()
+                and table_name = 'mc_depart_record'
+                and column_name = 'before_balance'
+                and is_nullable = 'YES'
+        - sqlCheck:
+            expectedResult: "1"
+            sql: |
+              select count(*) from information_schema.columns
+              where table_schema = database()
+                and table_name = 'mc_depart_record'
+                and column_name = 'balance'
+                and is_nullable = 'YES'
+      changes:
+        - sql:
+            sql: |
+              select 1
+      rollback:
+        - sql:
+            sql: |
+              select 1
+  - changeSet:
+      id: 0010-d7-add-mc-depart-record-trade-engine-key-column
+      author: codex
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: mc_depart_record
+        - columnExists:
+            tableName: mc_depart_record
+            columnName: order_id
+        - columnExists:
+            tableName: mc_depart_record
+            columnName: type
+        - not:
+            columnExists:
+              tableName: mc_depart_record
+              columnName: trade_engine_record_key
+      changes:
+        - sql:
+            stripComments: false
+            sql: |
+              ALTER TABLE mc_depart_record
+                ADD COLUMN trade_engine_record_key varchar(191)
+                GENERATED ALWAYS AS (
+                  CASE
+                    WHEN type = '1'
+                      AND order_id IS NOT NULL
+                      AND order_id <> ''
+                    THEN concat('PRE_DEDUCT:', order_id)
+                    ELSE NULL
+                  END
+                ) STORED COMMENT '新交易引擎资金流水幂等唯一键'
+      rollback:
+        - sql:
+            sql: |
+              ALTER TABLE mc_depart_record
+                DROP COLUMN trade_engine_record_key
+  - changeSet:
+      id: 0011-d7-check-mc-depart-record-trade-engine-key-duplicates
+      author: codex
+      preConditions:
+        - onFail: HALT
+        - tableExists:
+            tableName: mc_depart_record
+        - columnExists:
+            tableName: mc_depart_record
+            columnName: trade_engine_record_key
+        - sqlCheck:
+            expectedResult: "0"
+            sql: |
+              select count(*)
+              from (
+                select trade_engine_record_key, count(*) as cnt
+                from mc_depart_record
+                where trade_engine_record_key is not null
+                group by trade_engine_record_key
+                having count(*) > 1
+              ) duplicate_trade_engine_depart_records
+      changes:
+        - sql:
+            sql: |
+              select 1
+      rollback:
+        - sql:
+            sql: |
+              select 1
+  - changeSet:
+      id: 0012-d7-add-mc-depart-record-trade-engine-key-unique
+      author: codex
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: mc_depart_record
+        - columnExists:
+            tableName: mc_depart_record
+            columnName: trade_engine_record_key
+        - not:
+            indexExists:
+              tableName: mc_depart_record
+              indexName: uk_mc_depart_record_trade_engine_key
+      changes:
+        - sql:
+            sql: |
+              ALTER TABLE mc_depart_record
+                ADD UNIQUE KEY uk_mc_depart_record_trade_engine_key (trade_engine_record_key)
+      rollback:
+        - sql:
+            sql: |
+              ALTER TABLE mc_depart_record
+                DROP INDEX uk_mc_depart_record_trade_engine_key

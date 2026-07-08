@@ -226,6 +226,72 @@ public class TradeEngineProperties {
         private String persistRoutingKey = "recharge.persist.mysql";
 
         /**
+         * 异步落库 Consumer 订阅的持久化队列名称。
+         *
+         * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」。
+         * 该值需要和 broker 上声明的 Quorum Queue、Exchange Binding 保持一致；生产环境变更队列名时必须同步
+         * Nacos、RabbitMQ 声明脚本和补投任务配置，避免消息发布成功但 Consumer 订阅旧队列。
+         */
+        private String persistQueue = "recharge.persist.mysql.queue";
+
+        /**
+         * 异步落库主队列的死信 Exchange。
+         *
+         * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」。
+         * Consumer 反序列化失败或 broker 重试策略耗尽后，消息应进入该死信交换机，避免毒消息阻塞主队列。
+         */
+        private String persistDeadLetterExchange = "recharge.persist.dlx";
+
+        /**
+         * 异步落库死信队列名称。
+         *
+         * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「12.5 故障模式与处理」。
+         * DLQ 中的消息由后续 MySQL 落库补偿任务或人工排查处理，不能在正常 Consumer 中静默丢弃。
+         */
+        private String persistDeadLetterQueue = "recharge.persist.mysql.dlq";
+
+        /**
+         * 异步落库死信 Routing Key。
+         *
+         * <p>该值同时用于主队列 `x-dead-letter-routing-key` 和 DLQ 绑定，必须与 RabbitMQ broker 声明保持一致。
+         */
+        private String persistDeadLetterRoutingKey = "recharge.persist.mysql.dlq";
+
+        /**
+         * 异步落库 Consumer 端业务失败/异常后的最大重试次数。
+         *
+         * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「12.5 故障模式与处理」。
+         * listener 通过 {@code x-retry-count} 消息头累计重试次数；达到该阈值后 {@code basicReject(requeue=false)}
+         * 让消息进入 DLQ，避免 broker 立即 requeue 形成热重投死循环。首次投递不计入重试次数，
+         * 因此实际最大处理次数为 {@code consumerMaxRetry + 1}。
+         */
+        private int consumerMaxRetry = 3;
+
+        /**
+         * 异步落库失败后的退避重试 Exchange。
+         *
+         * <p>主队列消费失败但尚未达到 {@link #consumerMaxRetry} 时，listener 会先把消息发布到该
+         * retry exchange，并在 RabbitMQ confirm ack 后再 ack 原消息；retry queue 通过 TTL 和 DLX
+         * 把消息投回主 exchange，避免立即热重投，同时避免“先 ack 原消息、后发布 retry 失败”的丢消息窗口。
+         */
+        private String persistRetryExchange = "recharge.persist.retry.exchange";
+
+        /**
+         * 异步落库失败后的退避重试队列。
+         */
+        private String persistRetryQueue = "recharge.persist.mysql.retry.queue";
+
+        /**
+         * 异步落库失败后进入 retry queue 的 Routing Key。
+         */
+        private String persistRetryRoutingKey = "recharge.persist.mysql.retry";
+
+        /**
+         * retry queue 消息退避毫秒数。
+         */
+        private int consumerRetryDelayMs = 30000;
+
+        /**
          * Publisher Confirm 等待超时时间，超时后进入补偿或重试路径。
          */
         private int publishConfirmTimeoutMs = 500;
@@ -259,6 +325,78 @@ public class TradeEngineProperties {
 
         public void setPersistRoutingKey(String persistRoutingKey) {
             this.persistRoutingKey = persistRoutingKey;
+        }
+
+        public String getPersistQueue() {
+            return persistQueue;
+        }
+
+        public void setPersistQueue(String persistQueue) {
+            this.persistQueue = persistQueue;
+        }
+
+        public String getPersistDeadLetterExchange() {
+            return persistDeadLetterExchange;
+        }
+
+        public void setPersistDeadLetterExchange(String persistDeadLetterExchange) {
+            this.persistDeadLetterExchange = persistDeadLetterExchange;
+        }
+
+        public String getPersistDeadLetterQueue() {
+            return persistDeadLetterQueue;
+        }
+
+        public void setPersistDeadLetterQueue(String persistDeadLetterQueue) {
+            this.persistDeadLetterQueue = persistDeadLetterQueue;
+        }
+
+        public String getPersistDeadLetterRoutingKey() {
+            return persistDeadLetterRoutingKey;
+        }
+
+        public void setPersistDeadLetterRoutingKey(String persistDeadLetterRoutingKey) {
+            this.persistDeadLetterRoutingKey = persistDeadLetterRoutingKey;
+        }
+
+        public int getConsumerMaxRetry() {
+            return consumerMaxRetry;
+        }
+
+        public void setConsumerMaxRetry(int consumerMaxRetry) {
+            this.consumerMaxRetry = consumerMaxRetry;
+        }
+
+        public String getPersistRetryExchange() {
+            return persistRetryExchange;
+        }
+
+        public void setPersistRetryExchange(String persistRetryExchange) {
+            this.persistRetryExchange = persistRetryExchange;
+        }
+
+        public String getPersistRetryQueue() {
+            return persistRetryQueue;
+        }
+
+        public void setPersistRetryQueue(String persistRetryQueue) {
+            this.persistRetryQueue = persistRetryQueue;
+        }
+
+        public String getPersistRetryRoutingKey() {
+            return persistRetryRoutingKey;
+        }
+
+        public void setPersistRetryRoutingKey(String persistRetryRoutingKey) {
+            this.persistRetryRoutingKey = persistRetryRoutingKey;
+        }
+
+        public int getConsumerRetryDelayMs() {
+            return consumerRetryDelayMs;
+        }
+
+        public void setConsumerRetryDelayMs(int consumerRetryDelayMs) {
+            this.consumerRetryDelayMs = consumerRetryDelayMs;
         }
 
         public int getPublishConfirmTimeoutMs() {

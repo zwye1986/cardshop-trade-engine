@@ -104,6 +104,26 @@ class ProfileResourceIsolationTest {
         assertThat(application.getProperty("spring.rabbitmq.publisher-confirm-type")).isEqualTo("correlated");
         assertThat(application.getProperty("spring.rabbitmq.publisher-returns")).isEqualTo("true");
         assertThat(application.getProperty("spring.rabbitmq.template.mandatory")).isEqualTo("true");
+        assertThat(application.getProperty("spring.rabbitmq.listener.simple.acknowledge-mode")).isEqualTo("manual");
+        assertThat(application.getProperty("spring.rabbitmq.listener.simple.prefetch")).isEqualTo("50");
+        assertThat(application.getProperty("spring.rabbitmq.listener.simple.concurrency")).isEqualTo("4");
+        assertThat(application.getProperty("spring.rabbitmq.listener.simple.max-concurrency")).isEqualTo("16");
+        assertThat(application.getProperty("trade.engine.mq.persist-queue"))
+                .isEqualTo("recharge.persist.mysql.queue");
+        assertThat(application.getProperty("trade.engine.mq.persist-dead-letter-exchange"))
+                .isEqualTo("recharge.persist.dlx");
+        assertThat(application.getProperty("trade.engine.mq.persist-dead-letter-queue"))
+                .isEqualTo("recharge.persist.mysql.dlq");
+        assertThat(application.getProperty("trade.engine.mq.persist-dead-letter-routing-key"))
+                .isEqualTo("recharge.persist.mysql.dlq");
+        assertThat(application.getProperty("trade.engine.mq.persist-retry-exchange"))
+                .isEqualTo("recharge.persist.retry.exchange");
+        assertThat(application.getProperty("trade.engine.mq.persist-retry-queue"))
+                .isEqualTo("recharge.persist.mysql.retry.queue");
+        assertThat(application.getProperty("trade.engine.mq.persist-retry-routing-key"))
+                .isEqualTo("recharge.persist.mysql.retry");
+        assertThat(application.getProperty("trade.engine.mq.consumer-retry-delay-ms"))
+                .isEqualTo("30000");
     }
 
     private Properties load(String resourcePath) {

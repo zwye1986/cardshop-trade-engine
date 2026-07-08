@@ -9,7 +9,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
+import java.util.Queue;
+import java.util.concurrent.Executor;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.core.Message;
 import org.springframework.amqp.core.MessageProperties;
@@ -55,6 +60,32 @@ class RabbitPersistRechargeOrderMessagePublisherTest {
         assertThat(result.attemptCount()).isEqualTo(2);
         assertThat(result.failCode()).isEqualTo("CONFIRM_NACK");
         assertThat(operations.calls).isEqualTo(2);
+    }
+
+    @Test
+    void handlesConfirmFailureRetryOnMqConfirmExecutor() {
+        var operations = new RecordingRabbitPersistMessageOperations(false);
+        var mqConfirmExecutor = new QueuedNamedExecutor("trade-mq-confirm-test");
+        var publisher = publisher(operations, properties(2, 500), mqConfirmExecutor);
+
+        var resultFuture = publisher.publish(message()).toCompletableFuture();
+
+        assertThat(resultFuture).isNotDone();
+        assertThat(operations.calls).isEqualTo(1);
+        assertThat(operations.publishThreads).containsExactly(Thread.currentThread().getName());
+        assertThat(mqConfirmExecutor.queuedTaskCount()).isEqualTo(1);
+
+        mqConfirmExecutor.runNext();
+        assertThat(resultFuture).isNotDone();
+        assertThat(operations.calls).isEqualTo(2);
+        assertThat(operations.publishThreads.get(1)).isEqualTo("trade-mq-confirm-test");
+
+        mqConfirmExecutor.runNext();
+        PersistMessagePublishResult result = resultFuture.join();
+
+        assertThat(result.confirmed()).isFalse();
+        assertThat(result.attemptCount()).isEqualTo(2);
+        assertThat(result.failCode()).isEqualTo("CONFIRM_NACK");
     }
 
     @Test
@@ -106,7 +137,19 @@ class RabbitPersistRechargeOrderMessagePublisherTest {
     private static RabbitPersistRechargeOrderMessagePublisher publisher(
             RabbitPersistMessageOperations operations,
             TradeEngineProperties properties) {
-        return new RabbitPersistRechargeOrderMessagePublisher(operations, new ObjectMapper(), properties, CLOCK);
+        return publisher(operations, properties, Runnable::run);
+    }
+
+    private static RabbitPersistRechargeOrderMessagePublisher publisher(
+            RabbitPersistMessageOperations operations,
+            TradeEngineProperties properties,
+            Executor mqConfirmExecutor) {
+        return new RabbitPersistRechargeOrderMessagePublisher(
+                operations,
+                new ObjectMapper(),
+                properties,
+                CLOCK,
+                mqConfirmExecutor);
     }
 
     private static TradeEngineProperties properties(int retryTimes, int confirmTimeoutMs) {
@@ -134,6 +177,7 @@ class RabbitPersistRechargeOrderMessagePublisherTest {
         private String exchange;
         private String routingKey;
         private String payload;
+        private final List<String> publishThreads = new ArrayList<>();
         private boolean returned;
         private RuntimeException publishFailure;
 
@@ -151,6 +195,7 @@ class RabbitPersistRechargeOrderMessagePublisherTest {
             this.exchange = exchange;
             this.routingKey = routingKey;
             this.payload = payload;
+            this.publishThreads.add(Thread.currentThread().getName());
             if (publishFailure != null) {
                 throw publishFailure;
             }
@@ -163,6 +208,36 @@ class RabbitPersistRechargeOrderMessagePublisherTest {
                         routingKey));
             }
             correlationData.getFuture().complete(new CorrelationData.Confirm(ack, ack ? null : "nack-for-test"));
+        }
+    }
+
+    private static final class QueuedNamedExecutor implements Executor {
+
+        private final String threadName;
+        private final Queue<Runnable> tasks = new ArrayDeque<>();
+
+        private QueuedNamedExecutor(String threadName) {
+            this.threadName = threadName;
+        }
+
+        @Override
+        public void execute(Runnable command) {
+            tasks.add(command);
+        }
+
+        private int queuedTaskCount() {
+            return tasks.size();
+        }
+
+        private void runNext() {
+            Runnable task = tasks.remove();
+            String originalName = Thread.currentThread().getName();
+            try {
+                Thread.currentThread().setName(threadName);
+                task.run();
+            } finally {
+                Thread.currentThread().setName(originalName);
+            }
         }
     }
 }

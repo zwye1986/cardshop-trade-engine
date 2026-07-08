@@ -11,6 +11,7 @@ import java.time.Instant;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
@@ -34,6 +35,7 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
     private final ObjectMapper objectMapper;
     private final TradeEngineProperties properties;
     private final Clock clock;
+    private final Executor mqConfirmExecutor;
     private final AtomicInteger consecutiveFailures = new AtomicInteger();
     private volatile Instant breakerOpenUntil = Instant.EPOCH;
 
@@ -42,10 +44,20 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
             ObjectMapper objectMapper,
             TradeEngineProperties properties,
             Clock clock) {
-        this.operations = operations;
-        this.objectMapper = objectMapper;
-        this.properties = properties;
-        this.clock = clock;
+        this(operations, objectMapper, properties, clock, Runnable::run);
+    }
+
+    public RabbitPersistRechargeOrderMessagePublisher(
+            RabbitPersistMessageOperations operations,
+            ObjectMapper objectMapper,
+            TradeEngineProperties properties,
+            Clock clock,
+            Executor mqConfirmExecutor) {
+        this.operations = Objects.requireNonNull(operations, "operations must not be null");
+        this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
+        this.properties = Objects.requireNonNull(properties, "properties must not be null");
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.mqConfirmExecutor = Objects.requireNonNull(mqConfirmExecutor, "mqConfirmExecutor must not be null");
     }
 
     @Override
@@ -100,15 +112,14 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
 
         long timeoutMs = Math.max(1L, properties.getMq().getPublishConfirmTimeoutMs());
         /*
-         * TODO(D7B): 将 publisher confirm 的 handle/retry continuation 切到 tradeMqConfirmTaskExecutor。
-         * 参见 docs/交行直充业务系统高可用方案设计.md「3.7 线程池与隔离」中的 mq-confirm-worker。
-         * 当前链路会在 Rabbit confirm 完成线程或 CompletableFuture timeout 调度线程上执行 handle/thenCompose，
-         * 失败重试时还会继续调用 convertAndSend；后续接入独立执行器后，需要补充线程名断言测试，避免
-         * confirm 回调线程承担业务重试和 Redis 状态推进工作。
+         * docs/交行直充业务系统高可用方案设计.md「3.7 线程池与隔离」要求 RabbitMQ confirm callback
+         * 只完成 Future 或轻量入队，不能承担业务重试。这里用独立 mqConfirmExecutor 执行 confirm 结果判定；
+         * 后续 thenCompose 会在同一个 executor 线程内触发 retryOrFail，从而把 confirm 失败后的重投也隔离到
+         * tradeMqConfirmTaskExecutor，避免 Rabbit confirm 回调线程或 JDK timeout 调度线程继续做业务工作。
          */
         return correlationData.getFuture()
                 .orTimeout(timeoutMs, TimeUnit.MILLISECONDS)
-                .handle((confirm, ex) -> {
+                .handleAsync((confirm, ex) -> {
                     if (ex == null && confirm != null && confirm.isAck()) {
                         ReturnedMessage returned = correlationData.getReturned();
                         if (returned != null) {
@@ -147,7 +158,7 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
                             failCode,
                             failReason);
                     return PersistMessagePublishResult.failed(message.messageId(), attempt, failCode, failReason);
-                })
+                }, mqConfirmExecutor)
                 .thenCompose(result -> handlePublishAttemptResult(message, payload, attempt, result));
     }
 

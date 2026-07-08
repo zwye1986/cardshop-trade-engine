@@ -29,6 +29,14 @@ class TradeEnginePropertiesTest {
             assertThat(properties.getRedis().getWaitReplicas()).isEqualTo(1);
             assertThat(properties.getRedis().getPendingOrgBucketCount()).isEqualTo(128);
             assertThat(properties.getRedis().getKeyPrefix()).isEqualTo("cardshop:trade");
+            assertThat(properties.getMq().getPersistQueue()).isEqualTo("recharge.persist.mysql.queue");
+            assertThat(properties.getMq().getPersistDeadLetterExchange()).isEqualTo("recharge.persist.dlx");
+            assertThat(properties.getMq().getPersistDeadLetterQueue()).isEqualTo("recharge.persist.mysql.dlq");
+            assertThat(properties.getMq().getPersistDeadLetterRoutingKey()).isEqualTo("recharge.persist.mysql.dlq");
+            assertThat(properties.getMq().getPersistRetryExchange()).isEqualTo("recharge.persist.retry.exchange");
+            assertThat(properties.getMq().getPersistRetryQueue()).isEqualTo("recharge.persist.mysql.retry.queue");
+            assertThat(properties.getMq().getPersistRetryRoutingKey()).isEqualTo("recharge.persist.mysql.retry");
+            assertThat(properties.getMq().getConsumerRetryDelayMs()).isEqualTo(30000);
             assertThat(properties.getMq().getPublishConfirmTimeoutMs()).isEqualTo(500);
             assertThat(properties.getMq().getBreaker().isEnabled()).isTrue();
             assertThat(properties.getOrder().getPendingTtlDays()).isEqualTo(7);
@@ -49,6 +57,14 @@ class TradeEnginePropertiesTest {
                 .withPropertyValues(
                         "trade.engine.redis.write-enabled=false",
                         "trade.engine.redis.wait-replicas=2",
+                        "trade.engine.mq.persist-queue=recharge.persist.mysql.gray.queue",
+                        "trade.engine.mq.persist-dead-letter-exchange=recharge.persist.gray.dlx",
+                        "trade.engine.mq.persist-dead-letter-queue=recharge.persist.mysql.gray.dlq",
+                        "trade.engine.mq.persist-dead-letter-routing-key=recharge.persist.mysql.gray.dlq",
+                        "trade.engine.mq.persist-retry-exchange=recharge.persist.gray.retry.exchange",
+                        "trade.engine.mq.persist-retry-queue=recharge.persist.mysql.gray.retry.queue",
+                        "trade.engine.mq.persist-retry-routing-key=recharge.persist.mysql.gray.retry",
+                        "trade.engine.mq.consumer-retry-delay-ms=1500",
                         "trade.engine.mq.breaker.failure-threshold=9",
                         "trade.engine.routing.gray-org-codes[0]=A11",
                         "trade.engine.routing.supported-paths[0]=/v1/cardapi/order/getRechargeOrder",
@@ -61,6 +77,14 @@ class TradeEnginePropertiesTest {
                     // 环境覆盖验证用于保证 Nacos 灰度配置能被 Spring Boot 正确绑定。
                     assertThat(properties.getRedis().isWriteEnabled()).isFalse();
                     assertThat(properties.getRedis().getWaitReplicas()).isEqualTo(2);
+                    assertThat(properties.getMq().getPersistQueue()).isEqualTo("recharge.persist.mysql.gray.queue");
+                    assertThat(properties.getMq().getPersistDeadLetterExchange()).isEqualTo("recharge.persist.gray.dlx");
+                    assertThat(properties.getMq().getPersistDeadLetterQueue()).isEqualTo("recharge.persist.mysql.gray.dlq");
+                    assertThat(properties.getMq().getPersistDeadLetterRoutingKey()).isEqualTo("recharge.persist.mysql.gray.dlq");
+                    assertThat(properties.getMq().getPersistRetryExchange()).isEqualTo("recharge.persist.gray.retry.exchange");
+                    assertThat(properties.getMq().getPersistRetryQueue()).isEqualTo("recharge.persist.mysql.gray.retry.queue");
+                    assertThat(properties.getMq().getPersistRetryRoutingKey()).isEqualTo("recharge.persist.mysql.gray.retry");
+                    assertThat(properties.getMq().getConsumerRetryDelayMs()).isEqualTo(1500);
                     assertThat(properties.getMq().getBreaker().getFailureThreshold()).isEqualTo(9);
                     assertThat(properties.getRouting().getGrayOrgCodes()).containsExactly("A11");
                     assertThat(properties.getRouting().getSupportedPaths())

@@ -5,10 +5,12 @@ import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckReposito
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
+import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
+import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitTemplatePersistMessageOperations;
 import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
@@ -16,6 +18,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomaly
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyRecordAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderQueryAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
@@ -34,7 +37,17 @@ import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisSessionFactor
 import com.cardshop.trade.engine.infrastructure.redis.SpringDataRechargeRedisScriptExecutor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
+import java.util.concurrent.Executor;
+import org.springframework.amqp.core.BindingBuilder;
+import org.springframework.amqp.core.Declarables;
+import org.springframework.amqp.core.DirectExchange;
+import org.springframework.amqp.core.ExchangeBuilder;
+import org.springframework.amqp.core.Queue;
+import org.springframework.amqp.core.QueueBuilder;
+import org.springframework.amqp.rabbit.annotation.EnableRabbit;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -42,7 +55,6 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
-import org.springframework.beans.factory.ObjectProvider;
 
 /**
  * 基础设施层自动配置入口。
@@ -54,7 +66,63 @@ import org.springframework.beans.factory.ObjectProvider;
  */
 @Configuration(proxyBeanMethods = false)
 @EnableConfigurationProperties(TradeEngineProperties.class)
+@EnableRabbit
 public class TradeEngineInfrastructureConfiguration {
+
+    /**
+     * 声明异步落库 RabbitMQ 拓扑。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」。
+     * 主队列、retry queue 和 DLQ 均使用 Quorum Queue；主队列死信始终进入最终 DLQ，
+     * 未耗尽重试次数的业务失败由 listener 发布到 retry exchange，retry queue 到期后通过 DLX 投回主 exchange。
+     * 该方法只创建 Spring AMQP 的声明对象，真正向 broker declare 由 RabbitAdmin 在具备 RabbitMQ 自动配置的环境中完成。
+     */
+    @Bean
+    public Declarables rechargePersistDeclarables(TradeEngineProperties properties) {
+        TradeEngineProperties.Mq mq = properties.getMq();
+        DirectExchange exchange = ExchangeBuilder
+                .directExchange(mq.getPersistExchange())
+                .durable(true)
+                .build();
+        DirectExchange retryExchange = ExchangeBuilder
+                .directExchange(mq.getPersistRetryExchange())
+                .durable(true)
+                .build();
+        DirectExchange deadLetterExchange = ExchangeBuilder
+                .directExchange(mq.getPersistDeadLetterExchange())
+                .durable(true)
+                .build();
+        Queue queue = QueueBuilder
+                .durable(mq.getPersistQueue())
+                .quorum()
+                .deadLetterExchange(mq.getPersistDeadLetterExchange())
+                .deadLetterRoutingKey(mq.getPersistDeadLetterRoutingKey())
+                .build();
+        Queue retryQueue = QueueBuilder
+                .durable(mq.getPersistRetryQueue())
+                .quorum()
+                .deadLetterExchange(mq.getPersistExchange())
+                .deadLetterRoutingKey(mq.getPersistRoutingKey())
+                .ttl(Math.max(1000, mq.getConsumerRetryDelayMs()))
+                .build();
+        Queue deadLetterQueue = QueueBuilder
+                .durable(mq.getPersistDeadLetterQueue())
+                .quorum()
+                .build();
+
+        // 参见详细设计「20.9 RabbitMQ 声明契约」：声明对象只描述 broker 拓扑，
+        // 真实创建/校验由 RabbitAdmin 在具备 RabbitMQ 连接的 profile 中执行。
+        return new Declarables(
+                exchange,
+                retryExchange,
+                deadLetterExchange,
+                queue,
+                retryQueue,
+                deadLetterQueue,
+                BindingBuilder.bind(queue).to(exchange).with(mq.getPersistRoutingKey()),
+                BindingBuilder.bind(retryQueue).to(retryExchange).with(mq.getPersistRetryRoutingKey()),
+                BindingBuilder.bind(deadLetterQueue).to(deadLetterExchange).with(mq.getPersistDeadLetterRoutingKey()));
+    }
 
     @Bean
     public RechargeRedisKeyBuilder rechargeRedisKeyBuilder(TradeEngineProperties properties) {
@@ -114,12 +182,38 @@ public class TradeEngineInfrastructureConfiguration {
     public PersistRechargeOrderMessagePublisher persistRechargeOrderMessagePublisher(
             RabbitTemplate rabbitTemplate,
             ObjectMapper objectMapper,
-            TradeEngineProperties properties) {
+            TradeEngineProperties properties,
+            @Qualifier("tradeMqConfirmTaskExecutor") Executor mqConfirmExecutor) {
         return new RabbitPersistRechargeOrderMessagePublisher(
                 new RabbitTemplatePersistMessageOperations(rabbitTemplate),
                 objectMapper,
                 properties,
-                Clock.systemUTC());
+                Clock.systemUTC(),
+                mqConfirmExecutor);
+    }
+
+    /**
+     * 装配 RabbitMQ 持久化消息 Listener。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」和
+     * 「20.13.8 异步落库 Consumer」。该 Bean 只在 RabbitMQ 客户端和 application 层 Consumer 核心服务都存在时创建：
+     * local profile 排除 Rabbit 自动配置时不会启动监听容器；RabbitMQ 就绪但 MySQL/Redis 落库端口未就绪时也不会消费消息。
+     */
+    @Bean
+    @ConditionalOnBean({RabbitTemplate.class, PersistRechargeOrderConsumerService.class})
+    @ConditionalOnMissingBean(RabbitPersistRechargeOrderMessageListener.class)
+    public RabbitPersistRechargeOrderMessageListener rabbitPersistRechargeOrderMessageListener(
+            ObjectMapper objectMapper,
+            PersistRechargeOrderConsumerService consumerService,
+            RabbitTemplate rabbitTemplate,
+            TradeEngineProperties properties) {
+        return new RabbitPersistRechargeOrderMessageListener(
+                objectMapper,
+                consumerService,
+                rabbitTemplate,
+                properties.getMq().getPersistRetryExchange(),
+                properties.getMq().getPersistRetryRoutingKey(),
+                properties.getMq().getConsumerMaxRetry());
     }
 
     /**
@@ -205,16 +299,18 @@ public class TradeEngineInfrastructureConfiguration {
      * 装配 MySQL 异步落库端口。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
-     * 三个 Mapper 同时存在时才启用，确保事务内能完整写 `mc_order`、`recharge_order_ext` 和 outbox。
+     * 四个 Mapper 同时存在时才启用，确保事务内能完整写 `mc_order`、`recharge_order_ext`、
+     * `mc_depart_record(PRE_DEDUCT)` 和 outbox。
      */
     @Bean
-    @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class, RechargeOutboxMapper.class})
+    @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class, RechargeOutboxMapper.class, McDepartRecordMapper.class})
     @ConditionalOnMissingBean(RechargeOrderPersistencePort.class)
     public RechargeOrderPersistencePort rechargeOrderPersistencePort(
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             RechargeOutboxMapper outboxMapper,
+            McDepartRecordMapper departRecordMapper,
             ObjectMapper objectMapper) {
-        return new MybatisRechargeOrderPersistenceAdapter(orderMapper, extMapper, outboxMapper, objectMapper);
+        return new MybatisRechargeOrderPersistenceAdapter(orderMapper, extMapper, outboxMapper, departRecordMapper, objectMapper);
     }
 }
