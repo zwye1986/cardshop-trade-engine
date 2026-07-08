@@ -13,6 +13,10 @@ import com.cardshop.trade.engine.application.v1.RechargeOrderSnapshot;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
 import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
+import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxCommand;
+import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort;
+import java.util.ArrayList;
+import java.util.List;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -113,10 +117,12 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
 
     @Test
     void invalidReturnsProcessingForOrderThatHasNotBeenPersistedToMysql() {
+        RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort();
         var service = new V1InvalidRechargeOrderUseCaseService(
                 precheckService(),
                 (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
-                (orgCode, outOrderSn) -> Optional.of(snapshot("ACCEPTED", "PENDING_MQ", "PASSED", "", "")));
+                (orgCode, outOrderSn) -> Optional.of(snapshot("ACCEPTED", "PENDING_MQ", "PASSED", "", "")),
+                invalidOutboxPort);
 
         V1CardApiResult result = service.invalidRechargeOrder(command("OUT-INVALID-1", "nonce-invalid-123456789012345678"));
 
@@ -124,6 +130,30 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
         V1RechargeOrderResponse data = (V1RechargeOrderResponse) result.data();
         assertThat(data.orderStatus()).isEqualTo("2");
         assertThat(data.orderStatusDesc()).isEqualTo("处理中");
+        assertThat(invalidOutboxPort.commands).isEmpty();
+    }
+
+    @Test
+    void invalidEnqueuesInvalidOrderOutboxWhenMysqlOrderHasPersisted() {
+        RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort();
+        var service = new V1InvalidRechargeOrderUseCaseService(
+                precheckService(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (orgCode, outOrderSn) -> Optional.of(snapshot("SUPPLIER_ACCEPTED", "DB_PERSISTED", "PASSED", "", "")),
+                invalidOutboxPort);
+
+        V1CardApiResult result = service.invalidRechargeOrder(command("OUT-INVALID-2", "nonce-invalid-223456789012345678"));
+
+        assertThat(result.code()).isEqualTo("200");
+        V1RechargeOrderResponse data = (V1RechargeOrderResponse) result.data();
+        assertThat(data.orderStatus()).isEqualTo("2");
+        assertThat(data.orderStatusDesc()).isEqualTo("处理中");
+        assertThat(invalidOutboxPort.commands).singleElement().satisfies(command -> {
+            assertThat(command.orgCode()).isEqualTo("A36");
+            assertThat(command.orderId()).isEqualTo("202607051337458961474292");
+            assertThat(command.outOrderSn()).isEqualTo("OUT-QUERY-1");
+            assertThat(command.reason()).isEqualTo("");
+        });
     }
 
     @Test
@@ -177,5 +207,15 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
                 failCode,
                 failReason,
                 true);
+    }
+
+    private static final class RecordingInvalidOutboxPort implements InvalidRechargeOrderOutboxPort {
+
+        private final List<InvalidRechargeOrderOutboxCommand> commands = new ArrayList<>();
+
+        @Override
+        public void enqueueInvalidOrder(InvalidRechargeOrderOutboxCommand command) {
+            commands.add(command);
+        }
     }
 }

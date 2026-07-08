@@ -6,6 +6,8 @@ import com.cardshop.trade.engine.api.v1.protocol.V1MerchantSecurityProfile;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckResult;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderUseCase;
+import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxCommand;
+import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderSnapshot;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
@@ -32,14 +34,24 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
     private final V1ProtocolPrecheckService precheckService;
     private final V1MerchantProfilePort merchantProfilePort;
     private final RechargeOrderQueryPort orderQueryPort;
+    private final InvalidRechargeOrderOutboxPort invalidOrderOutboxPort;
 
     public V1InvalidRechargeOrderUseCaseService(
             V1ProtocolPrecheckService precheckService,
             V1MerchantProfilePort merchantProfilePort,
             RechargeOrderQueryPort orderQueryPort) {
+        this(precheckService, merchantProfilePort, orderQueryPort, InvalidRechargeOrderOutboxPort.noop());
+    }
+
+    public V1InvalidRechargeOrderUseCaseService(
+            V1ProtocolPrecheckService precheckService,
+            V1MerchantProfilePort merchantProfilePort,
+            RechargeOrderQueryPort orderQueryPort,
+            InvalidRechargeOrderOutboxPort invalidOrderOutboxPort) {
         this.precheckService = precheckService;
         this.merchantProfilePort = merchantProfilePort;
         this.orderQueryPort = orderQueryPort;
+        this.invalidOrderOutboxPort = invalidOrderOutboxPort;
     }
 
     @Override
@@ -63,15 +75,27 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
         }
 
         return orderQueryPort.findByOrgCodeAndOutOrderSn(merchant.orgCode(), request.outOrderSn())
-                .map(this::toInvalidResult)
+                .map(snapshot -> toInvalidResult(merchant, request, snapshot))
                 .orElseGet(V1CardApiResultStatus.ORDER_NOT_FOUND::result);
     }
 
-    private V1CardApiResult toInvalidResult(RechargeOrderSnapshot snapshot) {
+    private V1CardApiResult toInvalidResult(
+            V1MerchantProfile merchant,
+            V1RechargeOrderInvalidRequest request,
+            RechargeOrderSnapshot snapshot) {
         if (!"DB_PERSISTED".equals(defaultText(snapshot.persistStatus(), ""))) {
             return processing(snapshot);
         }
-        // TODO(D10): DB_PERSISTED 订单应写入 INVALID_ORDER outbox 并由供应商作废 Worker 处理；参见 docs/交行直充业务系统详细设计.md「20.13.11 作废设计」。
+        /*
+         * docs/交行直充业务系统详细设计.md「20.13.11 作废设计」要求 DB_PERSISTED 订单只生成
+         * INVALID_ORDER outbox，由 Worker 异步调用供应商作废。接口线程仍返回处理中，避免超时后调用方
+         * 重复请求导致供应商重复作废。
+         */
+        invalidOrderOutboxPort.enqueueInvalidOrder(new InvalidRechargeOrderOutboxCommand(
+                merchant.orgCode(),
+                snapshot.orderId(),
+                snapshot.outOrderSn(),
+                defaultText(request.reason(), "")));
         return processing(snapshot);
     }
 

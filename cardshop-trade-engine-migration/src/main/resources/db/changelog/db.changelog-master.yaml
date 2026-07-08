@@ -420,3 +420,25 @@ databaseChangeLog:
             sql: |
               ALTER TABLE mc_depart_record
                 DROP INDEX uk_mc_depart_record_trade_engine_key
+  - changeSet:
+      id: 0013-d9-add-recharge-order-ext-dispatch-status
+      author: codex
+      preConditions:
+        - onFail: MARK_RAN
+        - tableExists:
+            tableName: recharge_order_ext
+        - not:
+            columnExists:
+              tableName: recharge_order_ext
+              columnName: dispatch_status
+      changes:
+        - sql:
+            stripComments: false
+            sql: |
+              ALTER TABLE recharge_order_ext
+                ADD COLUMN dispatch_status varchar(32) NOT NULL DEFAULT 'WAIT_DISPATCH' COMMENT '业务履约状态'
+      rollback:
+        - sql:
+            sql: |
+              ALTER TABLE recharge_order_ext
+                DROP COLUMN dispatch_status

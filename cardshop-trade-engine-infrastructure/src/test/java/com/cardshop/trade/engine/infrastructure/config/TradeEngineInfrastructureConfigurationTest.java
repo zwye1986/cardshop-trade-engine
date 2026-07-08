@@ -4,14 +4,22 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
+import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
+import com.cardshop.trade.engine.application.recharge.MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
+import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
+import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
+import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
@@ -273,6 +281,31 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(RechargeAcceptAnomalyMapper.class, () -> mapperProxy(RechargeAcceptAnomalyMapper.class))
                 .run(context -> assertThat(context).hasSingleBean(AcceptAnomalyCheckRepositoryPort.class));
+    }
+
+    @Test
+    void doesNotCreateOutboxWorkerWhenMerchantProfilePortIsMissing() {
+        contextRunner
+                .withBean(RechargeOutboxPort.class, () -> interfaceProxy(RechargeOutboxPort.class))
+                .withBean(RechargeFulfillmentOrderPort.class, () -> interfaceProxy(RechargeFulfillmentOrderPort.class))
+                .withBean(RechargeSupplierGatewayPort.class, () -> interfaceProxy(RechargeSupplierGatewayPort.class))
+                .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
+                .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
+                .withBean(MerchantNotifyPayloadSigner.class, () -> interfaceProxy(MerchantNotifyPayloadSigner.class))
+                .run(context -> assertThat(context).doesNotHaveBean(RechargeOutboxWorkerService.class));
+    }
+
+    @Test
+    void createsOutboxWorkerWhenMerchantProfilePortAndFulfillmentPortsExist() {
+        contextRunner
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(RechargeOutboxPort.class, () -> interfaceProxy(RechargeOutboxPort.class))
+                .withBean(RechargeFulfillmentOrderPort.class, () -> interfaceProxy(RechargeFulfillmentOrderPort.class))
+                .withBean(RechargeSupplierGatewayPort.class, () -> interfaceProxy(RechargeSupplierGatewayPort.class))
+                .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
+                .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
+                .withBean(V1MerchantProfilePort.class, () -> interfaceProxy(V1MerchantProfilePort.class))
+                .run(context -> assertThat(context).hasSingleBean(RechargeOutboxWorkerService.class));
     }
 
     private static <T> T mapperProxy(Class<T> mapperType) {

@@ -107,6 +107,21 @@ class MapperContractTest {
     }
 
     @Test
+    void notifyTaskMapperAndAdapterReclaimExpiredProcessingTasks() throws IOException {
+        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeNotifyTaskMapper.java"));
+        String selectDueTasks = mapper.substring(mapper.indexOf("default List<RechargeNotifyTaskDO> selectDueTasks"));
+        assertThat(selectDueTasks)
+                .contains("TaskStatus.PROCESSING.name()")
+                .contains("RechargeNotifyTaskDO::getLockedUntil");
+
+        String adapter = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/MybatisRechargeNotifyTaskAdapter.java"));
+        String claim = adapter.substring(adapter.indexOf("public Optional<RechargeNotifyTask> claim"));
+        assertThat(claim)
+                .contains("TaskStatus.PROCESSING.name()")
+                .contains("RechargeNotifyTaskDO::getLockedUntil");
+    }
+
+    @Test
     void persistenceCodeDoesNotUseMultiTableJoinQueries() throws IOException {
         Path root = Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence");
 

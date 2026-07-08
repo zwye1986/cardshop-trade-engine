@@ -21,4 +21,11 @@ public interface V1MerchantProfileReader {
     default McExtDepartDO selectByAppIdAndAppSecret(String appId, String appSecret) {
         return null;
     }
+
+    /**
+     * 按商户编码读取回调签名资料。
+     */
+    default McExtDepartDO selectByOrgCode(String orgCode) {
+        return null;
+    }
 }

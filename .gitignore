@@ -9,4 +9,5 @@ logs/
 dist/
 config/env.*
 deploy/config/env.*
+deploy/config/.*.env
 !deploy/config/env.example

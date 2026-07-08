@@ -3,6 +3,7 @@ package com.cardshop.trade.engine.infrastructure.persistence;
 import com.cardshop.trade.engine.application.recharge.OrderPersistAggregate;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshot;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
+import com.cardshop.trade.engine.application.recharge.FulfillmentDispatchStatus;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.domain.order.PersistStatus;
 import com.cardshop.trade.engine.domain.order.TaskStatus;
@@ -153,6 +154,9 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
         ext.setValidationStatus(snapshot.validationStatus());
         ext.setDispatchAllowed(snapshot.dispatchAllowed());
         ext.setBalanceReserved(snapshot.balanceReserved());
+        ext.setDispatchStatus(snapshot.dispatchAllowed()
+                ? FulfillmentDispatchStatus.WAIT_DISPATCH.name()
+                : FulfillmentDispatchStatus.FAILED.name());
         ext.setMqPublishCount(snapshot.mqPublishCount());
         ext.setPersistRetryCount(0);
         ext.setLastError(snapshot.failReason());

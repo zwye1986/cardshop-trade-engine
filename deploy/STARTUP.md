@@ -17,12 +17,17 @@ cardshop-trade-engine-<version>/
 Copy the template and keep one file per runtime profile:
 
 ```bash
-cp config/env.example config/env.dev
+cp config/env.example config/.dev.env
+vi config/.dev.env
 ```
 
-Only bootstrap settings belong in `config/env.<profile>`: `APP_PROFILE`,
-`SERVER_PORT`, `CARD_SHOP_TRADE_JAVA_HOME`, `JAVA_OPTS`, and Nacos connection
-settings. MySQL, Redis, RabbitMQ, XXL-Job, legacy-cardshop URL, and business
+Only settings read directly from environment placeholders belong in
+`config/.<profile>.env`: `APP_PROFILE`, `SERVER_PORT`, Nacos, RabbitMQ,
+legacy-cardshop URL, V1 JWT secret, JDK path, and JVM/log/pid settings. The
+start script validates required values and exports them for Spring placeholders;
+secrets such as `NACOS_PASSWORD`, `SPRING_RABBITMQ_PASSWORD`, and
+`V1_CARDAPI_JWT_SECRET` must not be placed in `JAVA_OPTS` or JVM `-D` arguments.
+MySQL, Redis, XXL-Job, gray routing lists, supplier settings, and business
 switches should be managed by Nacos to avoid per-server configuration drift.
 
 For dev, use namespace `cardshop-trade-engine-dev` and group
@@ -64,7 +69,7 @@ spring:
 ## Start And Stop
 
 The script validates JDK 21 before launching. If the server default `JAVA_HOME`
-is not JDK 21, set `CARD_SHOP_TRADE_JAVA_HOME` in `config/env.<profile>`.
+is not JDK 21, set `CARD_SHOP_TRADE_JAVA_HOME` in `config/.<profile>.env`.
 
 ```bash
 ./bin/start.sh start dev

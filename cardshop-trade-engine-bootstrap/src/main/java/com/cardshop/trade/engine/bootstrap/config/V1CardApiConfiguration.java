@@ -17,6 +17,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityP
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderUseCase;
+import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort;
 import com.cardshop.trade.engine.application.v1.IssueV1TokenUseCase;
 import com.cardshop.trade.engine.application.v1.QueryRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
@@ -182,13 +183,18 @@ public class V1CardApiConfiguration {
     }
 
     @Bean
-    @ConditionalOnBean({V1MerchantProfilePort.class, RechargeOrderQueryPort.class})
+    @ConditionalOnBean({V1MerchantProfilePort.class, RechargeOrderQueryPort.class, InvalidRechargeOrderOutboxPort.class})
     @ConditionalOnMissingBean(InvalidRechargeOrderUseCase.class)
     public InvalidRechargeOrderUseCase v1InvalidRechargeOrderUseCase(
             V1ProtocolPrecheckService precheckService,
             V1MerchantProfilePort merchantProfilePort,
-            RechargeOrderQueryPort orderQueryPort) {
-        return new V1InvalidRechargeOrderUseCaseService(precheckService, merchantProfilePort, orderQueryPort);
+            RechargeOrderQueryPort orderQueryPort,
+            ObjectProvider<InvalidRechargeOrderOutboxPort> invalidOrderOutboxPortProvider) {
+        return new V1InvalidRechargeOrderUseCaseService(
+                precheckService,
+                merchantProfilePort,
+                orderQueryPort,
+                invalidOrderOutboxPortProvider.getObject());
     }
 
     @Bean

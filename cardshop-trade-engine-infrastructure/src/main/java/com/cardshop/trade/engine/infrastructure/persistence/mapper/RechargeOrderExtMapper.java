@@ -35,6 +35,7 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
               validation_status,
               dispatch_allowed,
               balance_reserved,
+              dispatch_status,
               mq_publish_count,
               persist_retry_count,
               last_error,
@@ -57,6 +58,7 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
               #{validationStatus},
               #{dispatchAllowed},
               #{balanceReserved},
+              #{dispatchStatus},
               #{mqPublishCount},
               #{persistRetryCount},
               #{lastError},
@@ -73,6 +75,11 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
               last_error = case
                 when values(persisted_version) >= persisted_version then values(last_error)
                 else last_error
+              end,
+              dispatch_status = case
+                when values(persisted_version) > persisted_version then values(dispatch_status)
+                when values(persisted_version) = persisted_version and dispatch_status is null then values(dispatch_status)
+                else dispatch_status
               end,
               persist_status = case
                 when values(persisted_version) > persisted_version then values(persist_status)

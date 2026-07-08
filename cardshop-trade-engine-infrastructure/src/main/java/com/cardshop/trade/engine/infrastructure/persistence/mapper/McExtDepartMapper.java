@@ -42,4 +42,11 @@ public interface McExtDepartMapper extends BaseMapper<McExtDepartDO>, V1Merchant
                 .eq(McExtDepartDO::getAppId, appId)
                 .eq(McExtDepartDO::getAppSecret, appSecret));
     }
+
+    @Override
+    default McExtDepartDO selectByOrgCode(String orgCode) {
+        return selectOne(new LambdaQueryWrapper<McExtDepartDO>()
+                .eq(McExtDepartDO::getOrgCode, orgCode)
+                .last("limit 1"));
+    }
 }

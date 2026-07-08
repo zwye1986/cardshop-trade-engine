@@ -60,6 +60,14 @@ public class MybatisV1MerchantProfileAdapter implements V1MerchantProfilePort {
         }
     }
 
+    @Override
+    public Optional<V1MerchantProfile> findByOrgCode(String orgCode) {
+        if (!StringUtils.hasText(orgCode)) {
+            return Optional.empty();
+        }
+        return toProfile(reader.selectByOrgCode(orgCode));
+    }
+
     private static Optional<V1MerchantProfile> toProfile(McExtDepartDO merchant) {
         if (merchant == null || !StringUtils.hasText(merchant.getOrgCode())) {
             return Optional.empty();

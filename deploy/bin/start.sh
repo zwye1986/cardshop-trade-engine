@@ -17,8 +17,8 @@ Usage:
   ./bin/start.sh restart <dev|test|prod>
   ./bin/start.sh status <dev|test|prod>
 
-The script loads config/env.${APP_PROFILE}. Keep only bootstrap settings there:
-APP_PROFILE, SERVER_PORT, Nacos address/namespace/group/account, JDK path, and JAVA_OPTS.
+The script loads config/.${APP_PROFILE}.env. Secrets stay in environment variables
+and are read by Spring placeholders; they are never appended to JVM argv.
 USAGE
 }
 
@@ -34,8 +34,9 @@ APP_PROFILE="${2:-${APP_PROFILE:-}}"
   exit 1
 }
 [[ "$ACTION" =~ ^(start|stop|restart|status)$ ]] || fail "Unsupported action '$ACTION'. Expected start|stop|restart|status."
+REQUESTED_PROFILE="$APP_PROFILE"
 
-ENV_FILE="$APP_HOME/config/env.${APP_PROFILE}"
+ENV_FILE="$APP_HOME/config/.${APP_PROFILE}.env"
 if [[ -f "$ENV_FILE" ]]; then
   set -a
   # shellcheck source=/dev/null
@@ -44,10 +45,11 @@ if [[ -f "$ENV_FILE" ]]; then
 elif [[ "$ACTION" == "status" ]]; then
   printf 'WARN: Env file is missing: %s\n' "$ENV_FILE" >&2
 else
-  fail "Missing env file: $ENV_FILE. Copy config/env.example to config/env.${APP_PROFILE} and fill values."
+  fail "Missing env file: $ENV_FILE. Fill config/.${APP_PROFILE}.env before starting this profile."
 fi
 
-APP_PROFILE="${APP_PROFILE:-$2}"
+[[ "${APP_PROFILE:-}" == "$REQUESTED_PROFILE" ]] || fail "APP_PROFILE in $ENV_FILE must be '$REQUESTED_PROFILE'."
+APP_PROFILE="$REQUESTED_PROFILE"
 SERVER_PORT="${SERVER_PORT:-8080}"
 if [[ -z "${PID_DIR:-}" ]]; then
   PID_DIR="$APP_HOME/run"
@@ -98,6 +100,36 @@ normalize_nacos_addr() {
   printf '%s\n' "$addr"
 }
 
+REQUIRED_START_ENV_NAMES=(
+  NACOS_SERVER_ADDR
+  NACOS_USERNAME
+  NACOS_PASSWORD
+  NACOS_NAMESPACE
+  NACOS_GROUP
+  SPRING_RABBITMQ_HOST
+  SPRING_RABBITMQ_PORT
+  SPRING_RABBITMQ_USERNAME
+  SPRING_RABBITMQ_PASSWORD
+  SPRING_RABBITMQ_VIRTUAL_HOST
+  V1_CARDAPI_JWT_SECRET
+)
+
+require_not_placeholder() {
+  local name="$1"
+  local value="${!name:-}"
+  [[ "$value" != "change-me" ]] || fail "Environment variable $name still uses placeholder value in $ENV_FILE."
+}
+
+validate_start_environment() {
+  local name
+  for name in "${REQUIRED_START_ENV_NAMES[@]}"; do
+    require_value "$name"
+  done
+  require_not_placeholder "NACOS_PASSWORD"
+  require_not_placeholder "SPRING_RABBITMQ_PASSWORD"
+  require_not_placeholder "V1_CARDAPI_JWT_SECRET"
+}
+
 resolve_jar() {
   local matches=($DEFAULT_JAR_GLOB)
   [[ ${#matches[@]} -eq 1 && -f "${matches[0]}" ]] || fail "Expected exactly one application jar under app/. Found: ${matches[*]:-none}"
@@ -121,11 +153,7 @@ check_port_free() {
 start_app() {
   is_running && fail "$APP_NAME profile=$APP_PROFILE is already running. pid=$(cat "$PID_FILE")"
 
-  require_value "NACOS_SERVER_ADDR"
-  require_value "NACOS_NAMESPACE"
-  require_value "NACOS_GROUP"
-  require_value "NACOS_USERNAME"
-  require_value "NACOS_PASSWORD"
+  validate_start_environment
   NACOS_SERVER_ADDR="$(normalize_nacos_addr "$NACOS_SERVER_ADDR")"
 
   local java_home
@@ -139,17 +167,12 @@ start_app() {
   check_port_free
 
   printf 'Starting %s profile=%s port=%s java=%s\n' "$APP_NAME" "$APP_PROFILE" "$SERVER_PORT" "$JAVA_HOME"
+  export APP_PROFILE SERVER_PORT
   export NACOS_SERVER_ADDR NACOS_USERNAME NACOS_PASSWORD NACOS_NAMESPACE NACOS_GROUP
+  export SPRING_RABBITMQ_HOST SPRING_RABBITMQ_PORT SPRING_RABBITMQ_USERNAME SPRING_RABBITMQ_PASSWORD SPRING_RABBITMQ_VIRTUAL_HOST
+  export LEGACY_CARD_SHOP_BASE_URL V1_CARDAPI_JWT_SECRET
 
-  nohup "$JAVA_HOME/bin/java" ${JAVA_OPTS:-} -jar "$jar" \
-    --spring.profiles.active="$APP_PROFILE" \
-    --server.port="$SERVER_PORT" \
-    --spring.cloud.nacos.server-addr="$NACOS_SERVER_ADDR" \
-    --spring.cloud.nacos.config.namespace="$NACOS_NAMESPACE" \
-    --spring.cloud.nacos.config.group="$NACOS_GROUP" \
-    --spring.cloud.nacos.discovery.namespace="$NACOS_NAMESPACE" \
-    --spring.cloud.nacos.discovery.group="$NACOS_GROUP" \
-    >>"$STDOUT_LOG" 2>&1 &
+  nohup "$JAVA_HOME/bin/java" ${JAVA_OPTS:-} -jar "$jar" >>"$STDOUT_LOG" 2>&1 &
 
   echo $! > "$PID_FILE"
   sleep 2

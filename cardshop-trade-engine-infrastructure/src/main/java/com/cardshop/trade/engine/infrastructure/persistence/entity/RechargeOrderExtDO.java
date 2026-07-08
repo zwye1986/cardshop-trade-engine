@@ -15,66 +15,135 @@ import java.time.LocalDateTime;
 @TableName("recharge_order_ext")
 public class RechargeOrderExtDO {
 
+    /**
+     * 表主键。
+     */
     @TableId(value = "id", type = IdType.AUTO)
     private Long id;
 
+    /**
+     * 平台订单号，对应 `mc_order.order_Id`。
+     */
     @TableField("order_id")
     private String orderId;
 
+    /**
+     * 商户编码。
+     */
     @TableField("org_code")
     private String orgCode;
 
+    /**
+     * 商户订单号，对应 `mc_order.out_orderId`。
+     */
     @TableField("out_order_sn")
     private String outOrderSn;
 
+    /**
+     * 标准化请求摘要。
+     */
     @TableField("request_hash")
     private String requestHash;
 
+    /**
+     * 请求摘要规范版本。
+     */
     @TableField("request_hash_version")
     private String requestHashVersion;
 
+    /**
+     * 请求摘要算法。
+     */
     @TableField("request_hash_alg")
     private String requestHashAlg;
 
+    /**
+     * Redis 订单 key 或 Redis 侧订单标识。
+     */
     @TableField("redis_order_id")
     private String redisOrderId;
 
+    /**
+     * RabbitMQ 落库消息 ID。
+     */
     @TableField("persist_msg_id")
     private String persistMsgId;
 
+    /**
+     * Redis/MQ/MySQL 持久化状态。
+     */
     @TableField("persist_status")
     private String persistStatus;
 
+    /**
+     * MySQL 落库使用的快照来源。
+     */
     @TableField("persist_source")
     private String persistSource;
 
+    /**
+     * Redis 当前订单版本。
+     */
     @TableField("redis_order_version")
     private Long redisOrderVersion;
 
+    /**
+     * 已成功写入 MySQL 的订单版本。
+     */
     @TableField("persisted_version")
     private Long persistedVersion;
 
+    /**
+     * 业务校验状态。
+     */
     @TableField("validation_status")
     private String validationStatus;
 
+    /**
+     * 是否允许供应商派单。
+     */
     @TableField("dispatch_allowed")
     private Boolean dispatchAllowed;
 
+    /**
+     * 是否已完成 Redis 余额预扣。
+     */
     @TableField("balance_reserved")
     private Boolean balanceReserved;
 
+    /**
+     * 业务履约状态。
+     */
+    @TableField("dispatch_status")
+    private String dispatchStatus;
+
+    /**
+     * 落库消息发布次数。
+     */
     @TableField("mq_publish_count")
     private Integer mqPublishCount;
 
+    /**
+     * Redis 到 MySQL 异步落库重试次数。
+     */
     @TableField("persist_retry_count")
     private Integer persistRetryCount;
 
+    /**
+     * 最近一次持久化失败原因。
+     */
     @TableField("last_error")
     private String lastError;
 
+    /**
+     * 创建时间。
+     */
     @TableField("created_at")
     private LocalDateTime createdAt;
 
+    /**
+     * 更新时间。
+     */
     @TableField("updated_at")
     private LocalDateTime updatedAt;
 
@@ -204,6 +273,14 @@ public class RechargeOrderExtDO {
 
     public void setBalanceReserved(Boolean balanceReserved) {
         this.balanceReserved = balanceReserved;
+    }
+
+    public String getDispatchStatus() {
+        return dispatchStatus;
+    }
+
+    public void setDispatchStatus(String dispatchStatus) {
+        this.dispatchStatus = dispatchStatus;
     }
 
     public Integer getMqPublishCount() {

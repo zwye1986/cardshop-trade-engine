@@ -10,6 +10,35 @@ import java.util.Objects;
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「10.2 持久化消息」和
  * 「20.13.8 异步落库 Consumer」。`RechargeOrderSnapshot` 只服务查单/作废入口，字段不足以写
  * `mc_order`；本对象专门承载落库字段，避免 Consumer 从多个协议 DTO 或 Redis hash 中临时拼字段。
+ *
+ * @param orgCode 商户编码，对应旧表 {@code mc_order.org_code}
+ * @param appId 商户 appId，用于追踪 V1 请求来源
+ * @param orderId 平台订单号，对应旧表 {@code mc_order.order_Id}
+ * @param outOrderSn 商户外部订单号，对应旧表 {@code mc_order.out_orderId}
+ * @param productId 外部请求中的父商品编码，对应旧表 {@code mc_order.parent_id}
+ * @param selectedProductId 实际落库子商品编码，对应旧表 {@code mc_order.produt_code}
+ * @param account 直充账号，对应旧表 {@code mc_order.account}
+ * @param notifyUrl 商户回调地址，对应旧表 {@code mc_order.callback_url}
+ * @param num 下单数量，对应旧表 {@code mc_order.num}
+ * @param orderPrice 订单金额，单位分，对应旧表 {@code mc_order.order_price}
+ * @param productName 商品名称，对应旧表 {@code mc_order.product_name}
+ * @param productValue 商品面值，单位分，对应旧表 {@code mc_order.product_value}
+ * @param productType 商品类型，对应旧表 {@code mc_order.product_type}
+ * @param couponType 券码类型，对应旧表 {@code mc_order.coupon_type}
+ * @param supplierChannel 供应商渠道编码，对应旧表 {@code mc_order.url}
+ * @param requestHash 请求摘要，对应 {@code recharge_order_ext.request_hash}
+ * @param requestHashVersion 请求摘要版本，对应 {@code recharge_order_ext.request_hash_version}
+ * @param requestHashAlg 请求摘要算法，对应 {@code recharge_order_ext.request_hash_alg}
+ * @param orderStatus Redis 接单阶段订单状态，对应 {@code recharge_order_ext.order_status}
+ * @param validationStatus 业务校验状态，对应 {@code recharge_order_ext.validation_status}
+ * @param failCode 校验或落库失败码，对应旧表 {@code mc_order.fail_code}
+ * @param failReason 校验或落库失败原因，对应旧表 {@code mc_order.fail_reason}
+ * @param dispatchAllowed 是否允许供应商派单，对应 {@code recharge_order_ext.dispatch_allowed}
+ * @param balanceReserved 是否已完成 Redis 预扣，对应 {@code recharge_order_ext.balance_reserved}
+ * @param persistStatus Redis 到 MySQL 持久化状态，对应 {@code recharge_order_ext.persist_status}
+ * @param orderVersion Redis 订单版本，对应 {@code recharge_order_ext.redis_order_version}
+ * @param persistedVersion MySQL 已持久化版本，对应 {@code recharge_order_ext.persisted_version}
+ * @param mqPublishCount MQ 发布次数，对应 {@code recharge_order_ext.mq_publish_count}
  */
 public record PersistOrderSnapshot(
         String orgCode,

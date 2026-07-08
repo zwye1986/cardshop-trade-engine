@@ -12,6 +12,15 @@ import java.util.Objects;
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
  * 这是 application 层读取 `recharge_accept_anomaly` 后使用的稳定模型；它只表达核查所需的业务定位字段，
  * 不暴露 MyBatis DO 或表字段命名。
+ *
+ * @param anomalyId 异常记录唯一 ID，对应 {@code recharge_accept_anomaly.anomaly_id}
+ * @param anomalyType 异常类型，对应 {@code recharge_accept_anomaly.anomaly_type}
+ * @param orgCode 商户编码，对应 {@code recharge_accept_anomaly.org_code}
+ * @param outOrderSn 商户外部订单号，对应 {@code recharge_accept_anomaly.out_order_sn}
+ * @param orderId 平台订单号，对应 {@code recharge_accept_anomaly.order_id}
+ * @param requestHash 请求摘要，对应 {@code recharge_accept_anomaly.request_hash}
+ * @param persistMsgId 持久化消息 ID，对应 {@code recharge_accept_anomaly.persist_msg_id}
+ * @param rawContext 原始异常上下文，对应 {@code recharge_accept_anomaly.raw_context}
  */
 public record AcceptAnomalyCase(
         String anomalyId,

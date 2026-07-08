@@ -1,7 +1,9 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -50,6 +52,21 @@ public class TradeEngineProperties {
     private final Balance balance = new Balance();
 
     /**
+     * D9/D10 outbox 履约和限频参数；参见详细设计「20.13.9 派单 Outbox」。
+     */
+    private final Fulfillment fulfillment = new Fulfillment();
+
+    /**
+     * D10 商户回调任务参数；参见详细设计「20.13.12 回调设计」。
+     */
+    private final Notify notify = new Notify();
+
+    /**
+     * 供应商 Gateway 配置；参见详细设计「20.13.9 派单 Outbox」。
+     */
+    private final Supplier supplier = new Supplier();
+
+    /**
      * 数据库、MQ Confirm、供应商 I/O 线程池隔离配置；参见高可用设计「3.7 线程池与隔离」。
      */
     private final ThreadPool threadPool = new ThreadPool();
@@ -94,6 +111,18 @@ public class TradeEngineProperties {
 
     public Balance getBalance() {
         return balance;
+    }
+
+    public Fulfillment getFulfillment() {
+        return fulfillment;
+    }
+
+    public Notify getNotify() {
+        return notify;
+    }
+
+    public Supplier getSupplier() {
+        return supplier;
     }
 
     public ThreadPool getThreadPool() {
@@ -906,6 +935,157 @@ public class TradeEngineProperties {
 
         public void setReconcileDiffThresholdCent(int reconcileDiffThresholdCent) {
             this.reconcileDiffThresholdCent = reconcileDiffThresholdCent;
+        }
+    }
+
+    /**
+     * outbox 履约配置。
+     */
+    public static class Fulfillment {
+
+        private int outboxClaimLeaseSeconds = 120;
+        private int outboxRetryBackoffSeconds = 5;
+        private int frequencyRetryDelaySeconds = 30;
+        private int frequencyLockTtlMinutes = 30;
+        private int frequencySuccessMinimumHoldSeconds = 5;
+
+        public int getOutboxClaimLeaseSeconds() {
+            return outboxClaimLeaseSeconds;
+        }
+
+        public void setOutboxClaimLeaseSeconds(int outboxClaimLeaseSeconds) {
+            this.outboxClaimLeaseSeconds = outboxClaimLeaseSeconds;
+        }
+
+        public int getOutboxRetryBackoffSeconds() {
+            return outboxRetryBackoffSeconds;
+        }
+
+        public void setOutboxRetryBackoffSeconds(int outboxRetryBackoffSeconds) {
+            this.outboxRetryBackoffSeconds = outboxRetryBackoffSeconds;
+        }
+
+        public int getFrequencyRetryDelaySeconds() {
+            return frequencyRetryDelaySeconds;
+        }
+
+        public void setFrequencyRetryDelaySeconds(int frequencyRetryDelaySeconds) {
+            this.frequencyRetryDelaySeconds = frequencyRetryDelaySeconds;
+        }
+
+        public int getFrequencyLockTtlMinutes() {
+            return frequencyLockTtlMinutes;
+        }
+
+        public void setFrequencyLockTtlMinutes(int frequencyLockTtlMinutes) {
+            this.frequencyLockTtlMinutes = frequencyLockTtlMinutes;
+        }
+
+        public int getFrequencySuccessMinimumHoldSeconds() {
+            return frequencySuccessMinimumHoldSeconds;
+        }
+
+        public void setFrequencySuccessMinimumHoldSeconds(int frequencySuccessMinimumHoldSeconds) {
+            this.frequencySuccessMinimumHoldSeconds = frequencySuccessMinimumHoldSeconds;
+        }
+    }
+
+    /**
+     * 商户回调任务配置。
+     */
+    public static class Notify {
+
+        private int claimLeaseSeconds = 60;
+        private int retryBackoffSeconds = 30;
+        private int httpTimeoutMs = 3000;
+
+        public int getClaimLeaseSeconds() {
+            return claimLeaseSeconds;
+        }
+
+        public void setClaimLeaseSeconds(int claimLeaseSeconds) {
+            this.claimLeaseSeconds = claimLeaseSeconds;
+        }
+
+        public int getRetryBackoffSeconds() {
+            return retryBackoffSeconds;
+        }
+
+        public void setRetryBackoffSeconds(int retryBackoffSeconds) {
+            this.retryBackoffSeconds = retryBackoffSeconds;
+        }
+
+        public int getHttpTimeoutMs() {
+            return httpTimeoutMs;
+        }
+
+        public void setHttpTimeoutMs(int httpTimeoutMs) {
+            this.httpTimeoutMs = httpTimeoutMs;
+        }
+    }
+
+    /**
+     * 供应商 Gateway 配置。
+     */
+    public static class Supplier {
+
+        private boolean httpEnabled = false;
+        private int defaultTimeoutMs = 3000;
+        private Map<String, Channel> channels = new LinkedHashMap<>();
+
+        public boolean isHttpEnabled() {
+            return httpEnabled;
+        }
+
+        public void setHttpEnabled(boolean httpEnabled) {
+            this.httpEnabled = httpEnabled;
+        }
+
+        public int getDefaultTimeoutMs() {
+            return defaultTimeoutMs;
+        }
+
+        public void setDefaultTimeoutMs(int defaultTimeoutMs) {
+            this.defaultTimeoutMs = defaultTimeoutMs;
+        }
+
+        public Map<String, Channel> getChannels() {
+            return channels;
+        }
+
+        public void setChannels(Map<String, Channel> channels) {
+            this.channels = channels == null ? new LinkedHashMap<>() : channels;
+        }
+
+        public static class Channel {
+
+            private String dispatchUrl = "";
+            private String invalidUrl = "";
+            private Integer timeoutMs;
+
+            public String getDispatchUrl() {
+                return dispatchUrl;
+            }
+
+            public void setDispatchUrl(String dispatchUrl) {
+                this.dispatchUrl = dispatchUrl;
+            }
+
+            public String getInvalidUrl() {
+                return invalidUrl;
+            }
+
+            public void setInvalidUrl(String invalidUrl) {
+                this.invalidUrl = invalidUrl;
+            }
+
+            public Integer getTimeoutMs() {
+                return timeoutMs;
+            }
+
+            public void setTimeoutMs(Integer timeoutMs) {
+                this.timeoutMs = timeoutMs;
+            }
         }
     }
 

@@ -77,7 +77,7 @@ mvn -pl cardshop-trade-engine-bootstrap -am test
 
 `local` 默认端口为 `18081`，可通过 `SERVER_PORT` 覆盖。脚本默认使用 `/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home`；如需指定其他 JDK 21 路径，设置 `CARD_SHOP_TRADE_JAVA_HOME`。
 
-需要联调真实中间件时使用 `dev` profile。本地只提供 Nacos 启动引导信息，MySQL、Redis、RabbitMQ、XXL-Job 和旧卡管地址等业务/中间件配置应来自 Nacos 或部署密钥。`dev` 使用独立 namespace `cardshop-trade-engine-dev`，MySQL datasource 共用原卡管测试库 `cardshop_test`，Redis 连接参数与旧卡管 dev 当前配置保持一致，发布到新服务 Nacos 时使用 Spring Boot 3 的 `spring.data.redis.*`。
+需要联调真实中间件时使用 `dev` profile。本地只提供 profile、端口、Nacos、RabbitMQ、旧卡管代理地址、V1 JWT secret、JDK/JVM 参数等启动引导信息，MySQL、Redis、XXL-Job 和业务开关应来自 Nacos 或部署密钥。`dev` 使用独立 namespace `cardshop-trade-engine-dev`，MySQL datasource 共用原卡管测试库 `cardshop_test`，Redis 连接参数与旧卡管 dev 当前配置保持一致，发布到新服务 Nacos 时使用 Spring Boot 3 的 `spring.data.redis.*`。
 
 ```bash
 APP_PROFILE=dev \
@@ -99,7 +99,7 @@ mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
 ./scripts/package.sh
 ```
 
-脚本会强制检测 JDK 21，并在 `dist/` 下生成 `cardshop-trade-engine-<version>.zip`。zip 内包含应用 jar、`bin/start.sh`、`config/env.example` 和 `STARTUP.md`。服务器解压后复制 `config/env.example` 为 `config/env.<profile>`，只填写 Nacos、端口、JDK 和 JVM 参数，然后执行：
+脚本会强制检测 JDK 21，并在 `dist/` 下生成 `cardshop-trade-engine-<version>.zip`。zip 内包含应用 jar、`bin/start.sh`、`config/env.example` 和 `STARTUP.md`。服务器解压后复制模板为对应的 `config/.<profile>.env`，从部署密钥系统填写 Nacos、RabbitMQ、端口、JDK、旧卡管代理地址、V1 JWT secret 和 JVM 参数；启动脚本只校验必填环境变量并导出给 Spring placeholder 读取，不把密钥写入 JVM argv，然后执行：
 
 ```bash
 ./bin/start.sh start dev

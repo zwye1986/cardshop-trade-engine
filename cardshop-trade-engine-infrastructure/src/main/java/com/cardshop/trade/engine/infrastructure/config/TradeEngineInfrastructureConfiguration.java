@@ -3,24 +3,44 @@ package com.cardshop.trade.engine.infrastructure.config;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
+import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
+import com.cardshop.trade.engine.application.recharge.MerchantNotifyClientPort;
+import com.cardshop.trade.engine.application.recharge.MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
+import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
+import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
+import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerService;
+import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerSettings;
+import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerSettings;
+import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
+import com.cardshop.trade.engine.application.recharge.V1MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitTemplatePersistMessageOperations;
+import com.cardshop.trade.engine.infrastructure.notify.HttpMerchantNotifyClientAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyRecordAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderQueryAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOutboxAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.LettuceRechargeRedisSessionFactory;
@@ -30,13 +50,19 @@ import com.cardshop.trade.engine.infrastructure.redis.RedisAcceptRechargeOrderAd
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisDirectRechargeFrequencyAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptLoader;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptExecutor;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisSessionFactory;
 import com.cardshop.trade.engine.infrastructure.redis.SpringDataRechargeRedisScriptExecutor;
+import com.cardshop.trade.engine.infrastructure.supplier.HttpRechargeSupplierGatewayAdapter;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.http.HttpClient;
 import java.time.Clock;
+import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.concurrent.Executor;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.Declarables;
@@ -50,6 +76,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -68,6 +95,18 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 @EnableConfigurationProperties(TradeEngineProperties.class)
 @EnableRabbit
 public class TradeEngineInfrastructureConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean(ObjectMapper.class)
+    public ObjectMapper objectMapper() {
+        return new ObjectMapper();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(Clock.class)
+    public Clock clock() {
+        return Clock.systemUTC();
+    }
 
     /**
      * 声明异步落库 RabbitMQ 拓扑。
@@ -312,5 +351,142 @@ public class TradeEngineInfrastructureConfiguration {
             McDepartRecordMapper departRecordMapper,
             ObjectMapper objectMapper) {
         return new MybatisRechargeOrderPersistenceAdapter(orderMapper, extMapper, outboxMapper, departRecordMapper, objectMapper);
+    }
+
+    @Bean
+    @ConditionalOnBean(RechargeOutboxMapper.class)
+    @ConditionalOnMissingBean(RechargeOutboxPort.class)
+    public MybatisRechargeOutboxAdapter rechargeOutboxPort(
+            RechargeOutboxMapper outboxMapper,
+            ObjectMapper objectMapper,
+            Clock clock) {
+        return new MybatisRechargeOutboxAdapter(outboxMapper, objectMapper, clock);
+    }
+
+    @Bean
+    @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class, McOrderSupplierFlowMapper.class})
+    @ConditionalOnMissingBean(RechargeFulfillmentOrderPort.class)
+    public RechargeFulfillmentOrderPort rechargeFulfillmentOrderPort(
+            McOrderMapper orderMapper,
+            RechargeOrderExtMapper extMapper,
+            McOrderSupplierFlowMapper flowMapper,
+            ObjectMapper objectMapper,
+            Clock clock) {
+        return new MybatisRechargeFulfillmentOrderAdapter(orderMapper, extMapper, flowMapper, objectMapper, clock);
+    }
+
+    @Bean
+    @ConditionalOnBean(RechargeNotifyTaskMapper.class)
+    @ConditionalOnMissingBean(RechargeNotifyTaskPort.class)
+    public MybatisRechargeNotifyTaskAdapter rechargeNotifyTaskPort(
+            RechargeNotifyTaskMapper notifyTaskMapper,
+            ObjectMapper objectMapper,
+            Clock clock) {
+        return new MybatisRechargeNotifyTaskAdapter(notifyTaskMapper, objectMapper, clock);
+    }
+
+    @Bean
+    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
+    @ConditionalOnMissingBean(DirectRechargeFrequencyPort.class)
+    public DirectRechargeFrequencyPort directRechargeFrequencyPort(
+            ReactiveStringRedisTemplate redisTemplate,
+            TradeEngineProperties properties) {
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 3);
+        return new RedisDirectRechargeFrequencyAdapter(redisTemplate, Duration.ofMillis(timeoutMs));
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(HttpClient.class)
+    public HttpClient tradeEngineHttpClient() {
+        return HttpClient.newBuilder()
+                .connectTimeout(Duration.ofSeconds(3))
+                .build();
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(MerchantNotifyClientPort.class)
+    public MerchantNotifyClientPort merchantNotifyClientPort(
+            HttpClient httpClient,
+            ObjectMapper objectMapper,
+            TradeEngineProperties properties) {
+        return new HttpMerchantNotifyClientAdapter(
+                httpClient,
+                objectMapper,
+                Duration.ofMillis(properties.getNotify().getHttpTimeoutMs()));
+    }
+
+    @Bean
+    @ConditionalOnProperty(prefix = "trade.engine.supplier", name = "http-enabled", havingValue = "true")
+    @ConditionalOnMissingBean(RechargeSupplierGatewayPort.class)
+    public RechargeSupplierGatewayPort rechargeSupplierGatewayPort(
+            HttpClient httpClient,
+            ObjectMapper objectMapper,
+            TradeEngineProperties properties) {
+        Map<String, HttpRechargeSupplierGatewayAdapter.SupplierChannelEndpoint> channels = new LinkedHashMap<>();
+        int defaultTimeoutMs = Math.max(100, properties.getSupplier().getDefaultTimeoutMs());
+        properties.getSupplier().getChannels().forEach((channel, endpoint) -> {
+            int timeoutMs = endpoint.getTimeoutMs() == null ? defaultTimeoutMs : Math.max(100, endpoint.getTimeoutMs());
+            channels.put(channel, new HttpRechargeSupplierGatewayAdapter.SupplierChannelEndpoint(
+                    endpoint.getDispatchUrl(),
+                    endpoint.getInvalidUrl(),
+                    Duration.ofMillis(timeoutMs)));
+        });
+        return new HttpRechargeSupplierGatewayAdapter(channels, objectMapper, httpClient);
+    }
+
+    @Bean
+    @ConditionalOnBean({
+            RechargeOutboxPort.class,
+            RechargeFulfillmentOrderPort.class,
+            RechargeSupplierGatewayPort.class,
+            DirectRechargeFrequencyPort.class,
+            RechargeNotifyTaskPort.class,
+            V1MerchantProfilePort.class
+    })
+    @ConditionalOnMissingBean(RechargeOutboxWorkerService.class)
+    public RechargeOutboxWorkerService rechargeOutboxWorkerService(
+            RechargeOutboxPort outboxPort,
+            RechargeFulfillmentOrderPort orderPort,
+            RechargeSupplierGatewayPort supplierGatewayPort,
+            DirectRechargeFrequencyPort frequencyPort,
+            RechargeNotifyTaskPort notifyTaskPort,
+            ObjectProvider<MerchantNotifyPayloadSigner> payloadSignerProvider,
+            V1MerchantProfilePort merchantProfilePort,
+            Clock clock,
+            TradeEngineProperties properties) {
+        var fulfillment = properties.getFulfillment();
+        MerchantNotifyPayloadSigner payloadSigner = payloadSignerProvider.getIfAvailable(
+                () -> new V1MerchantNotifyPayloadSigner(merchantProfilePort));
+        return new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGatewayPort,
+                frequencyPort,
+                notifyTaskPort,
+                payloadSigner,
+                clock,
+                new RechargeOutboxWorkerSettings(
+                        Duration.ofSeconds(fulfillment.getOutboxClaimLeaseSeconds()),
+                        Duration.ofSeconds(fulfillment.getOutboxRetryBackoffSeconds()),
+                        Duration.ofSeconds(fulfillment.getFrequencyRetryDelaySeconds()),
+                        Duration.ofMinutes(fulfillment.getFrequencyLockTtlMinutes()),
+                        Duration.ofSeconds(fulfillment.getFrequencySuccessMinimumHoldSeconds())));
+    }
+
+    @Bean
+    @ConditionalOnBean({RechargeNotifyWorkerTaskPort.class, MerchantNotifyClientPort.class})
+    @ConditionalOnMissingBean(RechargeNotifyWorkerService.class)
+    public RechargeNotifyWorkerService rechargeNotifyWorkerService(
+            RechargeNotifyWorkerTaskPort taskPort,
+            MerchantNotifyClientPort notifyClientPort,
+            Clock clock,
+            TradeEngineProperties properties) {
+        return new RechargeNotifyWorkerService(
+                taskPort,
+                notifyClientPort,
+                clock,
+                new RechargeNotifyWorkerSettings(
+                        Duration.ofSeconds(properties.getNotify().getClaimLeaseSeconds()),
+                        Duration.ofSeconds(properties.getNotify().getRetryBackoffSeconds())));
     }
 }
