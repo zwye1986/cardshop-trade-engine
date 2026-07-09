@@ -123,6 +123,22 @@ class RedisSessionAcceptReliabilityAdapterTest {
     }
 
     @Test
+    void unwrapsSingleNestedLettuceMultiResultForMarkDbPersisted() {
+        var sessionFactory = new RecordingSessionFactory(List.of(
+                Mono.just(List.of(List.of("code", "MARKED", "order_id", "202607051337458961474292")))));
+        var adapter = adapter(sessionFactory, properties(true, 1, 100));
+
+        var result = adapter
+                .markDbPersisted(sampleCommand(), acceptedResult(), 7L, 1783224999000L)
+                .toCompletableFuture()
+                .join();
+
+        assertThat(result.marked()).isTrue();
+        assertThat(result.failCode()).isEmpty();
+        assertThat(result.failReason()).isEmpty();
+    }
+
+    @Test
     void opensShortSessionForMarkPersistFailedAfterMysqlError() {
         var sessionFactory = new RecordingSessionFactory(List.of(
                 Mono.just(List.of("code", "MARKED", "order_id", "202607051337458961474292"))));

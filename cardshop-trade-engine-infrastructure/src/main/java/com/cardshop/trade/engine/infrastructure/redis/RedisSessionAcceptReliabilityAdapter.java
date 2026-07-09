@@ -687,6 +687,14 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
     }
 
     private static Map<String, String> flatResult(Object rawResult) {
+        /*
+         * 参见 docs/交行直充业务系统详细设计.md「20.13.8 异步落库 Consumer」。
+         * 真实 Lettuce reactive `eval(..., MULTI)` 会把 Lua table 作为单个 multi 结果发出，
+         * 再经过 `collectList()` 形成 `[[code, MARKED, ...]]`；Spring Data 测试替身和部分单测
+         * 则直接给出 `[code, MARKED, ...]`。这里统一拆掉一层单元素嵌套，避免 Redis 已经成功推进
+         * DB_PERSISTED，却因为返回结构差异被误判为 MARK_FAILED。
+         */
+        rawResult = unwrapSingleNestedMultiResult(rawResult);
         if (!(rawResult instanceof List<?> values)) {
             return Map.of("code", String.valueOf(rawResult));
         }
@@ -695,6 +703,15 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
             fields.put(String.valueOf(values.get(index)), String.valueOf(values.get(index + 1)));
         }
         return fields;
+    }
+
+    private static Object unwrapSingleNestedMultiResult(Object rawResult) {
+        if (rawResult instanceof List<?> values
+                && values.size() == 1
+                && values.getFirst() instanceof List<?> nestedValues) {
+            return nestedValues;
+        }
+        return rawResult;
     }
 
     private void closeWithErrorLog(RechargeRedisSession session) {

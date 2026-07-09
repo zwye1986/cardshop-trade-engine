@@ -18,6 +18,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /**
  * dev/test 环境人工触发补偿任务的受控入口。
@@ -48,7 +50,7 @@ public class ManualRechargeJobController {
     }
 
     @PostMapping("/persist-mq-republish/run-once")
-    public ResponseEntity<ManualJobRunResponse> runPersistMqRepublishOnce(
+    public Mono<ResponseEntity<ManualJobRunResponse>> runPersistMqRepublishOnce(
             @RequestBody ManualJobRunRequest request,
             ServerWebExchange exchange) {
         /*
@@ -57,16 +59,25 @@ public class ManualRechargeJobController {
          * XXL-Job Handler 契约」中关于 runOnce 门面仅承接固定补偿链路的约束。
          */
         if (!isLoopback(exchange)) {
-            return ResponseEntity.status(HttpStatus.FORBIDDEN)
-                    .body(ManualJobRunResponse.rejected("Manual integration job endpoint only accepts loopback requests"));
+            return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN)
+                    .body(ManualJobRunResponse.rejected("Manual integration job endpoint only accepts loopback requests")));
         }
         ManualJobParameters parameters = validate(request);
-        RechargeCompensationBatchResult result = persistMqRepublishJob.runOnce(
-                parameters.shardTotal(),
-                parameters.shardIndex(),
-                parameters.limit(),
-                parameters.workerId());
-        return ResponseEntity.ok(ManualJobRunResponse.succeeded(parameters, result));
+        /*
+         * WebFlux Controller 默认运行在 Reactor event-loop 上，而 Redis pending 补投端口内部会对
+         * Reactive Redis 命令做短超时 block，以复用 XXL-Job 的同步 runOnce 契约。参见详细设计「20.11
+         * XXL-Job Handler 契约」。人工 HTTP 入口必须把这段同步补偿任务切到 boundedElastic，否则 test188
+         * 会在 event-loop 线程上触发 Reactor 的 blocking guard，表现为每个 org_index bucket 扫描失败。
+         */
+        return Mono.fromCallable(() -> {
+                    RechargeCompensationBatchResult result = persistMqRepublishJob.runOnce(
+                            parameters.shardTotal(),
+                            parameters.shardIndex(),
+                            parameters.limit(),
+                            parameters.workerId());
+                    return ResponseEntity.ok(ManualJobRunResponse.succeeded(parameters, result));
+                })
+                .subscribeOn(Schedulers.boundedElastic());
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -143,9 +154,18 @@ public class ManualRechargeJobController {
     public record ManualJobParameters(int shardTotal, int shardIndex, int limit, String workerId) {
     }
 
+    /**
+     * 人工补投入口的 HTTP 响应。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
+     * {@code docs/集成测试方案.md}「8.5 Redis pending 补投联调设计」。该响应会被 test188 上的 curl、
+     * 测试辅助前端和 `docs/集成测试.md` 同时作为执行证据使用，因此字段必须保持简单 JSON 类型。`triggeredAt`
+     * 使用 ISO-8601 字符串而不是 {@link Instant}，避免 dev/test 部署包中 Jackson 未启用 JSR-310 模块时，
+     * 人工入口任务已执行成功却在响应序列化阶段返回 500。
+     */
     public record ManualJobRunResponse(
             String status,
-            Instant triggeredAt,
+            String triggeredAt,
             ManualJobParameters parameters,
             Integer scanned,
             Integer succeeded,
@@ -158,7 +178,7 @@ public class ManualRechargeJobController {
                 RechargeCompensationBatchResult result) {
             return new ManualJobRunResponse(
                     "OK",
-                    Instant.now(),
+                    Instant.now().toString(),
                     parameters,
                     result.scanned(),
                     result.succeeded(),
@@ -170,7 +190,7 @@ public class ManualRechargeJobController {
         static ManualJobRunResponse rejected(String message) {
             return new ManualJobRunResponse(
                     "REJECTED",
-                    Instant.now(),
+                    Instant.now().toString(),
                     null,
                     null,
                     null,

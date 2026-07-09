@@ -23,6 +23,8 @@
 
 dev/test 集成测试阶段同时维护独立前端项目 `/Users/mac/Documents/codeSpace/frontend/cardshop-trade-engine-test-console`。该前端用于发送 V1/Actuator 请求、生成 curl、聚合 Redis/RabbitMQ/MySQL 证据和导出执行记录 Markdown。两个项目不在同一个 Git 仓库中，但接口、观测指标、Redis pending 补投入口和集成测试用例变更需要同步维护，具体约束见 [跨项目联调记忆](docs/跨项目联调记忆.md)。
 
+test188 HTTP 访问入口：`http://apitest.kalaiwang.com/testSuite/console/`。
+
 ## 目标架构
 
 服务通过 `/v1/cardapi` 兼容旧直充接口，按配置支持灰度路由和无侵入切流。目标链路以 Redis Lua 承接高并发下单和余额冻结，RabbitMQ 负责异步持久化与补偿，MySQL 保留最终业务状态，XXL-Job 承担补投、对账、缓存修复等后台任务。Redis 写入、MQ Confirm、MySQL 落库和灰度切流均通过配置开关渐进启用。

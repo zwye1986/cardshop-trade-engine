@@ -69,6 +69,7 @@ import org.springframework.amqp.rabbit.annotation.RabbitListenerAnnotationBeanPo
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.RabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.listener.MessageListenerContainer;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.data.redis.connection.ReactiveRedisConnection;
@@ -224,6 +225,7 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withUserConfiguration(
                         TradeEngineInfrastructureConfiguration.class,
                         LateInfrastructureDependencyBeans.class)
+                .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
                 .run(context -> {
                     assertThat(context.getBean(V1TokenStorePort.class))
                             .isInstanceOf(RedisV1TokenStoreAdapter.class);
@@ -238,6 +240,10 @@ class TradeEngineInfrastructureConfigurationTest {
                             .isInstanceOf(RabbitPersistRechargeOrderMessagePublisher.class);
                     assertThat(context.getBean(RechargeRedisScriptExecutor.class))
                             .isInstanceOf(SpringDataRechargeRedisScriptExecutor.class);
+                    assertThat(context.getBean(PersistOrderSnapshotPort.class))
+                            .isInstanceOf(RedisPersistOrderSnapshotAdapter.class);
+                    assertThat(context.getBean(PendingPersistOrderPort.class))
+                            .isInstanceOf(RedisPendingPersistOrderAdapter.class);
                 });
     }
 

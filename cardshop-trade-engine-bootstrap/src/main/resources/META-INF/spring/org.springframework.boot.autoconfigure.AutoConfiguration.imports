@@ -1,2 +1,3 @@
+com.cardshop.trade.engine.bootstrap.config.TradeEngineCompensationJobAutoConfiguration
 com.cardshop.trade.engine.bootstrap.config.TradeEngineConsumerAutoConfiguration
 com.cardshop.trade.engine.bootstrap.config.TradeEngineRabbitListenerAutoConfiguration
