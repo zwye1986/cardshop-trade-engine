@@ -16,6 +16,7 @@ import java.util.Objects;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.redis.connection.Limit;
 import org.springframework.data.domain.Range;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.util.StringUtils;
@@ -106,6 +107,11 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
             int limit,
             String workerId) {
         int normalizedTotal = Math.max(1, shardTotal);
+        if (normalizedTotal > bucketCount) {
+            throw new IllegalArgumentException(
+                    "pendingOrgBucketCount must be greater than or equal to shardTotal: pendingOrgBucketCount=%d, shardTotal=%d"
+                            .formatted(bucketCount, normalizedTotal));
+        }
         int normalizedIndex = Math.floorMod(shardIndex, normalizedTotal);
         int remaining = Math.max(1, limit);
         long nowMillis = clock.millis();
@@ -127,12 +133,16 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
         Objects.requireNonNull(snapshot, "snapshot must not be null");
         Objects.requireNonNull(result, "result must not be null");
         String messageId = StringUtils.hasText(result.messageId()) ? result.messageId() : snapshot.messageId();
-        String now = Long.toString(clock.millis());
+        long nowMillis = clock.millis();
+        long nextRetryMillis = nowMillis + Math.max(1000, retryDelay.toMillis());
+        String now = Long.toString(nowMillis);
+        int publishCount = intField(snapshot.initialOrderSnapshot(), "mq_publish_count", 0) + 1;
         Map<String, String> orderUpdates = new LinkedHashMap<>();
         orderUpdates.put("persist_status", STATUS_PERSIST_QUEUED);
         orderUpdates.put("persist_msg_id", messageId);
-        orderUpdates.put("mq_publish_count", Integer.toString(Math.max(1, result.attemptCount())));
+        orderUpdates.put("mq_publish_count", Integer.toString(Math.max(1, publishCount)));
         orderUpdates.put("last_republish_worker", text(workerId));
+        orderUpdates.put("next_retry_time", Long.toString(nextRetryMillis));
         orderUpdates.put("updated_at", now);
 
         Map<String, String> idemUpdates = new LinkedHashMap<>();
@@ -143,6 +153,16 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
         try {
             operations.putAll(keyBuilder.orderKey(snapshot.orgCode(), snapshot.outOrderSn()), orderUpdates);
             operations.putAll(keyBuilder.idempotentKey(snapshot.orgCode(), snapshot.outOrderSn()), idemUpdates);
+            /*
+             * docs/交行直充业务系统详细设计.md「20.11 XXL-Job Handler 契约」要求 pending score
+             * 表示下一次补偿时间。补投 confirm 成功后仍保留 pending 给 Consumer 落库清理，但必须把
+             * score 推进到 retryDelay 后，避免 claim 租约一到期就反复重发同一订单。
+             */
+            operations.addToZSet(keyBuilder.pendingKey(snapshot.orgCode()), nextRetryMillis, snapshot.orderId());
+            operations.addToZSet(
+                    keyBuilder.pendingOrgIndexKey(keyBuilder.pendingOrgBucket(snapshot.orgCode())),
+                    nextRetryMillis,
+                    snapshot.orgCode());
         } catch (RuntimeException ex) {
             log.error("Redis pending补投成功后状态推进失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}, workerId={}",
                     snapshot.orgCode(),
@@ -374,6 +394,21 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
         }
     }
 
+    private static int intField(Map<String, Object> fields, String key, int fallback) {
+        Object value = fields.get(key);
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value instanceof String text && StringUtils.hasText(text)) {
+            try {
+                return Integer.parseInt(text);
+            } catch (NumberFormatException ex) {
+                throw new IllegalArgumentException("invalid redis int field: " + key + "=" + text, ex);
+            }
+        }
+        return fallback;
+    }
+
     private static String text(String primary, String fallback) {
         if (StringUtils.hasText(primary)) {
             return primary;
@@ -426,8 +461,10 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
         @Override
         public List<String> rangeByScore(String key, long minScore, long maxScore, int limit) {
             List<String> values = redisTemplate.opsForZSet()
-                    .rangeByScore(key, Range.closed((double) minScore, (double) maxScore))
-                    .take(Math.max(1, limit))
+                    .rangeByScore(
+                            key,
+                            Range.closed((double) minScore, (double) maxScore),
+                            Limit.limit().count(Math.max(1, limit)))
                     .collectList()
                     .block(timeout);
             return values == null ? List.of() : values;

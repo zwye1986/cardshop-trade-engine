@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
+import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort;
 import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
 import com.cardshop.trade.engine.application.recharge.MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
@@ -409,6 +410,7 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(RechargeFulfillmentOrderPort.class, () -> interfaceProxy(RechargeFulfillmentOrderPort.class))
                 .withBean(RechargeSupplierGatewayPort.class, () -> interfaceProxy(RechargeSupplierGatewayPort.class))
                 .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
+                .withBean(BalanceDeltaFlushOutboxPort.class, BalanceDeltaFlushOutboxPort::noop)
                 .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
                 .withBean(MerchantNotifyPayloadSigner.class, () -> interfaceProxy(MerchantNotifyPayloadSigner.class))
                 .run(context -> {
@@ -425,6 +427,7 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(RechargeFulfillmentOrderPort.class, () -> interfaceProxy(RechargeFulfillmentOrderPort.class))
                 .withBean(RechargeSupplierGatewayPort.class, () -> interfaceProxy(RechargeSupplierGatewayPort.class))
                 .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
+                .withBean(BalanceDeltaFlushOutboxPort.class, BalanceDeltaFlushOutboxPort::noop)
                 .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
                 .withBean(V1MerchantProfilePort.class, () -> interfaceProxy(V1MerchantProfilePort.class))
                 .run(context -> assertThat(context).hasSingleBean(RechargeOutboxWorkerService.class));

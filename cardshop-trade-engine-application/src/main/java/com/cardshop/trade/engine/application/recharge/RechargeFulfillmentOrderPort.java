@@ -17,4 +17,13 @@ public interface RechargeFulfillmentOrderPort {
     void updateSupplierFlow(SupplierFlowUpdateCommand command);
 
     void updateFulfillmentStatus(OrderFulfillmentStatusUpdate update);
+
+    /**
+     * 标记 MySQL 扩展订单中的 Redis 预扣已经释放。
+     *
+     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「14.6 订单最终失败/作废退款协议」。
+     * 该动作必须在 Redis release 成功且反向 {@code BALANCE_DELTA_FLUSH} outbox 已写入后执行；
+     * 若提前置位，后续 outbox 重试会失去继续补资金动作的判断依据。
+     */
+    void markBalanceReleased(String orderId);
 }

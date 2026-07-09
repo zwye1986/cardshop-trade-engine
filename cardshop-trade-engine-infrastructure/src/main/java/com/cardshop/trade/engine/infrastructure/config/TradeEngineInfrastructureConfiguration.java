@@ -5,6 +5,8 @@ import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckReposito
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
+import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort;
+import com.cardshop.trade.engine.application.recharge.BalanceReservationReleasePort;
 import com.cardshop.trade.engine.application.recharge.CancelUnconfirmedAcceptResult;
 import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
 import com.cardshop.trade.engine.application.recharge.MarkPersistQueuedResult;
@@ -78,6 +80,7 @@ import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptLoader;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptExecutor;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisSessionFactory;
+import com.cardshop.trade.engine.infrastructure.redis.RedisBalanceReservationReleaseAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.SpringDataRechargeRedisScriptExecutor;
 import com.cardshop.trade.engine.infrastructure.supplier.HttpRechargeSupplierGatewayAdapter;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -241,8 +244,40 @@ public class TradeEngineInfrastructureConfiguration {
             RechargeRedisKeyBuilder keyBuilder,
             RechargeRedisScriptLoader scriptLoader,
             TradeEngineProperties properties,
-            RedisHaGuardPort redisHaGuardPort) {
-        return new RedisSessionAcceptReliabilityAdapter(sessionFactory, keyBuilder, scriptLoader, properties, redisHaGuardPort);
+            RedisHaGuardPort redisHaGuardPort,
+            ObjectProvider<AcceptAnomalyRecordPort> acceptAnomalyRecordPortProvider,
+            @Qualifier("tradeDbTaskExecutor") ObjectProvider<Executor> acceptAnomalyRecordExecutorProvider) {
+        /*
+         * accept Lua timeout/BUSY 属于“Redis 可能已写入但 Java 未拿到返回”的状态未知窗口。
+         * 这里把 anomaly 写库端口和 DB executor 一起注入 Redis adapter：adapter 负责发现 Redis 协议边界异常，
+         * 但真实写库必须切到 tradeDbTaskExecutor，避免阻塞 Lettuce/Reactor 回调线程。
+         */
+        return new RedisSessionAcceptReliabilityAdapter(
+                sessionFactory,
+                keyBuilder,
+                scriptLoader,
+                properties,
+                redisHaGuardPort,
+                acceptAnomalyRecordPortProvider.getIfAvailable(AcceptAnomalyRecordPort::noop),
+                acceptAnomalyRecordExecutorProvider.getIfAvailable(() -> Runnable::run));
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(BalanceReservationReleasePort.class)
+    public BalanceReservationReleasePort balanceReservationReleasePort(
+            RechargeRedisSessionFactory sessionFactory,
+            RechargeRedisKeyBuilder keyBuilder,
+            RechargeRedisScriptLoader scriptLoader,
+            Clock clock,
+            TradeEngineProperties properties) {
+        /*
+         * 余额释放由 outbox worker 同步调用，不能让 Redis Lua 无界阻塞占死补偿线程。
+         * 这里沿用 pending 补投 adapter 的 Redis 普通操作超时策略：以 WAIT 超时为基准放大 5 倍，
+         * 既避免误伤短抖动，也保证异常窗口能回到 outbox 重试。参见 docs/交行直充业务系统高可用方案设计.md「14.6」。
+         */
+        Duration redisOperationTimeout = Duration.ofMillis(Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5L));
+        return new RedisBalanceReservationReleaseAdapter(
+                sessionFactory, keyBuilder, scriptLoader, clock, redisOperationTimeout);
     }
 
     @Bean
@@ -570,6 +605,8 @@ public class TradeEngineInfrastructureConfiguration {
             RechargeFulfillmentOrderPort.class,
             RechargeSupplierGatewayPort.class,
             DirectRechargeFrequencyPort.class,
+            BalanceDeltaFlushOutboxPort.class,
+            BalanceReservationReleasePort.class,
             RechargeNotifyTaskPort.class,
             V1MerchantProfilePort.class
     })
@@ -579,6 +616,8 @@ public class TradeEngineInfrastructureConfiguration {
             RechargeFulfillmentOrderPort orderPort,
             RechargeSupplierGatewayPort supplierGatewayPort,
             DirectRechargeFrequencyPort frequencyPort,
+            BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
+            BalanceReservationReleasePort balanceReservationReleasePort,
             RechargeNotifyTaskPort notifyTaskPort,
             ObjectProvider<MerchantNotifyPayloadSigner> payloadSignerProvider,
             V1MerchantProfilePort merchantProfilePort,
@@ -592,6 +631,8 @@ public class TradeEngineInfrastructureConfiguration {
                 orderPort,
                 supplierGatewayPort,
                 frequencyPort,
+                balanceDeltaFlushOutboxPort,
+                balanceReservationReleasePort,
                 notifyTaskPort,
                 payloadSigner,
                 clock,

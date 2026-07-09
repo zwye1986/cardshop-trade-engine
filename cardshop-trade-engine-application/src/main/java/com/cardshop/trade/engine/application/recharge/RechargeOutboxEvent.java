@@ -61,6 +61,23 @@ public record RechargeOutboxEvent(
                 lastError);
     }
 
+    /**
+     * 判断事件是否已经达到最大重试次数。
+     *
+     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「6.6 新增表」。达到上限的事件不能继续被
+     * Worker 执行业务动作，需要转入 {@code MANUAL_REQUIRED}，避免永久失败事件造成稳定重试和日志风暴。
+     */
+    public boolean retryExhausted() {
+        return retryCount >= maxRetryCount;
+    }
+
+    /**
+     * 判断当前这次失败是否会达到最大重试次数。
+     */
+    public boolean nextFailureReachesMaxRetry() {
+        return retryCount + 1 >= maxRetryCount;
+    }
+
     private static String requireText(String value, String field) {
         if (value == null || value.isBlank()) {
             throw new IllegalArgumentException(field + " must not be blank");

@@ -6,6 +6,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -48,6 +51,33 @@ class RechargePersistMqRepublishServiceTest {
         assertThat(result.failed()).isEqualTo(1);
         assertThat(pendingPort.markedPublished).isEmpty();
         assertThat(pendingPort.markedFailed).containsExactly("ORDER-1");
+    }
+
+    @Test
+    void startsBatchPublishesBeforeWaitingForSlowConfirmResults() throws Exception {
+        FakePendingPort pendingPort = new FakePendingPort(List.of(
+                pendingSnapshot("ORDER-1"),
+                pendingSnapshot("ORDER-2"),
+                pendingSnapshot("ORDER-3")));
+        SlowConfirmPublisher publisher = new SlowConfirmPublisher(3);
+        var service = new RechargePersistMqRepublishService(pendingPort, publisher);
+        CompletableFuture<RechargeCompensationBatchResult> task =
+                CompletableFuture.supplyAsync(() -> service.republishDue(16, 3, 20, "worker-A"));
+
+        try {
+            assertThat(publisher.awaitPublished(300, TimeUnit.MILLISECONDS)).isTrue();
+            assertThat(task).isNotDone();
+
+            publisher.completeAllConfirmed();
+
+            RechargeCompensationBatchResult result = task.get(1, TimeUnit.SECONDS);
+            assertThat(result.scanned()).isEqualTo(3);
+            assertThat(result.succeeded()).isEqualTo(3);
+            assertThat(pendingPort.markedPublished).containsExactly("ORDER-1", "ORDER-2", "ORDER-3");
+        } finally {
+            publisher.completeAllConfirmed();
+            task.cancel(true);
+        }
     }
 
     private static PendingPersistOrderSnapshot pendingSnapshot(String orderId) {
@@ -114,6 +144,39 @@ class RechargePersistMqRepublishServiceTest {
                     ? PersistMessagePublishResult.confirmed(message.messageId(), 1)
                     : PersistMessagePublishResult.failed(message.messageId(), 1, "BROKER_NACK", "broker nack");
             return CompletableFuture.completedFuture(result);
+        }
+    }
+
+    private static final class SlowConfirmPublisher implements PersistRechargeOrderMessagePublisher {
+
+        private final CountDownLatch publishedLatch;
+        private final List<CompletableFuture<PersistMessagePublishResult>> pendingConfirms = new CopyOnWriteArrayList<>();
+
+        private SlowConfirmPublisher(int expectedPublishes) {
+            this.publishedLatch = new CountDownLatch(expectedPublishes);
+        }
+
+        private boolean awaitPublished(long timeout, TimeUnit unit) throws InterruptedException {
+            return publishedLatch.await(timeout, unit);
+        }
+
+        private void completeAllConfirmed() {
+            for (CompletableFuture<PersistMessagePublishResult> pendingConfirm : pendingConfirms) {
+                pendingConfirm.complete(PersistMessagePublishResult.confirmed("confirmed", 1));
+            }
+        }
+
+        @Override
+        public boolean isAvailable() {
+            return true;
+        }
+
+        @Override
+        public java.util.concurrent.CompletionStage<PersistMessagePublishResult> publish(PersistTradeOrderMessage message) {
+            CompletableFuture<PersistMessagePublishResult> future = new CompletableFuture<>();
+            pendingConfirms.add(future);
+            publishedLatch.countDown();
+            return future;
         }
     }
 }

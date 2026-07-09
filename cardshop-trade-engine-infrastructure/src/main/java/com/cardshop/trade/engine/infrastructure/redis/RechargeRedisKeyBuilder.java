@@ -1,6 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.redis;
 
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
+import com.cardshop.trade.engine.application.recharge.BalanceReservationReleaseCommand;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.zip.CRC32;
@@ -99,6 +100,23 @@ public final class RechargeRedisKeyBuilder {
      */
     public List<String> markPersistFailedKeys(AcceptRechargeOrderCommand command) {
         return persistCompletionKeys(command);
+    }
+
+    /**
+     * 构造 `release_balance_reservation.lua` 所需 KEYS。
+     *
+     * <p>参见高可用设计「16.6 release.lua」。释放动作以 {@code releaseEventId} 作为 Redis 幂等 key，
+     * outbox 重试或僵尸任务抢占后重复执行只能返回已释放，不能再次回补可用余额。
+     */
+    public List<String> releaseBalanceReservationKeys(BalanceReservationReleaseCommand command) {
+        String orgTag = orgTag(command.orgCode());
+        return List.of(
+                key("recharge:" + orgTag + ":balance"),
+                key("recharge:" + orgTag + ":order:" + command.outOrderSn()),
+                key("recharge:" + orgTag + ":reservation:" + command.orderId()),
+                key("recharge:" + orgTag + ":order:event_index:" + command.orderId()),
+                key("recharge:" + orgTag + ":order:event:" + command.orderId() + ":4"),
+                key("recharge:" + orgTag + ":release:" + command.releaseEventId()));
     }
 
     /**

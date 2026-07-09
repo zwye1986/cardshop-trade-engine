@@ -33,6 +33,8 @@ public class RechargeOutboxWorkerService {
     private final RechargeFulfillmentOrderPort orderPort;
     private final RechargeSupplierGatewayPort supplierGatewayPort;
     private final DirectRechargeFrequencyPort frequencyPort;
+    private final BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort;
+    private final BalanceReservationReleasePort balanceReservationReleasePort;
     private final RechargeNotifyTaskPort notifyTaskPort;
     private final MerchantNotifyPayloadSigner notifyPayloadSigner;
     private final Clock clock;
@@ -43,6 +45,8 @@ public class RechargeOutboxWorkerService {
             RechargeFulfillmentOrderPort orderPort,
             RechargeSupplierGatewayPort supplierGatewayPort,
             DirectRechargeFrequencyPort frequencyPort,
+            BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
+            BalanceReservationReleasePort balanceReservationReleasePort,
             RechargeNotifyTaskPort notifyTaskPort,
             MerchantNotifyPayloadSigner notifyPayloadSigner,
             Clock clock,
@@ -51,6 +55,10 @@ public class RechargeOutboxWorkerService {
         this.orderPort = Objects.requireNonNull(orderPort, "orderPort must not be null");
         this.supplierGatewayPort = Objects.requireNonNull(supplierGatewayPort, "supplierGatewayPort must not be null");
         this.frequencyPort = Objects.requireNonNull(frequencyPort, "frequencyPort must not be null");
+        this.balanceDeltaFlushOutboxPort = Objects.requireNonNull(
+                balanceDeltaFlushOutboxPort, "balanceDeltaFlushOutboxPort must not be null");
+        this.balanceReservationReleasePort = Objects.requireNonNull(
+                balanceReservationReleasePort, "balanceReservationReleasePort must not be null");
         this.notifyTaskPort = Objects.requireNonNull(notifyTaskPort, "notifyTaskPort must not be null");
         this.notifyPayloadSigner = Objects.requireNonNull(notifyPayloadSigner, "notifyPayloadSigner must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
@@ -66,6 +74,11 @@ public class RechargeOutboxWorkerService {
         var events = outboxPort.selectDueForShard(shardTotal, shardIndex, limit);
         RechargeOutboxBatchResult result = RechargeOutboxBatchResult.empty().scanned(events.size());
         for (RechargeOutboxEvent event : events) {
+            if (event.retryExhausted()) {
+                outboxPort.markManualRequired(event, retryExhaustedMessage(event));
+                result = result.add(RechargeOutboxBatchResult.Outcome.FAILED);
+                continue;
+            }
             var claimed = outboxPort.claim(event, workerId, settings.claimLease());
             if (claimed.isEmpty()) {
                 result = result.add(RechargeOutboxBatchResult.Outcome.SKIPPED);
@@ -84,14 +97,14 @@ public class RechargeOutboxWorkerService {
                 case INVALID_ORDER -> handleInvalidOrder(event);
                 default -> {
                     String reason = "unsupported outbox event type: " + event.eventType();
-                    outboxPort.markFailed(event, reason, settings.retryBackoff());
+                    markFailedOrManualRequired(event, reason, settings.retryBackoff());
                     yield RechargeOutboxBatchResult.Outcome.FAILED;
                 }
             };
         } catch (Exception ex) {
             log.error("outbox事件处理异常 eventId={}, eventType={}, orderId={}",
                     event.eventId(), event.eventType(), event.orderId(), ex);
-            outboxPort.markFailed(event, ex.getMessage(), settings.retryBackoff());
+            markFailedOrManualRequired(event, ex.getMessage(), settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
     }
@@ -99,10 +112,13 @@ public class RechargeOutboxWorkerService {
     private RechargeOutboxBatchResult.Outcome handleSupplierDispatch(RechargeOutboxEvent event) {
         RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
         if (order == null) {
-            outboxPort.markFailed(event, "order not found for dispatch", settings.retryBackoff());
+            markFailedOrManualRequired(event, "order not found for dispatch", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
         if (!order.dispatchable()) {
+            if (order.terminalFailureAwaitingBalanceRelease()) {
+                return completeTerminalBalanceRelease(event, order, "供应商失败终态补偿释放预扣");
+            }
             outboxPort.markSuccess(event);
             return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
         }
@@ -116,7 +132,7 @@ public class RechargeOutboxWorkerService {
                     null,
                     null,
                     "同账号存在直充处理中订单，请稍后重试"));
-            outboxPort.markFailed(event, "direct recharge frequency wait", settings.frequencyRetryDelay());
+            markFailedOrManualRequired(event, "direct recharge frequency wait", settings.frequencyRetryDelay());
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
 
@@ -189,6 +205,11 @@ public class RechargeOutboxWorkerService {
                         response.responseMessage(),
                         response.responseMessage()));
                 createOrderStatusNotifyTask(order, LegacyOrderStatusCode.FAILED);
+                if (!releaseBalanceReservationAndEnqueueDelta(event, order, response.responseMessage())) {
+                    frequencyPort.releaseIfOwned(
+                            order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
+                    return RechargeOutboxBatchResult.Outcome.FAILED;
+                }
                 frequencyPort.releaseIfOwned(
                         order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
                 outboxPort.markSuccess(event);
@@ -201,8 +222,11 @@ public class RechargeOutboxWorkerService {
     private RechargeOutboxBatchResult.Outcome handleInvalidOrder(RechargeOutboxEvent event) {
         RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
         if (order == null) {
-            outboxPort.markFailed(event, "order not found for invalid", settings.retryBackoff());
+            markFailedOrManualRequired(event, "order not found for invalid", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
+        }
+        if (order.terminalFailureAwaitingBalanceRelease()) {
+            return completeTerminalBalanceRelease(event, order, "供应商作废终态补偿释放预扣");
         }
         orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
                 order.orderId(),
@@ -225,6 +249,11 @@ public class RechargeOutboxWorkerService {
                     response.responseMessage(),
                     "供应商作废成功"));
             createWriteOffNotifyTask(order);
+            if (!releaseBalanceReservationAndEnqueueDelta(event, order, "供应商作废成功")) {
+                frequencyPort.releaseIfOwned(
+                        order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
             frequencyPort.releaseIfOwned(
                     order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
             outboxPort.markSuccess(event);
@@ -234,8 +263,83 @@ public class RechargeOutboxWorkerService {
             outboxPort.markSuccess(event);
             return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
         }
-        outboxPort.markFailed(event, response.responseMessage(), settings.retryBackoff());
+        markFailedOrManualRequired(event, response.responseMessage(), settings.retryBackoff());
         return RechargeOutboxBatchResult.Outcome.FAILED;
+    }
+
+    private RechargeOutboxBatchResult.Outcome completeTerminalBalanceRelease(
+            RechargeOutboxEvent event,
+            RechargeFulfillmentOrder order,
+            String reason) {
+        if (!releaseBalanceReservationAndEnqueueDelta(event, order, reason)) {
+            return RechargeOutboxBatchResult.Outcome.FAILED;
+        }
+        outboxPort.markSuccess(event);
+        return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+    }
+
+    private boolean releaseBalanceReservationAndEnqueueDelta(
+            RechargeOutboxEvent event,
+            RechargeFulfillmentOrder order,
+            String reason) {
+        /*
+         * docs/交行直充业务系统高可用方案设计.md「14.6 订单最终失败/作废退款协议」
+         * 要求终态失败后释放 Redis reservation，并生成正向 BALANCE_DELTA_FLUSH 沉淀回旧表余额。
+         * releaseEventId 使用当前 outbox 事件 ID 保证 Redis Lua 幂等；若 Redis 回补失败，不能先写
+         * MySQL 余额反向事件，否则 Redis 与旧表会继续扩大偏差，因此保留当前 outbox 重试入口。
+         */
+        BalanceReservationReleaseResult releaseResult = balanceReservationReleasePort.release(
+                new BalanceReservationReleaseCommand(
+                        order.orgCode(),
+                        order.orderId(),
+                        order.outOrderSn(),
+                        order.orderPrice(),
+                        "RELEASE",
+                        event.eventId(),
+                        reason == null ? "" : reason));
+        if (!releaseResult.succeeded()) {
+            String failReason = releaseResult.failReason().isBlank()
+                    ? releaseResult.failCode()
+                    : releaseResult.failReason();
+            markFailedOrManualRequired(event, "release balance reservation failed: " + failReason, settings.retryBackoff());
+            return false;
+        }
+        enqueueReleaseBalanceDelta(order, reason);
+        orderPort.markBalanceReleased(order.orderId());
+        return true;
+    }
+
+    private void markFailedOrManualRequired(
+            RechargeOutboxEvent event,
+            String errorMessage,
+            java.time.Duration nextRetryDelay) {
+        if (event.nextFailureReachesMaxRetry()) {
+            outboxPort.markManualRequired(event, errorMessage);
+            return;
+        }
+        outboxPort.markFailed(event, errorMessage, nextRetryDelay);
+    }
+
+    private static String retryExhaustedMessage(RechargeOutboxEvent event) {
+        if (event.lastError().isBlank()) {
+            return "outbox retry exhausted";
+        }
+        return "outbox retry exhausted: " + event.lastError();
+    }
+
+    private void enqueueReleaseBalanceDelta(RechargeFulfillmentOrder order, String reason) {
+        /*
+         * docs/交行直充业务系统详细设计.md「20.2 作废设计」要求作废/失败完成后生成反向
+         * BALANCE_DELTA_FLUSH。这里仅写可靠事件，不在 Worker 线程直接改 mc_ext_depart.balance，
+         * 保持 D12 余额刷账的 CAS 抢占和重试语义。
+         */
+        balanceDeltaFlushOutboxPort.enqueueBalanceDeltaFlush(new BalanceDeltaFlushOutboxCommand(
+                order.orgCode(),
+                order.orderId(),
+                order.outOrderSn(),
+                order.orderPrice(),
+                "RELEASE",
+                reason == null ? "" : reason));
     }
 
     private void createOrderStatusNotifyTask(RechargeFulfillmentOrder order, LegacyOrderStatusCode orderStatus) {

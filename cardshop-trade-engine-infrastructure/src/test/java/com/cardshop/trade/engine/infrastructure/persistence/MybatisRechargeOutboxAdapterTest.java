@@ -2,6 +2,7 @@ package com.cardshop.trade.engine.infrastructure.persistence;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxCommand;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxCommand;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.domain.order.TaskStatus;
@@ -45,6 +46,33 @@ class MybatisRechargeOutboxAdapterTest {
         assertThat(writer.outbox.getPayload())
                 .contains("\"reason\":\"用户申请作废\"")
                 .contains("\"order_id\":\"ORDER-1\"");
+    }
+
+    @Test
+    void enqueuesReleaseBalanceDeltaFlushOutboxWithPositiveAmountAndIdempotentEventId() {
+        RecordingOutboxWriter writer = new RecordingOutboxWriter();
+        MybatisRechargeOutboxAdapter adapter = new MybatisRechargeOutboxAdapter(
+                writer,
+                new ObjectMapper(),
+                Clock.fixed(Instant.parse("2026-07-08T03:20:00Z"), ZoneOffset.UTC));
+
+        adapter.enqueueBalanceDeltaFlush(new BalanceDeltaFlushOutboxCommand(
+                "A36", "ORDER-1", "OUT-1", 5200L, "RELEASE", "供应商失败释放余额"));
+
+        assertThat(writer.outbox.getEventId()).isEqualTo("balance-flush-release-ORDER-1");
+        assertThat(writer.outbox.getEventType()).isEqualTo(OutboxEventType.BALANCE_DELTA_FLUSH.name());
+        assertThat(writer.outbox.getOrgCode()).isEqualTo("A36");
+        assertThat(writer.outbox.getOrderId()).isEqualTo("ORDER-1");
+        assertThat(writer.outbox.getOutOrderSn()).isEqualTo("OUT-1");
+        assertThat(writer.outbox.getStatus()).isEqualTo(TaskStatus.INIT.name());
+        assertThat(writer.outbox.getRetryCount()).isZero();
+        assertThat(writer.outbox.getMaxRetryCount()).isEqualTo(10);
+        assertThat(writer.outbox.getShardKey()).isEqualTo("balance-flush-release-ORDER-1");
+        assertThat(writer.outbox.getNextRetryTime()).isEqualTo(LocalDateTime.of(2026, 7, 8, 11, 20));
+        assertThat(writer.outbox.getPayload())
+                .contains("\"delta_amount\":5200")
+                .contains("\"delta_type\":\"RELEASE\"")
+                .contains("\"reason\":\"供应商失败释放余额\"");
     }
 
     private static final class RecordingOutboxWriter implements RechargeOutboxPersistWriter {

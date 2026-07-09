@@ -120,4 +120,32 @@ class RechargeRedisScriptLoaderTest {
                 .contains("last_error")
                 .contains("ZADD', KEYS[3]");
     }
+
+    @Test
+    void loadsReleaseBalanceReservationScriptFromClasspath() {
+        var loader = new RechargeRedisScriptLoader();
+
+        var script = loader.releaseBalanceReservationScript();
+
+        assertThat(script.getResultType()).isEqualTo(List.class);
+        assertThat(script.getSha1()).isNotBlank();
+        assertThat(script.getScriptAsString())
+                .contains("release_balance_reservation.lua")
+                .contains("ALREADY_RELEASED")
+                .contains("HINCRBY', KEYS[1], 'available'")
+                .contains("releaseEventId");
+    }
+
+    @Test
+    void releaseBalanceReservationFailsClosedWhenReservationOrFrozenAmountIsInconsistent() {
+        var loader = new RechargeRedisScriptLoader();
+
+        String script = loader.releaseBalanceReservationScript().getScriptAsString();
+
+        assertThat(script)
+                .contains("RESERVATION_NOT_FOUND")
+                .contains("RESERVATION_NOT_RELEASED")
+                .contains("FROZEN_BALANCE_NOT_ENOUGH")
+                .contains("tonumber(redis.call('HGET', KEYS[1], 'frozen') or '0')");
+    }
 }

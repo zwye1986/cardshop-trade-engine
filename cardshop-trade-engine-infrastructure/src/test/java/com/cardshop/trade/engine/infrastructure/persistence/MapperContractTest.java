@@ -127,6 +127,7 @@ class MapperContractTest {
                 .contains("TaskStatus.INIT.name()")
                 .contains("TaskStatus.FAILED.name()")
                 .contains("TaskStatus.PROCESSING.name()")
+                .contains("retry_count < max_retry_count")
                 .contains("mod(crc32(shard_key), {0}) = {1}")
                 .contains("LambdaUpdateWrapper")
                 .contains("version = version + 1");

@@ -175,6 +175,12 @@ class TradeEngineReliabilityConfigurationTest {
                             String errorMessage,
                             Duration nextRetryDelay) {
                     }
+
+                    @Override
+                    public void markManualRequired(
+                            com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent event,
+                            String errorMessage) {
+                    }
                 },
                 new com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort() {
                     @Override
@@ -197,6 +203,10 @@ class TradeEngineReliabilityConfigurationTest {
                     @Override
                     public void updateFulfillmentStatus(
                             com.cardshop.trade.engine.application.recharge.OrderFulfillmentStatusUpdate update) {
+                    }
+
+                    @Override
+                    public void markBalanceReleased(String orderId) {
                     }
                 },
                 new com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort() {
@@ -222,6 +232,8 @@ class TradeEngineReliabilityConfigurationTest {
                     public void releaseIfOwned(String orgCode, String account, String orderId, Duration minimumHold) {
                     }
                 },
+                com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort.noop(),
+                com.cardshop.trade.engine.application.recharge.BalanceReservationReleasePort.noop(),
                 task -> {
                 },
                 new com.cardshop.trade.engine.application.recharge.MerchantNotifyPayloadSigner() {

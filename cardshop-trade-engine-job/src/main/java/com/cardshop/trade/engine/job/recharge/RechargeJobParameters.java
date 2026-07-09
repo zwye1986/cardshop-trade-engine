@@ -9,7 +9,7 @@ package com.cardshop.trade.engine.job.recharge;
 final class RechargeJobParameters {
 
     static final int DEFAULT_LIMIT = 500;
-    private static final int MAX_LIMIT = 2_000;
+    private static final int MAX_LIMIT = 1_000;
 
     private RechargeJobParameters() {
     }
@@ -23,7 +23,12 @@ final class RechargeJobParameters {
         if (shardIndex < 0) {
             return 0;
         }
-        return Math.min(shardIndex, normalizedTotal - 1);
+        if (shardIndex >= normalizedTotal) {
+            throw new IllegalArgumentException(
+                    "shardIndex must be less than shardTotal: shardIndex=%d, shardTotal=%d"
+                            .formatted(shardIndex, normalizedTotal));
+        }
+        return shardIndex;
     }
 
     static int limit(int limit) {

@@ -71,7 +71,8 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
                 order.getOrderStatus() == null ? 0 : order.getOrderStatus(),
                 ext.getPersistStatus(),
                 ext.getValidationStatus(),
-                Boolean.TRUE.equals(ext.getDispatchAllowed())));
+                Boolean.TRUE.equals(ext.getDispatchAllowed()),
+                Boolean.TRUE.equals(ext.getBalanceReserved())));
     }
 
     @Override
@@ -122,6 +123,15 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
                 .eq(RechargeOrderExtDO::getOrderId, update.orderId())
                 .set(RechargeOrderExtDO::getDispatchStatus, update.dispatchStatus().name())
                 .set(RechargeOrderExtDO::getLastError, update.failReason())
+                .set(RechargeOrderExtDO::getUpdatedAt, now()));
+    }
+
+    @Override
+    @Transactional
+    public void markBalanceReleased(String orderId) {
+        extMapper.update(null, new LambdaUpdateWrapper<RechargeOrderExtDO>()
+                .eq(RechargeOrderExtDO::getOrderId, orderId)
+                .set(RechargeOrderExtDO::getBalanceReserved, false)
                 .set(RechargeOrderExtDO::getUpdatedAt, now()));
     }
 

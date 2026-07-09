@@ -9,6 +9,8 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -107,7 +109,7 @@ class RedisPendingPersistOrderAdapterTest {
     }
 
     @Test
-    void markRepublishedKeepsPendingButUpdatesOrderAndIdempotentStatus() {
+    void markRepublishedDefersPendingAndIncrementsPublishCount() {
         RechargeRedisKeyBuilder keyBuilder = new RechargeRedisKeyBuilder("test", 8);
         FakePendingRedisOperations operations = new FakePendingRedisOperations();
         RedisPendingPersistOrderAdapter adapter = new RedisPendingPersistOrderAdapter(
@@ -119,6 +121,7 @@ class RedisPendingPersistOrderAdapterTest {
                 PersistedOrderStatePort.noop(),
                 CLOCK);
         seedPendingOrder(operations, keyBuilder, "A05", "ORDER-1", "OUT-1", "", 10_000);
+        operations.hash(keyBuilder.orderKey("A05", "OUT-1")).put("mq_publish_count", "3");
         PendingPersistOrderSnapshot snapshot = adapter.selectDueForShard(1, 0, 10, "worker-A").getFirst();
 
         adapter.markRepublished(snapshot, PersistMessagePublishResult.confirmed("persist-repub-1", 2), "worker-A");
@@ -126,9 +129,11 @@ class RedisPendingPersistOrderAdapterTest {
         assertThat(operations.hash(keyBuilder.orderKey("A05", "OUT-1")))
                 .containsEntry("persist_status", "PERSIST_QUEUED")
                 .containsEntry("persist_msg_id", "persist-repub-1")
-                .containsEntry("mq_publish_count", "2")
+                .containsEntry("mq_publish_count", "4")
                 .containsEntry("last_republish_worker", "worker-A");
-        assertThat(operations.zset(keyBuilder.pendingKey("A05"))).containsKey("ORDER-1");
+        assertThat(operations.zset(keyBuilder.pendingKey("A05"))).containsEntry("ORDER-1", 50_000L);
+        assertThat(operations.zset(keyBuilder.pendingOrgIndexKey(keyBuilder.pendingOrgBucket("A05"))))
+                .containsEntry("A05", 50_000L);
         assertThat(operations.hash(keyBuilder.idempotentKey("A05", "OUT-1")))
                 .containsEntry("persist_status", "PERSIST_QUEUED")
                 .containsEntry("persist_msg_id", "persist-repub-1");
@@ -159,6 +164,35 @@ class RedisPendingPersistOrderAdapterTest {
         assertThat(operations.zset(keyBuilder.pendingKey("A05"))).containsEntry("ORDER-1", 50_000L);
         assertThat(operations.zset(keyBuilder.pendingOrgIndexKey(keyBuilder.pendingOrgBucket("A05"))))
                 .containsEntry("A05", 50_000L);
+    }
+
+    @Test
+    void rejectsShardTotalGreaterThanPendingOrgBucketCount() {
+        RechargeRedisKeyBuilder keyBuilder = new RechargeRedisKeyBuilder("test", 2);
+        FakePendingRedisOperations operations = new FakePendingRedisOperations();
+        RedisPendingPersistOrderAdapter adapter = new RedisPendingPersistOrderAdapter(
+                operations,
+                keyBuilder,
+                2,
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(120),
+                PersistedOrderStatePort.noop(),
+                CLOCK);
+
+        org.assertj.core.api.Assertions.assertThatThrownBy(
+                        () -> adapter.selectDueForShard(4, 0, 10, "worker-A"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("pendingOrgBucketCount");
+    }
+
+    @Test
+    void reactiveRedisRangeByScorePushesLimitDownToRedisCommand() throws Exception {
+        String adapter = Files.readString(Path.of(
+                "src/main/java/com/cardshop/trade/engine/infrastructure/redis/RedisPendingPersistOrderAdapter.java"));
+
+        assertThat(adapter)
+                .contains("Limit.limit().count(Math.max(1, limit))")
+                .doesNotContain(".rangeByScore(key, Range.closed((double) minScore, (double) maxScore))\n                    .take(");
     }
 
     private static void seedPendingOrder(
@@ -224,6 +258,7 @@ class RedisPendingPersistOrderAdapterTest {
         @Override
         public List<String> rangeByScore(String key, long minScore, long maxScore, int limit) {
             return zset(key).entrySet().stream()
+                    .sorted(Map.Entry.comparingByValue())
                     .filter(entry -> entry.getValue() >= minScore && entry.getValue() <= maxScore)
                     .limit(limit)
                     .map(Map.Entry::getKey)

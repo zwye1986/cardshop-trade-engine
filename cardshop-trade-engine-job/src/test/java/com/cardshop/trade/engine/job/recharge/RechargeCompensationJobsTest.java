@@ -1,6 +1,7 @@
 package com.cardshop.trade.engine.job.recharge;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushService;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcileService;
@@ -36,10 +37,32 @@ class RechargeCompensationJobsTest {
         RecordingPersistMqRepublishService service = new RecordingPersistMqRepublishService();
         RechargePersistMqRepublishJob job = new RechargePersistMqRepublishJob(service);
 
-        RechargeCompensationBatchResult result = job.runOnce(8, 20, 0, "executor-A");
+        RechargeCompensationBatchResult result = job.runOnce(8, 7, 5_000, "executor-A");
+
+        assertThat(result.scanned()).isEqualTo(1000);
+        assertThat(service.calls).containsExactly("8:7:1000:executor-A");
+    }
+
+    @Test
+    void usesDefaultLimitWhenLimitIsNotPositive() {
+        RecordingPersistMqRepublishService service = new RecordingPersistMqRepublishService();
+        RechargePersistMqRepublishJob job = new RechargePersistMqRepublishJob(service);
+
+        RechargeCompensationBatchResult result = job.runOnce(8, 7, 0, "executor-A");
 
         assertThat(result.scanned()).isEqualTo(500);
         assertThat(service.calls).containsExactly("8:7:500:executor-A");
+    }
+
+    @Test
+    void rejectsShardIndexOutsideShardTotalInsteadOfMergingIntoLastShard() {
+        RecordingPersistMqRepublishService service = new RecordingPersistMqRepublishService();
+        RechargePersistMqRepublishJob job = new RechargePersistMqRepublishJob(service);
+
+        assertThatThrownBy(() -> job.runOnce(8, 20, 0, "executor-A"))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shardIndex");
+        assertThat(service.calls).isEmpty();
     }
 
     @Test
@@ -92,6 +115,8 @@ class RechargeCompensationJobsTest {
                     interfaceProxy(com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort.class),
                     interfaceProxy(com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort.class),
                     interfaceProxy(com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort.class),
+                    interfaceProxy(com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort.class),
+                    interfaceProxy(com.cardshop.trade.engine.application.recharge.BalanceReservationReleasePort.class),
                     interfaceProxy(com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort.class),
                     interfaceProxy(com.cardshop.trade.engine.application.recharge.MerchantNotifyPayloadSigner.class),
                     java.time.Clock.systemUTC(),

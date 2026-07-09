@@ -2,6 +2,8 @@ package com.cardshop.trade.engine.infrastructure.redis;
 
 import com.cardshop.trade.engine.application.logging.LogStormGuard;
 import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecord;
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
@@ -12,13 +14,16 @@ import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityP
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
+import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.Executor;
 import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -36,8 +41,16 @@ import reactor.core.publisher.Mono;
 public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrderPort, RechargeAcceptReliabilityPort {
 
     private static final Logger log = LoggerFactory.getLogger(RedisSessionAcceptReliabilityAdapter.class);
+    private static final int MAX_ACCEPT_ANOMALY_ID_LENGTH = 100;
+    private static final int MAX_ERROR_MESSAGE_LENGTH = 500;
     private static final String LOG_EVENT_ACCEPT_OPEN_SESSION_FAILED = "redis-session.accept.open-session.failed";
     private static final String LOG_EVENT_ACCEPT_LUA_FAILED = "redis-session.accept.lua.failed";
+    private static final String LOG_EVENT_ACCEPT_UNKNOWN_CLOSE_WRITE_FAILED =
+            "redis-session.accept.unknown.close-write.failed";
+    private static final String LOG_EVENT_ACCEPT_UNKNOWN_ANOMALY_FAILED =
+            "redis-session.accept.unknown.anomaly.failed";
+    private static final String LOG_EVENT_ACCEPT_UNKNOWN_ANOMALY_SCHEDULE_FAILED =
+            "redis-session.accept.unknown.anomaly.schedule.failed";
     private static final String LOG_EVENT_WAIT_SESSION_MISSING = "redis-session.wait.session-missing";
     private static final String LOG_EVENT_WAIT_FAILED = "redis-session.wait.failed";
     private static final String LOG_EVENT_CANCEL_OPEN_SESSION_FAILED = "redis-session.cancel.open-session.failed";
@@ -57,6 +70,8 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
     private final RechargeRedisScriptLoader scriptLoader;
     private final TradeEngineProperties properties;
     private final RedisHaGuardPort redisHaGuardPort;
+    private final AcceptAnomalyRecordPort acceptAnomalyRecordPort;
+    private final Executor acceptAnomalyRecordExecutor;
     private final AcceptRechargeOrderLuaResultMapper acceptResultMapper = new AcceptRechargeOrderLuaResultMapper();
     private final Map<String, RechargeRedisSession> pendingSessions = new ConcurrentHashMap<>();
     private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
@@ -75,11 +90,26 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
             RechargeRedisScriptLoader scriptLoader,
             TradeEngineProperties properties,
             RedisHaGuardPort redisHaGuardPort) {
+        this(sessionFactory, keyBuilder, scriptLoader, properties, redisHaGuardPort, AcceptAnomalyRecordPort.noop(), Runnable::run);
+    }
+
+    public RedisSessionAcceptReliabilityAdapter(
+            RechargeRedisSessionFactory sessionFactory,
+            RechargeRedisKeyBuilder keyBuilder,
+            RechargeRedisScriptLoader scriptLoader,
+            TradeEngineProperties properties,
+            RedisHaGuardPort redisHaGuardPort,
+            AcceptAnomalyRecordPort acceptAnomalyRecordPort,
+            Executor acceptAnomalyRecordExecutor) {
         this.sessionFactory = sessionFactory;
         this.keyBuilder = keyBuilder;
         this.scriptLoader = scriptLoader;
         this.properties = properties;
         this.redisHaGuardPort = redisHaGuardPort == null ? RedisHaGuardPort.noop() : redisHaGuardPort;
+        this.acceptAnomalyRecordPort = acceptAnomalyRecordPort == null
+                ? AcceptAnomalyRecordPort.noop()
+                : acceptAnomalyRecordPort;
+        this.acceptAnomalyRecordExecutor = acceptAnomalyRecordExecutor == null ? Runnable::run : acceptAnomalyRecordExecutor;
     }
 
     @Override
@@ -126,18 +156,21 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 .doOnNext(result -> retainSessionOnlyForWrittenOrder(command, session, result))
                 .onErrorResume(ex -> {
                     closeWithErrorLog(session);
+                    AcceptAnomalyType anomalyType = classifyAcceptAnomalyType(ex);
+                    closeRedisWriteForUnknownAccept(command, anomalyType, ex);
+                    recordAcceptStateUnknownAnomalyAsync(command, anomalyType, ex);
                     logSampledError(LOG_EVENT_ACCEPT_LUA_FAILED, decision -> log.error(
-                            "Redis session接单Lua失败 orgCode={}, outOrderSn={}, orderId={}, requestHash={}, occurrence={}, sampled={}",
+                            "Redis session接单Lua状态未知 orgCode={}, outOrderSn={}, orderId={}, requestHash={}, anomalyType={}, occurrence={}, sampled={}",
                             command.orgCode(),
                             command.outOrderSn(),
                             command.orderId(),
                             command.requestHash(),
+                            anomalyType,
                             decision.occurrence(),
                             decision.sampledOccurrence(),
                             ex));
-                    // TODO(D5B): Lua 超时、Redis BUSY 或状态未知时写 recharge_accept_anomaly 并触发核查；参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
                     return Mono.just(AcceptRechargeOrderResult.redisUnavailable(
-                            command.orderId(), "Redis Lua 执行失败"));
+                            command.orderId(), acceptUnknownFailReason(anomalyType, ex)));
                 })
                 .toFuture();
     }
@@ -428,6 +461,188 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
             log.warn("Redis接单session被新会话覆盖 orgCode={}, outOrderSn={}, orderId={}",
                     command.orgCode(), command.outOrderSn(), result.orderId());
         }
+    }
+
+    /**
+     * 将 accept Lua 异常映射成可核查的异常类型。
+     *
+     * <p>Redis 脚本 timeout、BUSY 和客户端连接中断都可能出现在“Redis 已经收到脚本但 Java 未拿到返回值”
+     * 的窗口。这里不能简单当作写入前失败，也不能立即重试同一请求；因此统一进入状态未知分支，只在异常类型上
+     * 做细分，方便后续自动核查或人工处理按根因聚合。
+     */
+    private static AcceptAnomalyType classifyAcceptAnomalyType(Throwable ex) {
+        for (Throwable current = ex; current != null; current = current.getCause()) {
+            String text = ((current.getClass().getName()) + " " + current.getMessage()).toLowerCase(Locale.ROOT);
+            if (text.contains("busy")) {
+                return AcceptAnomalyType.REDIS_BUSY;
+            }
+            if (text.contains("timeout") || text.contains("timed out")) {
+                return AcceptAnomalyType.LUA_TIMEOUT;
+            }
+        }
+        return AcceptAnomalyType.ACCEPT_STATE_UNKNOWN;
+    }
+
+    /**
+     * accept Lua 状态未知时关闭 Redis 写入。
+     *
+     * <p>参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
+     * 这类异常无法证明订单、余额预扣和 pending 是否已经写入；继续放量只会扩大核查范围，所以先通过
+     * HA Guard fail closed，再由 anomaly 自动核查或人工确认恢复。
+     */
+    private void closeRedisWriteForUnknownAccept(
+            AcceptRechargeOrderCommand command,
+            AcceptAnomalyType anomalyType,
+            Throwable ex) {
+        Map<String, Object> context = unknownAcceptContext(command, anomalyType, ex);
+        try {
+            /*
+             * RedisHaGuardPort.closeWrite 约定必须是本机内存或等价快速操作。accept Lua 的 onErrorResume 可能在
+             * Lettuce/Reactor 回调线程上执行，不能在这里同步做远程配置发布；需要持久化关写时应在端口内部异步化。
+             */
+            redisHaGuardPort.closeWrite(anomalyType.name(), context);
+        } catch (RuntimeException closeEx) {
+            logSampledError(LOG_EVENT_ACCEPT_UNKNOWN_CLOSE_WRITE_FAILED, decision -> log.error(
+                    "Redis接单状态未知后关闭HA Guard失败 orgCode={}, outOrderSn={}, orderId={}, anomalyType={}, occurrence={}, sampled={}",
+                    command.orgCode(),
+                    command.outOrderSn(),
+                    command.orderId(),
+                    anomalyType,
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    closeEx));
+        }
+    }
+
+    /**
+     * 异步登记 accept Lua 状态未知 anomaly。
+     *
+     * <p>异常登记最终可能落 MySQL，必须切到 DB executor 执行，避免 Redis 回调线程被 MyBatis 阻塞。
+     * 登记失败只影响后续核查入口的完整性，不能改变当前请求的 fail-closed 响应；因此只记录日志并返回。
+     */
+    private void recordAcceptStateUnknownAnomalyAsync(
+            AcceptRechargeOrderCommand command,
+            AcceptAnomalyType anomalyType,
+            Throwable ex) {
+        try {
+            CompletableFuture
+                    .runAsync(
+                            () -> recordAcceptStateUnknownAnomaly(command, anomalyType, ex),
+                            acceptAnomalyRecordExecutor)
+                    .exceptionally(recordEx -> {
+                        logSampledError(LOG_EVENT_ACCEPT_UNKNOWN_ANOMALY_FAILED, decision -> log.error(
+                                "Redis接单状态未知异常登记失败 orgCode={}, outOrderSn={}, orderId={}, anomalyType={}, occurrence={}, sampled={}",
+                                command.orgCode(),
+                                command.outOrderSn(),
+                                command.orderId(),
+                                anomalyType,
+                                decision.occurrence(),
+                                decision.sampledOccurrence(),
+                                recordEx));
+                        return null;
+                    });
+        } catch (RuntimeException scheduleEx) {
+            logSampledError(LOG_EVENT_ACCEPT_UNKNOWN_ANOMALY_SCHEDULE_FAILED, decision -> log.error(
+                    "Redis接单状态未知异常登记调度失败 orgCode={}, outOrderSn={}, orderId={}, anomalyType={}, occurrence={}, sampled={}",
+                    command.orgCode(),
+                    command.outOrderSn(),
+                    command.orderId(),
+                    anomalyType,
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    scheduleEx));
+        }
+    }
+
+    private void recordAcceptStateUnknownAnomaly(
+            AcceptRechargeOrderCommand command,
+            AcceptAnomalyType anomalyType,
+            Throwable ex) {
+        AcceptAnomalyRecord record = new AcceptAnomalyRecord(
+                acceptAnomalyId(anomalyType, command),
+                anomalyType,
+                command.orgCode(),
+                command.outOrderSn(),
+                command.orderId(),
+                command.requestHash(),
+                "",
+                unknownAcceptContext(command, anomalyType, ex),
+                acceptUnknownFailReason(anomalyType, ex));
+        acceptAnomalyRecordPort.record(record);
+    }
+
+    private static String acceptAnomalyId(AcceptAnomalyType type, AcceptRechargeOrderCommand command) {
+        String prefix = "accept-" + type.name() + "-";
+        if (hasText(command.orderId())) {
+            return prefix + abbreviate(command.orderId(), MAX_ACCEPT_ANOMALY_ID_LENGTH - prefix.length());
+        }
+        /*
+         * 理论上 V1 下单在进入 Redis 前已生成 orderId；这里仍保留 request_hash 兜底，防止后续复用适配器的
+         * 入口在状态未知时拿不到平台订单号，多个异常退化成同一个 `unknown`。
+         */
+        return prefix + abbreviate("request-" + command.requestHash(), MAX_ACCEPT_ANOMALY_ID_LENGTH - prefix.length());
+    }
+
+    private static Map<String, Object> unknownAcceptContext(
+            AcceptRechargeOrderCommand command,
+            AcceptAnomalyType anomalyType,
+            Throwable ex) {
+        Throwable root = rootCause(ex);
+        Map<String, Object> context = new LinkedHashMap<>();
+        // 只放核查定位字段；账号、原始请求体、token、密钥等敏感信息不能进入 anomaly raw_context。
+        context.put("org_code", command.orgCode());
+        context.put("out_order_sn", command.outOrderSn());
+        context.put("order_id", command.orderId());
+        context.put("request_hash", command.requestHash());
+        context.put("anomaly_type", anomalyType.name());
+        context.put("failure_phase", "ACCEPT_LUA");
+        context.put("accept_status", "UNKNOWN");
+        context.put("order_written", null);
+        context.put("redis_write_closed", true);
+        context.put("exception_class", root.getClass().getName());
+        context.put("exception_message", truncate(root.getMessage(), MAX_ERROR_MESSAGE_LENGTH));
+        context.put("now_epoch_millis", command.nowEpochMillis());
+        return context;
+    }
+
+    private static String acceptUnknownFailReason(AcceptAnomalyType type, Throwable ex) {
+        String message = truncate(rootCause(ex).getMessage(), MAX_ERROR_MESSAGE_LENGTH);
+        String prefix = switch (type) {
+            case LUA_TIMEOUT -> "Redis Lua 执行超时，接单状态未知";
+            case REDIS_BUSY -> "Redis BUSY，接单状态未知";
+            case ACCEPT_STATE_UNKNOWN -> "Redis Lua 执行状态未知";
+            case WAIT_CANCEL_FAILED -> "Redis WAIT/cancel 状态未知";
+        };
+        return hasText(message) ? prefix + ": " + message : prefix;
+    }
+
+    private static Throwable rootCause(Throwable ex) {
+        Throwable current = ex;
+        while (current != null && current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current == null ? new IllegalStateException("unknown redis accept error") : current;
+    }
+
+    private static String abbreviate(String value, int maxLength) {
+        if (maxLength <= 0) {
+            return "";
+        }
+        if (value == null || value.length() <= maxLength) {
+            return value == null ? "" : value;
+        }
+        return value.substring(0, maxLength);
+    }
+
+    private static String truncate(String value, int maxLength) {
+        if (value == null || value.length() <= maxLength) {
+            return value == null ? "" : value;
+        }
+        return value.substring(0, maxLength);
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 
     private void releaseSession(String orderId) {

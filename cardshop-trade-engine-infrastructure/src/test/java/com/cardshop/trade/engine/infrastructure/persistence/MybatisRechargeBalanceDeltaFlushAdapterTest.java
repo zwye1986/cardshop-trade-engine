@@ -43,8 +43,9 @@ class MybatisRechargeBalanceDeltaFlushAdapterTest {
         assertThat(result.succeeded()).isEqualTo(1);
         assertThat(result.failed()).isZero();
         assertThat(result.skipped()).isZero();
-        assertThat(operations.selectCalls).containsExactly("4:1:20");
-        assertThat(operations.claimCalls).containsExactly("balance-flush-ORDER-1:0:worker-A:2026-07-08T12:32");
+        assertThat(operations.selectCalls).containsExactly("4:1:20:2026-07-08T12:30");
+        assertThat(operations.claimCalls)
+                .containsExactly("balance-flush-ORDER-1:0:worker-A:2026-07-08T12:32:2026-07-08T12:30");
         assertThat(operations.balanceCalls).containsExactly("A36:-5200");
         assertThat(operations.successCalls).containsExactly("balance-flush-ORDER-1:1");
     }
@@ -69,6 +70,72 @@ class MybatisRechargeBalanceDeltaFlushAdapterTest {
         assertThat(result.skipped()).isEqualTo(1);
         assertThat(operations.balanceCalls).isEmpty();
         assertThat(operations.successCalls).isEmpty();
+    }
+
+    @Test
+    void sendsExhaustedFailureToManualRequiredWithoutSchedulingAnotherRetry() {
+        RecordingBalanceFlushOperations operations = new RecordingBalanceFlushOperations();
+        operations.incrementResult = 0;
+        RechargeOutboxDO event = balanceEvent("balance-flush-ORDER-1", 3L, -5200L);
+        event.setRetryCount(9);
+        event.setMaxRetryCount(10);
+        operations.due.add(event);
+        MybatisRechargeBalanceDeltaFlushAdapter adapter = new MybatisRechargeBalanceDeltaFlushAdapter(
+                operations,
+                new ObjectMapper(),
+                CLOCK,
+                Duration.ofMinutes(2),
+                Duration.ofSeconds(30));
+
+        RechargeCompensationBatchResult result = adapter.flushDue(4, 1, 20, "worker-A");
+
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(operations.manualRequiredCalls)
+                .containsExactly("balance-flush-ORDER-1:4:true:mc_ext_depart balance row not found for orgCode=A36");
+        assertThat(operations.failedCalls).isEmpty();
+    }
+
+    @Test
+    void sendsAlreadyExhaustedFailedEventToManualRequiredWithoutClaimingAgain() {
+        RecordingBalanceFlushOperations operations = new RecordingBalanceFlushOperations();
+        RechargeOutboxDO event = balanceEvent("balance-flush-ORDER-1", 3L, -5200L);
+        event.setStatus(TaskStatus.FAILED.name());
+        event.setRetryCount(10);
+        event.setMaxRetryCount(10);
+        event.setLastError("payload damaged");
+        operations.due.add(event);
+        MybatisRechargeBalanceDeltaFlushAdapter adapter = new MybatisRechargeBalanceDeltaFlushAdapter(
+                operations,
+                new ObjectMapper(),
+                CLOCK,
+                Duration.ofMinutes(2),
+                Duration.ofSeconds(30));
+
+        RechargeCompensationBatchResult result = adapter.flushDue(4, 1, 20, "worker-A");
+
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(operations.claimCalls).isEmpty();
+        assertThat(operations.balanceCalls).isEmpty();
+        assertThat(operations.manualRequiredCalls)
+                .containsExactly("balance-flush-ORDER-1:3:false:balance delta flush retry exhausted: payload damaged");
+    }
+
+    @Test
+    void delegatesInjectedClockToOutboxSelectionAndClaimRecovery() {
+        RecordingBalanceFlushOperations operations = new RecordingBalanceFlushOperations();
+        operations.due.add(balanceEvent("balance-flush-ORDER-1", 0L, -5200L));
+        MybatisRechargeBalanceDeltaFlushAdapter adapter = new MybatisRechargeBalanceDeltaFlushAdapter(
+                operations,
+                new ObjectMapper(),
+                CLOCK,
+                Duration.ofMinutes(2),
+                Duration.ofSeconds(30));
+
+        adapter.flushDue(4, 1, 20, "worker-A");
+
+        assertThat(operations.selectCalls).containsExactly("4:1:20:2026-07-08T12:30");
+        assertThat(operations.claimCalls)
+                .containsExactly("balance-flush-ORDER-1:0:worker-A:2026-07-08T12:32:2026-07-08T12:30");
     }
 
     private static RechargeOutboxDO balanceEvent(String eventId, long version, long deltaAmount) {
@@ -97,24 +164,35 @@ class MybatisRechargeBalanceDeltaFlushAdapterTest {
         private final List<String> balanceCalls = new ArrayList<>();
         private final List<String> successCalls = new ArrayList<>();
         private final List<String> failedCalls = new ArrayList<>();
+        private final List<String> manualRequiredCalls = new ArrayList<>();
         private int claimResult = 1;
+        private int incrementResult = 1;
 
         @Override
-        public List<RechargeOutboxDO> selectDueBalanceFlush(int shardTotal, int shardIndex, int limit) {
-            selectCalls.add(shardTotal + ":" + shardIndex + ":" + limit);
+        public List<RechargeOutboxDO> selectDueBalanceFlush(
+                int shardTotal,
+                int shardIndex,
+                int limit,
+                LocalDateTime now) {
+            selectCalls.add(shardTotal + ":" + shardIndex + ":" + limit + ":" + now);
             return due;
         }
 
         @Override
-        public int claimProcessing(String eventId, long currentVersion, String workerId, LocalDateTime lockedUntil) {
-            claimCalls.add(eventId + ":" + currentVersion + ":" + workerId + ":" + lockedUntil);
+        public int claimProcessing(
+                String eventId,
+                long currentVersion,
+                String workerId,
+                LocalDateTime lockedUntil,
+                LocalDateTime now) {
+            claimCalls.add(eventId + ":" + currentVersion + ":" + workerId + ":" + lockedUntil + ":" + now);
             return claimResult;
         }
 
         @Override
         public int incrementBalance(String orgCode, long deltaAmount) {
             balanceCalls.add(orgCode + ":" + deltaAmount);
-            return 1;
+            return incrementResult;
         }
 
         @Override
@@ -131,6 +209,17 @@ class MybatisRechargeBalanceDeltaFlushAdapterTest {
                 LocalDateTime nextRetryTime,
                 LocalDateTime updatedAt) {
             failedCalls.add(eventId + ":" + currentVersion + ":" + errorMessage);
+            return 1;
+        }
+
+        @Override
+        public int markManualRequired(
+                String eventId,
+                long currentVersion,
+                String errorMessage,
+                LocalDateTime updatedAt,
+                boolean incrementRetryCount) {
+            manualRequiredCalls.add(eventId + ":" + currentVersion + ":" + incrementRetryCount + ":" + errorMessage);
             return 1;
         }
     }
