@@ -7,6 +7,7 @@
 - [交行直充业务系统详细设计](docs/交行直充业务系统详细设计.md)
 - [交行直充接口 Redis 与 MySQL 一致性及高可用设计实现方案](docs/交行直充业务系统高可用方案设计.md)
 - [交行直充业务系统开发时间表](docs/交行直充业务系统开发时间表.md)
+- [跨项目联调记忆](docs/跨项目联调记忆.md)
 - [贡献者指南](AGENTS.md)
 
 ## 技术栈
@@ -17,6 +18,10 @@
 - Redis Reactive，RabbitMQ，MyBatis，MySQL
 - Liquibase 4.29.2
 - JUnit 5，AssertJ，Spring Boot Test
+
+## 关联测试辅助前端
+
+dev/test 集成测试阶段同时维护独立前端项目 `/Users/mac/Documents/codeSpace/frontend/cardshop-trade-engine-test-console`。该前端用于发送 V1/Actuator 请求、生成 curl、聚合 Redis/RabbitMQ/MySQL 证据和导出执行记录 Markdown。两个项目不在同一个 Git 仓库中，但接口、观测指标、Redis pending 补投入口和集成测试用例变更需要同步维护，具体约束见 [跨项目联调记忆](docs/跨项目联调记忆.md)。
 
 ## 目标架构
 
