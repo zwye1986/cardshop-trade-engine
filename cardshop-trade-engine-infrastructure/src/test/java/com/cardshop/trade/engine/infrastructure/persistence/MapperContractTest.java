@@ -155,7 +155,10 @@ class MapperContractTest {
 
         assertThat(rootPom)
                 .contains("<mybatis-plus.version>3.5.4.1</mybatis-plus.version>")
+                .contains("<mybatis-spring.version>3.0.3</mybatis-spring.version>")
                 .contains("<artifactId>mybatis-plus-spring-boot3-starter</artifactId>")
+                .contains("<artifactId>mybatis-spring</artifactId>")
+                .contains("<version>${mybatis-spring.version}</version>")
                 .doesNotContain("<artifactId>mybatis-plus-core</artifactId>");
         assertThat(infrastructurePom)
                 .contains("<artifactId>mybatis-plus-spring-boot3-starter</artifactId>")

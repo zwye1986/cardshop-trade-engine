@@ -36,6 +36,7 @@
         <spring-cloud.version>2023.0.4</spring-cloud.version>
         <spring-cloud-alibaba.version>2023.0.1.2</spring-cloud-alibaba.version>
         <mybatis-plus.version>3.5.4.1</mybatis-plus.version>
+        <mybatis-spring.version>3.0.3</mybatis-spring.version>
         <liquibase.version>4.29.2</liquibase.version>
         <bouncycastle.version>1.70</bouncycastle.version>
     </properties>
@@ -60,6 +61,18 @@
                 <groupId>com.baomidou</groupId>
                 <artifactId>mybatis-plus-spring-boot3-starter</artifactId>
                 <version>${mybatis-plus.version}</version>
+            </dependency>
+            <!--
+                Spring Framework 6.1 会校验 FactoryBean.OBJECT_TYPE_ATTRIBUTE 的类型。
+                mybatis-spring 3.0.2 在 Mapper 扫描时写入 String，dev/test 启动会在
+                DatabaseInitializationDependencyConfigurer 阶段失败；3.0.3 改为写入 Class。
+                参见 docs/交行直充业务系统详细设计.md「20.13.8 异步落库 Consumer」中
+                Mapper 自动扫描与真实 dev/test/prod 启动 fail-fast 的约束。
+            -->
+            <dependency>
+                <groupId>org.mybatis</groupId>
+                <artifactId>mybatis-spring</artifactId>
+                <version>${mybatis-spring.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.bouncycastle</groupId>
