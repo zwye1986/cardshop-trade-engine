@@ -15,5 +15,7 @@ trade:
       write-enabled: true
     fault-injection:
       enabled: true
+    integration:
+      manual-job-enabled: false
     mq:
       publish-confirm-timeout-ms: 500

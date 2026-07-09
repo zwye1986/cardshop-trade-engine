@@ -41,3 +41,5 @@ trade:
       publish-confirm-timeout-ms: 1000
     fault-injection:
       enabled: false
+    integration:
+      manual-job-enabled: false

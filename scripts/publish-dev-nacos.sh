@@ -183,6 +183,8 @@ trade:
       publish-confirm-timeout-ms: 1000
     fault-injection:
       enabled: false
+    integration:
+      manual-job-enabled: false
 YAML
 
 printf 'Publishing Nacos config dataId=%s namespace=%s group=%s server=%s\n' \
