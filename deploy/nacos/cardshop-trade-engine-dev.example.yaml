@@ -43,3 +43,4 @@ trade:
       enabled: false
     integration:
       manual-job-enabled: false
+      manual-job-timeout-ms: 30000

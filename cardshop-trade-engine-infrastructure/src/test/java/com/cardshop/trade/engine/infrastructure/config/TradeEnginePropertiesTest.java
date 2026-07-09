@@ -48,6 +48,7 @@ class TradeEnginePropertiesTest {
             assertThat(properties.getBalance().getOwnerMode()).isEqualTo("NEW");
             assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(16);
             assertThat(properties.getThreadPool().getDbMaxSize()).isEqualTo(32);
+            assertThat(properties.getIntegration().getManualJobTimeoutMs()).isEqualTo(30000);
         });
     }
 
@@ -70,7 +71,8 @@ class TradeEnginePropertiesTest {
                         "trade.engine.routing.supported-paths[0]=/v1/cardapi/order/getRechargeOrder",
                         "trade.engine.v1.crypto.key-rotation-previous-enabled=false",
                         "trade.engine.thread-pool.db-core-size=4",
-                        "trade.engine.thread-pool.db-max-size=8")
+                        "trade.engine.thread-pool.db-max-size=8",
+                        "trade.engine.integration.manual-job-timeout-ms=12345")
                 .run(context -> {
                     var properties = context.getBean(TradeEngineProperties.class);
 
@@ -92,6 +94,7 @@ class TradeEnginePropertiesTest {
                     assertThat(properties.getV1().getCrypto().isKeyRotationPreviousEnabled()).isFalse();
                     assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(4);
                     assertThat(properties.getThreadPool().getDbMaxSize()).isEqualTo(8);
+                    assertThat(properties.getIntegration().getManualJobTimeoutMs()).isEqualTo(12345);
                 });
     }
 

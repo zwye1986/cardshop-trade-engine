@@ -59,6 +59,11 @@ if [[ -z "${LOG_DIR:-}" ]]; then
 fi
 PID_FILE="$PID_DIR/$APP_NAME-$APP_PROFILE.pid"
 STDOUT_LOG="$LOG_DIR/$APP_NAME-$APP_PROFILE.out"
+# stdout 兜底文件轮转守护的 PID 文件
+ROTATE_PID_FILE="$PID_DIR/$APP_NAME-$APP_PROFILE.rotate.pid"
+# stdout 兜底文件轮转参数：与 logback 主日志策略对齐（按天 + 200MB，保留 90 天）
+STDOUT_MAX_BYTES=$((200 * 1024 * 1024))
+STDOUT_RETENTION_DAYS=90
 
 detect_java_home() {
   local candidates=()
@@ -150,6 +155,81 @@ check_port_free() {
   fi
 }
 
+# 跨平台获取文件字节数：macOS stat 用 -f%z，Linux stat 用 -c%s
+file_size_bytes() {
+  local f="$1"
+  if stat -f%z "$f" >/dev/null 2>&1; then
+    stat -f%z "$f"
+  else
+    stat -c%s "$f" 2>/dev/null || printf '0'
+  fi
+}
+
+# 计算某天归档的下一个序号，避免同名覆盖
+next_archive_seq() {
+  local stem="$1"
+  local seq=0
+  while [[ -e "${stem}.${seq}.log" ]]; do
+    seq=$((seq + 1))
+  done
+  printf '%s\n' "$seq"
+}
+
+# stdout 兜底文件轮转守护。参数：应用 PID、stdout 文件、日志目录、单文件上限字节、保留天数。
+# 按「跨天 + 单文件达到上限」双触发 copytruncate 轮转，归档保留指定天数。
+# 仅作用于 start.sh 重定向的 .out（JVM 原生输出兜底），与 logback 管控的业务日志相互独立。
+# 截断瞬间极少日志可能重复或丢失，作为兜底文件可接受。
+stdout_rotate_loop() {
+  trap '' HUP  # 忽略终端挂断，等价 nohup，使守护在 start.sh 退出后继续运行
+  local app_pid="$1"
+  local stdout_log="$2"
+  local log_dir="$3"
+  local max_bytes="$4"
+  local retention_days="$5"
+  local last_day
+  last_day="$(date +%Y-%m-%d)"
+  while kill -0 "$app_pid" >/dev/null 2>&1; do
+    sleep 60
+    kill -0 "$app_pid" >/dev/null 2>&1 || break
+    [[ -f "$stdout_log" ]] || continue
+    local size today need_roll
+    size="$(file_size_bytes "$stdout_log")"
+    today="$(date +%Y-%m-%d)"
+    need_roll=0
+    if (( size >= max_bytes )); then
+      need_roll=1
+    elif [[ "$today" != "$last_day" ]]; then
+      need_roll=1
+    fi
+    if (( need_roll )); then
+      local stem archive seq
+      stem="$stdout_log.$today"
+      seq="$(next_archive_seq "$stem")"
+      archive="${stem}.${seq}.log"
+      # copytruncate：拷贝当前内容到归档，再截断原文件，使 nohup 进程
+      # 继续写入同一 fd（O_APPEND），无需重启
+      if cp -p "$stdout_log" "$archive" 2>/dev/null; then
+        : > "$stdout_log"
+        last_day="$today"
+      fi
+    fi
+    # 清理超期归档（按 mtime），与 logback maxHistory 对齐
+    find "$log_dir" -type f -name "$(basename "$stdout_log").*.log" -mtime +"$retention_days" -delete 2>/dev/null
+  done
+}
+
+# 停止 stdout 轮转守护并清理其 PID 文件
+stop_stdout_rotate() {
+  if [[ -f "$ROTATE_PID_FILE" ]]; then
+    local rpid
+    rpid="$(cat "$ROTATE_PID_FILE")"
+    if [[ -n "$rpid" ]] && kill -0 "$rpid" >/dev/null 2>&1; then
+      kill "$rpid" 2>/dev/null || true
+    fi
+    rm -f "$ROTATE_PID_FILE"
+  fi
+}
+
 start_app() {
   is_running && fail "$APP_NAME profile=$APP_PROFILE is already running. pid=$(cat "$PID_FILE")"
 
@@ -171,19 +251,29 @@ start_app() {
   export NACOS_SERVER_ADDR NACOS_USERNAME NACOS_PASSWORD NACOS_NAMESPACE NACOS_GROUP
   export SPRING_RABBITMQ_HOST SPRING_RABBITMQ_PORT SPRING_RABBITMQ_USERNAME SPRING_RABBITMQ_PASSWORD SPRING_RABBITMQ_VIRTUAL_HOST
   export LEGACY_CARD_SHOP_BASE_URL V1_CARDAPI_JWT_SECRET
+  # 导出 LOG_DIR，使 application.yml 的 logging.file.path:${LOG_DIR:./logs}
+  # 能取到部署脚本约定的日志目录，并注入为 logback 的 LOG_PATH 系统属性
+  export LOG_DIR
 
   nohup "$JAVA_HOME/bin/java" ${JAVA_OPTS:-} -jar "$jar" >>"$STDOUT_LOG" 2>&1 &
-
-  echo $! > "$PID_FILE"
+  local app_pid=$!
+  echo "$app_pid" > "$PID_FILE"
   sleep 2
   is_running || fail "Startup failed. Check log: $STDOUT_LOG"
-  printf 'Started %s profile=%s pid=%s log=%s\n' "$APP_NAME" "$APP_PROFILE" "$(cat "$PID_FILE")" "$STDOUT_LOG"
+
+  # 启动 stdout 兜底文件轮转守护：按天 + 200MB copytruncate 轮转，归档保留 90 天。
+  # 后台子 shell 继承本脚本的函数与变量；函数内 trap '' HUP 忽略终端挂断，
+  # 等价 nohup，start.sh 退出后由 init 接管继续运行，随应用进程退出而自退。
+  stdout_rotate_loop "$app_pid" "$STDOUT_LOG" "$LOG_DIR" "$STDOUT_MAX_BYTES" "$STDOUT_RETENTION_DAYS" &
+  echo $! > "$ROTATE_PID_FILE"
+
+  printf 'Started %s profile=%s pid=%s log=%s\n' "$APP_NAME" "$APP_PROFILE" "$app_pid" "$STDOUT_LOG"
 }
 
 stop_app() {
   if ! is_running; then
     printf '%s profile=%s is not running.\n' "$APP_NAME" "$APP_PROFILE"
-    rm -f "$PID_FILE"
+    rm -f "$PID_FILE" "$ROTATE_PID_FILE"
     return 0
   fi
 
@@ -196,6 +286,7 @@ stop_app() {
     if ! kill -0 "$pid" >/dev/null 2>&1; then
       rm -f "$PID_FILE"
       printf 'Stopped %s profile=%s\n' "$APP_NAME" "$APP_PROFILE"
+      stop_stdout_rotate
       return 0
     fi
     sleep 1

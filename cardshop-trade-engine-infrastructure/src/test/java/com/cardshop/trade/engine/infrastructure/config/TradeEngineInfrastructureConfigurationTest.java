@@ -164,8 +164,24 @@ class TradeEngineInfrastructureConfigurationTest {
     }
 
     @Test
-    void createsPersistOrderSnapshotPortWhenRedisTemplateExists() {
+    void leavesPersistOrderSnapshotPortToRedisPendingAutoConfigurationWhenRedisTemplateExists() {
         contextRunner
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
+                .run(context -> assertThat(context).doesNotHaveBean(PersistOrderSnapshotPort.class));
+    }
+
+    @Test
+    void leavesPendingPersistOrderPortToRedisPendingAutoConfigurationWhenRedisTemplateExists() {
+        contextRunner
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
+                .run(context -> assertThat(context).doesNotHaveBean(PendingPersistOrderPort.class));
+    }
+
+    @Test
+    void redisPendingAutoConfigurationCreatesPersistOrderSnapshotPortWhenRedisTemplateExists() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(TradeEngineInfrastructureConfiguration.class)
+                .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
                 .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
                 .run(context -> {
                     assertThat(context).hasSingleBean(PersistOrderSnapshotPort.class);
@@ -175,8 +191,10 @@ class TradeEngineInfrastructureConfigurationTest {
     }
 
     @Test
-    void createsPendingPersistOrderPortWhenRedisTemplateExists() {
-        contextRunner
+    void redisPendingAutoConfigurationCreatesPendingPersistOrderPortWhenRedisTemplateExists() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(TradeEngineInfrastructureConfiguration.class)
+                .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
                 .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
                 .run(context -> {
                     assertThat(context).hasSingleBean(PendingPersistOrderPort.class);

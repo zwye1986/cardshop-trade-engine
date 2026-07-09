@@ -12,13 +12,17 @@ import com.cardshop.trade.engine.application.recharge.RechargeCompensationBatchR
 import com.cardshop.trade.engine.application.recharge.RechargePersistMqRepublishService;
 import com.cardshop.trade.engine.bootstrap.config.TradeEngineCompensationJobAutoConfiguration;
 import com.cardshop.trade.engine.bootstrap.config.TradeEngineReliabilityConfiguration;
+import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
@@ -39,19 +43,28 @@ class ManualRechargeJobControllerTest {
     @Test
     void registersOnlyWhenDevOrTestProfileAndManualSwitchEnabled() {
         new ApplicationContextRunner()
-                .withUserConfiguration(ManualJobTestConfiguration.class, ManualRechargeJobController.class)
+                .withUserConfiguration(
+                        ManualJobPropertiesConfiguration.class,
+                        ManualJobTestConfiguration.class,
+                        ManualRechargeJobController.class)
                 .withPropertyValues(
                         "spring.profiles.active=dev",
                         "trade.engine.integration.manual-job-enabled=true")
                 .run(context -> assertThat(context).hasSingleBean(ManualRechargeJobController.class));
 
         new ApplicationContextRunner()
-                .withUserConfiguration(ManualJobTestConfiguration.class, ManualRechargeJobController.class)
+                .withUserConfiguration(
+                        ManualJobPropertiesConfiguration.class,
+                        ManualJobTestConfiguration.class,
+                        ManualRechargeJobController.class)
                 .withPropertyValues("spring.profiles.active=test")
                 .run(context -> assertThat(context).doesNotHaveBean(ManualRechargeJobController.class));
 
         new ApplicationContextRunner()
-                .withUserConfiguration(ManualJobTestConfiguration.class, ManualRechargeJobController.class)
+                .withUserConfiguration(
+                        ManualJobPropertiesConfiguration.class,
+                        ManualJobTestConfiguration.class,
+                        ManualRechargeJobController.class)
                 .withPropertyValues(
                         "spring.profiles.active=prod",
                         "trade.engine.integration.manual-job-enabled=true")
@@ -62,6 +75,7 @@ class ManualRechargeJobControllerTest {
     void registersWithRepublishJobWhenPublisherComesFromLaterAutoConfiguration() {
         new ApplicationContextRunner()
                 .withUserConfiguration(TradeEngineReliabilityConfiguration.class, ManualRechargeJobController.class)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
                 .withConfiguration(AutoConfigurations.of(
                         LaterRepublishDependencyAutoConfiguration.class,
                         TradeEngineCompensationJobAutoConfiguration.class))
@@ -83,6 +97,7 @@ class ManualRechargeJobControllerTest {
                         TradeEngineReliabilityConfiguration.class,
                         EarlyPublisherConfiguration.class,
                         ManualRechargeJobController.class)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
                 .withConfiguration(AutoConfigurations.of(
                         LaterRedisPendingPortAutoConfiguration.class,
                         TradeEngineCompensationJobAutoConfiguration.class))
@@ -137,6 +152,57 @@ class ManualRechargeJobControllerTest {
     }
 
     @Test
+    void returnsFailedResponseWhenJobThrowsAfterValidation() {
+        ManualRechargeJobController controller = controller(new FailingPendingPort("redis connection interrupted"));
+        var request = new ManualRechargeJobController.ManualJobRunRequest(1, 0, 10, "test188-manual-1");
+
+        var response = controller.runPersistMqRepublishOnce(request, exchange("127.0.0.1")).block();
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().status()).isEqualTo("FAILED");
+        assertThat(response.getBody().parameters()).isEqualTo(
+                new ManualRechargeJobController.ManualJobParameters(1, 0, 10, "test188-manual-1"));
+        assertThat(response.getBody().message()).contains("redis connection interrupted");
+    }
+
+    @Test
+    void returnsFailedResponseWhenJobTimesOutWithoutTreatingTimeoutAsThreadInterruption() throws Exception {
+        BlockingPendingPort pendingPort = new BlockingPendingPort();
+        ManualRechargeJobController controller = controller(pendingPort, Duration.ofMillis(50));
+        var request = new ManualRechargeJobController.ManualJobRunRequest(1, 0, 10, "test188-manual-timeout");
+
+        try {
+            var response = controller.runPersistMqRepublishOnce(request, exchange("127.0.0.1")).block(Duration.ofSeconds(2));
+
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.GATEWAY_TIMEOUT);
+            assertThat(response.getBody()).isNotNull();
+            assertThat(response.getBody().status()).isEqualTo("FAILED");
+            assertThat(response.getBody().parameters()).isEqualTo(
+                    new ManualRechargeJobController.ManualJobParameters(1, 0, 10, "test188-manual-timeout"));
+            assertThat(response.getBody().message()).contains("timed out");
+            assertThat(pendingPort.awaitStarted()).isTrue();
+            assertThat(pendingPort.isReleased()).isFalse();
+        } finally {
+            pendingPort.release();
+        }
+    }
+
+    @Test
+    void fallsBackToDefaultTimeoutWhenConfiguredTimeoutIsNonPositive() {
+        TradeEngineProperties properties = new TradeEngineProperties();
+        properties.getIntegration().setManualJobTimeoutMs(0);
+        ManualRechargeJobController controller = controller(new DelayedPendingPort(Duration.ofMillis(25)), properties);
+        var request = new ManualRechargeJobController.ManualJobRunRequest(1, 0, 10, "test188-manual-default-timeout");
+
+        var response = controller.runPersistMqRepublishOnce(request, exchange("127.0.0.1")).block(Duration.ofSeconds(2));
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().status()).isEqualTo("OK");
+    }
+
+    @Test
     void rejectsNonLoopbackRequestBeforeJobRuns() {
         RecordingPendingPort pendingPort = new RecordingPendingPort(List.of(pendingSnapshot("ORDER-1")));
         ManualRechargeJobController controller = controller(pendingPort);
@@ -177,8 +243,23 @@ class ManualRechargeJobControllerTest {
     }
 
     private static ManualRechargeJobController controller(RecordingPendingPort pendingPort) {
+        return controller(pendingPort, Duration.ofSeconds(30));
+    }
+
+    private static ManualRechargeJobController controller(PendingPersistOrderPort pendingPort) {
+        return controller(pendingPort, Duration.ofSeconds(30));
+    }
+
+    private static ManualRechargeJobController controller(PendingPersistOrderPort pendingPort, Duration timeout) {
         var service = new RechargePersistMqRepublishService(pendingPort, new AlwaysConfirmedPublisher());
-        return new ManualRechargeJobController(new RechargePersistMqRepublishJob(service));
+        return new ManualRechargeJobController(new RechargePersistMqRepublishJob(service), timeout);
+    }
+
+    private static ManualRechargeJobController controller(
+            PendingPersistOrderPort pendingPort,
+            TradeEngineProperties properties) {
+        var service = new RechargePersistMqRepublishService(pendingPort, new AlwaysConfirmedPublisher());
+        return new ManualRechargeJobController(new RechargePersistMqRepublishJob(service), properties);
     }
 
     private static MockServerWebExchange exchange(String host) {
@@ -227,6 +308,126 @@ class ManualRechargeJobControllerTest {
                 PersistMessagePublishResult result,
                 String workerId) {
             markedRepublished.add(snapshot.orderId());
+        }
+
+        @Override
+        public void markRepublishFailed(PendingPersistOrderSnapshot snapshot, String reason, String workerId) {
+        }
+    }
+
+    private static final class FailingPendingPort implements PendingPersistOrderPort {
+
+        private final String message;
+
+        private FailingPendingPort(String message) {
+            this.message = message;
+        }
+
+        @Override
+        public List<PendingPersistOrderSnapshot> selectDueForShard(
+                int shardTotal,
+                int shardIndex,
+                int limit,
+                String workerId) {
+            throw new IllegalStateException(message);
+        }
+
+        @Override
+        public void markRepublished(
+                PendingPersistOrderSnapshot snapshot,
+                PersistMessagePublishResult result,
+                String workerId) {
+        }
+
+        @Override
+        public void markRepublishFailed(PendingPersistOrderSnapshot snapshot, String reason, String workerId) {
+        }
+    }
+
+    private static final class BlockingPendingPort implements PendingPersistOrderPort {
+
+        private final CountDownLatch started = new CountDownLatch(1);
+        private final CountDownLatch release = new CountDownLatch(1);
+        private volatile boolean released;
+
+        @Override
+        public List<PendingPersistOrderSnapshot> selectDueForShard(
+                int shardTotal,
+                int shardIndex,
+                int limit,
+                String workerId) {
+            started.countDown();
+            boolean interrupted = false;
+            try {
+                while (true) {
+                    try {
+                        if (release.await(100, TimeUnit.MILLISECONDS)) {
+                            released = true;
+                            return List.of();
+                        }
+                    } catch (InterruptedException ex) {
+                        interrupted = true;
+                    }
+                }
+            } finally {
+                if (interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        }
+
+        @Override
+        public void markRepublished(
+                PendingPersistOrderSnapshot snapshot,
+                PersistMessagePublishResult result,
+                String workerId) {
+        }
+
+        @Override
+        public void markRepublishFailed(PendingPersistOrderSnapshot snapshot, String reason, String workerId) {
+        }
+
+        private boolean awaitStarted() throws InterruptedException {
+            return started.await(1, TimeUnit.SECONDS);
+        }
+
+        private void release() {
+            release.countDown();
+        }
+
+        private boolean isReleased() {
+            return released;
+        }
+    }
+
+    private static final class DelayedPendingPort implements PendingPersistOrderPort {
+
+        private final Duration delay;
+
+        private DelayedPendingPort(Duration delay) {
+            this.delay = delay;
+        }
+
+        @Override
+        public List<PendingPersistOrderSnapshot> selectDueForShard(
+                int shardTotal,
+                int shardIndex,
+                int limit,
+                String workerId) {
+            try {
+                Thread.sleep(delay.toMillis());
+                return List.of();
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("delayed pending scan interrupted", ex);
+            }
+        }
+
+        @Override
+        public void markRepublished(
+                PendingPersistOrderSnapshot snapshot,
+                PersistMessagePublishResult result,
+                String workerId) {
         }
 
         @Override
@@ -287,6 +488,14 @@ class ManualRechargeJobControllerTest {
                     new RechargePersistMqRepublishService(
                             PendingPersistOrderPort.noop(),
                             new AlwaysConfirmedPublisher()));
+        }
+    }
+
+    static class ManualJobPropertiesConfiguration {
+
+        @Bean
+        TradeEngineProperties tradeEngineProperties() {
+            return new TradeEngineProperties();
         }
     }
 }

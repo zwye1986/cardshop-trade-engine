@@ -1,6 +1,14 @@
 server:
   port: ${SERVER_PORT:10080}
 
+# 日志目录桥接：start.sh / dev-local.sh 会 export LOG_DIR（默认 $APP_HOME/logs）。
+# Spring 据此设置系统属性 LOG_PATH，供 logback-spring.xml 的 ${LOG_PATH} 引用；
+# LOG_DIR 未设置时回落到 ./logs，适配本地未走部署脚本的场景。
+# 详见 cardshop-trade-engine-bootstrap/src/main/resources/logback-spring.xml。
+logging:
+  file:
+    path: ${LOG_DIR:./logs}
+
 spring:
   main:
     web-application-type: reactive
@@ -79,6 +87,8 @@ trade:
       request-hash-alg: SHA-256
       config-changed-retry-min-ms: 500
       config-changed-retry-max-ms: 2000
+    integration:
+      manual-job-timeout-ms: 30000
     routing:
       enabled: true
       legacy-base-url: ${LEGACY_CARD_SHOP_BASE_URL:}

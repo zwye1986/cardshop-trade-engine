@@ -14,10 +14,8 @@ import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
 import com.cardshop.trade.engine.application.recharge.MerchantNotifyClientPort;
 import com.cardshop.trade.engine.application.recharge.MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.recharge.PersistMessagePublishResult;
-import com.cardshop.trade.engine.application.recharge.PendingPersistOrderPort;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
-import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
@@ -70,8 +68,6 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrder
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.LettuceRechargeRedisSessionFactory;
 import com.cardshop.trade.engine.infrastructure.redis.InMemoryRedisHaGuard;
-import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
-import com.cardshop.trade.engine.infrastructure.redis.RedisPendingPersistOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
@@ -425,49 +421,6 @@ public class TradeEngineInfrastructureConfiguration {
         return new FallbackRechargeOrderQueryAdapter(
                 redisQueryPort,
                 new MybatisRechargeOrderQueryAdapter(orderMapper, extMapper));
-    }
-
-    /**
-     * 装配 Persist Consumer 使用的 Redis 完整订单快照端口。
-     *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。该端口读取完整
-     * Redis hash，不复用查单端口，避免查单 DTO 字段不足导致 MySQL 兜底落库信息缺失。
-     */
-    @Bean
-    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
-    @ConditionalOnMissingBean(PersistOrderSnapshotPort.class)
-    public PersistOrderSnapshotPort persistOrderSnapshotPort(
-            ReactiveStringRedisTemplate redisTemplate,
-            RechargeRedisKeyBuilder keyBuilder,
-            TradeEngineProperties properties) {
-        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
-        return new RedisPersistOrderSnapshotAdapter(
-                redisTemplate,
-                keyBuilder,
-                java.time.Duration.ofMillis(timeoutMs));
-    }
-
-    /**
-     * 装配 D11/D12 Redis pending MQ 补投端口。
-     *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」。该端口只在
-     * Redis 客户端存在时启用；local profile 或局部装配测试没有 Redis 时，由 bootstrap 层的 noop 端口兜底。
-     */
-    @Bean
-    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
-    @ConditionalOnMissingBean(PendingPersistOrderPort.class)
-    public PendingPersistOrderPort pendingPersistOrderPort(
-            ReactiveStringRedisTemplate redisTemplate,
-            RechargeRedisKeyBuilder keyBuilder,
-            TradeEngineProperties properties,
-            ObjectProvider<PersistedOrderStatePort> persistedOrderStatePortProvider,
-            Clock clock) {
-        return new RedisPendingPersistOrderAdapter(
-                redisTemplate,
-                keyBuilder,
-                properties,
-                persistedOrderStatePortProvider.getIfAvailable(PersistedOrderStatePort::noop),
-                clock);
     }
 
     @Bean

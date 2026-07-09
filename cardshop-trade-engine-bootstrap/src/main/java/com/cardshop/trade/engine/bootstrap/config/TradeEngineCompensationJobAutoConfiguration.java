@@ -25,7 +25,10 @@ import org.springframework.context.annotation.Bean;
  * 它不注册 {@link PendingPersistOrderPort#noop()} 为 Bean，而是在构造 service 时按需降级，避免 noop 端口抢占
  * Redis 真实端口；同时仍要求 MQ publisher Bean 存在，确保没有发布端口时不会创建看似可用的补投任务。
  */
-@AutoConfiguration(afterName = "com.cardshop.trade.engine.infrastructure.config.TradeEngineInfrastructureConfiguration")
+@AutoConfiguration(afterName = {
+        "com.cardshop.trade.engine.infrastructure.config.TradeEngineRedisPendingAutoConfiguration",
+        "com.cardshop.trade.engine.infrastructure.config.TradeEngineMybatisPersistenceAutoConfiguration"
+})
 public class TradeEngineCompensationJobAutoConfiguration {
 
     /**

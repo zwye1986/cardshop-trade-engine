@@ -88,7 +88,18 @@ is not JDK 21, set `CARD_SHOP_TRADE_JAVA_HOME` in `config/.<profile>.env`.
 ./bin/start.sh restart dev
 ```
 
-Logs are written to `logs/cardshop-trade-engine-<profile>.out` by default.
+Logs are written under `logs/` (override with `LOG_DIR` in `config/.<profile>.env`):
+
+- `logs/cardshop-trade-engine.log` — primary business log, managed by logback.
+  Rolls over by day and when a single file reaches 200MB; archives keep 90 days
+  (named `cardshop-trade-engine.<YYYY-MM-dd>.<seq>.log`).
+- `logs/cardshop-trade-engine-<profile>.out` — JVM native output fallback
+  (banner, uncaught stacks, JVM diagnostics). The start script runs a background
+  rotation daemon that applies the same 200MB + daily copytruncate rollover and
+  keeps archives for 90 days.
+
+The primary log is authoritative for application logging; `.out` is a safety net
+and is normally small in `test`/`prod` (no console appender).
 
 Health endpoints:
 

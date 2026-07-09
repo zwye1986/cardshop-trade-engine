@@ -81,6 +81,11 @@ public class TradeEngineProperties {
      */
     private final Health health = new Health();
 
+    /**
+     * dev/test 集成联调入口配置；参见详细设计「20.11 XXL-Job Handler 契约」。
+     */
+    private final Integration integration = new Integration();
+
     public String getEnvironment() {
         return environment;
     }
@@ -135,6 +140,10 @@ public class TradeEngineProperties {
 
     public Health getHealth() {
         return health;
+    }
+
+    public Integration getIntegration() {
+        return integration;
     }
 
     /**
@@ -1201,6 +1210,29 @@ public class TradeEngineProperties {
 
         public void setExternalCheckEnabled(boolean externalCheckEnabled) {
             this.externalCheckEnabled = externalCheckEnabled;
+        }
+    }
+
+    /**
+     * 集成测试专用开关和保护阈值。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
+     * {@code docs/集成测试方案.md}「8.5 Redis pending 补投联调设计」。这些配置只服务 dev/test 联调入口，
+     * 生产环境默认不开启人工入口。
+     */
+    public static class Integration {
+
+        /**
+         * 人工触发 Redis pending 补投任务的 HTTP 响应超时，单位毫秒。
+         */
+        private int manualJobTimeoutMs = 30000;
+
+        public int getManualJobTimeoutMs() {
+            return manualJobTimeoutMs;
+        }
+
+        public void setManualJobTimeoutMs(int manualJobTimeoutMs) {
+            this.manualJobTimeoutMs = manualJobTimeoutMs;
         }
     }
 }

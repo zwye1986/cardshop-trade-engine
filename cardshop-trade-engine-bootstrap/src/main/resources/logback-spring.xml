@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    日志轮转配置：按天 + 单文件 200MB 双重触发轮转，归档保留 90 天。
+    设计要点：
+      - 活动文件与归档均落在 ${LOG_PATH}，该属性由 application.yml 的
+        logging.file.path: ${LOG_DIR:./logs} 经 Spring 注入为系统属性 LOG_PATH。
+        start.sh 会 export LOG_DIR（默认 $APP_HOME/logs），从而把 logback
+        日志目录与部署脚本约定的 LOG_DIR 统一。
+      - SizeAndTimeBasedRollingPolicy 仅支持 maxFileSize/maxHistory/totalSizeCap/
+        cleanHistoryOnStart；logback 无「归档文件个数上限」属性。本配置按需求
+        不设 totalSizeCap，仅用 maxHistory=90（天）控制保留窗口；高流量日
+        当天可能产生多个 200MB 归档（序号 %i 递增），盘量由 90 天窗口收敛。
+      - local/dev 同时输出到控制台与文件，便于本地/联调观察；test/prod 仅写
+        文件，避免 stdout 重复落盘，.out 仅作为 JVM 原生输出兜底（由 start.sh
+        做 copytruncate 风格的等价轮转）。
+-->
+<configuration>
+    <!-- 复用 Spring Boot 默认控制台/文件 appender 约定与 conversionRule -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- 日志目录：优先取 Spring 注入的 LOG_PATH，未注入时回落到 ./logs -->
+    <property name="LOG_PATH" value="${LOG_PATH:-./logs}"/>
+    <!-- 活动日志文件名 -->
+    <property name="LOG_FILE_NAME" value="cardshop-trade-engine"/>
+    <!-- 单文件大小上限：200MB -->
+    <property name="MAX_FILE_SIZE" value="200MB"/>
+    <!-- 归档保留天数：90 天 -->
+    <property name="MAX_HISTORY" value="90"/>
+
+    <!-- 控制台输出（UTF-8），仅 local/dev 使用 -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- 滚动文件输出：按天 + 200MB 双触发轮转，保留 90 天 -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_PATH}/${LOG_FILE_NAME}.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <!-- 归档命名：日期 + 当日序号，便于按天检索与大文件分片定位 -->
+            <fileNamePattern>${LOG_PATH}/${LOG_FILE_NAME}.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <!-- 单文件达到 200MB 立即滚动，不等到跨天 -->
+            <maxFileSize>${MAX_FILE_SIZE}</maxFileSize>
+            <!-- 归档保留 90 天，超过则异步删除最老归档 -->
+            <maxHistory>${MAX_HISTORY}</maxHistory>
+            <!-- 应用启动时即清理超期归档，避免停机期间残留堆积 -->
+            <cleanHistoryOnStart>true</cleanHistoryOnStart>
+            <!-- 按需求不设 totalSizeCap：仅以天数窗口控制归档总量 -->
+        </rollingPolicy>
+        <encoder>
+            <pattern>${FILE_LOG_PATTERN}</pattern>
+            <charset>UTF-8</charset>
+        </encoder>
+    </appender>
+
+    <!-- 默认 root：仅写文件。保证任意 profile（含未预期的）都不会静默丢日志，
+         且 test/prod 不会向 stdout 重复输出，.out 仅作 JVM 原生输出兜底。 -->
+    <root level="INFO">
+        <appender-ref ref="FILE"/>
+    </root>
+
+    <!-- local/dev：在默认 FILE 之外追加控制台输出，便于本地/联调观察。
+         logback 中后定义的 <root> 会重置 root logger 的 appender 列表，
+         因此此处显式同时声明 CONSOLE 与 FILE，避免丢失文件输出。 -->
+    <springProfile name="local,dev">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="FILE"/>
+        </root>
+    </springProfile>
+
+</configuration>

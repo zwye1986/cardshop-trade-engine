@@ -1,12 +1,18 @@
 package com.cardshop.trade.engine.bootstrap.admin;
 
 import com.cardshop.trade.engine.application.recharge.RechargeCompensationBatchResult;
+import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Objects;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Profile;
 import org.springframework.http.HttpStatus;
@@ -37,16 +43,31 @@ import reactor.core.scheduler.Schedulers;
 @RequestMapping("/internal/integration/recharge/jobs")
 public class ManualRechargeJobController {
 
+    private static final Logger log = LoggerFactory.getLogger(ManualRechargeJobController.class);
+    private static final Duration DEFAULT_MANUAL_JOB_TIMEOUT = Duration.ofSeconds(30);
     private static final int MAX_MANUAL_SHARD_TOTAL = 128;
     private static final int MAX_MANUAL_LIMIT = 100;
     private static final Pattern WORKER_ID_PATTERN = Pattern.compile("[A-Za-z0-9._:-]{1,80}");
 
     private final RechargePersistMqRepublishJob persistMqRepublishJob;
+    private final Duration manualJobTimeout;
 
-    public ManualRechargeJobController(RechargePersistMqRepublishJob persistMqRepublishJob) {
+    @Autowired
+    public ManualRechargeJobController(
+            RechargePersistMqRepublishJob persistMqRepublishJob,
+            TradeEngineProperties properties) {
+        this(
+                persistMqRepublishJob,
+                Duration.ofMillis(Objects.requireNonNull(properties, "properties must not be null")
+                        .getIntegration()
+                        .getManualJobTimeoutMs()));
+    }
+
+    ManualRechargeJobController(RechargePersistMqRepublishJob persistMqRepublishJob, Duration manualJobTimeout) {
         this.persistMqRepublishJob = Objects.requireNonNull(
                 persistMqRepublishJob,
                 "persistMqRepublishJob must not be null");
+        this.manualJobTimeout = normalizeTimeout(manualJobTimeout);
     }
 
     @PostMapping("/persist-mq-republish/run-once")
@@ -68,6 +89,11 @@ public class ManualRechargeJobController {
          * Reactive Redis 命令做短超时 block，以复用 XXL-Job 的同步 runOnce 契约。参见详细设计「20.11
          * XXL-Job Handler 契约」。人工 HTTP 入口必须把这段同步补偿任务切到 boundedElastic，否则 test188
          * 会在 event-loop 线程上触发 Reactor 的 blocking guard，表现为每个 org_index bucket 扫描失败。
+         *
+         * 这里的 Reactor timeout 只保护 HTTP 响应链路：超时后会向调用方返回 FAILED，但已经提交到
+         * boundedElastic 的 blocking runOnce 不保证被中断；真正释放工作线程仍依赖 Redis/RabbitMQ/MySQL
+         * 端口各自的操作超时。这个边界必须写清楚，避免后续维护者误以为 HTTP timeout 能完全防止
+         * boundedElastic 线程耗尽。
          */
         return Mono.fromCallable(() -> {
                     RechargeCompensationBatchResult result = persistMqRepublishJob.runOnce(
@@ -77,7 +103,10 @@ public class ManualRechargeJobController {
                             parameters.workerId());
                     return ResponseEntity.ok(ManualJobRunResponse.succeeded(parameters, result));
                 })
-                .subscribeOn(Schedulers.boundedElastic());
+                .subscribeOn(Schedulers.boundedElastic())
+                .timeout(manualJobTimeout)
+                .onErrorResume(TimeoutException.class, ex -> handleJobTimeout(parameters, ex))
+                .onErrorResume(RuntimeException.class, ex -> handleJobFailure(parameters, ex));
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
@@ -148,6 +177,53 @@ public class ManualRechargeJobController {
         return value;
     }
 
+    private Mono<ResponseEntity<ManualJobRunResponse>> handleJobTimeout(
+            ManualJobParameters parameters,
+            TimeoutException ex) {
+        log.error("人工触发Redis pending补投超时 shardTotal={}, shardIndex={}, limit={}, workerId={}, timeoutMs={}",
+                parameters.shardTotal(),
+                parameters.shardIndex(),
+                parameters.limit(),
+                parameters.workerId(),
+                manualJobTimeout.toMillis(),
+                ex);
+        return Mono.just(ResponseEntity.status(HttpStatus.GATEWAY_TIMEOUT)
+                .body(ManualJobRunResponse.failed(
+                        parameters,
+                        "Manual integration job timed out after " + manualJobTimeout.toMillis() + "ms")));
+    }
+
+    private Mono<ResponseEntity<ManualJobRunResponse>> handleJobFailure(
+            ManualJobParameters parameters,
+            RuntimeException ex) {
+        log.error("人工触发Redis pending补投失败 shardTotal={}, shardIndex={}, limit={}, workerId={}",
+                parameters.shardTotal(),
+                parameters.shardIndex(),
+                parameters.limit(),
+                parameters.workerId(),
+                ex);
+        return Mono.just(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(ManualJobRunResponse.failed(
+                        parameters,
+                        "Manual integration job failed: " + safeMessage(ex))));
+    }
+
+    private static Duration normalizeTimeout(Duration timeout) {
+        /*
+         * Nacos 临时联调配置可能被误填为 0 或负数。这里回落到默认 30s，而不是压成 1ms，
+         * 避免 PEND-001/PEND-003 人工触发入口在参数合法时几乎必然返回 FAILED。
+         */
+        Duration value = timeout == null || timeout.isZero() || timeout.isNegative()
+                ? DEFAULT_MANUAL_JOB_TIMEOUT
+                : timeout;
+        return value;
+    }
+
+    private static String safeMessage(RuntimeException ex) {
+        String message = ex.getMessage();
+        return StringUtils.hasText(message) ? message : ex.getClass().getSimpleName();
+    }
+
     public record ManualJobRunRequest(Integer shardTotal, Integer shardIndex, Integer limit, String workerId) {
     }
 
@@ -192,6 +268,18 @@ public class ManualRechargeJobController {
                     "REJECTED",
                     Instant.now().toString(),
                     null,
+                    null,
+                    null,
+                    null,
+                    null,
+                    message);
+        }
+
+        static ManualJobRunResponse failed(ManualJobParameters parameters, String message) {
+            return new ManualJobRunResponse(
+                    "FAILED",
+                    Instant.now().toString(),
+                    parameters,
                     null,
                     null,
                     null,
