@@ -7,6 +7,7 @@ import com.cardshop.trade.engine.application.recharge.BalanceReservationReleaseP
 import com.cardshop.trade.engine.application.recharge.BalanceReservationReleaseResult;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,17 +37,20 @@ public class RedisBalanceReservationReleaseAdapter implements BalanceReservation
     private final RechargeRedisKeyBuilder keyBuilder;
     private final RechargeRedisScriptLoader scriptLoader;
     private final Clock clock;
+    private final Duration redisOperationTimeout;
     private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
     public RedisBalanceReservationReleaseAdapter(
             RechargeRedisSessionFactory sessionFactory,
             RechargeRedisKeyBuilder keyBuilder,
             RechargeRedisScriptLoader scriptLoader,
-            Clock clock) {
+            Clock clock,
+            Duration redisOperationTimeout) {
         this.sessionFactory = Objects.requireNonNull(sessionFactory, "sessionFactory must not be null");
         this.keyBuilder = Objects.requireNonNull(keyBuilder, "keyBuilder must not be null");
         this.scriptLoader = Objects.requireNonNull(scriptLoader, "scriptLoader must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.redisOperationTimeout = normalizeTimeout(redisOperationTimeout);
     }
 
     @Override
@@ -68,12 +72,17 @@ public class RedisBalanceReservationReleaseAdapter implements BalanceReservation
             return BalanceReservationReleaseResult.failed("REDIS_SESSION_UNAVAILABLE", "Redis 会话不可用");
         }
         try {
+            /*
+             * docs/交行直充业务系统高可用方案设计.md「14.6 订单最终失败/作废退款协议」要求
+             * outbox 释放失败必须回到可重试入口。这里不能使用无参 block()：Redis/Lettuce 卡住时会占死
+             * 补偿 worker，事件也无法 markFailed，因此使用配置派生的短超时把异常窗口重新交给 outbox 重试。
+             */
             Object rawResult = session
                     .execute(
                             scriptLoader.releaseBalanceReservationScript(),
                             keyBuilder.releaseBalanceReservationKeys(command),
                             args(command))
-                    .block();
+                    .block(redisOperationTimeout);
             return toResult(rawResult);
         } catch (RuntimeException ex) {
             logSampledError(LOG_EVENT_LUA_FAILED, decision -> log.error(
@@ -151,6 +160,14 @@ public class RedisBalanceReservationReleaseAdapter implements BalanceReservation
             return defaultValue;
         }
         return value.strip().toUpperCase(java.util.Locale.ROOT);
+    }
+
+    private static Duration normalizeTimeout(Duration timeout) {
+        Duration safeTimeout = Objects.requireNonNull(timeout, "redisOperationTimeout must not be null");
+        if (safeTimeout.isZero() || safeTimeout.isNegative()) {
+            return Duration.ofMillis(100);
+        }
+        return safeTimeout;
     }
 
     private void closeWithErrorLog(RechargeRedisSession session) {

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cardshop.trade.engine.application.recharge.BalanceReservationReleaseCommand;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
@@ -100,12 +101,32 @@ class RedisBalanceReservationReleaseAdapterTest {
         assertThat(sessionFactory.sessions.getFirst().closed).isTrue();
     }
 
+    @Test
+    void returnsFailureAndClosesSessionWhenRedisCallTimesOut() {
+        var sessionFactory = new RecordingSessionFactory(List.of(Mono.never()));
+        var adapter = adapter(sessionFactory, Duration.ofMillis(10));
+
+        var result = adapter.release(command());
+
+        assertThat(result.succeeded()).isFalse();
+        assertThat(result.failCode()).isEqualTo("RELEASE_LUA_ERROR");
+        assertThat(result.failReason()).contains("Redis");
+        assertThat(sessionFactory.sessions.getFirst().closed).isTrue();
+    }
+
     private static RedisBalanceReservationReleaseAdapter adapter(RecordingSessionFactory sessionFactory) {
+        return adapter(sessionFactory, Duration.ofSeconds(5));
+    }
+
+    private static RedisBalanceReservationReleaseAdapter adapter(
+            RecordingSessionFactory sessionFactory,
+            Duration redisOperationTimeout) {
         return new RedisBalanceReservationReleaseAdapter(
                 sessionFactory,
                 new RechargeRedisKeyBuilder("cardshop:trade", 128),
                 new RechargeRedisScriptLoader(),
-                CLOCK);
+                CLOCK,
+                redisOperationTimeout);
     }
 
     private static BalanceReservationReleaseCommand command() {

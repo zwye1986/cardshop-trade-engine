@@ -268,8 +268,16 @@ public class TradeEngineInfrastructureConfiguration {
             RechargeRedisSessionFactory sessionFactory,
             RechargeRedisKeyBuilder keyBuilder,
             RechargeRedisScriptLoader scriptLoader,
-            Clock clock) {
-        return new RedisBalanceReservationReleaseAdapter(sessionFactory, keyBuilder, scriptLoader, clock);
+            Clock clock,
+            TradeEngineProperties properties) {
+        /*
+         * 余额释放由 outbox worker 同步调用，不能让 Redis Lua 无界阻塞占死补偿线程。
+         * 这里沿用 pending 补投 adapter 的 Redis 普通操作超时策略：以 WAIT 超时为基准放大 5 倍，
+         * 既避免误伤短抖动，也保证异常窗口能回到 outbox 重试。参见 docs/交行直充业务系统高可用方案设计.md「14.6」。
+         */
+        Duration redisOperationTimeout = Duration.ofMillis(Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5L));
+        return new RedisBalanceReservationReleaseAdapter(
+                sessionFactory, keyBuilder, scriptLoader, clock, redisOperationTimeout);
     }
 
     @Bean
