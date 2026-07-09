@@ -13,16 +13,38 @@ import com.cardshop.trade.engine.application.recharge.MarkPersistQueuedResult;
 import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
+import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
+import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
+import com.cardshop.trade.engine.application.recharge.PersistMessagePublishResult;
+import com.cardshop.trade.engine.application.recharge.PendingPersistOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushService;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcilePort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcileService;
+import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
+import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairService;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerSettings;
+import com.cardshop.trade.engine.application.recharge.RechargePersistMqRepublishService;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.job.recharge.AcceptAnomalyAutoCheckJob;
+import com.cardshop.trade.engine.job.recharge.RechargeBalanceDeltaFlushJob;
+import com.cardshop.trade.engine.job.recharge.RechargeBalanceReconcileJob;
+import com.cardshop.trade.engine.job.recharge.RechargeCacheRepairJob;
+import com.cardshop.trade.engine.job.recharge.RechargeOutboxPublishJob;
+import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineInfrastructureConfiguration;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import java.lang.reflect.Proxy;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
@@ -72,6 +94,33 @@ class TradeEngineReliabilityConfigurationTest {
     }
 
     @Test
+    void registersD11D12CompensationServicesAndJobFacadesWithNoopPorts() {
+        contextRunner
+                .withBean(PersistRechargeOrderMessagePublisher.class, StubPersistPublisher::new)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargePersistMqRepublishService.class);
+                    assertThat(context).hasSingleBean(RechargePersistMqRepublishJob.class);
+                    assertThat(context).hasSingleBean(RechargeBalanceDeltaFlushService.class);
+                    assertThat(context).hasSingleBean(RechargeBalanceDeltaFlushJob.class);
+                    assertThat(context).hasSingleBean(RechargeBalanceReconcileService.class);
+                    assertThat(context).hasSingleBean(RechargeBalanceReconcileJob.class);
+                    assertThat(context).hasSingleBean(RechargeCacheRepairService.class);
+                    assertThat(context).hasSingleBean(RechargeCacheRepairJob.class);
+                    assertThat(context).doesNotHaveBean(PendingPersistOrderPort.class);
+                    assertThat(context).doesNotHaveBean(RechargeBalanceDeltaFlushPort.class);
+                    assertThat(context).doesNotHaveBean(RechargeBalanceReconcilePort.class);
+                    assertThat(context).doesNotHaveBean(RechargeCacheRepairPort.class);
+                });
+    }
+
+    @Test
+    void registersOutboxPublishJobWhenOutboxWorkerServiceIsPresent() {
+        contextRunner
+                .withBean(RechargeOutboxWorkerService.class, TradeEngineReliabilityConfigurationTest::outboxWorkerService)
+                .run(context -> assertThat(context).hasSingleBean(RechargeOutboxPublishJob.class));
+    }
+
+    @Test
     void registersRabbitPersistListenerWhenConsumerComesFromReliabilityConfiguration() {
         new ApplicationContextRunner()
                 .withUserConfiguration(
@@ -82,6 +131,122 @@ class TradeEngineReliabilityConfigurationTest {
                     assertThat(context).hasSingleBean(PersistRechargeOrderConsumerService.class);
                     assertThat(context).hasSingleBean(RabbitPersistRechargeOrderMessageListener.class);
                 });
+    }
+
+    private static final class StubPersistPublisher implements PersistRechargeOrderMessagePublisher {
+
+        @Override
+        public boolean isAvailable() {
+            return true;
+        }
+
+        @Override
+        public java.util.concurrent.CompletionStage<PersistMessagePublishResult> publish(PersistTradeOrderMessage message) {
+            return CompletableFuture.completedFuture(PersistMessagePublishResult.confirmed(message.messageId(), 1));
+        }
+    }
+
+    private static RechargeOutboxWorkerService outboxWorkerService() {
+        return new RechargeOutboxWorkerService(
+                new com.cardshop.trade.engine.application.recharge.RechargeOutboxPort() {
+                    @Override
+                    public List<com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent> selectDueForShard(
+                            int shardTotal,
+                            int shardIndex,
+                            int limit) {
+                        return List.of();
+                    }
+
+                    @Override
+                    public Optional<com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent> claim(
+                            com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent event,
+                            String workerId,
+                            Duration lease) {
+                        return Optional.empty();
+                    }
+
+                    @Override
+                    public void markSuccess(com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent event) {
+                    }
+
+                    @Override
+                    public void markFailed(
+                            com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent event,
+                            String errorMessage,
+                            Duration nextRetryDelay) {
+                    }
+                },
+                new com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort() {
+                    @Override
+                    public Optional<com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrder> findByOrderId(
+                            String orderId) {
+                        return Optional.empty();
+                    }
+
+                    @Override
+                    public long insertSupplierFlowStart(
+                            com.cardshop.trade.engine.application.recharge.SupplierFlowStartCommand command) {
+                        return 0L;
+                    }
+
+                    @Override
+                    public void updateSupplierFlow(
+                            com.cardshop.trade.engine.application.recharge.SupplierFlowUpdateCommand command) {
+                    }
+
+                    @Override
+                    public void updateFulfillmentStatus(
+                            com.cardshop.trade.engine.application.recharge.OrderFulfillmentStatusUpdate update) {
+                    }
+                },
+                new com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort() {
+                    @Override
+                    public com.cardshop.trade.engine.application.recharge.SupplierGatewayResponse dispatch(
+                            com.cardshop.trade.engine.application.recharge.SupplierDispatchGatewayRequest request) {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    @Override
+                    public com.cardshop.trade.engine.application.recharge.SupplierGatewayResponse invalid(
+                            com.cardshop.trade.engine.application.recharge.SupplierInvalidGatewayRequest request) {
+                        throw new UnsupportedOperationException();
+                    }
+                },
+                new com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort() {
+                    @Override
+                    public boolean acquire(String orgCode, String account, String orderId, Duration ttl) {
+                        return true;
+                    }
+
+                    @Override
+                    public void releaseIfOwned(String orgCode, String account, String orderId, Duration minimumHold) {
+                    }
+                },
+                task -> {
+                },
+                new com.cardshop.trade.engine.application.recharge.MerchantNotifyPayloadSigner() {
+                    @Override
+                    public Map<String, String> signOrderStatus(
+                            com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrder order,
+                            String orderStatus,
+                            java.time.Instant now) {
+                        return Map.of();
+                    }
+
+                    @Override
+                    public Map<String, String> signWriteOff(
+                            com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrder order,
+                            java.time.Instant invalidTime) {
+                        return Map.of();
+                    }
+                },
+                Clock.systemUTC(),
+                new RechargeOutboxWorkerSettings(
+                        Duration.ofSeconds(30),
+                        Duration.ofSeconds(30),
+                        Duration.ofSeconds(30),
+                        Duration.ofMinutes(5),
+                        Duration.ofSeconds(30)));
     }
 
     private static final class StubRepository implements AcceptAnomalyCheckRepositoryPort {

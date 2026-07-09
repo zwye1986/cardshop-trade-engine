@@ -30,7 +30,8 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
  * 本类是 D7/D8 的事务边界：同一个事务内写 `mc_order`、`recharge_order_ext`、必要的
- * `mc_depart_record(PRE_DEDUCT)`，并在允许派单时写入 `SUPPLIER_DISPATCH` outbox。
+ * `mc_depart_record(PRE_DEDUCT)`，在允许派单时写入 `SUPPLIER_DISPATCH` outbox，并在 Redis 已预扣余额时写入
+ * `BALANCE_DELTA_FLUSH` outbox 供 D12 余额沉淀任务处理。
  * 事务成功后由 application service 调用 Redis `markDbPersisted`。
  */
 public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPersistencePort {
@@ -79,7 +80,8 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
      * <p>重复 MQ 消息会再次进入该方法，因此 Mapper 必须使用幂等 insert/upsert：
      * `mc_order` 保持首次事实并作为减少重复写的串行点（orderInserted == 1 才写资金流水），
      * `recharge_order_ext` 只前进版本，资金流水按 `trade_engine_record_key` DB 唯一键兜底，
-     * `recharge_outbox` 按 event_id 幂等。
+     * `recharge_outbox` 按 event_id 幂等；D12 余额刷账事件和 D9 派单事件在同一事务内落地，避免订单已落库
+     * 但余额沉淀缺事件。
      */
     @Override
     @Transactional
@@ -99,6 +101,9 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
         }
         if (aggregate.dispatchOutboxRequired()) {
             outboxWriter.insertIfAbsent(toDispatchOutbox(aggregate));
+        }
+        if (aggregate.snapshot().balanceReserved()) {
+            outboxWriter.insertIfAbsent(toBalanceDeltaFlushOutbox(aggregate));
         }
     }
 
@@ -207,6 +212,35 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
         return outbox;
     }
 
+    private RechargeOutboxDO toBalanceDeltaFlushOutbox(OrderPersistAggregate aggregate) {
+        PersistOrderSnapshot snapshot = aggregate.snapshot();
+        LocalDateTime persistedAt = persistedAt(aggregate);
+        String eventId = "balance-flush-" + snapshot.orderId();
+        RechargeOutboxDO outbox = new RechargeOutboxDO();
+        outbox.setEventId(eventId);
+        outbox.setEventType(OutboxEventType.BALANCE_DELTA_FLUSH.name());
+        outbox.setOrgCode(snapshot.orgCode());
+        outbox.setOrderId(snapshot.orderId());
+        outbox.setOutOrderSn(snapshot.outOrderSn());
+        outbox.setPayload(balanceDeltaPayload(aggregate));
+        outbox.setStatus(TaskStatus.INIT.name());
+        outbox.setRetryCount(0);
+        outbox.setMaxRetryCount(DEFAULT_MAX_RETRY_COUNT);
+        outbox.setNextRetryTime(persistedAt);
+        outbox.setLockedBy(null);
+        outbox.setLockedUntil(null);
+        outbox.setVersion(0L);
+        outbox.setLastError("");
+        /*
+         * 详细设计「20.13.15 测试清单」要求 outbox shard_key 固定使用 event_id；余额刷账按商户聚合发生在
+         * D12 job 内部，不能在落库阶段把 shard_key 改成 org_code，否则会和通用 outbox 扫描语义分叉。
+         */
+        outbox.setShardKey(eventId);
+        outbox.setCreatedAt(persistedAt);
+        outbox.setUpdatedAt(persistedAt);
+        return outbox;
+    }
+
     private static boolean preDeductRecordRequired(OrderPersistAggregate aggregate) {
         PersistOrderSnapshot snapshot = aggregate.snapshot();
         return aggregate.dispatchOutboxRequired() && snapshot.balanceReserved();
@@ -228,6 +262,22 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
                     Map.entry("persist_source", aggregate.persistSource().name())));
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("serialize supplier dispatch outbox payload failed", ex);
+        }
+    }
+
+    private String balanceDeltaPayload(OrderPersistAggregate aggregate) {
+        PersistOrderSnapshot snapshot = aggregate.snapshot();
+        try {
+            return objectMapper.writeValueAsString(Map.ofEntries(
+                    Map.entry("order_id", snapshot.orderId()),
+                    Map.entry("org_code", snapshot.orgCode()),
+                    Map.entry("out_order_sn", snapshot.outOrderSn()),
+                    Map.entry("delta_amount", -snapshot.orderPrice()),
+                    Map.entry("delta_type", "PRE_DEDUCT"),
+                    Map.entry("persist_msg_id", aggregate.persistMessageId()),
+                    Map.entry("persist_source", aggregate.persistSource().name())));
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("serialize balance delta flush outbox payload failed", ex);
         }
     }
 

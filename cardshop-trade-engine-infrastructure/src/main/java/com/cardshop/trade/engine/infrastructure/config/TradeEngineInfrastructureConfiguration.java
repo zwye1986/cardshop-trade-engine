@@ -12,6 +12,8 @@ import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
 import com.cardshop.trade.engine.application.recharge.MerchantNotifyClientPort;
 import com.cardshop.trade.engine.application.recharge.MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.recharge.PersistMessagePublishResult;
+import com.cardshop.trade.engine.application.recharge.PendingPersistOrderPort;
+import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
@@ -27,6 +29,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerServic
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerSettings;
 import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.recharge.V1MerchantNotifyPayloadSigner;
@@ -45,15 +48,18 @@ import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomaly
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyRecordAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOutboxAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisPersistedOrderStateAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisV1MerchantProfileAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisV1ProductCandidateSelector;
 import com.cardshop.trade.engine.infrastructure.persistence.V1DepartProductReader;
 import com.cardshop.trade.engine.infrastructure.persistence.V1MerchantProfileReader;
 import com.cardshop.trade.engine.infrastructure.persistence.V1ProductReader;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
@@ -63,6 +69,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutbo
 import com.cardshop.trade.engine.infrastructure.redis.LettuceRechargeRedisSessionFactory;
 import com.cardshop.trade.engine.infrastructure.redis.InMemoryRedisHaGuard;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisPendingPersistOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
@@ -101,6 +108,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
 import reactor.core.publisher.Mono;
 
 /**
@@ -405,6 +413,36 @@ public class TradeEngineInfrastructureConfiguration {
     }
 
     /**
+     * 装配 D11/D12 Redis pending MQ 补投端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」。该端口只在
+     * Redis 客户端存在时启用；local profile 或局部装配测试没有 Redis 时，由 bootstrap 层的 noop 端口兜底。
+     */
+    @Bean
+    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
+    @ConditionalOnMissingBean(PendingPersistOrderPort.class)
+    public PendingPersistOrderPort pendingPersistOrderPort(
+            ReactiveStringRedisTemplate redisTemplate,
+            RechargeRedisKeyBuilder keyBuilder,
+            TradeEngineProperties properties,
+            ObjectProvider<PersistedOrderStatePort> persistedOrderStatePortProvider,
+            Clock clock) {
+        return new RedisPendingPersistOrderAdapter(
+                redisTemplate,
+                keyBuilder,
+                properties,
+                persistedOrderStatePortProvider.getIfAvailable(PersistedOrderStatePort::noop),
+                clock);
+    }
+
+    @Bean
+    @ConditionalOnBean(RechargeOrderExtMapper.class)
+    @ConditionalOnMissingBean(PersistedOrderStatePort.class)
+    public PersistedOrderStatePort persistedOrderStatePort(RechargeOrderExtMapper extMapper) {
+        return new MybatisPersistedOrderStateAdapter(extMapper);
+    }
+
+    /**
      * 装配 MySQL 异步落库端口。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
@@ -423,6 +461,26 @@ public class TradeEngineInfrastructureConfiguration {
             McDepartRecordMapper departRecordMapper,
             ObjectMapper objectMapper) {
         return new MybatisRechargeOrderPersistenceAdapter(orderMapper, extMapper, outboxMapper, departRecordMapper, objectMapper);
+    }
+
+    @Bean
+    @ConditionalOnBean({RechargeOutboxMapper.class, McExtDepartMapper.class, PlatformTransactionManager.class})
+    @ConditionalOnMissingBean(RechargeBalanceDeltaFlushPort.class)
+    public RechargeBalanceDeltaFlushPort rechargeBalanceDeltaFlushPort(
+            RechargeOutboxMapper outboxMapper,
+            McExtDepartMapper extDepartMapper,
+            ObjectMapper objectMapper,
+            Clock clock,
+            TradeEngineProperties properties,
+            PlatformTransactionManager transactionManager) {
+        return new MybatisRechargeBalanceDeltaFlushAdapter(
+                outboxMapper,
+                extDepartMapper,
+                objectMapper,
+                clock,
+                Duration.ofSeconds(properties.getFulfillment().getOutboxClaimLeaseSeconds()),
+                Duration.ofSeconds(properties.getFulfillment().getOutboxRetryBackoffSeconds()),
+                transactionManager);
     }
 
     @Bean

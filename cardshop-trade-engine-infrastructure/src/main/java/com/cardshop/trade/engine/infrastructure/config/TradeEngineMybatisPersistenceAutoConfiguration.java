@@ -1,26 +1,34 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
+import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisPersistedOrderStateAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
+import java.time.Clock;
+import java.time.Duration;
 import org.apache.ibatis.session.SqlSessionFactory;
-import org.mybatis.spring.boot.autoconfigure.MybatisAutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
+import org.springframework.transaction.PlatformTransactionManager;
 
 /**
  * MyBatis 落库端口的后置自动配置。
  *
  * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。真实 dev/test/prod
- * 环境中的 Mapper Bean 由 MyBatis 自动配置和 mapper scanner 注册；普通业务 {@code @Configuration} 早于
- * {@link MybatisAutoConfiguration} 解析时，按 Mapper 做 {@code @ConditionalOnBean} 可能被过早判定为不满足，
+ * 环境中的 Mapper Bean 由 MyBatis-Plus 自动配置和 mapper scanner 注册；普通业务 {@code @Configuration} 早于
+ * {@link MybatisPlusAutoConfiguration} 解析时，按 Mapper 做 {@code @ConditionalOnBean} 可能被过早判定为不满足，
  * 从而跳过 {@link RechargeOrderPersistencePort}。该端口缺失会继续导致
  * {@code PersistRechargeOrderConsumerService} 和 Rabbit listener 缺失，最终表现为应用健康但 RabbitMQ 没有
  * connection/consumer。
@@ -30,8 +38,8 @@ import org.springframework.context.annotation.Bean;
  * 必需 Mapper 作为构造参数直接注入。若 mapper scan 漏掉任一 Mapper，dev/test/prod 应在启动期 fail-fast，
  * 不能静默缺失 Consumer 后继续对外显示健康。
  */
-@AutoConfiguration(after = MybatisAutoConfiguration.class)
-@ConditionalOnClass({MybatisAutoConfiguration.class, MybatisRechargeOrderPersistenceAdapter.class})
+@AutoConfiguration(after = MybatisPlusAutoConfiguration.class)
+@ConditionalOnClass({MybatisPlusAutoConfiguration.class, MybatisRechargeOrderPersistenceAdapter.class})
 public class TradeEngineMybatisPersistenceAutoConfiguration {
 
     /**
@@ -55,5 +63,32 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
                 outboxMapper,
                 departRecordMapper,
                 objectMapper);
+    }
+
+    @Bean
+    @ConditionalOnBean(SqlSessionFactory.class)
+    @ConditionalOnMissingBean(PersistedOrderStatePort.class)
+    public PersistedOrderStatePort persistedOrderStatePort(RechargeOrderExtMapper extMapper) {
+        return new MybatisPersistedOrderStateAdapter(extMapper);
+    }
+
+    @Bean
+    @ConditionalOnBean({SqlSessionFactory.class, PlatformTransactionManager.class})
+    @ConditionalOnMissingBean(RechargeBalanceDeltaFlushPort.class)
+    public RechargeBalanceDeltaFlushPort rechargeBalanceDeltaFlushPort(
+            RechargeOutboxMapper outboxMapper,
+            McExtDepartMapper extDepartMapper,
+            ObjectMapper objectMapper,
+            Clock clock,
+            TradeEngineProperties properties,
+            PlatformTransactionManager transactionManager) {
+        return new MybatisRechargeBalanceDeltaFlushAdapter(
+                outboxMapper,
+                extDepartMapper,
+                objectMapper,
+                clock,
+                Duration.ofSeconds(properties.getFulfillment().getOutboxClaimLeaseSeconds()),
+                Duration.ofSeconds(properties.getFulfillment().getOutboxRetryBackoffSeconds()),
+                transactionManager);
     }
 }

@@ -7,9 +7,11 @@ import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
 import com.cardshop.trade.engine.application.recharge.MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
+import com.cardshop.trade.engine.application.recharge.PendingPersistOrderPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
@@ -25,6 +27,7 @@ import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisV1MerchantProfileAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisV1ProductCandidateSelector;
@@ -32,6 +35,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.V1DepartProductReade
 import com.cardshop.trade.engine.infrastructure.persistence.V1MerchantProfileReader;
 import com.cardshop.trade.engine.infrastructure.persistence.V1ProductReader;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
@@ -41,6 +45,7 @@ import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptLoader;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptExecutor;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisSessionFactory;
+import com.cardshop.trade.engine.infrastructure.redis.RedisPendingPersistOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
@@ -68,6 +73,10 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.data.redis.connection.ReactiveRedisConnection;
 import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 import reactor.core.publisher.Mono;
 
 /**
@@ -164,6 +173,17 @@ class TradeEngineInfrastructureConfigurationTest {
     }
 
     @Test
+    void createsPendingPersistOrderPortWhenRedisTemplateExists() {
+        contextRunner
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(PendingPersistOrderPort.class);
+                    assertThat(context.getBean(PendingPersistOrderPort.class))
+                            .isInstanceOf(RedisPendingPersistOrderAdapter.class);
+                });
+    }
+
+    @Test
     void createsV1TokenStorePortWhenRedisTemplateExists() {
         contextRunner
                 .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
@@ -232,6 +252,20 @@ class TradeEngineInfrastructureConfigurationTest {
                     assertThat(context).hasSingleBean(RechargeOrderPersistencePort.class);
                     assertThat(context.getBean(RechargeOrderPersistencePort.class))
                             .isInstanceOf(MybatisRechargeOrderPersistenceAdapter.class);
+                });
+    }
+
+    @Test
+    void createsBalanceDeltaFlushPortWhenOutboxMerchantAndTransactionManagerExist() {
+        contextRunner
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(RechargeOutboxMapper.class, () -> mapperProxy(RechargeOutboxMapper.class))
+                .withBean(McExtDepartMapper.class, () -> mapperProxy(McExtDepartMapper.class))
+                .withBean(PlatformTransactionManager.class, TradeEngineInfrastructureConfigurationTest::transactionManager)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargeBalanceDeltaFlushPort.class);
+                    assertThat(context.getBean(RechargeBalanceDeltaFlushPort.class))
+                            .isInstanceOf(MybatisRechargeBalanceDeltaFlushAdapter.class);
                 });
     }
 
@@ -467,6 +501,23 @@ class TradeEngineInfrastructureConfigurationTest {
                 },
                 reliabilityPort,
                 Clock.systemUTC());
+    }
+
+    private static PlatformTransactionManager transactionManager() {
+        return new PlatformTransactionManager() {
+            @Override
+            public TransactionStatus getTransaction(TransactionDefinition definition) {
+                return new SimpleTransactionStatus();
+            }
+
+            @Override
+            public void commit(TransactionStatus status) {
+            }
+
+            @Override
+            public void rollback(TransactionStatus status) {
+            }
+        };
     }
 
     private static <T> T interfaceProxy(Class<T> type) {

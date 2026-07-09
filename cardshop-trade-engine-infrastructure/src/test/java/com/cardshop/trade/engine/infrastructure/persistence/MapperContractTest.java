@@ -148,6 +148,21 @@ class MapperContractTest {
     }
 
     @Test
+    void runtimeUsesMybatisPlusBoot3StarterForBaseMapperSqlInjector() throws IOException {
+        String rootPom = Files.readString(Path.of("../pom.xml").normalize());
+        String infrastructurePom = Files.readString(Path.of("pom.xml"));
+
+        assertThat(rootPom)
+                .contains("<mybatis-plus.version>3.5.4.1</mybatis-plus.version>")
+                .contains("<artifactId>mybatis-plus-spring-boot3-starter</artifactId>")
+                .doesNotContain("<artifactId>mybatis-plus-core</artifactId>");
+        assertThat(infrastructurePom)
+                .contains("<artifactId>mybatis-plus-spring-boot3-starter</artifactId>")
+                .doesNotContain("<artifactId>mybatis-spring-boot-starter</artifactId>")
+                .doesNotContain("<artifactId>mybatis-plus-core</artifactId>");
+    }
+
+    @Test
     void persistenceCodeDoesNotUseMultiTableJoinQueries() throws IOException {
         Path root = Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence");
 

@@ -54,7 +54,7 @@ class ProfileResourceIsolationTest {
         assertThat(applicationLocal.values())
                 .contains(
                         "org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration",
-                        "org.mybatis.spring.boot.autoconfigure.MybatisAutoConfiguration",
+                        "com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration",
                         "org.springframework.boot.autoconfigure.amqp.RabbitAutoConfiguration",
                         "org.springframework.boot.autoconfigure.data.redis.RedisAutoConfiguration",
                         "org.springframework.boot.autoconfigure.liquibase.LiquibaseAutoConfiguration");

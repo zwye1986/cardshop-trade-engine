@@ -14,6 +14,8 @@ import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutbo
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -25,7 +27,7 @@ import org.junit.jupiter.api.Test;
 class MybatisRechargeOrderPersistenceAdapterTest {
 
     @Test
-    void writesAcceptedOrderExtAndSupplierDispatchOutbox() {
+    void writesAcceptedOrderExtSupplierDispatchAndBalanceFlushOutbox() {
         RecordingStore store = new RecordingStore();
         MybatisRechargeOrderPersistenceAdapter adapter = new MybatisRechargeOrderPersistenceAdapter(
                 store,
@@ -70,16 +72,27 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.departRecord.getBalance()).isNull();
         assertThat(store.departRecord.getCreateTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
 
-        assertThat(store.outbox.getEventId()).isEqualTo("dispatch-ORDER-1001");
-        assertThat(store.outbox.getEventType()).isEqualTo(OutboxEventType.SUPPLIER_DISPATCH.name());
-        assertThat(store.outbox.getStatus()).isEqualTo(TaskStatus.INIT.name());
-        assertThat(store.outbox.getRetryCount()).isZero();
-        assertThat(store.outbox.getMaxRetryCount()).isEqualTo(10);
-        assertThat(store.outbox.getShardKey()).isEqualTo("dispatch-ORDER-1001");
-        assertThat(store.outbox.getNextRetryTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
-        assertThat(store.outbox.getPayload())
+        RechargeOutboxDO dispatchOutbox = store.outboxByEventId("dispatch-ORDER-1001");
+        assertThat(dispatchOutbox.getEventType()).isEqualTo(OutboxEventType.SUPPLIER_DISPATCH.name());
+        assertThat(dispatchOutbox.getStatus()).isEqualTo(TaskStatus.INIT.name());
+        assertThat(dispatchOutbox.getRetryCount()).isZero();
+        assertThat(dispatchOutbox.getMaxRetryCount()).isEqualTo(10);
+        assertThat(dispatchOutbox.getShardKey()).isEqualTo("dispatch-ORDER-1001");
+        assertThat(dispatchOutbox.getNextRetryTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
+        assertThat(dispatchOutbox.getPayload())
                 .contains("\"order_id\":\"ORDER-1001\"")
                 .contains("\"supplier_channel\":\"BOCOM\"");
+
+        RechargeOutboxDO balanceOutbox = store.outboxByEventId("balance-flush-ORDER-1001");
+        assertThat(balanceOutbox.getEventType()).isEqualTo(OutboxEventType.BALANCE_DELTA_FLUSH.name());
+        assertThat(balanceOutbox.getStatus()).isEqualTo(TaskStatus.INIT.name());
+        assertThat(balanceOutbox.getRetryCount()).isZero();
+        assertThat(balanceOutbox.getMaxRetryCount()).isEqualTo(10);
+        assertThat(balanceOutbox.getShardKey()).isEqualTo("balance-flush-ORDER-1001");
+        assertThat(balanceOutbox.getPayload())
+                .contains("\"delta_amount\":-5200")
+                .contains("\"org_code\":\"A36\"")
+                .contains("\"order_id\":\"ORDER-1001\"");
     }
 
     @Test
@@ -100,7 +113,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.ext.getValidationStatus()).isEqualTo("FAILED");
         assertThat(store.ext.getDispatchAllowed()).isFalse();
         assertThat(store.departRecord).isNull();
-        assertThat(store.outbox).isNull();
+        assertThat(store.outboxes).isEmpty();
     }
 
     @Test
@@ -118,7 +131,8 @@ class MybatisRechargeOrderPersistenceAdapterTest {
 
         assertThat(store.ext.getOrderId()).isEqualTo("ORDER-1001");
         assertThat(store.departRecord).isNull();
-        assertThat(store.outbox.getEventId()).isEqualTo("dispatch-ORDER-1001");
+        assertThat(store.outboxByEventId("dispatch-ORDER-1001").getEventId()).isEqualTo("dispatch-ORDER-1001");
+        assertThat(store.outboxByEventId("balance-flush-ORDER-1001").getEventId()).isEqualTo("balance-flush-ORDER-1001");
     }
 
     private static OrderPersistAggregate aggregate(PersistOrderSnapshot snapshot) {
@@ -173,7 +187,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
 
         private McOrderDO order;
         private RechargeOrderExtDO ext;
-        private RechargeOutboxDO outbox;
+        private final List<RechargeOutboxDO> outboxes = new ArrayList<>();
         private McDepartRecordDO departRecord;
         private int nextOrderInsertResult = 1;
 
@@ -191,7 +205,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
 
         @Override
         public int insertIfAbsent(RechargeOutboxDO outbox) {
-            this.outbox = outbox;
+            this.outboxes.add(outbox);
             return 1;
         }
 
@@ -199,6 +213,13 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         public int insertPreDeductIfAbsent(McDepartRecordDO record) {
             this.departRecord = record;
             return 1;
+        }
+
+        private RechargeOutboxDO outboxByEventId(String eventId) {
+            return outboxes.stream()
+                    .filter(outbox -> eventId.equals(outbox.getEventId()))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("missing outbox event " + eventId));
         }
     }
 }

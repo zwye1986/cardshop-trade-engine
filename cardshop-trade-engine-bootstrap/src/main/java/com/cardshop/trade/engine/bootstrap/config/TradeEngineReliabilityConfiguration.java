@@ -2,17 +2,32 @@ package com.cardshop.trade.engine.bootstrap.config;
 
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyAutoCheckService;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
+import com.cardshop.trade.engine.application.recharge.PendingPersistOrderPort;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
+import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushService;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcilePort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcileService;
+import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
+import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairService;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
+import com.cardshop.trade.engine.application.recharge.RechargePersistMqRepublishService;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.cardshop.trade.engine.job.recharge.AcceptAnomalyAutoCheckJob;
+import com.cardshop.trade.engine.job.recharge.RechargeBalanceDeltaFlushJob;
+import com.cardshop.trade.engine.job.recharge.RechargeBalanceReconcileJob;
+import com.cardshop.trade.engine.job.recharge.RechargeCacheRepairJob;
+import com.cardshop.trade.engine.job.recharge.RechargeOutboxPublishJob;
+import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
 import java.time.Clock;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
@@ -55,6 +70,93 @@ public class TradeEngineReliabilityConfiguration {
     public AcceptAnomalyAutoCheckJob acceptAnomalyAutoCheckJob(
             AcceptAnomalyAutoCheckService autoCheckService) {
         return new AcceptAnomalyAutoCheckJob(autoCheckService);
+    }
+
+    @Bean
+    @ConditionalOnBean(PersistRechargeOrderMessagePublisher.class)
+    @ConditionalOnMissingBean(RechargePersistMqRepublishService.class)
+    public RechargePersistMqRepublishService rechargePersistMqRepublishService(
+            ObjectProvider<PendingPersistOrderPort> pendingPortProvider,
+            PersistRechargeOrderMessagePublisher publisher) {
+        /*
+         * 参见高可用设计「17.3 MQ 补投任务」。不要把 PendingPersistOrderPort.noop() 注册成 Bean，
+         * 否则普通配置类解析顺序可能让 Noop 先占位，挡住 infrastructure 在 Redis/MySQL 就绪后提供的真实端口。
+         */
+        return new RechargePersistMqRepublishService(
+                pendingPortProvider.getIfAvailable(PendingPersistOrderPort::noop),
+                publisher);
+    }
+
+    @Bean
+    @ConditionalOnBean(RechargePersistMqRepublishService.class)
+    @ConditionalOnMissingBean(RechargePersistMqRepublishJob.class)
+    public RechargePersistMqRepublishJob rechargePersistMqRepublishJob(
+            RechargePersistMqRepublishService service) {
+        return new RechargePersistMqRepublishJob(service);
+    }
+
+    /**
+     * Outbox 重试/补偿 Job 门面。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
+     * 「20.13.9 派单 Outbox」。D9 的实时 worker 与 D11/D12 的调度补偿共用同一个
+     * {@link com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService}，确保 outbox CAS
+     * 抢占、供应商派单、作废和回调任务生成只有一套业务语义。
+     */
+    @Bean
+    @ConditionalOnBean(com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService.class)
+    @ConditionalOnMissingBean(RechargeOutboxPublishJob.class)
+    public RechargeOutboxPublishJob rechargeOutboxPublishJob(
+            com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService service) {
+        return new RechargeOutboxPublishJob(service);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(RechargeBalanceDeltaFlushService.class)
+    public RechargeBalanceDeltaFlushService rechargeBalanceDeltaFlushService(
+            ObjectProvider<RechargeBalanceDeltaFlushPort> portProvider) {
+        return new RechargeBalanceDeltaFlushService(
+                portProvider.getIfAvailable(RechargeBalanceDeltaFlushPort::noop));
+    }
+
+    @Bean
+    @ConditionalOnBean(RechargeBalanceDeltaFlushService.class)
+    @ConditionalOnMissingBean(RechargeBalanceDeltaFlushJob.class)
+    public RechargeBalanceDeltaFlushJob rechargeBalanceDeltaFlushJob(
+            RechargeBalanceDeltaFlushService service) {
+        return new RechargeBalanceDeltaFlushJob(service);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(RechargeBalanceReconcileService.class)
+    public RechargeBalanceReconcileService rechargeBalanceReconcileService(
+            ObjectProvider<RechargeBalanceReconcilePort> portProvider) {
+        return new RechargeBalanceReconcileService(
+                portProvider.getIfAvailable(RechargeBalanceReconcilePort::noop));
+    }
+
+    @Bean
+    @ConditionalOnBean(RechargeBalanceReconcileService.class)
+    @ConditionalOnMissingBean(RechargeBalanceReconcileJob.class)
+    public RechargeBalanceReconcileJob rechargeBalanceReconcileJob(
+            RechargeBalanceReconcileService service) {
+        return new RechargeBalanceReconcileJob(service);
+    }
+
+    @Bean
+    @ConditionalOnMissingBean(RechargeCacheRepairService.class)
+    public RechargeCacheRepairService rechargeCacheRepairService(
+            ObjectProvider<RechargeCacheRepairPort> portProvider) {
+        return new RechargeCacheRepairService(
+                portProvider.getIfAvailable(RechargeCacheRepairPort::noop));
+    }
+
+    @Bean
+    @ConditionalOnBean(RechargeCacheRepairService.class)
+    @ConditionalOnMissingBean(RechargeCacheRepairJob.class)
+    public RechargeCacheRepairJob rechargeCacheRepairJob(
+            RechargeCacheRepairService service) {
+        return new RechargeCacheRepairJob(service);
     }
 
     /**

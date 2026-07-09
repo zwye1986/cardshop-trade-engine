@@ -5,6 +5,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.entity.McExtDepartDO
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 /**
  * 旧卡管商户扩展表 `mc_ext_depart` Mapper。
@@ -81,4 +82,20 @@ public interface McExtDepartMapper extends V1MerchantProfileReader {
             limit 1
             """)
     McExtDepartDO selectByOrgCode(@Param("orgCode") String orgCode);
+
+    /**
+     * 原子增量更新商户最终余额。
+     *
+     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「14.7 `mc_ext_depart.balance` 刷账协议」。
+     * 下单实时扣减发生在 Redis，MySQL 余额只由 D12 `BALANCE_DELTA_FLUSH` 任务按 delta 聚合沉淀；
+     * SQL 使用 `balance = balance + delta`，避免读取旧余额后再覆盖导致并发刷账丢失增量。
+     */
+    @Update("""
+            update mc_ext_depart
+            set balance = coalesce(balance, 0) + #{deltaAmount}
+            where org_code = #{orgCode}
+            """)
+    int incrementBalance(
+            @Param("orgCode") String orgCode,
+            @Param("deltaAmount") long deltaAmount);
 }

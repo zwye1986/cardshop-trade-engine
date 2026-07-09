@@ -112,6 +112,53 @@ public final class RechargeRedisKeyBuilder {
     }
 
     /**
+     * 构造订单幂等 hash key。
+     *
+     * <p>参见详细设计「20.6 Redis Lua 入参与 Key 构造」。MQ 补投任务在 confirm 成功后需要同步推进
+     * idem hash 中的 {@code persist_status/persist_msg_id}，避免查单或后续异常核查只看到旧状态。
+     */
+    public String idempotentKey(String orgCode, String outOrderSn) {
+        return key("recharge:" + orgTag(orgCode) + ":idem:" + outOrderSn);
+    }
+
+    /**
+     * 构造订单预扣 reservation key。
+     *
+     * <p>参见高可用设计「5. 关键 Redis Key 设计」。Redis pending ZSET 的 member 只有 {@code orderId}，
+     * 补投扫描需要先通过 reservation 找回 {@code outOrderSn}，再读取完整订单 hash 构造 MQ 快照。
+     */
+    public String reservationKey(String orgCode, String orderId) {
+        return key("recharge:" + orgTag(orgCode) + ":reservation:" + orderId);
+    }
+
+    /**
+     * 构造商户级待持久化订单 ZSET。
+     */
+    public String pendingKey(String orgCode) {
+        return key("recharge:" + orgTag(orgCode) + ":persist:pending");
+    }
+
+    /**
+     * 构造 Redis pending 订单级补投 claim 锁。
+     *
+     * <p>参见详细设计「20.11 XXL-Job Handler 契约」。补投任务必须按订单获取
+     * {@code persist:claim:{orderId}}，避免多分片或多执行器同时重发同一条持久化 MQ 消息。
+     */
+    public String persistClaimKey(String orgCode, String orderId) {
+        return key("recharge:" + orgTag(orgCode) + ":persist:claim:" + orderId);
+    }
+
+    /**
+     * 构造 pending 商户分桶索引 key。
+     */
+    public String pendingOrgIndexKey(int bucket) {
+        if (bucket < 0 || bucket >= pendingOrgBucketCount) {
+            throw new IllegalArgumentException("bucket out of range: " + bucket);
+        }
+        return key("recharge:persist:pending:org_index:" + bucket);
+    }
+
+    /**
      * 按 CRC32 对商户 pending 索引分桶，保证 XXL-Job 后续可通过 org_index 分片扫描。
      */
     public int pendingOrgBucket(String orgCode) {

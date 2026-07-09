@@ -3,6 +3,7 @@ package com.cardshop.trade.engine.infrastructure.persistence.mapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.domain.order.TaskStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
 import java.time.LocalDateTime;
@@ -74,9 +75,28 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
      * 扫描到期事件和租约失效事件。
      */
     default List<RechargeOutboxDO> selectDueForShard(int shardTotal, int shardIndex, int limit) {
+        return selectDueForShardByEventTypes(
+                shardTotal,
+                shardIndex,
+                limit,
+                List.of(OutboxEventType.SUPPLIER_DISPATCH.name(), OutboxEventType.INVALID_ORDER.name()));
+    }
+
+    /**
+     * 按事件类型扫描到期事件和租约失效事件。
+     *
+     * <p>D9/D10 的履约 worker 与 D12 的余额刷账 worker 共享 outbox 表，但处理语义不同；扫描时必须
+     * 先按 event_type 隔离，避免通用供应商 worker 把 `BALANCE_DELTA_FLUSH` 误标为不支持事件。
+     */
+    default List<RechargeOutboxDO> selectDueForShardByEventTypes(
+            int shardTotal,
+            int shardIndex,
+            int limit,
+            List<String> eventTypes) {
         int safeLimit = Math.max(1, Math.min(limit, 1000));
         LocalDateTime now = LocalDateTime.now();
         return selectList(new LambdaQueryWrapper<RechargeOutboxDO>()
+                .in(RechargeOutboxDO::getEventType, eventTypes)
                 .and(wrapper -> wrapper
                         .and(due -> due
                                 .in(RechargeOutboxDO::getStatus, TaskStatus.INIT.name(), TaskStatus.FAILED.name())
