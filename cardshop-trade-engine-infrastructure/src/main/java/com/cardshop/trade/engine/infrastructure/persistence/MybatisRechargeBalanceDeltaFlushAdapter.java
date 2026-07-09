@@ -94,13 +94,24 @@ public class MybatisRechargeBalanceDeltaFlushAdapter implements RechargeBalanceD
      */
     @Override
     public RechargeCompensationBatchResult flushDue(int shardTotal, int shardIndex, int limit, String workerId) {
-        List<RechargeOutboxDO> events = operations.selectDueBalanceFlush(shardTotal, shardIndex, limit);
+        LocalDateTime now = now();
+        List<RechargeOutboxDO> events = operations.selectDueBalanceFlush(shardTotal, shardIndex, limit, now);
         int succeeded = 0;
         int failed = 0;
         int skipped = 0;
         for (RechargeOutboxDO event : events) {
-            LocalDateTime lockedUntil = now().plusNanos(claimLease.toNanos());
-            int claimed = operations.claimProcessing(event.getEventId(), version(event), workerId, lockedUntil);
+            if (retryExhausted(event)) {
+                failed++;
+                operations.markManualRequired(
+                        event.getEventId(),
+                        version(event),
+                        retryExhaustedMessage(event),
+                        now,
+                        false);
+                continue;
+            }
+            LocalDateTime lockedUntil = now.plusNanos(claimLease.toNanos());
+            int claimed = operations.claimProcessing(event.getEventId(), version(event), workerId, lockedUntil, now);
             if (claimed != 1) {
                 skipped++;
                 continue;
@@ -111,14 +122,27 @@ public class MybatisRechargeBalanceDeltaFlushAdapter implements RechargeBalanceD
                 succeeded++;
             } catch (RuntimeException ex) {
                 failed++;
-                log.error("余额delta刷账事件处理失败 eventId={}, orgCode={}, orderId={}, workerId={}",
-                        event.getEventId(), event.getOrgCode(), event.getOrderId(), workerId, ex);
-                operations.markFailed(
-                        event.getEventId(),
-                        claimedVersion,
-                        ex.getMessage(),
-                        now().plusNanos(retryBackoff.toNanos()),
-                        now());
+                if (nextRetryExhausted(event)) {
+                    log.warn("余额delta刷账事件达到最大重试次数，转人工处理 eventId={}, orgCode={}, orderId={}, workerId={}, retryCount={}, maxRetryCount={}, error={}",
+                            event.getEventId(),
+                            event.getOrgCode(),
+                            event.getOrderId(),
+                            workerId,
+                            event.getRetryCount(),
+                            event.getMaxRetryCount(),
+                            ex.getMessage(),
+                            ex);
+                    operations.markManualRequired(event.getEventId(), claimedVersion, ex.getMessage(), now(), true);
+                } else {
+                    log.error("余额delta刷账事件处理失败 eventId={}, orgCode={}, orderId={}, workerId={}",
+                            event.getEventId(), event.getOrgCode(), event.getOrderId(), workerId, ex);
+                    operations.markFailed(
+                            event.getEventId(),
+                            claimedVersion,
+                            ex.getMessage(),
+                            now().plusNanos(retryBackoff.toNanos()),
+                            now());
+                }
             }
         }
         return new RechargeCompensationBatchResult(events.size(), succeeded, failed, skipped);
@@ -180,9 +204,14 @@ public class MybatisRechargeBalanceDeltaFlushAdapter implements RechargeBalanceD
 
     interface BalanceDeltaFlushOperations {
 
-        List<RechargeOutboxDO> selectDueBalanceFlush(int shardTotal, int shardIndex, int limit);
+        List<RechargeOutboxDO> selectDueBalanceFlush(int shardTotal, int shardIndex, int limit, LocalDateTime now);
 
-        int claimProcessing(String eventId, long currentVersion, String workerId, LocalDateTime lockedUntil);
+        int claimProcessing(
+                String eventId,
+                long currentVersion,
+                String workerId,
+                LocalDateTime lockedUntil,
+                LocalDateTime now);
 
         int incrementBalance(String orgCode, long deltaAmount);
 
@@ -194,6 +223,13 @@ public class MybatisRechargeBalanceDeltaFlushAdapter implements RechargeBalanceD
                 String errorMessage,
                 LocalDateTime nextRetryTime,
                 LocalDateTime updatedAt);
+
+        int markManualRequired(
+                String eventId,
+                long currentVersion,
+                String errorMessage,
+                LocalDateTime updatedAt,
+                boolean incrementRetryCount);
     }
 
     private static final class MybatisBalanceDeltaFlushOperations implements BalanceDeltaFlushOperations {
@@ -209,17 +245,27 @@ public class MybatisRechargeBalanceDeltaFlushAdapter implements RechargeBalanceD
         }
 
         @Override
-        public List<RechargeOutboxDO> selectDueBalanceFlush(int shardTotal, int shardIndex, int limit) {
+        public List<RechargeOutboxDO> selectDueBalanceFlush(
+                int shardTotal,
+                int shardIndex,
+                int limit,
+                LocalDateTime now) {
             return outboxMapper.selectDueForShardByEventTypes(
                     shardTotal,
                     shardIndex,
                     limit,
-                    List.of(OutboxEventType.BALANCE_DELTA_FLUSH.name()));
+                    List.of(OutboxEventType.BALANCE_DELTA_FLUSH.name()),
+                    now);
         }
 
         @Override
-        public int claimProcessing(String eventId, long currentVersion, String workerId, LocalDateTime lockedUntil) {
-            return outboxMapper.claimProcessing(eventId, currentVersion, workerId, lockedUntil);
+        public int claimProcessing(
+                String eventId,
+                long currentVersion,
+                String workerId,
+                LocalDateTime lockedUntil,
+                LocalDateTime now) {
+            return outboxMapper.claimProcessing(eventId, currentVersion, workerId, lockedUntil, now);
         }
 
         @Override
@@ -258,11 +304,52 @@ public class MybatisRechargeBalanceDeltaFlushAdapter implements RechargeBalanceD
                     .setSql("version = version + 1"));
         }
 
+        @Override
+        public int markManualRequired(
+                String eventId,
+                long currentVersion,
+                String errorMessage,
+                LocalDateTime updatedAt,
+                boolean incrementRetryCount) {
+            LambdaUpdateWrapper<RechargeOutboxDO> wrapper = new LambdaUpdateWrapper<RechargeOutboxDO>()
+                    .eq(RechargeOutboxDO::getEventId, eventId)
+                    .eq(RechargeOutboxDO::getVersion, currentVersion)
+                    .set(RechargeOutboxDO::getStatus, TaskStatus.MANUAL_REQUIRED.name())
+                    .set(RechargeOutboxDO::getLockedUntil, null)
+                    .set(RechargeOutboxDO::getLastError, truncate(errorMessage, 1000))
+                    .set(RechargeOutboxDO::getUpdatedAt, updatedAt)
+                    .setSql("version = version + 1");
+            if (incrementRetryCount) {
+                wrapper.setSql("retry_count = retry_count + 1");
+            }
+            return outboxMapper.update(null, wrapper);
+        }
+
         private static String truncate(String value, int maxLength) {
             if (value == null) {
                 return "";
             }
             return value.length() <= maxLength ? value : value.substring(0, maxLength);
         }
+    }
+
+    private static boolean nextRetryExhausted(RechargeOutboxDO event) {
+        int retryCount = event.getRetryCount() == null ? 0 : event.getRetryCount();
+        int maxRetryCount = event.getMaxRetryCount() == null ? 10 : event.getMaxRetryCount();
+        return retryCount + 1 >= maxRetryCount;
+    }
+
+    private static boolean retryExhausted(RechargeOutboxDO event) {
+        int retryCount = event.getRetryCount() == null ? 0 : event.getRetryCount();
+        int maxRetryCount = event.getMaxRetryCount() == null ? 10 : event.getMaxRetryCount();
+        return retryCount >= maxRetryCount;
+    }
+
+    private static String retryExhaustedMessage(RechargeOutboxDO event) {
+        String lastError = event.getLastError();
+        if (!StringUtils.hasText(lastError)) {
+            return "balance delta flush retry exhausted";
+        }
+        return "balance delta flush retry exhausted: " + lastError;
     }
 }

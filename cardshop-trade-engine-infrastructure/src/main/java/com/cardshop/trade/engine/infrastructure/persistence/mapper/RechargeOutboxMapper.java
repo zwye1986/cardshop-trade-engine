@@ -93,8 +93,19 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
             int shardIndex,
             int limit,
             List<String> eventTypes) {
+        return selectDueForShardByEventTypes(shardTotal, shardIndex, limit, eventTypes, LocalDateTime.now());
+    }
+
+    /**
+     * 使用调用方注入的时钟扫描到期事件，便于固定 Clock 的测试和生产排障统一时间来源。
+     */
+    default List<RechargeOutboxDO> selectDueForShardByEventTypes(
+            int shardTotal,
+            int shardIndex,
+            int limit,
+            List<String> eventTypes,
+            LocalDateTime now) {
         int safeLimit = Math.max(1, Math.min(limit, 1000));
-        LocalDateTime now = LocalDateTime.now();
         return selectList(new LambdaQueryWrapper<RechargeOutboxDO>()
                 .in(RechargeOutboxDO::getEventType, eventTypes)
                 .and(wrapper -> wrapper
@@ -117,12 +128,24 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
      * 基于事件 ID 和版本号抢占事件。
      */
     default int claimProcessing(String eventId, long currentVersion, String workerId, LocalDateTime lockedUntil) {
-        LocalDateTime now = LocalDateTime.now();
+        return claimProcessing(eventId, currentVersion, workerId, lockedUntil, LocalDateTime.now());
+    }
+
+    /**
+     * 使用调用方注入的时钟执行僵尸任务回收判断。
+     */
+    default int claimProcessing(
+            String eventId,
+            long currentVersion,
+            String workerId,
+            LocalDateTime lockedUntil,
+            LocalDateTime now) {
         return update(null, new LambdaUpdateWrapper<RechargeOutboxDO>()
                 .eq(RechargeOutboxDO::getEventId, eventId)
                 .eq(RechargeOutboxDO::getVersion, currentVersion)
                 .and(wrapper -> wrapper
                         .in(RechargeOutboxDO::getStatus, TaskStatus.INIT.name(), TaskStatus.FAILED.name())
+                        .apply("retry_count < max_retry_count")
                         .or(zombie -> zombie
                                 .eq(RechargeOutboxDO::getStatus, TaskStatus.PROCESSING.name())
                                 .and(lock -> lock

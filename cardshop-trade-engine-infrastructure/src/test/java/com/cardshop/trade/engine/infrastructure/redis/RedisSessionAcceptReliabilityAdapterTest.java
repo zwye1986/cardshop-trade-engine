@@ -3,15 +3,20 @@ package com.cardshop.trade.engine.infrastructure.redis;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecord;
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
+import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.redis.core.script.RedisScript;
@@ -195,6 +200,51 @@ class RedisSessionAcceptReliabilityAdapterTest {
         assertThat(sessionFactory.sessions).isEmpty();
     }
 
+    @Test
+    void recordsLuaTimeoutAnomalyAndClosesHaGuardWhenAcceptStateIsUnknown() {
+        var sessionFactory = new RecordingSessionFactory(List.of(
+                Mono.error(new TimeoutException("command timed out after 100ms"))));
+        var haGuard = new RecordingHaGuard();
+        var anomalyPort = new RecordingAnomalyPort();
+        var adapter = adapterWithAnomaly(sessionFactory, haGuard, anomalyPort);
+
+        AcceptRechargeOrderResult result = adapter.accept(sampleCommand()).toCompletableFuture().join();
+
+        assertUnknownAcceptHandled(result, sessionFactory, haGuard, anomalyPort, AcceptAnomalyType.LUA_TIMEOUT);
+        assertThat(result.failReason()).contains("Redis Lua 执行超时");
+        assertThat(anomalyPort.records.getFirst().lastError()).contains("command timed out after 100ms");
+    }
+
+    @Test
+    void recordsRedisBusyAnomalyAndClosesHaGuardWhenAcceptScriptReturnsBusy() {
+        var sessionFactory = new RecordingSessionFactory(List.of(
+                Mono.error(new IllegalStateException("BUSY Redis is busy running a script"))));
+        var haGuard = new RecordingHaGuard();
+        var anomalyPort = new RecordingAnomalyPort();
+        var adapter = adapterWithAnomaly(sessionFactory, haGuard, anomalyPort);
+
+        AcceptRechargeOrderResult result = adapter.accept(sampleCommand()).toCompletableFuture().join();
+
+        assertUnknownAcceptHandled(result, sessionFactory, haGuard, anomalyPort, AcceptAnomalyType.REDIS_BUSY);
+        assertThat(result.failReason()).contains("Redis BUSY");
+        assertThat(anomalyPort.records.getFirst().rawContext())
+                .containsEntry("exception_message", "BUSY Redis is busy running a script");
+    }
+
+    @Test
+    void recordsGenericAcceptStateUnknownAnomalyForUnexpectedRedisError() {
+        var sessionFactory = new RecordingSessionFactory(List.of(
+                Mono.error(new IllegalStateException("connection reset after eval"))));
+        var haGuard = new RecordingHaGuard();
+        var anomalyPort = new RecordingAnomalyPort();
+        var adapter = adapterWithAnomaly(sessionFactory, haGuard, anomalyPort);
+
+        AcceptRechargeOrderResult result = adapter.accept(sampleCommand()).toCompletableFuture().join();
+
+        assertUnknownAcceptHandled(result, sessionFactory, haGuard, anomalyPort, AcceptAnomalyType.ACCEPT_STATE_UNKNOWN);
+        assertThat(result.failReason()).contains("Redis Lua 执行状态未知");
+    }
+
     private static RedisSessionAcceptReliabilityAdapter adapter(
             RecordingSessionFactory sessionFactory,
             TradeEngineProperties properties) {
@@ -203,6 +253,54 @@ class RedisSessionAcceptReliabilityAdapterTest {
                 new RechargeRedisKeyBuilder("cardshop:trade", 128),
                 new RechargeRedisScriptLoader(),
                 properties);
+    }
+
+    private static RedisSessionAcceptReliabilityAdapter adapterWithAnomaly(
+            RecordingSessionFactory sessionFactory,
+            RecordingHaGuard haGuard,
+            RecordingAnomalyPort anomalyPort) {
+        return new RedisSessionAcceptReliabilityAdapter(
+                sessionFactory,
+                new RechargeRedisKeyBuilder("cardshop:trade", 128),
+                new RechargeRedisScriptLoader(),
+                properties(true, 1, 100),
+                haGuard,
+                anomalyPort,
+                Runnable::run);
+    }
+
+    private static void assertUnknownAcceptHandled(
+            AcceptRechargeOrderResult result,
+            RecordingSessionFactory sessionFactory,
+            RecordingHaGuard haGuard,
+            RecordingAnomalyPort anomalyPort,
+            AcceptAnomalyType anomalyType) {
+        assertThat(result.status()).isEqualTo(AcceptRechargeOrderStatus.REDIS_UNAVAILABLE);
+        assertThat(result.orderWritten()).isFalse();
+        assertThat(sessionFactory.sessions).hasSize(1);
+        assertThat(sessionFactory.sessions.getFirst().closed).isTrue();
+        assertThat(haGuard.closeReason).isEqualTo(anomalyType.name());
+        assertThat(haGuard.closeContext)
+                .containsEntry("org_code", "A36")
+                .containsEntry("out_order_sn", "OUT-1001")
+                .containsEntry("order_id", "202607051337458961474292")
+                .containsEntry("request_hash", "hash-v1")
+                .containsEntry("failure_phase", "ACCEPT_LUA")
+                .containsEntry("accept_status", "UNKNOWN")
+                .containsEntry("redis_write_closed", true);
+        assertThat(haGuard.closeContext).doesNotContainKey("account");
+        assertThat(anomalyPort.records).hasSize(1);
+        AcceptAnomalyRecord record = anomalyPort.records.getFirst();
+        assertThat(record.anomalyId()).isEqualTo("accept-" + anomalyType.name() + "-202607051337458961474292");
+        assertThat(record.anomalyType()).isEqualTo(anomalyType);
+        assertThat(record.orgCode()).isEqualTo("A36");
+        assertThat(record.outOrderSn()).isEqualTo("OUT-1001");
+        assertThat(record.orderId()).isEqualTo("202607051337458961474292");
+        assertThat(record.requestHash()).isEqualTo("hash-v1");
+        assertThat(record.rawContext())
+                .containsEntry("anomaly_type", anomalyType.name())
+                .containsEntry("order_written", null);
+        assertThat(record.rawContext()).doesNotContainKey("account");
     }
 
     private static TradeEngineProperties properties(boolean writeEnabled, int waitReplicas, int waitTimeoutMs) {
@@ -341,6 +439,33 @@ class RedisSessionAcceptReliabilityAdapterTest {
         @Override
         public RedisScript<List> acceptRechargeOrderScript() {
             throw new IllegalStateException("script unavailable");
+        }
+    }
+
+    private static final class RecordingHaGuard implements RedisHaGuardPort {
+
+        private String closeReason;
+        private Map<String, Object> closeContext = Map.of();
+
+        @Override
+        public boolean isWriteAllowed() {
+            return true;
+        }
+
+        @Override
+        public void closeWrite(String reason, Map<String, Object> context) {
+            closeReason = reason;
+            closeContext = context;
+        }
+    }
+
+    private static final class RecordingAnomalyPort implements AcceptAnomalyRecordPort {
+
+        private final List<AcceptAnomalyRecord> records = new ArrayList<>();
+
+        @Override
+        public void record(AcceptAnomalyRecord record) {
+            records.add(record);
         }
     }
 }

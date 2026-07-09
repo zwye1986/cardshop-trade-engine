@@ -19,4 +19,12 @@ public interface RechargeOutboxPort {
     void markSuccess(RechargeOutboxEvent event);
 
     void markFailed(RechargeOutboxEvent event, String errorMessage, Duration nextRetryDelay);
+
+    /**
+     * 将达到最大重试次数的事件转入人工处理。
+     *
+     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「6.6 新增表」。该状态用于终止永久失败事件的
+     * 自动重试，同时保留人工排查入口。
+     */
+    void markManualRequired(RechargeOutboxEvent event, String errorMessage);
 }

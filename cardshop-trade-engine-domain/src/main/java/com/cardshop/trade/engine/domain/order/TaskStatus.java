@@ -10,5 +10,6 @@ public enum TaskStatus {
     INIT,
     PROCESSING,
     SUCCESS,
-    FAILED
+    FAILED,
+    MANUAL_REQUIRED
 }

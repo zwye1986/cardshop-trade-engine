@@ -23,6 +23,7 @@ import com.cardshop.trade.engine.domain.order.ValidationStatus;
  * @param persistStatus Redis 到 MySQL 落库状态，对应 {@code recharge_order_ext.persist_status}
  * @param validationStatus 业务校验状态，对应 {@code recharge_order_ext.validation_status}
  * @param dispatchAllowed 是否允许供应商派单，对应 {@code recharge_order_ext.dispatch_allowed}
+ * @param balanceReserved 是否完成 Redis 预扣，对应 {@code recharge_order_ext.balance_reserved}
  */
 public record RechargeFulfillmentOrder(
         String orderId,
@@ -37,12 +38,27 @@ public record RechargeFulfillmentOrder(
         int orderStatus,
         String persistStatus,
         String validationStatus,
-        boolean dispatchAllowed) {
+        boolean dispatchAllowed,
+        boolean balanceReserved) {
 
     public boolean dispatchable() {
         return dispatchAllowed
                 && orderStatus == LegacyOrderStatusCode.ACCEPTED.code()
                 && PersistStatus.DB_PERSISTED.name().equals(persistStatus)
                 && ValidationStatus.PASSED.name().equals(validationStatus);
+    }
+
+    /**
+     * 判断供应商失败/作废成功后的 outbox 重试是否仍需继续释放 Redis 预扣。
+     *
+     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「14.6 订单最终失败/作废退款协议」。订单可能已在上一次
+     * Worker 执行中写成失败终态，但 Redis release 或反向刷账 outbox 失败；此时再次抢占同一 outbox 不能因为
+     * 订单“不再可派单”直接标成功，否则资金释放入口会丢失。
+     */
+    public boolean terminalFailureAwaitingBalanceRelease() {
+        return balanceReserved
+                && PersistStatus.DB_PERSISTED.name().equals(persistStatus)
+                && (orderStatus == LegacyOrderStatusCode.FAILED.code()
+                || orderStatus == LegacyOrderStatusCode.REFUNDED.code());
     }
 }

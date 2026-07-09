@@ -24,12 +24,15 @@ public class RechargeRedisScriptLoader {
             "redis/lua/mark_db_persisted.lua";
     private static final String MARK_PERSIST_FAILED_SCRIPT =
             "redis/lua/mark_persist_failed.lua";
+    private static final String RELEASE_BALANCE_RESERVATION_SCRIPT =
+            "redis/lua/release_balance_reservation.lua";
 
     private final RedisScript<List> acceptRechargeOrderScript;
     private final RedisScript<List> cancelUnconfirmedAcceptScript;
     private final RedisScript<List> markPersistQueuedScript;
     private final RedisScript<List> markDbPersistedScript;
     private final RedisScript<List> markPersistFailedScript;
+    private final RedisScript<List> releaseBalanceReservationScript;
 
     public RechargeRedisScriptLoader() {
         this.acceptRechargeOrderScript = load(ACCEPT_RECHARGE_ORDER_SCRIPT);
@@ -37,6 +40,7 @@ public class RechargeRedisScriptLoader {
         this.markPersistQueuedScript = load(MARK_PERSIST_QUEUED_SCRIPT);
         this.markDbPersistedScript = load(MARK_DB_PERSISTED_SCRIPT);
         this.markPersistFailedScript = load(MARK_PERSIST_FAILED_SCRIPT);
+        this.releaseBalanceReservationScript = load(RELEASE_BALANCE_RESERVATION_SCRIPT);
     }
 
     public RedisScript<List> acceptRechargeOrderScript() {
@@ -57,6 +61,10 @@ public class RechargeRedisScriptLoader {
 
     public RedisScript<List> markPersistFailedScript() {
         return markPersistFailedScript;
+    }
+
+    public RedisScript<List> releaseBalanceReservationScript() {
+        return releaseBalanceReservationScript;
     }
 
     private static RedisScript<List> load(String location) {

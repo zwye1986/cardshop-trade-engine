@@ -1,6 +1,8 @@
 package com.cardshop.trade.engine.infrastructure.persistence;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxCommand;
+import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxCommand;
@@ -25,7 +27,8 @@ import java.util.Objects;
  * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」和「20.13.11 作废设计」。
  * outbox 的 {@code shard_key} 固定使用 {@code event_id}，避免不同任务混用分片语义。
  */
-public class MybatisRechargeOutboxAdapter implements RechargeOutboxPort, InvalidRechargeOrderOutboxPort {
+public class MybatisRechargeOutboxAdapter
+        implements RechargeOutboxPort, InvalidRechargeOrderOutboxPort, BalanceDeltaFlushOutboxPort {
 
     private static final int DEFAULT_MAX_RETRY_COUNT = 10;
     private static final ZoneId LEGACY_CARDSHOP_DB_ZONE = ZoneId.of("Asia/Shanghai");
@@ -81,6 +84,10 @@ public class MybatisRechargeOutboxAdapter implements RechargeOutboxPort, Invalid
 
     @Override
     public void markFailed(RechargeOutboxEvent event, String errorMessage, Duration nextRetryDelay) {
+        if (event.nextFailureReachesMaxRetry()) {
+            markManualRequired(event, errorMessage);
+            return;
+        }
         requireMapper().update(null, new LambdaUpdateWrapper<RechargeOutboxDO>()
                 .eq(RechargeOutboxDO::getEventId, event.eventId())
                 .eq(RechargeOutboxDO::getVersion, event.version())
@@ -91,6 +98,22 @@ public class MybatisRechargeOutboxAdapter implements RechargeOutboxPort, Invalid
                 .set(RechargeOutboxDO::getUpdatedAt, now())
                 .setSql("retry_count = retry_count + 1")
                 .setSql("version = version + 1"));
+    }
+
+    @Override
+    public void markManualRequired(RechargeOutboxEvent event, String errorMessage) {
+        LambdaUpdateWrapper<RechargeOutboxDO> wrapper = new LambdaUpdateWrapper<RechargeOutboxDO>()
+                .eq(RechargeOutboxDO::getEventId, event.eventId())
+                .eq(RechargeOutboxDO::getVersion, event.version())
+                .set(RechargeOutboxDO::getStatus, TaskStatus.MANUAL_REQUIRED.name())
+                .set(RechargeOutboxDO::getLockedUntil, null)
+                .set(RechargeOutboxDO::getLastError, truncate(errorMessage, 1000))
+                .set(RechargeOutboxDO::getUpdatedAt, now())
+                .setSql("version = version + 1");
+        if (!event.retryExhausted()) {
+            wrapper.setSql("retry_count = retry_count + 1");
+        }
+        requireMapper().update(null, wrapper);
     }
 
     @Override
@@ -105,6 +128,34 @@ public class MybatisRechargeOutboxAdapter implements RechargeOutboxPort, Invalid
         outbox.setOrderId(command.orderId());
         outbox.setOutOrderSn(command.outOrderSn());
         outbox.setPayload(invalidPayload(command));
+        outbox.setStatus(TaskStatus.INIT.name());
+        outbox.setRetryCount(0);
+        outbox.setMaxRetryCount(DEFAULT_MAX_RETRY_COUNT);
+        outbox.setNextRetryTime(now);
+        outbox.setLockedBy(null);
+        outbox.setLockedUntil(null);
+        outbox.setVersion(0L);
+        outbox.setLastError("");
+        outbox.setShardKey(eventId);
+        outbox.setCreatedAt(now);
+        outbox.setUpdatedAt(now);
+        writer.insertIfAbsent(outbox);
+    }
+
+    @Override
+    public void enqueueBalanceDeltaFlush(BalanceDeltaFlushOutboxCommand command) {
+        Objects.requireNonNull(command, "command must not be null");
+        LocalDateTime now = now();
+        String normalizedDeltaType = normalizeDeltaType(command.deltaType());
+        String eventId = "balance-flush-" + normalizedDeltaType.toLowerCase(java.util.Locale.ROOT) + "-"
+                + command.orderId();
+        RechargeOutboxDO outbox = new RechargeOutboxDO();
+        outbox.setEventId(eventId);
+        outbox.setEventType(OutboxEventType.BALANCE_DELTA_FLUSH.name());
+        outbox.setOrgCode(command.orgCode());
+        outbox.setOrderId(command.orderId());
+        outbox.setOutOrderSn(command.outOrderSn());
+        outbox.setPayload(balanceDeltaPayload(command, normalizedDeltaType));
         outbox.setStatus(TaskStatus.INIT.name());
         outbox.setRetryCount(0);
         outbox.setMaxRetryCount(DEFAULT_MAX_RETRY_COUNT);
@@ -144,6 +195,27 @@ public class MybatisRechargeOutboxAdapter implements RechargeOutboxPort, Invalid
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("serialize invalid order outbox payload failed", ex);
         }
+    }
+
+    private String balanceDeltaPayload(BalanceDeltaFlushOutboxCommand command, String normalizedDeltaType) {
+        try {
+            return objectMapper.writeValueAsString(Map.of(
+                    "org_code", command.orgCode(),
+                    "order_id", command.orderId(),
+                    "out_order_sn", command.outOrderSn(),
+                    "delta_amount", command.deltaAmount(),
+                    "delta_type", normalizedDeltaType,
+                    "reason", command.reason() == null ? "" : command.reason()));
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("serialize balance delta flush outbox payload failed", ex);
+        }
+    }
+
+    private static String normalizeDeltaType(String deltaType) {
+        if (deltaType == null || deltaType.isBlank()) {
+            return "RELEASE";
+        }
+        return deltaType.strip().toUpperCase(java.util.Locale.ROOT);
     }
 
     private LocalDateTime now() {

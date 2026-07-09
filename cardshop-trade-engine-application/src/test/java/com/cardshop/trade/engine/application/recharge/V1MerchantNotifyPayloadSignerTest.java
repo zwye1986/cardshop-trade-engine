@@ -69,6 +69,7 @@ class V1MerchantNotifyPayloadSignerTest {
                 12,
                 "DB_PERSISTED",
                 "PASSED",
+                true,
                 true);
     }
 }

@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand;
+import com.cardshop.trade.engine.application.recharge.BalanceReservationReleaseCommand;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.CRC32;
@@ -104,6 +105,20 @@ class RechargeRedisKeyBuilderTest {
     }
 
     @Test
+    void releaseBalanceReservationKeysUseStableOrderAndOrgHashTag() {
+        var builder = new RechargeRedisKeyBuilder("cardshop:trade", 128);
+
+        assertThat(builder.releaseBalanceReservationKeys(sampleReleaseCommand()))
+                .containsExactly(
+                        "cardshop:trade:recharge:{A36}:balance",
+                        "cardshop:trade:recharge:{A36}:order:OUT-1001",
+                        "cardshop:trade:recharge:{A36}:reservation:202607051337458961474292",
+                        "cardshop:trade:recharge:{A36}:order:event_index:202607051337458961474292",
+                        "cardshop:trade:recharge:{A36}:order:event:202607051337458961474292:4",
+                        "cardshop:trade:recharge:{A36}:release:dispatch-202607051337458961474292");
+    }
+
+    @Test
     void orderKeyUsesSameHashTagAsAcceptLua() {
         var builder = new RechargeRedisKeyBuilder("cardshop:trade", 128);
 
@@ -163,5 +178,16 @@ class RechargeRedisKeyBuilderTest {
                 11L,
                 1783224958000L,
                 1783225258000L);
+    }
+
+    private static BalanceReservationReleaseCommand sampleReleaseCommand() {
+        return new BalanceReservationReleaseCommand(
+                "A36",
+                "202607051337458961474292",
+                "OUT-1001",
+                5200L,
+                "RELEASE",
+                "dispatch-202607051337458961474292",
+                "供应商失败");
     }
 }
