@@ -8,14 +8,22 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecor
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
+import com.baomidou.mybatisplus.autoconfigure.DdlApplicationRunner;
+import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Proxy;
+import java.sql.Connection;
+import javax.sql.DataSource;
 import org.apache.ibatis.session.SqlSessionFactory;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
+import org.springframework.jdbc.datasource.AbstractDataSource;
 
 /**
  * MyBatis 落库端口后置自动配置测试。
@@ -40,6 +48,30 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                     assertThat(context.getBean(RechargeOrderPersistencePort.class))
                             .isInstanceOf(MybatisRechargeOrderPersistenceAdapter.class);
                 });
+    }
+
+    @Nested
+    class MybatisPlusDdlRunnerCompatibility {
+
+        @Test
+        void providesRealDdlRunnerWhenNoMybatisPlusDdlScriptsAreConfigured() {
+            new ApplicationContextRunner()
+                    .withBean(DataSource.class, TradeEngineMybatisPersistenceAutoConfigurationTest::dataSource)
+                    .withConfiguration(AutoConfigurations.of(
+                            MybatisPlusDdlRunnerCompatibilityAutoConfiguration.class,
+                            MybatisPlusAutoConfiguration.class))
+                    .run(context -> {
+                        assertThat(context).hasNotFailed();
+
+                        Object runner = context.getBean("ddlApplicationRunner");
+                        assertThat(runner)
+                                .isInstanceOf(ApplicationRunner.class)
+                                .isInstanceOf(DdlApplicationRunner.class);
+                        assertThat(runner.getClass().getName())
+                                .isNotEqualTo("org.springframework.beans.factory.support.NullBean");
+                        ((ApplicationRunner) runner).run(new DefaultApplicationArguments());
+                    });
+        }
     }
 
     @AutoConfiguration(before = TradeEngineMybatisPersistenceAutoConfiguration.class)
@@ -79,5 +111,19 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                     throw new AssertionError("configuration test should not invoke mapper method " + method.getName());
                 });
         return mapperType.cast(proxy);
+    }
+
+    private static DataSource dataSource() {
+        return new AbstractDataSource() {
+            @Override
+            public Connection getConnection() {
+                throw new AssertionError("configuration test should not open a database connection");
+            }
+
+            @Override
+            public Connection getConnection(String username, String password) {
+                throw new AssertionError("configuration test should not open a database connection");
+            }
+        };
     }
 }

@@ -1,1 +1,2 @@
+com.cardshop.trade.engine.infrastructure.config.MybatisPlusDdlRunnerCompatibilityAutoConfiguration
 com.cardshop.trade.engine.infrastructure.config.TradeEngineMybatisPersistenceAutoConfiguration
