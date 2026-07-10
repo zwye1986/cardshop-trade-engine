@@ -109,6 +109,31 @@ class RedisPendingPersistOrderAdapterTest {
     }
 
     @Test
+    void selectDueCleansPendingResidualWhenRedisOrderIsAlreadyDbPersisted() {
+        RechargeRedisKeyBuilder keyBuilder = new RechargeRedisKeyBuilder("test", 8);
+        FakePendingRedisOperations operations = new FakePendingRedisOperations();
+        RedisPendingPersistOrderAdapter adapter = new RedisPendingPersistOrderAdapter(
+                operations,
+                keyBuilder,
+                8,
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(120),
+                PersistedOrderStatePort.noop(),
+                CLOCK);
+        seedPendingOrder(operations, keyBuilder, "A05", "ORDER-1", "OUT-1", "persist-1", 10_000);
+        operations.hash(keyBuilder.orderKey("A05", "OUT-1")).put("persist_status", "DB_PERSISTED");
+        operations.hash(keyBuilder.orderKey("A05", "OUT-1")).put("persisted_version", "1");
+        operations.hash(keyBuilder.idempotentKey("A05", "OUT-1")).put("persist_status", "DB_PERSISTED");
+
+        List<PendingPersistOrderSnapshot> snapshots = adapter.selectDueForShard(1, 0, 10, "worker-A");
+
+        assertThat(snapshots).isEmpty();
+        assertThat(operations.zset(keyBuilder.pendingKey("A05"))).doesNotContainKey("ORDER-1");
+        assertThat(operations.zset(keyBuilder.pendingOrgIndexKey(keyBuilder.pendingOrgBucket("A05"))))
+                .doesNotContainKey("A05");
+    }
+
+    @Test
     void markRepublishedDefersPendingAndIncrementsPublishCount() {
         RechargeRedisKeyBuilder keyBuilder = new RechargeRedisKeyBuilder("test", 8);
         FakePendingRedisOperations operations = new FakePendingRedisOperations();
@@ -156,6 +181,40 @@ class RedisPendingPersistOrderAdapterTest {
         operations.hash(keyBuilder.orderKey("A05", "OUT-1")).put("persist_status", "DB_PERSISTED");
         operations.hash(keyBuilder.orderKey("A05", "OUT-1")).put("persisted_version", "1");
         operations.hash(keyBuilder.idempotentKey("A05", "OUT-1")).put("persist_status", "DB_PERSISTED");
+
+        adapter.markRepublished(snapshot, PersistMessagePublishResult.confirmed("persist-repub-1", 2), "worker-A");
+
+        assertThat(operations.hash(keyBuilder.orderKey("A05", "OUT-1")))
+                .containsEntry("persist_status", "DB_PERSISTED")
+                .containsEntry("persisted_version", "1")
+                .containsEntry("last_republish_worker", "worker-A")
+                .doesNotContainEntry("persist_status", "PERSIST_QUEUED");
+        assertThat(operations.hash(keyBuilder.idempotentKey("A05", "OUT-1")))
+                .containsEntry("persist_status", "DB_PERSISTED");
+        assertThat(operations.zset(keyBuilder.pendingKey("A05"))).doesNotContainKey("ORDER-1");
+        assertThat(operations.zset(keyBuilder.pendingOrgIndexKey(keyBuilder.pendingOrgBucket("A05"))))
+                .doesNotContainKey("A05");
+    }
+
+    @Test
+    void markRepublishedUsesAtomicStateCheckWhenConsumerPersistsBetweenReadAndWrite() {
+        RechargeRedisKeyBuilder keyBuilder = new RechargeRedisKeyBuilder("test", 8);
+        FakePendingRedisOperations operations = new FakePendingRedisOperations();
+        RedisPendingPersistOrderAdapter adapter = new RedisPendingPersistOrderAdapter(
+                operations,
+                keyBuilder,
+                8,
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(120),
+                PersistedOrderStatePort.noop(),
+                CLOCK);
+        seedPendingOrder(operations, keyBuilder, "A05", "ORDER-1", "OUT-1", "", 10_000);
+        PendingPersistOrderSnapshot snapshot = adapter.selectDueForShard(1, 0, 10, "worker-A").getFirst();
+        operations.beforeMarkRepublished(keyBuilder.orderKey("A05", "OUT-1"), () -> {
+            operations.hash(keyBuilder.orderKey("A05", "OUT-1")).put("persist_status", "DB_PERSISTED");
+            operations.hash(keyBuilder.orderKey("A05", "OUT-1")).put("persisted_version", "1");
+            operations.hash(keyBuilder.idempotentKey("A05", "OUT-1")).put("persist_status", "DB_PERSISTED");
+        });
 
         adapter.markRepublished(snapshot, PersistMessagePublishResult.confirmed("persist-repub-1", 2), "worker-A");
 
@@ -286,6 +345,7 @@ class RedisPendingPersistOrderAdapterTest {
         private final Map<String, Map<String, String>> hashes = new LinkedHashMap<>();
         private final Map<String, Map<String, Long>> zsets = new LinkedHashMap<>();
         private final Map<String, String> strings = new LinkedHashMap<>();
+        private final Map<String, Runnable> beforeMarkRepublishedHooks = new LinkedHashMap<>();
 
         @Override
         public List<String> rangeByScore(String key, long minScore, long maxScore, int limit) {
@@ -310,6 +370,56 @@ class RedisPendingPersistOrderAdapterTest {
         @Override
         public void addToZSet(String key, long score, String value) {
             zset(key).put(value, score);
+        }
+
+        @Override
+        public void markRepublishedOrRepair(
+                String orderKey,
+                String idemKey,
+                String pendingKey,
+                String orgIndexKey,
+                String orgCode,
+                String orderId,
+                long fallbackPersistedVersion,
+                String messageId,
+                int publishCount,
+                String workerId,
+                long nextRetryMillis,
+                long nowMillis) {
+            Runnable hook = beforeMarkRepublishedHooks.remove(orderKey);
+            if (hook != null) {
+                hook.run();
+            }
+            Map<String, String> order = hash(orderKey);
+            if ("DB_PERSISTED".equals(order.get("persist_status"))) {
+                String persistedVersion = order.get("persisted_version");
+                if (persistedVersion == null || persistedVersion.isBlank() || Long.parseLong(persistedVersion) < 1) {
+                    persistedVersion = Long.toString(Math.max(1L, fallbackPersistedVersion));
+                }
+                order.put("persist_status", "DB_PERSISTED");
+                order.put("persisted_version", persistedVersion);
+                order.put("last_republish_worker", workerId);
+                order.put("updated_at", Long.toString(nowMillis));
+                hash(idemKey).put("persist_status", "DB_PERSISTED");
+                hash(idemKey).put("updated_at", Long.toString(nowMillis));
+                zset(pendingKey).remove(orderId);
+                refreshOrgIndex(pendingKey, orgIndexKey, orgCode);
+                return;
+            }
+            if ("PERSISTING".equals(order.get("persist_status"))) {
+                return;
+            }
+            order.put("persist_status", "PERSIST_QUEUED");
+            order.put("persist_msg_id", messageId);
+            order.put("mq_publish_count", Integer.toString(Math.max(1, publishCount)));
+            order.put("last_republish_worker", workerId);
+            order.put("next_retry_time", Long.toString(nextRetryMillis));
+            order.put("updated_at", Long.toString(nowMillis));
+            hash(idemKey).put("persist_status", "PERSIST_QUEUED");
+            hash(idemKey).put("persist_msg_id", messageId);
+            hash(idemKey).put("updated_at", Long.toString(nowMillis));
+            zset(pendingKey).put(orderId, nextRetryMillis);
+            zset(orgIndexKey).put(orgCode, nextRetryMillis);
         }
 
         @Override
@@ -341,6 +451,20 @@ class RedisPendingPersistOrderAdapterTest {
 
         String string(String key) {
             return strings.get(key);
+        }
+
+        void beforeMarkRepublished(String orderKey, Runnable hook) {
+            beforeMarkRepublishedHooks.put(orderKey, hook);
+        }
+
+        private void refreshOrgIndex(String pendingKey, String orgIndexKey, String orgCode) {
+            Map<String, Long> pending = zset(pendingKey);
+            if (pending.isEmpty()) {
+                zset(orgIndexKey).remove(orgCode);
+                return;
+            }
+            long nextScore = pending.values().stream().mapToLong(Long::longValue).min().orElseThrow();
+            zset(orgIndexKey).put(orgCode, nextScore);
         }
     }
 }

@@ -16,9 +16,12 @@ import java.util.Objects;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.data.redis.connection.Limit;
 import org.springframework.data.domain.Range;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.util.StringUtils;
 
 /**
@@ -137,49 +140,27 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
         long nextRetryMillis = nowMillis + Math.max(1000, retryDelay.toMillis());
         String now = Long.toString(nowMillis);
         int publishCount = intField(snapshot.initialOrderSnapshot(), "mq_publish_count", 0) + 1;
-        Map<String, String> orderUpdates = new LinkedHashMap<>();
-        orderUpdates.put("persist_status", STATUS_PERSIST_QUEUED);
-        orderUpdates.put("persist_msg_id", messageId);
-        orderUpdates.put("mq_publish_count", Integer.toString(Math.max(1, publishCount)));
-        orderUpdates.put("last_republish_worker", text(workerId));
-        orderUpdates.put("next_retry_time", Long.toString(nextRetryMillis));
-        orderUpdates.put("updated_at", now);
-
-        Map<String, String> idemUpdates = new LinkedHashMap<>();
-        idemUpdates.put("persist_status", STATUS_PERSIST_QUEUED);
-        idemUpdates.put("persist_msg_id", messageId);
-        idemUpdates.put("updated_at", now);
-
         try {
-            Map<String, String> currentOrder = operations.entries(keyBuilder.orderKey(snapshot.orgCode(), snapshot.outOrderSn()));
-            if (STATUS_DB_PERSISTED.equals(currentOrder.get("persist_status"))) {
-                /*
-                 * docs/交行直充业务系统详细设计.md「20.11 XXL-Job Handler 契约」要求补投任务不能让
-                 * Redis 状态从终态回退。PEND-006 真实联调证明：RabbitMQ confirm 后的 markRepublished
-                 * 可能晚于 Consumer 的 markDbPersisted，此时只能清理残留 pending/org_index，不能再把
-                 * order/idem 回写为 PERSIST_QUEUED。
-                 */
-                long persistedVersion = longField(currentOrder, "persisted_version", snapshot.orderVersion());
-                repairAlreadyPersisted(
-                        snapshot.orgCode(),
-                        snapshot.outOrderSn(),
-                        snapshot.orderId(),
-                        persistedVersion,
-                        workerId);
-                return;
-            }
-            operations.putAll(keyBuilder.orderKey(snapshot.orgCode(), snapshot.outOrderSn()), orderUpdates);
-            operations.putAll(keyBuilder.idempotentKey(snapshot.orgCode(), snapshot.outOrderSn()), idemUpdates);
             /*
-             * docs/交行直充业务系统详细设计.md「20.11 XXL-Job Handler 契约」要求 pending score
-             * 表示下一次补偿时间。补投 confirm 成功后仍保留 pending 给 Consumer 落库清理，但必须把
-             * score 推进到 retryDelay 后，避免 claim 租约一到期就反复重发同一订单。
+             * docs/交行直充业务系统详细设计.md「20.11 XXL-Job Handler 契约」要求补投任务不能让
+             * Redis 状态从终态回退。PEND-006 与第 7 节复测证明：RabbitMQ confirm 与 Consumer
+             * markDbPersisted 可以交错到单条 Redis 命令粒度，因此这里不能采用 Java 侧“先读后写”。
+             * `mark_pending_republished.lua` 在 Redis 内原子判断当前状态：若已 DB_PERSISTED 则只清理
+             * pending/org_index；否则才推进 PERSIST_QUEUED 并延后下一次补偿时间。
              */
-            operations.addToZSet(keyBuilder.pendingKey(snapshot.orgCode()), nextRetryMillis, snapshot.orderId());
-            operations.addToZSet(
+            operations.markRepublishedOrRepair(
+                    keyBuilder.orderKey(snapshot.orgCode(), snapshot.outOrderSn()),
+                    keyBuilder.idempotentKey(snapshot.orgCode(), snapshot.outOrderSn()),
+                    keyBuilder.pendingKey(snapshot.orgCode()),
                     keyBuilder.pendingOrgIndexKey(keyBuilder.pendingOrgBucket(snapshot.orgCode())),
+                    snapshot.orgCode(),
+                    snapshot.orderId(),
+                    Math.max(1L, snapshot.orderVersion()),
+                    messageId,
+                    Math.max(1, publishCount),
+                    text(workerId),
                     nextRetryMillis,
-                    snapshot.orgCode());
+                    nowMillis);
         } catch (RuntimeException ex) {
             log.error("Redis pending补投成功后状态推进失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}, workerId={}",
                     snapshot.orgCode(),
@@ -289,7 +270,19 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
                 return java.util.Optional.empty();
             }
             String persistStatus = order.getOrDefault("persist_status", "");
-            if (STATUS_DB_PERSISTED.equals(persistStatus) || STATUS_PERSISTING.equals(persistStatus)) {
+            if (STATUS_DB_PERSISTED.equals(persistStatus)) {
+                /*
+                 * docs/交行直充业务系统详细设计.md「20.11 XXL-Job Handler 契约」要求补偿任务具备
+                 * 自清理能力。2026-07-10 test188 第 7 节复测发现：极窄竞态下 Redis order 已经是
+                 * DB_PERSISTED，但 markRepublished 或历史残留仍可能留下 pending/org_index 未来 score。
+                 * 这种终态订单不应重新发布 MQ，也不能只跳过扫描；必须复用二次确认修复逻辑清掉索引，
+                 * 否则到期后会被反复扫描且永远 scanned=0。
+                 */
+                long persistedVersion = longField(order, "persisted_version", longField(order, "order_version", 1L));
+                repairAlreadyPersisted(orgCode, outOrderSn, orderId, persistedVersion, workerId);
+                return java.util.Optional.empty();
+            }
+            if (STATUS_PERSISTING.equals(persistStatus)) {
                 return java.util.Optional.empty();
             }
             if (!STATUS_PENDING_MQ.equals(persistStatus)
@@ -458,6 +451,20 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
 
         void addToZSet(String key, long score, String value);
 
+        void markRepublishedOrRepair(
+                String orderKey,
+                String idemKey,
+                String pendingKey,
+                String orgIndexKey,
+                String orgCode,
+                String orderId,
+                long fallbackPersistedVersion,
+                String messageId,
+                int publishCount,
+                String workerId,
+                long nextRetryMillis,
+                long nowMillis);
+
         boolean setIfAbsent(String key, String value, Duration ttl);
 
         void removeFromZSet(String key, String value);
@@ -466,6 +473,9 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
     }
 
     private static final class ReactivePendingRedisOperations implements PendingRedisOperations {
+
+        private static final RedisScript<List> MARK_PENDING_REPUBLISHED_SCRIPT =
+                loadScript("redis/lua/mark_pending_republished.lua");
 
         private final ReactiveStringRedisTemplate redisTemplate;
         private final Duration timeout;
@@ -509,6 +519,36 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
         }
 
         @Override
+        public void markRepublishedOrRepair(
+                String orderKey,
+                String idemKey,
+                String pendingKey,
+                String orgIndexKey,
+                String orgCode,
+                String orderId,
+                long fallbackPersistedVersion,
+                String messageId,
+                int publishCount,
+                String workerId,
+                long nextRetryMillis,
+                long nowMillis) {
+            redisTemplate.execute(
+                            MARK_PENDING_REPUBLISHED_SCRIPT,
+                            List.of(orderKey, idemKey, pendingKey, orgIndexKey),
+                            List.of(
+                                    orgCode,
+                                    orderId,
+                                    Long.toString(Math.max(1L, fallbackPersistedVersion)),
+                                    messageId == null ? "" : messageId,
+                                    Integer.toString(Math.max(1, publishCount)),
+                                    workerId == null ? "" : workerId,
+                                    Long.toString(nextRetryMillis),
+                                    Long.toString(nowMillis)))
+                    .next()
+                    .block(timeout);
+        }
+
+        @Override
         public boolean setIfAbsent(String key, String value, Duration ttl) {
             Boolean acquired = redisTemplate.opsForValue()
                     .setIfAbsent(key, value, ttl)
@@ -525,6 +565,13 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
         public Long score(String key, String value) {
             Double score = redisTemplate.opsForZSet().score(key, value).block(timeout);
             return score == null ? null : score.longValue();
+        }
+
+        private static RedisScript<List> loadScript(String location) {
+            DefaultRedisScript<List> script = new DefaultRedisScript<>();
+            script.setLocation(new ClassPathResource(location));
+            script.setResultType(List.class);
+            return script;
         }
     }
 }
