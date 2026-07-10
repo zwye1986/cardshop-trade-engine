@@ -1,9 +1,13 @@
 package com.cardshop.trade.engine.bootstrap.config;
 
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyAutoCheckService;
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.PendingPersistOrderPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
 import com.cardshop.trade.engine.application.recharge.RechargePersistMqRepublishService;
+import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.job.recharge.AcceptAnomalyAutoCheckJob;
 import com.cardshop.trade.engine.job.recharge.RechargeOutboxPublishJob;
 import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
 import org.springframework.beans.factory.ObjectProvider;
@@ -13,7 +17,7 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.context.annotation.Bean;
 
 /**
- * Redis pending 补投任务的后置自动配置。
+ * 补偿任务和异常核查任务的后置自动配置。
  *
  * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」、
  * {@code docs/集成测试方案.md}「8.5 Redis pending 补投联调设计」。真实 dev/test/prod 启动时，
@@ -23,9 +27,10 @@ import org.springframework.context.annotation.Bean;
  * {@link com.cardshop.trade.engine.bootstrap.admin.ManualRechargeJobController} 可能因缺少
  * {@link RechargePersistMqRepublishJob} 而阻断整个应用启动。
  *
- * <p>该自动配置运行在 Spring Boot auto-configuration 阶段，专门兜底装配 MQ 补投 service 和 job facade。
- * 它不注册 {@link PendingPersistOrderPort#noop()} 为 Bean，而是在构造 service 时按需降级，避免 noop 端口抢占
- * Redis 真实端口；同时仍要求 MQ publisher Bean 存在，确保没有发布端口时不会创建看似可用的补投任务。
+ * <p>该自动配置运行在 Spring Boot auto-configuration 阶段，专门兜底装配 MQ 补投、outbox 推进和接单异常核查
+ * 这些被人工入口/XXL-Job 共同调用的 service 与 job facade。它不注册 {@link PendingPersistOrderPort#noop()} 为
+ * Bean，而是在构造 service 时按需降级，避免 noop 端口抢占 Redis 真实端口；同时仍通过 {@code @ConditionalOnBean}
+ * 要求关键外部端口已经存在，确保没有实际执行能力时不会创建看似可用的补偿任务。
  */
 @AutoConfiguration(afterName = {
         "com.cardshop.trade.engine.infrastructure.config.TradeEngineRedisPendingAutoConfiguration",
@@ -82,5 +87,42 @@ public class TradeEngineCompensationJobAutoConfiguration {
     @ConditionalOnMissingBean(RechargeOutboxPublishJob.class)
     public RechargeOutboxPublishJob rechargeOutboxPublishJob(RechargeOutboxWorkerService service) {
         return new RechargeOutboxPublishJob(service);
+    }
+
+    /**
+     * 创建 Redis 接单异常自动核查服务。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」和
+     * 「10.1 XXL-Job Handler 契约」。2026-07-11 test188 已验证 {@code acceptAnomalyAutoCheckJob}
+     * 的 handler 能注册，但普通 {@link TradeEngineReliabilityConfiguration} 可能早于 MyBatis/Redis
+     * 查询端口完成条件判断，导致 handler 触发时只能报
+     * {@code AcceptAnomalyAutoCheckJob is not available for XXL-Job trigger}。
+     *
+     * <p>这里只补齐装配兜底：真实核查决策仍在 {@link AcceptAnomalyAutoCheckService}，查询与状态推进仍通过
+     * {@link AcceptAnomalyCheckRepositoryPort} 和 {@link RechargeOrderQueryPort} 两个端口完成，避免在调度层
+     * 引入任何 Redis/MySQL 业务判断。
+     */
+    @Bean
+    @ConditionalOnBean({AcceptAnomalyCheckRepositoryPort.class, RechargeOrderQueryPort.class})
+    @ConditionalOnMissingBean(AcceptAnomalyAutoCheckService.class)
+    public AcceptAnomalyAutoCheckService acceptAnomalyAutoCheckService(
+            AcceptAnomalyCheckRepositoryPort repository,
+            RechargeOrderQueryPort orderQueryPort) {
+        return new AcceptAnomalyAutoCheckService(repository, orderQueryPort);
+    }
+
+    /**
+     * 创建异常核查的人工联调与 XXL-Job 共用 job facade。
+     *
+     * <p>该 Bean 是 {@code acceptAnomalyAutoCheckJob} handler 的真实执行目标。handler 只解析
+     * {@code limit/workerId/batchId} 并委托这里，批量大小归一化和单条异常失败隔离仍复用
+     * {@link AcceptAnomalyAutoCheckJob#runOnce(int, String)} 既有实现。
+     */
+    @Bean
+    @ConditionalOnBean(AcceptAnomalyAutoCheckService.class)
+    @ConditionalOnMissingBean(AcceptAnomalyAutoCheckJob.class)
+    public AcceptAnomalyAutoCheckJob acceptAnomalyAutoCheckJob(
+            AcceptAnomalyAutoCheckService service) {
+        return new AcceptAnomalyAutoCheckJob(service);
     }
 }

@@ -15,7 +15,9 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -135,6 +137,30 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.outboxByEventId("balance-flush-ORDER-1001").getEventId()).isEqualTo("balance-flush-ORDER-1001");
     }
 
+    @Test
+    void repeatedMqConsumptionDoesNotDuplicatePreDeductRecordOrOutbox() {
+        RecordingStore store = new RecordingStore();
+        MybatisRechargeOrderPersistenceAdapter adapter = new MybatisRechargeOrderPersistenceAdapter(
+                store,
+                store,
+                store,
+                store,
+                new ObjectMapper());
+
+        adapter.persist(aggregate(snapshot("PASSED", true, "", "")));
+        adapter.persist(aggregate(snapshot("PASSED", true, "", "")));
+
+        // 对应详细设计「8.3 异步落库 Consumer」：重复 MQ 消费第二次命中 mc_order 唯一键后，
+        // 不能重复写 PRE_DEDUCT 资金流水，也不能重复创建 D9/D12 outbox 事件。
+        assertThat(store.orderInsertResults).containsExactly(1, 0);
+        assertThat(store.extPersistCalls).isEqualTo(2);
+        assertThat(store.departRecords).hasSize(1);
+        assertThat(store.outboxes)
+                .extracting(RechargeOutboxDO::getEventId)
+                .containsExactly("dispatch-ORDER-1001", "balance-flush-ORDER-1001");
+        assertThat(store.ext.getPersistedVersion()).isEqualTo(1L);
+    }
+
     private static OrderPersistAggregate aggregate(PersistOrderSnapshot snapshot) {
         return new OrderPersistAggregate(
                 "persist-ORDER-1001-01",
@@ -188,29 +214,63 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         private McOrderDO order;
         private RechargeOrderExtDO ext;
         private final List<RechargeOutboxDO> outboxes = new ArrayList<>();
+        private final List<McDepartRecordDO> departRecords = new ArrayList<>();
+        private final List<Integer> orderInsertResults = new ArrayList<>();
+        private final Map<String, McOrderDO> ordersByDirectKey = new LinkedHashMap<>();
+        private final Map<String, RechargeOutboxDO> outboxesByEventId = new LinkedHashMap<>();
+        private final Map<String, McDepartRecordDO> departRecordsByKey = new LinkedHashMap<>();
         private McDepartRecordDO departRecord;
+        private int extPersistCalls;
         private int nextOrderInsertResult = 1;
 
         @Override
         public int insertIfAbsent(McOrderDO order) {
+            /*
+             * 测试桩按旧表生成列唯一键 uk_direct_recharge_out_order_key 模拟 MySQL 行为：
+             * 首次 insert 返回 1，重复 MQ 消费再次写同一商户订单时返回 0，让适配器走“订单已存在”分支。
+             */
+            if (nextOrderInsertResult == 0) {
+                orderInsertResults.add(0);
+                return 0;
+            }
+            String directKey = order.getOrgCode() + ":" + order.getOutOrderId() + ":" + order.getProductType();
+            if (ordersByDirectKey.containsKey(directKey)) {
+                orderInsertResults.add(0);
+                return 0;
+            }
             this.order = order;
-            return nextOrderInsertResult;
+            ordersByDirectKey.put(directKey, order);
+            orderInsertResults.add(1);
+            return 1;
         }
 
         @Override
         public int insertOrUpdatePersistState(RechargeOrderExtDO ext) {
+            extPersistCalls++;
             this.ext = ext;
             return 1;
         }
 
         @Override
         public int insertIfAbsent(RechargeOutboxDO outbox) {
+            // recharge_outbox 的 event_id 是可靠事件幂等键；重复 MQ 消费只能保留首次事件。
+            if (outboxesByEventId.containsKey(outbox.getEventId())) {
+                return 0;
+            }
             this.outboxes.add(outbox);
+            this.outboxesByEventId.put(outbox.getEventId(), outbox);
             return 1;
         }
 
         @Override
         public int insertPreDeductIfAbsent(McDepartRecordDO record) {
+            // mc_depart_record 通过 type=1 + order_id 生成列唯一键防止重复扣款流水。
+            String recordKey = record.getOrderId() + ":" + record.getType();
+            if (departRecordsByKey.containsKey(recordKey)) {
+                return 0;
+            }
+            this.departRecords.add(record);
+            this.departRecordsByKey.put(recordKey, record);
             this.departRecord = record;
             return 1;
         }

@@ -42,6 +42,8 @@ class PersistRechargeOrderConsumerServiceTest {
         assertThat(persistencePort.lastAggregate.persistSource()).isEqualTo(PersistSource.MQ_SNAPSHOT_FALLBACK);
         assertThat(persistencePort.lastAggregate.snapshot().productName()).isEqualTo("交行话费100元");
         assertThat(reliabilityPort.markDbPersistedCalls).isEqualTo(1);
+        // 对应详细设计「8.3 异步落库 Consumer」：Redis 快照缺失时，MQ initialOrderSnapshot 的版本就是已落库版本。
+        assertThat(reliabilityPort.lastPersistedVersion).isEqualTo(1L);
         assertThat(reliabilityPort.markPersistFailedCalls).isZero();
         assertThat(persistencePort.events).containsExactly("persist");
         assertThat(reliabilityPort.events).containsExactly("markDbPersisted");
@@ -65,6 +67,8 @@ class PersistRechargeOrderConsumerServiceTest {
         assertThat(persistencePort.lastAggregate.persistSource()).isEqualTo(PersistSource.REDIS_SNAPSHOT);
         assertThat(persistencePort.lastAggregate.snapshot().orderVersion()).isEqualTo(2L);
         assertThat(persistencePort.lastAggregate.snapshot().productName()).isEqualTo("Redis更新商品名");
+        // 对应详细设计「8.3 异步落库 Consumer」：选择 Redis 更新版本快照后，markDbPersisted 必须推进到该快照版本。
+        assertThat(reliabilityPort.lastPersistedVersion).isEqualTo(2L);
     }
 
     @Test
@@ -86,6 +90,8 @@ class PersistRechargeOrderConsumerServiceTest {
         assertThat(persistencePort.lastAggregate.persistSource()).isEqualTo(PersistSource.MQ_SNAPSHOT_FALLBACK);
         assertThat(persistencePort.lastAggregate.snapshot().productName()).isEqualTo("交行话费100元");
         assertThat(reliabilityPort.markDbPersistedCalls).isEqualTo(1);
+        // Redis 快照读取异常会降级使用 MQ 初始快照，因此 persistedVersion 仍应等于 MQ 消息中的 orderVersion。
+        assertThat(reliabilityPort.lastPersistedVersion).isEqualTo(1L);
     }
 
     @Test
@@ -286,6 +292,7 @@ class PersistRechargeOrderConsumerServiceTest {
         private final List<String> events = new ArrayList<>();
         private int markDbPersistedCalls;
         private int markPersistFailedCalls;
+        private long lastPersistedVersion = -1L;
         private String lastPersistFailedReason;
         private CompletionStage<MarkPersistStateResult> markDbPersistedFuture =
                 CompletableFuture.completedFuture(MarkPersistStateResult.success());
@@ -324,6 +331,7 @@ class PersistRechargeOrderConsumerServiceTest {
                 long nowEpochMillis) {
             events.add("markDbPersisted");
             markDbPersistedCalls++;
+            lastPersistedVersion = persistedVersion;
             return markDbPersistedFuture;
         }
 

@@ -1,14 +1,17 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
+import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
+import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
-import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
-import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
-import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisPersistedOrderStateAdapter;
-import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOutboxAdapter;
@@ -16,11 +19,11 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecor
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 import java.time.Clock;
 import java.time.Duration;
 import org.apache.ibatis.session.SqlSessionFactory;
@@ -141,6 +144,29 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
             ObjectMapper objectMapper,
             Clock clock) {
         return new MybatisRechargeNotifyTaskAdapter(notifyTaskMapper, objectMapper, clock);
+    }
+
+    /**
+     * 创建接单异常自动核查仓储端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」和
+     * 「14.3 MySQL 表字段」。2026-07-11 test188 的 XXL-Job 冒烟暴露过
+     * {@code acceptAnomalyAutoCheckJob} handler 已注册但 job facade 缺失的问题；根因之一是普通
+     * {@code TradeEngineInfrastructureConfiguration} 早于 MyBatis mapper scanner 条件判断，导致
+     * {@link AcceptAnomalyCheckRepositoryPort} 没有注册，进而无法创建异常核查 service/job。
+     *
+     * <p>这里沿用本类其它 MyBatis 端口的模式：只以 {@link SqlSessionFactory} 作为 MyBatis 就绪信号，
+     * {@link RechargeAcceptAnomalyMapper} 作为方法参数在实例化阶段解析。若 mapper scan 漏配，应启动失败，
+     * 不能让调度入口在运行时才表现为 “job is not available”。
+     */
+    @Bean
+    @ConditionalOnBean(SqlSessionFactory.class)
+    @ConditionalOnMissingBean(AcceptAnomalyCheckRepositoryPort.class)
+    public AcceptAnomalyCheckRepositoryPort acceptAnomalyCheckRepositoryPort(
+            RechargeAcceptAnomalyMapper mapper,
+            ObjectMapper objectMapper,
+            Clock clock) {
+        return new MybatisAcceptAnomalyCheckRepositoryAdapter(mapper, objectMapper, clock);
     }
 
     @Bean

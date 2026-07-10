@@ -2,6 +2,7 @@ package com.cardshop.trade.engine.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
@@ -9,6 +10,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPo
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
@@ -17,6 +19,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecor
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
@@ -85,6 +88,26 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                     assertThat(context.getBean(RechargeNotifyTaskPort.class))
                             .isSameAs(context.getBean(RechargeNotifyWorkerTaskPort.class))
                             .isInstanceOf(MybatisRechargeNotifyTaskAdapter.class);
+                });
+    }
+
+    @Test
+    void registersAcceptAnomalyCheckRepositoryWhenMapperComesFromLaterAutoConfiguration() {
+        new ApplicationContextRunner()
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withConfiguration(AutoConfigurations.of(
+                        TestMapperAutoConfiguration.class,
+                        TradeEngineMybatisPersistenceAutoConfiguration.class))
+                .run(context -> {
+                    /*
+                     * 参见详细设计「6.3 Redis HA Guard 与状态未知窗口」。test188 的 XXL-Job 冒烟已暴露：
+                     * handler 能注册，但异常核查 job facade 因 repository 端口没有在后置配置阶段创建而缺失。
+                     * 这里要求 MyBatis mapper scan 完成后兜底创建真实核查仓储，避免调度入口只剩空壳。
+                     */
+                    assertThat(context).hasSingleBean(AcceptAnomalyCheckRepositoryPort.class);
+                    assertThat(context.getBean(AcceptAnomalyCheckRepositoryPort.class))
+                            .isInstanceOf(MybatisAcceptAnomalyCheckRepositoryAdapter.class);
                 });
     }
 
@@ -177,6 +200,11 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         @Bean
         RechargeNotifyTaskMapper rechargeNotifyTaskMapper() {
             return mapperProxy(RechargeNotifyTaskMapper.class);
+        }
+
+        @Bean
+        RechargeAcceptAnomalyMapper rechargeAcceptAnomalyMapper() {
+            return mapperProxy(RechargeAcceptAnomalyMapper.class);
         }
     }
 
