@@ -14,7 +14,7 @@ import org.slf4j.LoggerFactory;
 /**
  * `accept_recharge_order.lua` 返回值映射器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
  * Lua 返回扁平 key-value 数组，Java 侧在这里集中做类型归一，避免接口层或用例层依赖 Redis 原始返回结构。
  */
 final class AcceptRechargeOrderLuaResultMapper {
@@ -71,8 +71,8 @@ final class AcceptRechargeOrderLuaResultMapper {
     /**
      * 兼容 Lettuce 原生 reactive `eval(..., ScriptOutputType.MULTI)` 的单元素嵌套数组返回。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」以及
-     * 「20.13.8 异步落库 Consumer」。`LettuceRechargeRedisSessionFactory` 为了在同一 Redis 连接上执行
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」以及
+     * 「8.3 异步落库 Consumer」。`LettuceRechargeRedisSessionFactory` 为了在同一 Redis 连接上执行
      * accept Lua 与 WAIT，使用 Lettuce 原生命令并对返回流执行 `collectList()`；真实 Redis 返回的 Lua 数组可能先作为
      * 一个 MULTI 元素发出，收集后形态变成 `List<List<String>>`。若不在基础设施层展开，Java 会得到空字段映射，
      * 把 Redis 已经写入的 `ACCEPTED` 误判为 `UNKNOWN`，进而跳过 WAIT/MQ confirm，形成 Redis `PENDING_MQ`
@@ -88,7 +88,7 @@ final class AcceptRechargeOrderLuaResultMapper {
     /**
      * 将 Redis Lua 返回的单个标量归一为 UTF-8 字符串。
      *
-     * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」以及
+     * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」以及
      * {@code docs/交行直充业务系统高可用方案设计.md}「14.3 Redis 成功但 MQ confirm 失败协议」。
      * 这里不能直接使用 {@link String#valueOf(Object)}：不同 Redis 执行路径可能把 bulk string
      * 返回成 {@code String}、{@code byte[]} 或数字类型。若 {@code byte[]} 被格式化成 JVM 对象标识

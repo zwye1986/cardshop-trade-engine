@@ -20,8 +20,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * V1 Token 生成用例测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.1.1 `/v1/cardapi` 路由兼容设计」
- * 和「20.13.5 Token 生成接口」。D3 收口要求灰度 `/auth/getToken` 不能再返回 fallback，
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」
+ * 和「3. API/V1 接入层」。D3 收口要求灰度 `/auth/getToken` 不能再返回 fallback，
  * 必须按旧系统 app_id/app_secret 语义生成 HS512 JWT，并写入共享 Redis token key 空间。
  */
 class V1IssueTokenUseCaseServiceTest {

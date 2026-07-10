@@ -12,7 +12,7 @@ import java.util.List;
 /**
  * 旧卡管商品表 `mc_product` Mapper。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.5 商品选择规则」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
  * 查询只按商品编码集合读取启用商品，不和商户商品关系表做 SQL join；显式 SQL 避免运行期依赖
  * MyBatis-Plus BaseMapper 通用 statement。
  */

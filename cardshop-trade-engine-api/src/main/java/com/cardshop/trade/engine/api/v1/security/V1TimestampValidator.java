@@ -14,8 +14,8 @@ import java.time.Instant;
 /**
  * `/v1/cardapi` timestamp 偏差校验器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.2 V1 请求 DTO 和字段来源」
- * 与「20.13.3 SM4 解密与 SM3 验签」。兼容 10 位秒级时间戳和 13 位毫秒级时间戳。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「14.1 V1 DTO 字段」
+ * 与「3. API/V1 接入层」。兼容 10 位秒级时间戳和 13 位毫秒级时间戳。
  */
 @Component
 public class V1TimestampValidator {

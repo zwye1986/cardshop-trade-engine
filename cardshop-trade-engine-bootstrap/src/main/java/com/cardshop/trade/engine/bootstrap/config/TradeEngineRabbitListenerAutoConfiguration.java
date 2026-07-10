@@ -15,8 +15,8 @@ import org.springframework.context.annotation.Bean;
 /**
  * RabbitMQ 异步落库 listener 的后置自动配置。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」和
- * 「20.13.8 异步落库 Consumer」。真实 dev/test/prod 环境中的 {@link RabbitTemplate}
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「7. RabbitMQ 持久化消息层」和
+ * 「8.3 异步落库 Consumer」。真实 dev/test/prod 环境中的 {@link RabbitTemplate}
  * 来自 Spring Boot 的 {@link RabbitAutoConfiguration}，而业务侧普通 {@code @Configuration}
  * 会早于自动配置解析；若在普通配置类上直接使用 {@code @ConditionalOnBean(RabbitTemplate.class)}，
  * 条件可能在 RabbitTemplate BeanDefinition 注册前就被判定为不满足，最终出现应用健康但 RabbitMQ

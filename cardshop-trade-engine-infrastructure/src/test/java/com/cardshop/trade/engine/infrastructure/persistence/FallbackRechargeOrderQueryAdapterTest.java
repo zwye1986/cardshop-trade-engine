@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Redis 优先、MySQL 兜底查单组合端口测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
  * 查单入口必须优先返回 Redis 受理期快照；只有 Redis 未命中时，才读取 MySQL 已落库事实。
  */
 class FallbackRechargeOrderQueryAdapterTest {

@@ -28,7 +28,7 @@ import org.springframework.transaction.annotation.Transactional;
 /**
  * 基于 MyBatis 的 Redis/MQ 订单落库适配器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * 本类是 D7/D8 的事务边界：同一个事务内写 `mc_order`、`recharge_order_ext`、必要的
  * `mc_depart_record(PRE_DEDUCT)`，在允许派单时写入 `SUPPLIER_DISPATCH` outbox，并在 Redis 已预扣余额时写入
  * `BALANCE_DELTA_FLUSH` outbox 供 D12 余额沉淀任务处理。
@@ -92,7 +92,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
          * insertIfAbsent 返回 1 表示本事务是首次落库该订单，返回 0 表示订单事实已由先前提交的事务写入。
          * mc_order 与 mc_depart_record 在同一事务内提交，orderInserted == 1 时才尝试写 PRE_DEDUCT；
          * 资金流水本身仍依赖 `trade_engine_record_key` 唯一键做最终幂等兜底。参见
-         * docs/交行直充业务系统详细设计.md「20.13.8 异步落库 Consumer」资金流水幂等约束。
+         * docs/交行直充业务系统详细设计.md「8.3 异步落库 Consumer」资金流水幂等约束。
          */
         int orderInserted = orderWriter.insertIfAbsent(toMcOrder(aggregate));
         extWriter.insertOrUpdatePersistState(toExt(aggregate));
@@ -232,7 +232,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
         outbox.setVersion(0L);
         outbox.setLastError("");
         /*
-         * 详细设计「20.13.15 测试清单」要求 outbox shard_key 固定使用 event_id；余额刷账按商户聚合发生在
+         * 详细设计「13. 测试与验收标准」要求 outbox shard_key 固定使用 event_id；余额刷账按商户聚合发生在
          * D12 job 内部，不能在落库阶段把 shard_key 改成 org_code，否则会和通用 outbox 扫描语义分叉。
          */
         outbox.setShardKey(eventId);
@@ -299,7 +299,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
 
     private static LocalDateTime persistedAt(OrderPersistAggregate aggregate) {
         /*
-         * docs/交行直充业务系统详细设计.md「20.13.8 异步落库 Consumer」
+         * docs/交行直充业务系统详细设计.md「8.3 异步落库 Consumer」
          * mc_order/recharge_order_ext/recharge_outbox 使用 MySQL datetime 字面值，旧卡管库按 Asia/Shanghai
          * 读写和展示时间。这里将 Instant 转成本地业务时区的 LocalDateTime，避免补偿任务按 next_retry_time
          * 扫描时比真实时间偏移 8 小时。

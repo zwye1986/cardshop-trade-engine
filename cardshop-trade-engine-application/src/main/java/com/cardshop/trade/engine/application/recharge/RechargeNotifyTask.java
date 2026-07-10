@@ -5,7 +5,7 @@ import java.time.LocalDateTime;
 /**
  * 待推送商户回调任务。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.12 回调设计」。payload 是已经签名的
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。payload 是已经签名的
  * JSON 字符串，重试 Worker 不重新计算业务签名。
  *
  * @param taskId 回调任务唯一 ID，对应 {@code recharge_notify_task.task_id}

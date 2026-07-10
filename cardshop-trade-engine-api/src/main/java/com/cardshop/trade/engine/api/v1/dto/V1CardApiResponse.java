@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.api.v1.dto;
 /**
  * `/v1/cardapi` 统一响应包装。
  *
- * <p>响应形状对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.1 协议基线」：
+ * <p>响应形状对应 {@code docs/交行直充业务系统详细设计.md} 的「3. API/V1 接入层」：
  * 对外保持 {@code code/msg/data} 三段式结构，内部失败码不得替换旧接口数字状态码。
  *
  * @param code 旧接口数字状态码字符串，例如 200、500、505

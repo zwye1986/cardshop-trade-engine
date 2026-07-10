@@ -22,7 +22,7 @@ import org.springframework.amqp.rabbit.connection.CorrelationData;
 /**
  * RabbitMQ Redis 订单异步落库消息发布器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」和
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「7. RabbitMQ 持久化消息层」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「14.3 Redis 成功但 MQ confirm 失败协议」。
  * `RabbitTemplate.convertAndSend` 只代表消息交给客户端发送流程，接口返回前必须等待 publisher confirm ack；
  * 若 confirm 持续失败，{@link #isAvailable()} 会打开熔断，让下单链路在 Redis 写入前 fail closed。

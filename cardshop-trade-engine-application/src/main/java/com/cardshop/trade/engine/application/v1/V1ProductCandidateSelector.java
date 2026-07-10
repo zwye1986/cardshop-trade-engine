@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.v1;
 /**
  * V1 直充商品候选选择端口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.5 商品选择规则」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
  * 调用方传入的 {@code product_id} 是父商品编码，选择器负责按旧卡管商品权限关系找到实际子商品。
  */
 @FunctionalInterface

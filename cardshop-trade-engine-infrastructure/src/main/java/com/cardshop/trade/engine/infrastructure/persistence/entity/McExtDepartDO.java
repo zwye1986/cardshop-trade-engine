@@ -8,7 +8,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 /**
  * 旧卡管商户扩展表 `mc_ext_depart` 的最小持久化对象。
  *
- * <p>字段来源对应 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」。
+ * <p>字段来源对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
  * 新链路只读取 appId、appSecret、orgCode、aesKey 和启停状态，禁止把请求体里的 orgCode 当作可信商户身份。
  */
 @TableName("mc_ext_depart")

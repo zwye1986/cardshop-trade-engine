@@ -14,7 +14,7 @@ import java.util.Map;
 /**
  * `/v1/cardapi` 灰度路由判定服务。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.1.1 `/v1/cardapi` 路由兼容设计」：
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「3. API/V1 接入层」：
  * 默认保守回退旧系统，只有路径支持且明确命中灰度 appId 或 orgCode 时才进入新链路。
  */
 @Component

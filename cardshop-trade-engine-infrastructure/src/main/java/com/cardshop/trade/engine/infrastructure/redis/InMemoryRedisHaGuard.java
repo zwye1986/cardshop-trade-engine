@@ -16,14 +16,14 @@ import org.slf4j.LoggerFactory;
 /**
  * 基于本机内存状态的 Redis HA 写入门禁。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」和
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「15. Redis 高可用设计」。D5B 先实现节点内 fail closed：
  * Nacos/配置写入开关关闭，或运行时因为 WAIT/cancel 未知态主动关闭写入，都会让下单入口在 `accept.lua` 前拒绝。
  * Sentinel 事件监听、跨节点状态同步和自动恢复条件后续继续接入该类或其替代实现。
  *
  * <p>TODO(D5C/D6B): 接入 Sentinel switch-master、Lettuce topology/连接重建事件、异常核查收敛结果和
  * Nacos/跨节点写入开关，完成“修复任务确认余额、pending、订单快照和异常订单后再恢复写入”的自动恢复闭环；
- * 参见 docs/交行直充业务系统详细设计.md「9.3 Redis HA Guard」和
+ * 参见 docs/交行直充业务系统详细设计.md「6.3 Redis HA Guard 与状态未知窗口」和
  * docs/交行直充业务系统高可用方案设计.md「13. Redis 主从切换与恢复时序图」。
  */
 public class InMemoryRedisHaGuard implements RedisHaGuardPort {

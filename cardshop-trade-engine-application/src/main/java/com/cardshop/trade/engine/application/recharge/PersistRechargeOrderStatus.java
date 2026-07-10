@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.recharge;
 /**
  * 异步落库 Consumer 单条消息处理状态。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * 该状态用于后续 RabbitMQ adapter 判断 ack/nack：MySQL 已提交的结果不应再重复消费，
  * MySQL 未提交的结果应保持可重试。
  */

@@ -23,7 +23,7 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 /**
  * RabbitMQ 持久化消息 listener 适配器。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * 本类只负责 RabbitMQ 协议边界：反序列化 `PersistTradeOrderMessage`、调用 application 层 Consumer 核心服务、
  * 再根据 `PersistRechargeOrderResult.shouldAck` 执行 manual ack/nack。MySQL 事务、Redis 快照选择和
  * `markDbPersisted/markPersistFailed` 必须保持在 application service 中，避免 MQ 适配层复制业务状态机。

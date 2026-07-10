@@ -25,7 +25,7 @@ import org.springframework.util.StringUtils;
 /**
  * V1 查单用例。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」。D4 阶段先实现 Redis
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。D4 阶段先实现 Redis
  * 快照优先查询，未落库或 MQ/Consumer 未追平的订单统一映射为旧接口“处理中”，且查单不触发供应商状态修改。
  */
 public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUseCase {
@@ -97,7 +97,7 @@ public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUse
         String persistStatus = defaultText(snapshot.persistStatus(), "");
         String validationStatus = defaultText(snapshot.validationStatus(), "");
         /*
-         * 查单响应必须使用 V1.1 接口文档「1.4.2 订单状态码」和详细设计「20.13.10 查单设计」中的
+         * 查单响应必须使用 V1.1 接口文档「1.4.2 订单状态码」和详细设计「3. API/V1 接入层」中的
          * order_status 码表。这里特别避免把旧后台推送状态或核销 use_state 的 3 当成订单失败：
          * 失败订单对外是 6，核销作废才使用 use_state=3。
          */
@@ -134,7 +134,7 @@ public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUse
         }
         /*
          * 对未知内部态保持保守处理中，避免查单接口越权推进供应商查询或把未识别状态误报为终态。
-         * 后续若新增内部状态，应在详细设计「20.13.10 查单设计」状态映射表先补充，再扩展这里。
+         * 后续若新增内部状态，应在详细设计「3. API/V1 接入层」状态映射表先补充，再扩展这里。
          */
         return orderView(LegacyOrderStatusCode.ACCEPTED, ORDER_STATUS_DESC_PROCESSING);
     }

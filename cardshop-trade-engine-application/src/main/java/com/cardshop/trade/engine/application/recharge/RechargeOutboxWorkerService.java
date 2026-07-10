@@ -12,8 +12,8 @@ import org.slf4j.LoggerFactory;
 /**
  * MySQL outbox 履约 Worker。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」、
- * 「20.13.11 作废设计」和「20.13.12 回调设计」。本服务只负责编排端口：扫描并抢占 outbox、
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」、
+ * 「9.2 作废设计」和「9.3 回调设计」。本服务只负责编排端口：扫描并抢占 outbox、
  * 调用供应商 Gateway、回写订单/流水、生成回调任务；具体 MySQL、Redis 和 HTTP 实现都在基础设施层。
  */
 public class RechargeOutboxWorkerService {
@@ -217,7 +217,7 @@ public class RechargeOutboxWorkerService {
             }
             case RETRYABLE_FAILED -> {
                 /*
-                 * docs/交行直充业务系统详细设计.md「20.13.9 派单 Outbox」要求供应商派单具备退避重试。
+                 * docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」要求供应商派单具备退避重试。
                  * HTTP 5xx、超时、连接异常属于“本次调用不可确认”，不是供应商明确拒绝；这里不能释放
                  * Redis reservation、不能生成失败回调，也不能把 outbox 标成 SUCCESS。保持订单处于
                  * DISPATCHING/PROCESSING，由 outbox 下次重试用同一 event_id 幂等号继续推进。
@@ -339,7 +339,7 @@ public class RechargeOutboxWorkerService {
 
     private void enqueueReleaseBalanceDelta(RechargeFulfillmentOrder order, String reason) {
         /*
-         * docs/交行直充业务系统详细设计.md「20.2 作废设计」要求作废/失败完成后生成反向
+         * docs/交行直充业务系统详细设计.md「9.2 作废设计」要求作废/失败完成后生成反向
          * BALANCE_DELTA_FLUSH。这里仅写可靠事件，不在 Worker 线程直接改 mc_ext_depart.balance，
          * 保持 D12 余额刷账的 CAS 抢占和重试语义。
          */
@@ -428,7 +428,7 @@ public class RechargeOutboxWorkerService {
             case FAILED -> "fail";
             /*
              * mc_order_supplier_flow.status 是旧卡管 varchar(10)，DDL 注释只约定 new/success/fail/processing。
-             * docs/交行直充业务系统详细设计.md「20.13.9 派单 Outbox」中的可重试失败表示供应商结果未确认，
+             * docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」中的可重试失败表示供应商结果未确认，
              * 不是业务终态失败；写旧表时保持 processing，详细错误原因放到 response_result/remark 和 outbox
              * last_error 中，避免因状态值超长导致 SUP-002 的退避重试被数据库兼容问题打断。
              */

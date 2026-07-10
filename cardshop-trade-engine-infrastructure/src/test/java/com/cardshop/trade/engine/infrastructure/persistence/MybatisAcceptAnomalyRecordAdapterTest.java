@@ -18,7 +18,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Redis 受理异常登记 MyBatis 适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
  * WAIT 失败且 cancel 失败时，接口不能确认 Redis 是否最终保留订单，因此必须把最小核查上下文写入
  * `recharge_accept_anomaly`，供后续自动核查任务或人工处理使用。
  */

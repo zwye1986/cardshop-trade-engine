@@ -17,8 +17,8 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 /**
  * Redis 接单异常自动核查服务测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」和
- * 「20.13.6 Redis Lua 下单结果」。自动核查任务先实现 Redis/MySQL 读侧可判定的最小闭环：
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」和
+ * 「6. Redis 受理与缓存层」。自动核查任务先实现 Redis/MySQL 读侧可判定的最小闭环：
  * 查到同一订单则认为已受理；查不到快照或证据冲突时先转人工，等待后续显式 Redis/MQ probe 补齐。
  */
 @ExtendWith(OutputCaptureExtension.class)

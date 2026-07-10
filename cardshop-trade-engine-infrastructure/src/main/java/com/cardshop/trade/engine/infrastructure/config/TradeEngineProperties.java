@@ -10,7 +10,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * 交易引擎统一配置绑定对象。
  *
  * <p>配置前缀为 {@code trade.engine}，字段含义对应
- * {@code docs/交行直充业务系统详细设计.md} 的「7.4 核心配置项」和「20.10 Nacos 配置全量模板」。
+ * {@code docs/交行直充业务系统详细设计.md} 的「11. 配置中心、部署与健康检查」和「11. 配置中心、部署与健康检查」。
  * 该类是本地 YAML、Nacos 配置和运行时代码之间的合同：新增字段时必须同步更新设计文档、Nacos 模板和相关测试。
  */
 @ConfigurationProperties(prefix = "trade.engine")
@@ -27,12 +27,12 @@ public class TradeEngineProperties {
     private final Redis redis = new Redis();
 
     /**
-     * RabbitMQ 持久化消息和 Confirm 保护配置；参见详细设计「10. RabbitMQ 设计落地」。
+     * RabbitMQ 持久化消息和 Confirm 保护配置；参见详细设计「7. RabbitMQ 持久化消息层」。
      */
     private final Mq mq = new Mq();
 
     /**
-     * 订单缓存 TTL、请求幂等哈希和配置变更重试配置；参见详细设计「12. 核心业务流程」。
+     * 订单缓存 TTL、请求幂等哈希和配置变更重试配置；参见详细设计「4. Application 用例编排层」。
      */
     private final Order order = new Order();
 
@@ -42,7 +42,7 @@ public class TradeEngineProperties {
     private final Routing routing = new Routing();
 
     /**
-     * 交行 V1 协议的加解密、验签、Token 和防重放配置；参见详细设计「20.13 `/v1/cardapi` 小粒度详细设计」。
+     * 交行 V1 协议的加解密、验签、Token 和防重放配置；参见详细设计「3. API/V1 接入层」。
      */
     private final V1 v1 = new V1();
 
@@ -52,17 +52,17 @@ public class TradeEngineProperties {
     private final Balance balance = new Balance();
 
     /**
-     * D9/D10 outbox 履约和限频参数；参见详细设计「20.13.9 派单 Outbox」。
+     * D9/D10 outbox 履约和限频参数；参见详细设计「9.1 派单 Outbox」。
      */
     private final Fulfillment fulfillment = new Fulfillment();
 
     /**
-     * D10 商户回调任务参数；参见详细设计「20.13.12 回调设计」。
+     * D10 商户回调任务参数；参见详细设计「9.3 回调设计」。
      */
     private final Notify notify = new Notify();
 
     /**
-     * 供应商 Gateway 配置；参见详细设计「20.13.9 派单 Outbox」。
+     * 供应商 Gateway 配置；参见详细设计「9.1 派单 Outbox」。
      */
     private final Supplier supplier = new Supplier();
 
@@ -72,22 +72,22 @@ public class TradeEngineProperties {
     private final ThreadPool threadPool = new ThreadPool();
 
     /**
-     * 测试环境故障注入开关；参见详细设计「15. 测试设计」。
+     * 测试环境故障注入开关；参见详细设计「13. 测试与验收标准」。
      */
     private final FaultInjection faultInjection = new FaultInjection();
 
     /**
-     * 健康检查扩展开关；参见详细设计「16.2 健康检查」。
+     * 健康检查扩展开关；参见详细设计「11. 配置中心、部署与健康检查」。
      */
     private final Health health = new Health();
 
     /**
-     * dev/test 集成联调入口配置；参见详细设计「20.11 XXL-Job Handler 契约」。
+     * dev/test 集成联调入口配置；参见详细设计「10.1 XXL-Job Handler 契约」。
      */
     private final Integration integration = new Integration();
 
     /**
-     * XXL-Job 执行器配置；参见详细设计「20.11 XXL-Job Handler 契约」和高可用设计「17. 分片补偿与对账任务」。
+     * XXL-Job 执行器配置；参见详细设计「10.1 XXL-Job Handler 契约」和高可用设计「17. 分片补偿与对账任务」。
      */
     private final XxlJob xxlJob = new XxlJob();
 
@@ -158,8 +158,8 @@ public class TradeEngineProperties {
     /**
      * Redis 运行参数。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「9.2 Key 规范」、
-     * 「9.3 Redis HA Guard」和 {@code docs/交行直充业务系统高可用方案设计.md} 的「15. Redis 高可用设计」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「6.1 Redis Lua 入参与 Key 构造」、
+     * 「6.3 Redis HA Guard 与状态未知窗口」和 {@code docs/交行直充业务系统高可用方案设计.md} 的「15. Redis 高可用设计」。
      */
     public static class Redis {
 
@@ -258,7 +258,7 @@ public class TradeEngineProperties {
     /**
      * RabbitMQ 持久化与 Confirm 参数。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「10. RabbitMQ 设计落地」和「20.9 RabbitMQ 声明契约」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「7. RabbitMQ 持久化消息层」和「7. RabbitMQ 持久化消息层」。
      */
     public static class Mq {
 
@@ -275,7 +275,7 @@ public class TradeEngineProperties {
         /**
          * 异步落库 Consumer 订阅的持久化队列名称。
          *
-         * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」。
+         * <p>参见 {@code docs/交行直充业务系统详细设计.md}「7. RabbitMQ 持久化消息层」。
          * 该值需要和 broker 上声明的 Quorum Queue、Exchange Binding 保持一致；生产环境变更队列名时必须同步
          * Nacos、RabbitMQ 声明脚本和补投任务配置，避免消息发布成功但 Consumer 订阅旧队列。
          */
@@ -284,7 +284,7 @@ public class TradeEngineProperties {
         /**
          * 异步落库主队列的死信 Exchange。
          *
-         * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」。
+         * <p>参见 {@code docs/交行直充业务系统详细设计.md}「7. RabbitMQ 持久化消息层」。
          * Consumer 反序列化失败或 broker 重试策略耗尽后，消息应进入该死信交换机，避免毒消息阻塞主队列。
          */
         private String persistDeadLetterExchange = "recharge.persist.dlx";
@@ -551,7 +551,7 @@ public class TradeEngineProperties {
     /**
      * 订单生命周期与幂等控制配置。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「12. 核心业务流程」和
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「4. Application 用例编排层」和
      * {@code docs/交行直充业务系统高可用方案设计.md} 的「14.8 幂等协议」。
      */
     public static class Order {
@@ -652,7 +652,7 @@ public class TradeEngineProperties {
      * `/v1/cardapi` 路由与灰度配置。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「3.1 `/v1/cardapi` 无侵入路由切流」和
-     * 「20.13.1.1 `/v1/cardapi` 路由兼容设计」。
+     * 「3. API/V1 接入层」。
      */
     public static class Routing {
 
@@ -742,8 +742,8 @@ public class TradeEngineProperties {
     /**
      * 交行 V1 接口协议参数。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「20.13.2 V1 请求 DTO 和字段来源」、
-     * 「20.13.3 SM4 解密与 SM3 验签」和「20.13.10 查单设计」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「14.1 V1 DTO 字段」、
+     * 「3. API/V1 接入层」和「3. API/V1 接入层」。
      */
     public static class V1 {
 
@@ -876,7 +876,7 @@ public class TradeEngineProperties {
         /**
          * V1 加密验签密钥来源。
          *
-         * <p>参见详细设计「20.13.3 SM4 解密与 SM3 验签」。
+         * <p>参见详细设计「3. API/V1 接入层」。
          */
         public static class Crypto {
 
@@ -1183,7 +1183,7 @@ public class TradeEngineProperties {
     /**
      * 故障注入配置。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「15.3 压测」和验收前故障演练要求。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「13. 测试与验收标准」和验收前故障演练要求。
      */
     public static class FaultInjection {
 
@@ -1204,7 +1204,7 @@ public class TradeEngineProperties {
     /**
      * 健康检查配置。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「16.2 健康检查」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「11. 配置中心、部署与健康检查」。
      */
     public static class Health {
 
@@ -1225,7 +1225,7 @@ public class TradeEngineProperties {
     /**
      * 集成测试专用开关和保护阈值。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」和
      * {@code docs/集成测试方案.md}「8.5 Redis pending 补投联调设计」。这些配置只服务 dev/test 联调入口，
      * 生产环境默认不开启人工入口。
      */
@@ -1248,7 +1248,7 @@ public class TradeEngineProperties {
     /**
      * XXL-Job 执行器配置。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」。真实 handler
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」。真实 handler
      * Bean 可以常驻应用上下文，便于 SDK 扫描；执行器网络注册必须由 {@link #enabled} 显式打开，避免 dev/test
      * 未配置调度中心时应用启动去绑定端口或注册错误地址。
      */

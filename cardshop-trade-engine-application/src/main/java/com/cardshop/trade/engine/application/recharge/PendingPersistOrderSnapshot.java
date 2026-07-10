@@ -6,7 +6,7 @@ import java.util.Objects;
 /**
  * Redis pending 中等待 MQ 补投的订单快照。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」
  * 和 {@code docs/交行直充业务系统高可用方案设计.md}「17.3 MQ 补投任务」。补投服务只依赖该最小快照
  * 重新构造 {@link PersistTradeOrderMessage}，Redis org_index、claim 锁和二次确认留给基础设施端口实现。
  *

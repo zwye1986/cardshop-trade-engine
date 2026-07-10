@@ -26,8 +26,8 @@ import org.junit.jupiter.api.Test;
 /**
  * HTTP 供应商 Gateway fake server 联调测试。
  *
- * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」和
- * 「20.13.11 作废设计」。D9/D10 启用真实 Worker 前，至少要证明配置化 HTTP 适配器能对本地 fake server
+ * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和
+ * 「9.2 作废设计」。D9/D10 启用真实 Worker 前，至少要证明配置化 HTTP 适配器能对本地 fake server
  * 发起真实 JSON 请求、解析供应商成功/处理中响应，并把请求幂等号固定为 outbox event_id。
  */
 class HttpRechargeSupplierGatewayAdapterTest {

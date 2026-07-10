@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Redis 同账号直充限频锁测试。
  *
- * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」。同一订单 outbox
+ * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。同一订单 outbox
  * 重试时必须能重入自己持有的限频锁，否则供应商调用异常后的重试会被当前订单自己的锁挡到 TTL 过期。
  */
 class RedisDirectRechargeFrequencyAdapterTest {

@@ -11,7 +11,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Redis V1 Token 存储适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.1.1 `/v1/cardapi` 路由兼容设计」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
  * 适配器必须沿用旧系统共享 key {@code token:app_id:{appId}}，并按签发 TTL 设置 Redis 过期时间。
  */
 class RedisV1TokenStoreAdapterTest {

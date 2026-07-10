@@ -13,7 +13,7 @@ import org.springframework.util.StringUtils;
 /**
  * XXL-Job 真实调度入口装配。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」和
  * {@code docs/开发进度.md} 第 7 节第 2 项。bootstrap 层是运行时框架适配边界：这里可以依赖
  * XXL-Job SDK，但 job/application/domain 模块继续保持无调度框架依赖，避免补偿业务逻辑和调度中心绑定。
  */

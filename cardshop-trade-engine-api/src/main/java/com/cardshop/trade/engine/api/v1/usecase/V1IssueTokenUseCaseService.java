@@ -23,8 +23,8 @@ import java.util.Optional;
 /**
  * V1 Token 生成用例。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.1.1 `/v1/cardapi` 路由兼容设计」
- * 和「20.13.5 Token 生成接口」。实现遵循旧系统 `TokenUtils` 的兼容语义：HS512 JWT、
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」
+ * 和「3. API/V1 接入层」。实现遵循旧系统 `TokenUtils` 的兼容语义：HS512 JWT、
  * claim key {@code order_token_key:}、Redis key {@code token:app_id:{appId}}。
  */
 public class V1IssueTokenUseCaseService implements IssueV1TokenUseCase {

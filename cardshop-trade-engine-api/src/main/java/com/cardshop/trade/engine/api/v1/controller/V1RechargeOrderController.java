@@ -31,8 +31,8 @@ import java.util.function.Function;
 /**
  * 原卡管兼容的 `/v1/cardapi/order` 入口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.6 创建直充订单」、
- * 「20.13.10 查单设计」和「20.13.11 作废设计」。入口层负责 token 兼容解析、灰度判定和旧系统代理；
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「4. Application 用例编排层」、
+ * 「3. API/V1 接入层」和「9.2 作废设计」。入口层负责 token 兼容解析、灰度判定和旧系统代理；
  * 其中 token 兼容解析可能读取共享 Redis key {@code token:app_id:{appId}}，必须和 Netty
  * 事件循环隔离，避免灰度流量放大后造成 worker 线程饥饿。
  */
@@ -160,7 +160,7 @@ public class V1RechargeOrderController {
     /**
      * V1 token 校验遵循旧系统规则：先验 JWT，再读取 Redis 中
      * {@code token:app_id:{appId}} 做“最后签发 token”一致性检查，参见详细设计
-     * 「20.13.4 Token 兼容校验」。当前 Redis 端口仍是同步接口，所以认证必须延迟到订阅时，
+     * 「3. API/V1 接入层」。当前 Redis 端口仍是同步接口，所以认证必须延迟到订阅时，
      * 并放入 boundedElastic；否则 controller 方法在 Netty event-loop 上被调用时会直接阻塞。
      */
     private Mono<Optional<AuthenticatedMerchant>> authenticateOnBlockingScheduler(String authorization) {

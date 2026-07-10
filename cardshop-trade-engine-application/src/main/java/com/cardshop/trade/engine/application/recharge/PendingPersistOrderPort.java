@@ -15,7 +15,7 @@ public interface PendingPersistOrderPort {
      * 扫描当前分片到期的 pending 订单快照。
      *
      * <p>{@code workerId} 用于基础设施层写入 Redis 订单级 claim 锁。参见
-     * {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」第 5-6 步。
+     * {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」第 5-6 步。
      */
     List<PendingPersistOrderSnapshot> selectDueForShard(int shardTotal, int shardIndex, int limit, String workerId);
 

@@ -36,8 +36,8 @@ import org.springframework.context.annotation.Configuration;
 /**
  * 交易可靠性与补偿类 application service 装配。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」、
- * 「17. 分片补偿与对账任务」和「20.13.6 Redis Lua 下单结果」。bootstrap 层负责把 application 服务和
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」、
+ * 「17. 分片补偿与对账任务」和「6. Redis 受理与缓存层」。bootstrap 层负责把 application 服务和
  * infrastructure 端口组装起来；具体 XXL-Job handler 后续只需要调用这些已装配好的服务。
  */
 @Configuration(proxyBeanMethods = false)
@@ -98,8 +98,8 @@ public class TradeEngineReliabilityConfiguration {
     /**
      * Outbox 重试/补偿 Job 门面。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
-     * 「20.13.9 派单 Outbox」。D9 的实时 worker 与 D11/D12 的调度补偿共用同一个
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」和
+     * 「9.1 派单 Outbox」。D9 的实时 worker 与 D11/D12 的调度补偿共用同一个
      * {@link com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService}，确保 outbox CAS
      * 抢占、供应商派单、作废和回调任务生成只有一套业务语义。
      */
@@ -179,7 +179,7 @@ public class TradeEngineReliabilityConfiguration {
     /**
      * Redis/MQ 到 MySQL 的异步落库 Consumer 核心服务。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。D7A 先装配
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。D7A 先装配
      * 不依赖 RabbitMQ listener 的核心服务，后续真实 `@RabbitListener` 只负责反序列化消息和按结果 ack/nack。
      * 该 Bean 覆盖显式提供 MySQL 落库端口的 slice test 或局部上下文；真实 dev/test/prod 中
      * {@link RechargeOrderPersistencePort} 可能由 MyBatis 后置自动配置创建，因此最终兜底由
@@ -203,8 +203,8 @@ public class TradeEngineReliabilityConfiguration {
     /**
      * RabbitMQ 异步落库 listener 的 bootstrap 侧轻量装配。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」和
-     * 「20.13.8 异步落库 Consumer」。基础设施配置类中也有 listener 装配方法，但它依赖
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「7. RabbitMQ 持久化消息层」和
+     * 「8.3 异步落库 Consumer」。基础设施配置类中也有 listener 装配方法，但它依赖
      * {@link PersistRechargeOrderConsumerService}；当 infrastructure 配置先于本配置类解析时，
      * {@code @ConditionalOnBean(PersistRechargeOrderConsumerService.class)} 会在 Consumer Bean 注册前被判定为不满足，
      * 结果就是应用启动健康但 RabbitMQ 没有 consumer，也不会在管理端看到 AMQP 连接。

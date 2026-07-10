@@ -12,7 +12,7 @@ import org.springframework.util.StringUtils;
  * 交行直充交易引擎启动入口。
  *
  * <p>该类承载独立服务的 Spring Boot 启动边界，对应
- * {@code docs/交行直充业务系统详细设计.md} 的「3. 总体架构」和「16. 部署设计」。
+ * {@code docs/交行直充业务系统详细设计.md} 的「2. 系统模块与依赖关系」和「11. 配置中心、部署与健康检查」。
  * 启动日志只记录 profile、端口、Java 版本等排障上下文，不输出 Nacos、数据库或商户密钥等敏感配置。
  */
 @SpringBootApplication(scanBasePackages = "com.cardshop.trade.engine")
@@ -23,7 +23,7 @@ public class TradeEngineApplication {
     /**
      * 服务主入口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「16.1 启动命令」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「11. 配置中心、部署与健康检查」。
      */
     public static void main(String[] args) {
         var context = SpringApplication.run(TradeEngineApplication.class, args);

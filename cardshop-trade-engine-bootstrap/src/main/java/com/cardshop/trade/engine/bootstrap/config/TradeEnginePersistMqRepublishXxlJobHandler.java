@@ -19,7 +19,7 @@ import org.springframework.util.StringUtils;
 /**
  * Redis pending MQ 补投的真实 XXL-Job handler。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「17.3 MQ 补投任务」。这个类只做 XXL-Job SDK
  * 到 framework-free {@link RechargePersistMqRepublishJob#runOnce(int, int, int, String)} 门面的适配：
  * 分片、批量大小和 worker 标识在这里解析，Redis pending 扫描、claim、RabbitMQ 补投和 MySQL 二次确认仍只存在一套业务实现。

@@ -7,7 +7,7 @@ import java.util.Objects;
 /**
  * Redis pending MQ 补投任务入口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「17.3 MQ 补投任务」。本类暂不直接依赖 XXL-Job API，
  * 后续 handler 只需把 shard/limit/workerId 解析后委托到 {@link #runOnce(int, int, int, String)}。
  */

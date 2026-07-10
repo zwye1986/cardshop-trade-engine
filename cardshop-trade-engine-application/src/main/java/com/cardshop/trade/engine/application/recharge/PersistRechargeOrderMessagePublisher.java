@@ -5,7 +5,7 @@ import java.util.concurrent.CompletionStage;
 /**
  * Redis 订单持久化消息发布端口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.5 下单服务实现细节」第 11-14 步。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「4. Application 用例编排层」第 11-14 步。
  * 应用层只关心 RabbitMQ publisher confirm 结果；exchange、routingKey、CorrelationData、
  * mandatory return 和重试细节由 infrastructure 适配器负责。
  */

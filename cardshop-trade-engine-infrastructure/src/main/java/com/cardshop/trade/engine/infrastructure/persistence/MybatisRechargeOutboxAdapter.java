@@ -24,7 +24,7 @@ import java.util.Objects;
 /**
  * 基于 MyBatis 的 outbox 扫描、抢占和作废事件写入适配器。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」和「20.13.11 作废设计」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和「9.2 作废设计」。
  * outbox 的 {@code shard_key} 固定使用 {@code event_id}，避免不同任务混用分片语义。
  */
 public class MybatisRechargeOutboxAdapter

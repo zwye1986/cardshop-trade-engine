@@ -13,7 +13,7 @@ import org.bouncycastle.crypto.digests.SM3Digest;
 /**
  * V1 商户回调 SM3 签名器。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.12 回调设计」。签名串沿用旧 V1
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。签名串沿用旧 V1
  * 协议的 ASCII 升序 {@code key=value,key=value} 规则，内部加入商户 {@code aesKey}，但响应 JSON
  * 只输出业务字段和 {@code sign}。
  */

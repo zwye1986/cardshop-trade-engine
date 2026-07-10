@@ -27,7 +27,7 @@ import org.junit.jupiter.api.Test;
 /**
  * V1 查单/作废用例测试。
  *
- * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」和「20.13.11 作废设计」。
+ * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」和「9.2 作废设计」。
  * D4 先形成 Redis 快照闭环：未落库订单查单/作废都返回处理中，避免同步调用供应商或直接修改旧库状态。
  */
 class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {

@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Lua 返回值映射测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
  * Lua 返回扁平 key-value 数组，Java 侧必须稳定映射成应用层结果，后续接口响应、WAIT 和 MQ confirm
  * 都会基于这个结果判断是否已经写入订单。
  */

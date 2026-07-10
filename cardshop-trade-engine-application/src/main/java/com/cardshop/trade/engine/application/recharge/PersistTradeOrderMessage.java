@@ -6,7 +6,7 @@ import java.util.Objects;
 /**
  * Redis 订单异步落 MySQL 的 RabbitMQ 消息。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「12.2 异步落库」和
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「7. RabbitMQ 设计」。
  * 消息必须携带 initial snapshot，避免 Redis 在 MySQL 落库前发生不可恢复回滚时无法兜底落库。
  *

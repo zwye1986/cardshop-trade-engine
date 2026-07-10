@@ -26,7 +26,7 @@ import org.springframework.util.StringUtils;
 /**
  * V1 作废订单用例。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.11 作废设计」。D4 只完成入口闭环和
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.2 作废设计」。D4 只完成入口闭环和
  * 未落库保护：订单仍处于 Redis pending/MQ/Consumer 窗口时返回处理中，不直接调用供应商或修改旧库。
  * 真正的 DB_PERSISTED 作废 outbox 会在 D10 作废任务中接入。
  */
@@ -91,7 +91,7 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
             return processing(snapshot);
         }
         /*
-         * docs/交行直充业务系统详细设计.md「20.13.11 作废设计」要求 DB_PERSISTED 订单只生成
+         * docs/交行直充业务系统详细设计.md「9.2 作废设计」要求 DB_PERSISTED 订单只生成
          * INVALID_ORDER outbox，由 Worker 异步调用供应商作废。接口线程仍返回处理中，避免超时后调用方
          * 重复请求导致供应商重复作废。
          */

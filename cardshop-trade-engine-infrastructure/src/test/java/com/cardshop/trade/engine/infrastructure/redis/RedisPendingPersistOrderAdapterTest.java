@@ -19,7 +19,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Redis pending MQ 补投适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」。这里不启动真实
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」。这里不启动真实
  * Redis，而是用内存操作桩验证 key 协议、快照重建和状态回写，真实 Redis WAIT/HA 行为留给集成测试覆盖。
  */
 class RedisPendingPersistOrderAdapterTest {

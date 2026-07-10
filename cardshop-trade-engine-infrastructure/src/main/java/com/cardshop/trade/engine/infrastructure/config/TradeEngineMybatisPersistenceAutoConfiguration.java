@@ -36,7 +36,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 /**
  * MyBatis 落库端口的后置自动配置。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。真实 dev/test/prod
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。真实 dev/test/prod
  * 环境中的 Mapper Bean 由 MyBatis-Plus 自动配置和 mapper scanner 注册；普通业务 {@code @Configuration} 早于
  * {@link MybatisPlusAutoConfiguration} 解析时，按 Mapper 做 {@code @ConditionalOnBean} 可能被过早判定为不满足，
  * 从而跳过 {@link RechargeOrderPersistencePort}。该端口缺失会继续导致
@@ -91,7 +91,7 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     /**
      * 创建派单/作废 outbox 端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」。真实 dev/test/prod
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。真实 dev/test/prod
      * 中 Mapper BeanDefinition 由 MyBatis-Plus 后置注册；这里以 {@link SqlSessionFactory} 作为 MyBatis
      * 就绪条件，并把 Mapper 放到方法参数上解析，避免普通配置类过早按 Mapper 条件判断导致 outbox worker
      * 缺少 {@link RechargeOutboxPort} 和 {@link com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort}。
@@ -109,7 +109,7 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     /**
      * 创建供应商履约订单读写端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.10 供应商流水」和「20.13.11 作废流程」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和「9.2 作废设计」。
      * SUP/INV 联调必须能读取旧订单、写供应商流水并推进 `recharge_order_ext.dispatch_status`；若任一 Mapper
      * 缺失，应在启动期暴露依赖错误，而不是静默跳过 worker。
      */
@@ -128,7 +128,7 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     /**
      * 创建商户回调任务端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.12 回调设计」。同一个 MyBatis adapter 同时承担
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。同一个 MyBatis adapter 同时承担
      * outbox 生成回调任务的写端和 notify worker 抢占/重试的读写端，因此返回具体类型，确保 Spring 能同时按
      * {@link RechargeNotifyTaskPort} 和
      * {@link com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort} 匹配到同一个 Bean。

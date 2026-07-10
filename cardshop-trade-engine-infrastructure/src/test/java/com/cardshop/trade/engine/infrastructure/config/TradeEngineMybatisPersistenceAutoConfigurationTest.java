@@ -42,7 +42,7 @@ import org.springframework.jdbc.datasource.AbstractDataSource;
 /**
  * MyBatis 落库端口后置自动配置测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。真实运行时
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。真实运行时
  * Mapper Bean 来自 MyBatis 自动配置和 mapper scanner，普通业务 {@code @Configuration} 过早使用
  * {@code @ConditionalOnBean(McOrderMapper.class)} 一类条件时，可能在 Mapper BeanDefinition 注册前被判定为不满足，
  * 继而跳过 {@link RechargeOrderPersistencePort}、Consumer 核心服务和 Rabbit listener。这里用后置自动配置模拟

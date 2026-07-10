@@ -24,7 +24,7 @@ import java.util.Optional;
 /**
  * 原卡管 `/v1/cardapi` JWT Token 兼容解析器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.4 Token 兼容校验」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「3. API/V1 接入层」。
  * 兼容 Bearer/bare JWT、HS512 签名、时间窗校验，并在 Redis token 存储端口存在时复用旧系统
  * {@code token:app_id:{appId}} 规则做“最后签发 token”一致性校验。
  */

@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.recharge;
 /**
  * Redis 接单异常自动核查批次结果。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」。
  * 后续 XXL-Job handler 可以把该结果写入日志或指标，用于观测异常收敛速度。
  *
  * @param checked 本批完成核查的异常记录数量

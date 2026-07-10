@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
  * Redis pending MQ 补投服务测试。
  *
  * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「17. 分片补偿与对账任务」
- * 和「20.13.8 异步落库 Consumer」。补投任务只能读取 Redis pending 中仍未落库的订单快照，
+ * 和「8.3 异步落库 Consumer」。补投任务只能读取 Redis pending 中仍未落库的订单快照，
  * 重新发布 MySQL 落库消息；发布失败时保留 pending，等待下一轮补偿。
  */
 class RechargePersistMqRepublishServiceTest {

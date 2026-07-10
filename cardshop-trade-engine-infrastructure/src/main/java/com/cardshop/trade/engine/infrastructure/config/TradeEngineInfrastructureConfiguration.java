@@ -114,7 +114,7 @@ import reactor.core.publisher.Mono;
  * 基础设施层自动配置入口。
  *
  * <p>本配置类只启用 {@link TradeEngineProperties} 的绑定，对应
- * {@code docs/交行直充业务系统详细设计.md} 的「6.4 Infrastructure 层」和「7.4 核心配置项」。
+ * {@code docs/交行直充业务系统详细设计.md} 的「6.4 Infrastructure 层」和「11. 配置中心、部署与健康检查」。
  * D4 阶段开始声明 Redis 接单所需的 Key 构造、Lua 脚本和适配器；真实 Redis 客户端仍由 Spring Boot
  * 自动配置和 Nacos 环境提供，local profile 禁用 Redis 时不会强制创建接单端口。
  */
@@ -138,7 +138,7 @@ public class TradeEngineInfrastructureConfiguration {
     /**
      * 声明异步落库 RabbitMQ 拓扑。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「7. RabbitMQ 持久化消息层」。
      * 主队列和 DLQ 使用 Quorum Queue；主队列死信始终进入最终 DLQ。retry queue 使用 classic durable queue，
      * 未耗尽重试次数的业务失败由 listener 发布到 retry exchange，retry queue 到期后通过 DLX 投回主 exchange。
      * 当前 dev/test RabbitMQ 3.8.8 对 quorum queue 不接受 {@code x-message-ttl} 参数；若 retry queue 声明为
@@ -177,7 +177,7 @@ public class TradeEngineInfrastructureConfiguration {
                 .quorum()
                 .build();
 
-        // 参见详细设计「20.9 RabbitMQ 声明契约」：声明对象只描述 broker 拓扑，
+        // 参见详细设计「7. RabbitMQ 持久化消息层」：声明对象只描述 broker 拓扑，
         // 真实创建/校验由 RabbitAdmin 在具备 RabbitMQ 连接的 profile 中执行。
         return new Declarables(
                 exchange,
@@ -299,8 +299,8 @@ public class TradeEngineInfrastructureConfiguration {
     /**
      * 装配 RabbitMQ 持久化消息 Listener。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」和
-     * 「20.13.8 异步落库 Consumer」。该 Bean 只在 RabbitMQ 客户端和 application 层 Consumer 核心服务都存在时创建：
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「7. RabbitMQ 持久化消息层」和
+     * 「8.3 异步落库 Consumer」。该 Bean 只在 RabbitMQ 客户端和 application 层 Consumer 核心服务都存在时创建：
      * local profile 排除 Rabbit 自动配置时不会启动监听容器；RabbitMQ 就绪但 MySQL/Redis 落库端口未就绪时也不会消费消息。
      */
     @Bean
@@ -323,7 +323,7 @@ public class TradeEngineInfrastructureConfiguration {
     /**
      * 装配接单异常登记端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
      * Mapper 存在才说明 D2 的 anomaly 表访问能力已就绪；否则 API 层会使用 noop 端口保守跳过登记。
      */
     @Bean
@@ -337,8 +337,8 @@ public class TradeEngineInfrastructureConfiguration {
     /**
      * 装配接单异常自动核查仓储端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」和
-     * 「20.13.6 Redis Lua 下单结果」。该 Bean 只提供异常表读取与状态推进，自动核查服务由 bootstrap 层组装。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」和
+     * 「6. Redis 受理与缓存层」。该 Bean 只提供异常表读取与状态推进，自动核查服务由 bootstrap 层组装。
      */
     @Bean
     @ConditionalOnBean(RechargeAcceptAnomalyMapper.class)
@@ -351,7 +351,7 @@ public class TradeEngineInfrastructureConfiguration {
     /**
      * 装配 V1 商户资料端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
      * 这里使用配置类显式装配，而不是在适配器类上做条件组件扫描，避免 MyBatis Mapper
      * 注册顺序导致条件过早判定为不满足，使 `/auth/getToken` 和灰度下单回落到未启用实现。
      */
@@ -368,7 +368,7 @@ public class TradeEngineInfrastructureConfiguration {
     /**
      * 装配 V1 直充商品候选选择端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.5 商品选择规则」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
      * 该端口依赖两个旧卡管单表 Reader，和商户资料端口一样放在配置类中按依赖显式启用。
      */
     @Bean
@@ -434,7 +434,7 @@ public class TradeEngineInfrastructureConfiguration {
     /**
      * 装配 MySQL 异步落库端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
      * 四个 Mapper 同时存在时才启用，确保事务内能完整写 `mc_order`、`recharge_order_ext`、
      * `mc_depart_record(PRE_DEDUCT)` 和 outbox。该 Bean 主要覆盖显式提供 Mapper 的 slice test 或局部上下文；
      * 真实 dev/test/prod 中 Mapper 来自 MyBatis 自动配置，最终兜底由
@@ -618,7 +618,7 @@ public class TradeEngineInfrastructureConfiguration {
     /**
      * RabbitMQ 依赖缺失时的不可用发布端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.5 下单服务实现细节」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「4. Application 用例编排层」。
      * 该兜底端口让应用保持可启动，但 {@link PersistRechargeOrderMessagePublisher#isAvailable()}
      * 始终返回 false，使下单链路在写 Redis 前 fail closed，避免产生无法异步落库的订单事实。
      */
@@ -644,7 +644,7 @@ public class TradeEngineInfrastructureConfiguration {
     /**
      * 旧卡管商户资料 Reader 缺失时的不可用端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
      * 这里返回空资料而不是抛异常，保证启动诊断可继续完成；Token、下单和回调签名会按商户资料缺失处理。
      */
     private static V1MerchantProfilePort unavailableV1MerchantProfilePort() {
@@ -669,7 +669,7 @@ public class TradeEngineInfrastructureConfiguration {
     /**
      * Redis Token 存储缺失时的不可用端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.5 Token 生成接口」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
      * 保存返回 false、读取返回空，让 `/auth/getToken` 在 Redis 未就绪时明确失败。
      */
     private static V1TokenStorePort unavailableV1TokenStorePort() {

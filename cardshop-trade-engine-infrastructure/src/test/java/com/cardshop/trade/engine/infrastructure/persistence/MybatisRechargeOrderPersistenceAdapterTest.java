@@ -21,7 +21,7 @@ import org.junit.jupiter.api.Test;
 /**
  * MyBatis 异步落库适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * 该测试不启动数据库，只验证 D7A 聚合到 DO/Mapper 的字段契约和 outbox 生成边界。
  */
 class MybatisRechargeOrderPersistenceAdapterTest {

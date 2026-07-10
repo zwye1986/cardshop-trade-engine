@@ -39,7 +39,7 @@ public record SupplierGatewayResponse(
     /**
      * 供应商调用发生可重试失败。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」。HTTP 5xx、超时、
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。HTTP 5xx、超时、
      * 连接异常只能说明本次调用窗口不可确认，不能等同于供应商明确失败；Worker 收到该状态时必须保留
      * outbox 重试，不释放余额、不创建终态回调，避免把临时网络抖动放大为业务失败。
      */

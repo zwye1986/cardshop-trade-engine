@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.domain.order;
 /**
  * MySQL 落库使用的订单快照来源。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「20.13.8 异步落库 Consumer」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「8.3 异步落库 Consumer」。
  * 该字段用于排查 Redis 快照缺失、MQ 初始快照兜底等高可用窗口。
  */
 public enum PersistSource {

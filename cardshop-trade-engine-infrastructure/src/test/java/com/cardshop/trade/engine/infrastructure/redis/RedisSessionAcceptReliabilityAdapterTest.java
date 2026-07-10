@@ -25,7 +25,7 @@ import reactor.core.publisher.Mono;
 /**
  * Redis session 版接单/可靠性适配器测试。
  *
- * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「20.5 下单服务实现细节」和
+ * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「4. Application 用例编排层」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「14.2 Redis WAIT 协议」。Redis WAIT 只确认同一客户端连接
  * 上此前写入的复制进度，因此生产适配器必须把 accept Lua 与 WAIT 放在同一个 session 中，而不是在另一条连接上补发 WAIT。
  */

@@ -60,7 +60,7 @@ import org.springframework.context.annotation.Bean;
 /**
  * 交易可靠性补偿服务装配测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」。只有异常核查仓储和订单查询端口
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」。只有异常核查仓储和订单查询端口
  * 同时存在时，才装配自动核查服务。
  */
 class TradeEngineReliabilityConfigurationTest {

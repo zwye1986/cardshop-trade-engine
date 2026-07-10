@@ -13,7 +13,7 @@ import org.springframework.context.annotation.Bean;
  * MyBatis-Plus DDL Runner 的 Spring Boot 3.3 兼容配置。
  *
  * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8. Liquibase 数据库版本控制」和
- * 「20.7 MyBatis Mapper 细节」。本服务的表结构变更统一由 Liquibase 管理，MyBatis-Plus 只用于
+ * 「8. MySQL/Liquibase 持久化层」。本服务的表结构变更统一由 Liquibase 管理，MyBatis-Plus 只用于
  * {@code BaseMapper + LambdaWrapper} 的运行期 SQL 注入，不承担建表或变更表结构职责。
  *
  * <p>MyBatis-Plus 3.5.4.1 的 {@link MybatisPlusAutoConfiguration#ddlApplicationRunner(List)}

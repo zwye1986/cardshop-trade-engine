@@ -8,7 +8,7 @@ import org.slf4j.LoggerFactory;
 /**
  * 商户回调重试 Worker。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.12 回调设计」。本服务只处理
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。本服务只处理
  * {@code recharge_notify_task} 的抢占、发送和重试状态回写，不重新生成回调 payload。
  */
 public class RechargeNotifyWorkerService {

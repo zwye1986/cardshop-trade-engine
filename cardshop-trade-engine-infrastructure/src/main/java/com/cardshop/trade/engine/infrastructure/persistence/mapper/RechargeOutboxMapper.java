@@ -25,7 +25,7 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
     /**
      * 幂等写入可靠事件。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
      * Persist Consumer 可能因为 RabbitMQ 重投重复处理同一订单，`SUPPLIER_DISPATCH` outbox 必须按
      * `event_id` 幂等插入，避免唯一键冲突被误判为数据库故障。
      */

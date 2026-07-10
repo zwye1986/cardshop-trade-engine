@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 /**
  * 回调重试 Worker 测试。
  *
- * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「20.13.12 回调设计」。回调失败必须回写重试
+ * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。回调失败必须回写重试
  * 时间和错误原因，成功必须标记 SUCCESS，避免重复通知商户。
  */
 class RechargeNotifyWorkerServiceTest {

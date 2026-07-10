@@ -14,7 +14,7 @@ import org.springframework.test.context.ActiveProfiles;
  * 启动集成测试。
  *
  * <p>验证 D1 骨架可以在隔离外部中间件的情况下启动，并加载
- * {@code docs/交行直充业务系统详细设计.md}「5. Maven 多模块工程设计」和「16.2 健康检查」
+ * {@code docs/交行直充业务系统详细设计.md}「2. 系统模块与依赖关系」和「11. 配置中心、部署与健康检查」
  * 要求的基础配置 Bean。
  */
 @ActiveProfiles("test")

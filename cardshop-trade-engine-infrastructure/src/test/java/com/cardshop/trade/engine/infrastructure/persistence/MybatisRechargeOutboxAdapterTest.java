@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 /**
  * 作废 outbox MyBatis 适配器测试。
  *
- * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「20.13.11 作废设计」。DB_PERSISTED 订单作废
+ * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「9.2 作废设计」。DB_PERSISTED 订单作废
  * 只写 INVALID_ORDER 可靠事件，接口线程不调用供应商。
  */
 class MybatisRechargeOutboxAdapterTest {

@@ -15,8 +15,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * V1 商户资料和商品候选基础设施适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」
- * 和「20.13.5 商品选择规则」。适配器必须按旧卡管表语义读取数据，但 SQL 只能使用单表
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」
+ * 和「5. Domain 状态与业务规则」。适配器必须按旧卡管表语义读取数据，但 SQL 只能使用单表
  * MyBatis-Plus LambdaWrapper，再在 Java 内完成商品权限和商品快照组装。
  */
 class V1MerchantAndProductAdapterTest {

@@ -85,7 +85,7 @@ import reactor.core.publisher.Mono;
 /**
  * 基础设施自动配置测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.14 实施任务拆分」任务 5 和任务 6。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「13. 测试与验收标准」任务 5 和任务 6。
  * Redis key builder 与脚本加载器是纯本地组件，应始终可装配；Redis 接单端口依赖真实 Redis 客户端，
  * local profile 排除 Redis 自动配置时不能因为缺少客户端导致应用启动失败。
  */

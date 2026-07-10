@@ -39,8 +39,8 @@ import reactor.core.scheduler.Schedulers;
 /**
  * dev/test 环境人工触发补偿任务的受控入口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」、
- * 「20.13.15 /v1/cardapi 测试清单」以及 {@code docs/集成测试方案.md}
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」、
+ * 「13. 测试与验收标准」以及 {@code docs/集成测试方案.md}
  * 「6.4.1 Redis pending 补投专项用例」和「8.5 Redis pending 补投联调设计」。这个 Controller 只为 PEND-001/PEND-002/PEND-003
  * 真实联调提供临时触发能力：必须显式打开 {@code trade.engine.integration.manual-job-enabled=true}，
  * 且只能在 {@code dev/test} profile、dev/test 测试机本机回环地址调用。这里不提供任意 Bean/方法调用能力，
@@ -146,8 +146,8 @@ public class ManualRechargeJobController {
             ServerWebExchange exchange) {
         /*
          * 安全边界：本入口只服务 dev/test 真实联调。即使开关被误打开，也要求请求来自当前测试机的
-         * loopback 地址，避免 RabbitMQ/MySQL/Redis 补偿任务被远程任意触发。详见详细设计「20.11
-         * XXL-Job Handler 契约」中关于 runOnce 门面仅承接固定补偿链路的约束。
+         * loopback 地址，避免 RabbitMQ/MySQL/Redis 补偿任务被远程任意触发。详见详细设计
+         * 「10.1 XXL-Job Handler 契约」中关于 runOnce 门面仅承接固定补偿链路的约束。
          */
         if (!isLoopback(exchange)) {
             return Mono.just(ResponseEntity.status(HttpStatus.FORBIDDEN)
@@ -156,8 +156,8 @@ public class ManualRechargeJobController {
         ManualJobParameters parameters = validate(request);
         /*
          * WebFlux Controller 默认运行在 Reactor event-loop 上，而 Redis pending 补投端口内部会对
-         * Reactive Redis 命令做短超时 block，以复用 XXL-Job 的同步 runOnce 契约。参见详细设计「20.11
-         * XXL-Job Handler 契约」。人工 HTTP 入口必须把这段同步补偿任务切到 boundedElastic，否则 test188
+         * Reactive Redis 命令做短超时 block，以复用 XXL-Job 的同步 runOnce 契约。参见详细设计
+         * 「10.1 XXL-Job Handler 契约」。人工 HTTP 入口必须把这段同步补偿任务切到 boundedElastic，否则 test188
          * 会在 event-loop 线程上触发 Reactor 的 blocking guard，表现为每个 org_index bucket 扫描失败。
          *
          * 这里的 Reactor timeout 只保护 HTTP 响应链路：超时后会向调用方返回 FAILED，但已经提交到
@@ -184,7 +184,7 @@ public class ManualRechargeJobController {
             @RequestBody ManualJobRunRequest request,
             ServerWebExchange exchange) {
         /*
-         * docs/交行直充业务系统详细设计.md「20.13.9 派单 Outbox」要求供应商派单、作废和回调任务生成
+         * docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」要求供应商派单、作废和回调任务生成
          * 共用 outbox CAS 抢占语义。该入口只用于 dev/test SUP/INV 用例手工推进到下一步；生产调度仍应走
          * XXL-Job 或内部调度，不允许把任意任务名透传给外部调用方。
          */
@@ -206,7 +206,7 @@ public class ManualRechargeJobController {
             @RequestBody ManualJobRunRequest request,
             ServerWebExchange exchange) {
         /*
-         * docs/交行直充业务系统详细设计.md「20.13.12 回调设计」要求非 200 或网络失败进入回调任务退避重试。
+         * docs/交行直充业务系统详细设计.md「9.3 回调设计」要求非 200 或网络失败进入回调任务退避重试。
          * 回调任务本身不使用分片参数，但入口仍复用统一请求对象，便于测试控制台和 curl 生成器只维护一种
          * 参数结构；shardTotal/shardIndex 只做安全校验，不参与 notify worker 执行。
          */
@@ -471,7 +471,7 @@ public class ManualRechargeJobController {
     /**
      * 人工补投入口的 HTTP 响应。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」和
      * {@code docs/集成测试方案.md}「8.5 Redis pending 补投联调设计」。该响应会被 test188 上的 curl、
      * 测试辅助前端和 `docs/集成测试.md` 同时作为执行证据使用，因此字段必须保持简单 JSON 类型。`triggeredAt`
      * 使用 ISO-8601 字符串而不是 {@link Instant}，避免 dev/test 部署包中 Jackson 未启用 JSR-310 模块时，

@@ -12,8 +12,8 @@ import org.slf4j.LoggerFactory;
 /**
  * Redis 接单异常自动核查服务。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」和
- * 「20.13.6 Redis Lua 下单结果」。该服务只负责“证据足够时推进状态，证据冲突时转人工”的决策；
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」和
+ * 「6. Redis 受理与缓存层」。该服务只负责“证据足够时推进状态，证据冲突时转人工”的决策；
  * 不在 application 层直接访问 Redis hash、RabbitMQ broker 或 MySQL 表。
  */
 public class AcceptAnomalyAutoCheckService {
@@ -41,7 +41,7 @@ public class AcceptAnomalyAutoCheckService {
      * <p>TODO(D7/D8): 增加显式 Redis order/idem/reservation/pending probe、RabbitMQ confirm/consumer 轨迹和
      * MySQL `mc_order/recharge_order_ext` 三方核查；只有三方都证明没有受理事实时，才允许标记
      * `RESOLVED_NOT_ACCEPTED` 并释放同一 `outOrderSn` 的重试。参见 docs/交行直充业务系统详细设计.md
-     * 「20.13.6 Redis Lua 下单结果」的 `recharge_accept_anomaly` 处理流程。
+     * 「6. Redis 受理与缓存层」的 `recharge_accept_anomaly` 处理流程。
      */
     public AcceptAnomalyCheckBatchResult checkBatch(int limit, String workerId) {
         if (limit <= 0) {

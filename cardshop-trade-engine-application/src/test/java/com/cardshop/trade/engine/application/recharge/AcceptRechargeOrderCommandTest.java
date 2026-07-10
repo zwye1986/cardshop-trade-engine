@@ -9,7 +9,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Redis-first 下单命令契约测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
  * 应用层命令必须把 Java 候选校验、配置版本、request_hash 和订单快照字段一次性带给基础设施层，
  * 避免 Redis Lua 只能看到部分上下文而无法原子写入成功/失败订单。
  */

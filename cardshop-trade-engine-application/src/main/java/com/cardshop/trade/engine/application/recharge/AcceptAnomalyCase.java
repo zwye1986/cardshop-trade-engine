@@ -9,7 +9,7 @@ import java.util.Objects;
 /**
  * 等待自动核查的 Redis 接单异常记录。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
  * 这是 application 层读取 `recharge_accept_anomaly` 后使用的稳定模型；它只表达核查所需的业务定位字段，
  * 不暴露 MyBatis DO 或表字段命名。
  *

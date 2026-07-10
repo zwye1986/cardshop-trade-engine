@@ -5,8 +5,8 @@ import java.util.Arrays;
 /**
  * 旧卡管 `mc_order.order_status` 数字状态码。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.3 错误码与状态码」和
- * 「20.13.10 查单设计」。新交易引擎的履约、查单、回调仍要兼容旧 V1 接口数字码，因此数字值只能在
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」和
+ * 「3. API/V1 接入层」。新交易引擎的履约、查单、回调仍要兼容旧 V1 接口数字码，因此数字值只能在
  * 本枚举集中维护，避免 application、api、infrastructure 各自硬编码 2、6、11、12、13。
  */
 public enum LegacyOrderStatusCode {

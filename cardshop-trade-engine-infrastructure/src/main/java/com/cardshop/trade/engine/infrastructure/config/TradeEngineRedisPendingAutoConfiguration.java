@@ -34,8 +34,8 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 /**
  * Redis pending 补投相关端口的后置自动配置。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
- * 「20.13.8 异步落库 Consumer」。真实 dev/test 启动中，{@link ReactiveStringRedisTemplate} 来自
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」和
+ * 「8.3 异步落库 Consumer」。真实 dev/test 启动中，{@link ReactiveStringRedisTemplate} 来自
  * Spring Boot Redis reactive auto-configuration，可能晚于普通 {@link TradeEngineInfrastructureConfiguration}
  * 的条件判断出现。若只在普通配置类中按 RedisTemplate 做 {@code @ConditionalOnBean}，应用会有 Redis
  * 客户端却缺少 {@link RedisPendingPersistOrderAdapter}，人工补投入口表现为一直 {@code scanned=0}。
@@ -95,7 +95,7 @@ public class TradeEngineRedisPendingAutoConfiguration {
     /**
      * 创建同账号直充限频端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」。派单 worker 在调用供应商前
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。派单 worker 在调用供应商前
      * 必须先抢同账号限频锁，并在明确终态或可重试失败窗口按 owner 释放/保留。该端口依赖
      * {@link ReactiveStringRedisTemplate}，需要和 pending 端口一样放到 Redis 后置自动配置中，避免普通配置类
      * 早于 RedisTemplate 条件判断而跳过，最终让 `RechargeOutboxWorkerService` 无法创建。
@@ -113,7 +113,7 @@ public class TradeEngineRedisPendingAutoConfiguration {
     /**
      * 创建 V1 查单/作废共用的订单快照查询端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」和「20.13.11 作废设计」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」和「9.2 作废设计」。
      * test188 dev 曾出现普通 {@link TradeEngineInfrastructureConfiguration} 早于 RedisTemplate 条件判断执行，
      * 导致 {@link RechargeOrderQueryPort} 没有注册，V1 查询/作废 use case 只能拿到 bootstrap fallback，
      * `/v1/cardapi/order/invalid` 即使已灰度且验签通过也返回“新交易引擎作废暂未启用”。这里放到 Redis reactive

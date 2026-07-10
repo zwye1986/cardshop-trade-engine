@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Persist Consumer Redis 完整快照适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * 查单快照字段不足以落库，Consumer 需要读取完整 Redis hash 字段并映射为 `PersistOrderSnapshot`。
  */
 class RedisPersistOrderSnapshotAdapterTest {

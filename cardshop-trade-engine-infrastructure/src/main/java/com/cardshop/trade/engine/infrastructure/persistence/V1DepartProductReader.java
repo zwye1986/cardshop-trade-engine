@@ -7,7 +7,7 @@ import java.util.List;
 /**
  * V1 商户商品关系单表读取接口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.5 商品选择规则」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
  */
 @FunctionalInterface
 public interface V1DepartProductReader {

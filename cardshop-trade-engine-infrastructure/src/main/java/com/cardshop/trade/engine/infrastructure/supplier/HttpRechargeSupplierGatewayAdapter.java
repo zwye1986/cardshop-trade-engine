@@ -23,7 +23,7 @@ import org.springframework.util.StringUtils;
 /**
  * 基于 HTTP JSON 的供应商 Gateway 适配器。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」和「20.13.11 作废设计」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和「9.2 作废设计」。
  * 首期用于配置化接入 fake server 或简单 HTTP 渠道；复杂渠道 SDK 后续可单独实现同一端口。
  */
 public class HttpRechargeSupplierGatewayAdapter implements RechargeSupplierGatewayPort {
@@ -126,7 +126,7 @@ public class HttpRechargeSupplierGatewayAdapter implements RechargeSupplierGatew
                         ex);
             }
             /*
-             * docs/交行直充业务系统详细设计.md「20.13.9 派单 Outbox」要求网络超时、连接异常这类
+             * docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」要求网络超时、连接异常这类
              * 不可确认窗口回到 outbox 退避重试。这里不能返回明确 FAILED，否则 application Worker
              * 会按供应商终态失败释放余额并创建商户失败回调，SUP-002 会被误判为业务失败。
              */
@@ -182,7 +182,7 @@ public class HttpRechargeSupplierGatewayAdapter implements RechargeSupplierGatew
     /**
      * 单个供应商渠道的 HTTP 端点配置。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」和「20.13.11 作废设计」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和「9.2 作废设计」。
      *
      * @param dispatchUrl 派单请求地址，用于供应商履约下发
      * @param invalidUrl 作废请求地址，用于已受理订单的供应商侧撤销

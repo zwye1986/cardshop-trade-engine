@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 /**
  * D2 Mapper 契约测试。
  *
- * <p>Mapper 合同对应 {@code docs/交行直充业务系统详细设计.md} 的「20.7 MyBatis Mapper 细节」
+ * <p>Mapper 合同对应 {@code docs/交行直充业务系统详细设计.md} 的「8. MySQL/Liquibase 持久化层」
  * 和用户补充要求：SQL 禁止多表关联查询，优先使用 MyBatis-Plus LambdaWrapper。
  */
 class MapperContractTest {

@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 /**
  * D2 数据库变更契约测试。
  *
- * <p>本测试覆盖 {@code docs/交行直充业务系统详细设计.md} 的「20.8 Liquibase 生产级变更清单」
+ * <p>本测试覆盖 {@code docs/交行直充业务系统详细设计.md} 的「8.2 Liquibase 约束」
  * 和 {@code docs/交行直充业务系统高可用方案设计.md} 的「6.2 `mc_order` 字段说明」「6.6 新增表」。
  * 这些断言用于防止后续迁移脚本遗漏共享旧表兼容字段、幂等生成列或补偿任务扫描索引。
  */

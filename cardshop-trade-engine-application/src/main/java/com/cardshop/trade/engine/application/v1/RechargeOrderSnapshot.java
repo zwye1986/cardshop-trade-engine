@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.v1;
 /**
  * V1 查单/作废使用的订单快照。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」和
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「14.5 Redis/MQ/MySQL 三方幂等协议」。
  * 该对象只承载接口响应和作废前置判断所需的最小字段，避免 API 层直接理解 Redis hash 或 MySQL 表结构。
  *

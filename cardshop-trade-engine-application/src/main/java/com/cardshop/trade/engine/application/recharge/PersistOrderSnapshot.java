@@ -8,8 +8,8 @@ import java.util.Objects;
 /**
  * Persist Consumer 写 MySQL 所需的完整订单快照。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「10.2 持久化消息」和
- * 「20.13.8 异步落库 Consumer」。`RechargeOrderSnapshot` 只服务查单/作废入口，字段不足以写
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「7. RabbitMQ 持久化消息层」和
+ * 「8.3 异步落库 Consumer」。`RechargeOrderSnapshot` 只服务查单/作废入口，字段不足以写
  * `mc_order`；本对象专门承载落库字段，避免 Consumer 从多个协议 DTO 或 Redis hash 中临时拼字段。
  *
  * @param orgCode 商户编码，对应旧表 {@code mc_order.org_code}
@@ -141,7 +141,7 @@ public record PersistOrderSnapshot(
                 intValue(snapshot, "product_type", 1),
                 /*
                  * TODO(D7B/D8): 用生产 mc_order.coupon_type 分布确认旧 MQ 消息缺失 coupon_type 时的下游影响；
-                 * 参见 docs/交行直充业务系统详细设计.md「20.13.8 异步落库 Consumer」。当前保留空值而非写 UNKNOWN，
+                 * 参见 docs/交行直充业务系统详细设计.md「8.3 异步落库 Consumer」。当前保留空值而非写 UNKNOWN，
                  * 避免旧卡管按 url/code/codekey 路由时误识别一个不存在的卡密类型。
                  */
                 text(snapshot, "coupon_type", ""),

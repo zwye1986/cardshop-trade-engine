@@ -7,7 +7,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * V1 旧协议返回码模板测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.1 协议基线」。旧协议允许不同业务语义复用同一个
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。旧协议允许不同业务语义复用同一个
  * code，例如订单重复和订单不存在都返回 505；测试在这里锁定“code 可复用、语义不可合并”的约束。
  */
 class V1CardApiResultStatusTest {

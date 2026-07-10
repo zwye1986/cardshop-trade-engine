@@ -10,7 +10,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Java 到 Lua 的入参映射契约测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.6 Redis Lua 入参与 Key 构造」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.1 Redis Lua 入参与 Key 构造」。
  * Redis Lua 参数是位置语义，测试必须锁住 ARGV 顺序，避免后续字段扩展造成脚本误读价格、版本或 TTL。
  */
 class AcceptRechargeOrderLuaArgumentsTest {

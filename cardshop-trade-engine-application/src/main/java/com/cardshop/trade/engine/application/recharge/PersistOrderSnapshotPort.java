@@ -5,7 +5,7 @@ import java.util.Optional;
 /**
  * Persist Consumer 读取 Redis 最新订单快照的端口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」第 2-5 步。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」第 2-5 步。
  * application 层只关心是否能拿到完整落库快照；Redis key、HGETALL、超时降级等细节留给 infrastructure。
  */
 public interface PersistOrderSnapshotPort {

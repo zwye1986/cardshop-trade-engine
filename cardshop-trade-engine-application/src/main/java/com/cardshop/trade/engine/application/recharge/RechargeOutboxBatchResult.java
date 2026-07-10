@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.recharge;
 /**
  * outbox Worker 单批处理结果。
  *
- * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「20.2 任务分片和幂等补偿」。
+ * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「10.1 XXL-Job Handler 契约」。
  *
  * @param scanned 本批扫描到的 outbox 事件数量
  * @param claimed 本批成功抢占租约的事件数量

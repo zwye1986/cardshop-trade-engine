@@ -1,5 +1,5 @@
 -- cancel_unconfirmed_accept.lua
--- docs/交行直充业务系统详细设计.md「20.5 下单服务实现细节」「20.13.6 Redis Lua 下单结果」
+-- docs/交行直充业务系统详细设计.md「4. Application 用例编排层」「6. Redis 受理与缓存层」
 -- WAIT 未达到副本确认要求时，原子释放 Redis 预扣、清理 pending/org_index，并允许调用方后续重试同一 out_order_sn。
 
 -- KEYS

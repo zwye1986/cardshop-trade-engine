@@ -25,7 +25,7 @@ import org.springframework.data.redis.serializer.RedisSerializationContext;
 /**
  * Redis 后置自动配置回归测试。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」和「20.13.11 作废设计」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」和「9.2 作废设计」。
  * test188 dev 曾出现普通基础设施配置早于 RedisTemplate/Mapper 条件判断，导致
  * {@link RechargeOrderQueryPort} 缺失，V1 查询/作废入口只能拿到 bootstrap fallback，表现为
  * `/v1/cardapi/order/invalid` 返回“新交易引擎作废暂未启用”。这些端口必须放在 Redis 后置自动配置中兜底。

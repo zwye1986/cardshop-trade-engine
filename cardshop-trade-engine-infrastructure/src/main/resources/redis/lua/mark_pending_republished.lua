@@ -1,5 +1,5 @@
 -- mark_pending_republished.lua
--- docs/交行直充业务系统详细设计.md「20.11 XXL-Job Handler 契约」
+-- docs/交行直充业务系统详细设计.md「10.1 XXL-Job Handler 契约」
 -- Redis pending 补投发布成功后推进状态。该脚本必须原子判断当前 Redis 订单状态：
 -- 1. 当前仍是可补投状态时，推进为 PERSIST_QUEUED 并延后 pending/org_index score。
 -- 2. 当前已经被 Consumer 标记为 DB_PERSISTED 时，只修复残留 pending/org_index，不能回退终态。
@@ -38,7 +38,7 @@ local function result(code, failCode, failReason)
   }
 end
 
--- docs/交行直充业务系统详细设计.md「20.11 XXL-Job Handler 契约」
+-- docs/交行直充业务系统详细设计.md「10.1 XXL-Job Handler 契约」
 -- 只要脚本清掉 pending 成员，就必须同步刷新 org_index，避免空商户索引长期留在补投扫描入口。
 local function refreshPendingOrgIndex()
   local nextPending = redis.call('ZRANGE', KEYS[3], 0, 0, 'WITHSCORES')

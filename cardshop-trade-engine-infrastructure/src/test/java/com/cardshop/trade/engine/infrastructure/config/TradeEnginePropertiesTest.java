@@ -10,8 +10,8 @@ import org.springframework.context.annotation.Configuration;
 /**
  * `trade.engine.*` 配置绑定测试。
  *
- * <p>配置字段对应 {@code docs/交行直充业务系统详细设计.md}「7.4 核心配置项」和
- * 「20.10 Nacos 配置全量模板」。新增配置项时应同步补充默认值和环境覆盖测试，防止 Nacos 模板、
+ * <p>配置字段对应 {@code docs/交行直充业务系统详细设计.md}「11. 配置中心、部署与健康检查」和
+ * 「11. 配置中心、部署与健康检查」。新增配置项时应同步补充默认值和环境覆盖测试，防止 Nacos 模板、
  * 本地 YAML 与 Java 绑定对象语义漂移。
  */
 class TradeEnginePropertiesTest {

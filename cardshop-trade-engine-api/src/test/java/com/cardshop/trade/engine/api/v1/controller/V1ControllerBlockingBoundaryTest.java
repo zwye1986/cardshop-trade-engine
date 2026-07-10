@@ -30,8 +30,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * V1 WebFlux 入口阻塞边界测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.1.1 `/v1/cardapi` 路由兼容设计」
- * 和「20.13.5 Token 生成接口」。商户资料查询、Redis token 写读仍通过同步端口兼容旧
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」
+ * 和「3. API/V1 接入层」。商户资料查询、Redis token 写读仍通过同步端口兼容旧
  * MyBatis/Redis 适配器，因此 controller 必须把这些调用隔离到 boundedElastic，避免 Netty
  * 事件循环线程直接等待阻塞 IO。
  */

@@ -33,7 +33,7 @@ import reactor.core.publisher.Mono;
 /**
  * 同 Redis session 的接单与可靠性适配器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.5 下单服务实现细节」和
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「4. Application 用例编排层」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「14.2 Redis WAIT 协议」。Redis WAIT 必须确认
  * 同一客户端连接上 accept Lua 产生的写入，因此该适配器同时实现 {@link AcceptRechargeOrderPort}
  * 与 {@link RechargeAcceptReliabilityPort}，并在 `orderId` 维度短暂保存接单 session。
@@ -119,7 +119,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         }
 
         /*
-         * 参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
+         * 参见 docs/交行直充业务系统详细设计.md「6. Redis 受理与缓存层」。
          * Lua 参数和脚本对象都不依赖 Redis 连接，必须在 openSession 之前完成；否则参数构造或脚本加载异常时，
          * 已打开的同 session WAIT 连接没有机会进入 Reactor 链路的关闭分支。
          */
@@ -486,7 +486,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
     /**
      * accept Lua 状态未知时关闭 Redis 写入。
      *
-     * <p>参见 docs/交行直充业务系统详细设计.md「20.13.6 Redis Lua 下单结果」。
+     * <p>参见 docs/交行直充业务系统详细设计.md「6. Redis 受理与缓存层」。
      * 这类异常无法证明订单、余额预扣和 pending 是否已经写入；继续放量只会扩大核查范围，所以先通过
      * HA Guard fail closed，再由 anomaly 自动核查或人工确认恢复。
      */
@@ -688,7 +688,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
 
     private static Map<String, String> flatResult(Object rawResult) {
         /*
-         * 参见 docs/交行直充业务系统详细设计.md「20.13.8 异步落库 Consumer」。
+         * 参见 docs/交行直充业务系统详细设计.md「8.3 异步落库 Consumer」。
          * 真实 Lettuce reactive `eval(..., MULTI)` 会把 Lua table 作为单个 multi 结果发出，
          * 再经过 `collectList()` 形成 `[[code, MARKED, ...]]`；Spring Data 测试替身和部分单测
          * 则直接给出 `[code, MARKED, ...]`。这里统一拆掉一层单元素嵌套，避免 Redis 已经成功推进

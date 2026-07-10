@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Redis 查单适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」。Redis hash 字段是下单 Lua、
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。Redis hash 字段是下单 Lua、
  * 查单接口和后续 Consumer 的共享合同，适配器必须稳定映射为 application 层快照。
  */
 class RedisRechargeOrderQueryAdapterTest {

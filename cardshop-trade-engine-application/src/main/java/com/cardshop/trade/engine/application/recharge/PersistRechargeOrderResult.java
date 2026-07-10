@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.recharge;
 /**
  * Persist Consumer 核心服务处理结果。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * 当前 D7A 还不直接绑定 Rabbit listener，因此先用该结果明确后续 adapter 的 ack/nack 决策。
  *
  * @param status 单条消息处理状态

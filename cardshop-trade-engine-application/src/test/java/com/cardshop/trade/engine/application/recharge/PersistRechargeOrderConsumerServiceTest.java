@@ -17,7 +17,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Redis/MQ 到 MySQL 异步落库 Consumer 核心编排测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * D7A 先验证不绑定 RabbitMQ listener 的核心服务：快照选择、事务写库端口调用和 Redis mark 调用顺序。
  */
 class PersistRechargeOrderConsumerServiceTest {

@@ -21,7 +21,7 @@ import org.springframework.context.annotation.Bean;
 /**
  * XXL-Job 真实调度入口装配测试。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」和
  * {@code docs/开发进度.md} 第 7 节第 2 项。真实 handler 必须复用现有
  * {@link com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob#runOnce(int, int, int, String)}
  * 门面，不能另写一套补投逻辑；同时默认关闭 executor，避免 dev/test 未配置调度中心时影响应用启动。

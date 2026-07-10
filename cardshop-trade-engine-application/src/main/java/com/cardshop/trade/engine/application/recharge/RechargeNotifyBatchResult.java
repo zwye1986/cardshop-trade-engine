@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.recharge;
 /**
  * 回调 Worker 单批处理结果。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.12 回调设计」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。
  *
  * @param scanned 本批扫描到的回调任务数量
  * @param claimed 本批成功抢占租约的回调任务数量

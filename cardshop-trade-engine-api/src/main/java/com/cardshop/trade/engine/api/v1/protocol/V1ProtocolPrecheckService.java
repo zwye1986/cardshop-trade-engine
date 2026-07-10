@@ -21,7 +21,7 @@ import java.util.function.Function;
 /**
  * `/v1/cardapi` 协议预校验服务。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.3 SM4 解密与 SM3 验签」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「3. API/V1 接入层」。
  * 该服务只处理 Redis/Lua 前的确定性协议校验：请求体解码、timestamp 偏差和 SM3 签名。
  */
 @Component
@@ -64,8 +64,8 @@ public class V1ProtocolPrecheckService {
     /**
      * 查单接口的协议预校验。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」
-     * 和「20.13.10 查单设计」。查单只做身份、解密、时间戳和签名确认，不在协议层访问供应商或修改订单。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」
+     * 和「3. API/V1 接入层」。查单只做身份、解密、时间戳和签名确认，不在协议层访问供应商或修改订单。
      */
     public V1ProtocolPrecheckResult<V1RechargeOrderQueryRequest> precheckQuery(
             String rawBody,
@@ -81,8 +81,8 @@ public class V1ProtocolPrecheckService {
     /**
      * 作废接口的协议预校验。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」
-     * 和「20.13.11 作废设计」。作废状态机和未落库订单保护属于后续应用用例，不在协议预校验内完成。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」
+     * 和「9.2 作废设计」。作废状态机和未落库订单保护属于后续应用用例，不在协议预校验内完成。
      */
     public V1ProtocolPrecheckResult<V1RechargeOrderInvalidRequest> precheckInvalid(
             String rawBody,

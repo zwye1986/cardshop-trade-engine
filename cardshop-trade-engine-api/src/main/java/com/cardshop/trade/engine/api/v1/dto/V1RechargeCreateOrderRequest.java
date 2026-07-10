@@ -9,7 +9,7 @@ import jakarta.validation.constraints.NotNull;
 /**
  * 交行 V1 创建直充订单请求 DTO。
  *
- * <p>字段来源对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.2 V1 请求 DTO 和字段来源」。
+ * <p>字段来源对应 {@code docs/交行直充业务系统详细设计.md} 的「14.1 V1 DTO 字段」。
  * `orgCode` 只作为兼容字段承载，实际路由和商户身份必须以后续 token 解析出的 `app_id/orgCode` 为准。
  *
  * @param orgCode 商户编码，兼容旧协议字段

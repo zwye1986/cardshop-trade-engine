@@ -27,7 +27,7 @@ import org.springframework.util.StringUtils;
 /**
  * 基于 Redis pending/org_index 的 MQ 补投扫描适配器。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「17.3 MQ 补投任务」。该适配器负责把 Redis 中到期的
  * pending 订单还原为 {@link PendingPersistOrderSnapshot}，供 application 层重新发布 RabbitMQ 持久化消息。
  *
@@ -142,7 +142,7 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
         int publishCount = intField(snapshot.initialOrderSnapshot(), "mq_publish_count", 0) + 1;
         try {
             /*
-             * docs/交行直充业务系统详细设计.md「20.11 XXL-Job Handler 契约」要求补投任务不能让
+             * docs/交行直充业务系统详细设计.md「10.1 XXL-Job Handler 契约」要求补投任务不能让
              * Redis 状态从终态回退。PEND-006 与第 7 节复测证明：RabbitMQ confirm 与 Consumer
              * markDbPersisted 可以交错到单条 Redis 命令粒度，因此这里不能采用 Java 侧“先读后写”。
              * `mark_pending_republished.lua` 在 Redis 内原子判断当前状态：若已 DB_PERSISTED 则只清理
@@ -272,7 +272,7 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
             String persistStatus = order.getOrDefault("persist_status", "");
             if (STATUS_DB_PERSISTED.equals(persistStatus)) {
                 /*
-                 * docs/交行直充业务系统详细设计.md「20.11 XXL-Job Handler 契约」要求补偿任务具备
+                 * docs/交行直充业务系统详细设计.md「10.1 XXL-Job Handler 契约」要求补偿任务具备
                  * 自清理能力。2026-07-10 test188 第 7 节复测发现：极窄竞态下 Redis order 已经是
                  * DB_PERSISTED，但 markRepublished 或历史残留仍可能留下 pending/org_index 未来 score。
                  * 这种终态订单不应重新发布 MQ，也不能只跳过扫描；必须复用二次确认修复逻辑清掉索引，

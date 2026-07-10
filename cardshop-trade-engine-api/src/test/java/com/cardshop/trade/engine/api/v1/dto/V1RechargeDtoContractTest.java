@@ -7,8 +7,8 @@ import org.junit.jupiter.api.Test;
 /**
  * V1 DTO 契约测试。
  *
- * <p>DTO 字段对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.2 V1 请求 DTO 和字段来源」
- * 和「20.13.10 查单设计」。D2 只固化字段载体，D3 再接 Controller、验签和路由。
+ * <p>DTO 字段对应 {@code docs/交行直充业务系统详细设计.md} 的「14.1 V1 DTO 字段」
+ * 和「3. API/V1 接入层」。D2 只固化字段载体，D3 再接 Controller、验签和路由。
  */
 class V1RechargeDtoContractTest {
 

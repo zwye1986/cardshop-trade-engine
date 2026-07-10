@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 /**
  * MySQL 查单兜底适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」。Redis 快照丢失或已过期时，
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。Redis 快照丢失或已过期时，
  * 查单需要从 `mc_order` 读取订单事实，并尽量合并 `recharge_order_ext` 中的持久化状态。
  */
 class MybatisRechargeOrderQueryAdapterTest {

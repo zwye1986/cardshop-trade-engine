@@ -1,5 +1,5 @@
 -- mark_db_persisted.lua
--- docs/交行直充业务系统详细设计.md「20.13.8 MySQL 异步落库」
+-- docs/交行直充业务系统详细设计.md「8.3 异步落库 Consumer」
 -- Consumer 确认 MySQL 事务提交后，原子推进 Redis persisted_version；只有 Redis 当前版本已追平本次落库版本时，
 -- 才标记 DB_PERSISTED 并清理 pending/org_index 补投入口。
 
@@ -26,7 +26,7 @@ local function result(code, failCode, failReason)
   }
 end
 
--- docs/交行直充业务系统详细设计.md「20.13.8 MySQL 异步落库」
+-- docs/交行直充业务系统详细设计.md「8.3 异步落库 Consumer」
 -- org_index 是 D5B 补投任务发现“哪些商户仍有 pending 订单”的入口。只要本脚本删除
 -- pending zset 成员，就必须立即刷新 org_index；即使订单 hash 已被 TTL/人工清理，也不能留下
 -- 空商户索引，否则后续扫描会反复命中没有成员的 bucket。
