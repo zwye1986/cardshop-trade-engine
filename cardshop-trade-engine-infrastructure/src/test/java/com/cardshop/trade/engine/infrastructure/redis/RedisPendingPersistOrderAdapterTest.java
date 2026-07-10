@@ -140,6 +140,38 @@ class RedisPendingPersistOrderAdapterTest {
     }
 
     @Test
+    void markRepublishedDoesNotOverwriteDbPersistedStateWhenConsumerWinsRace() {
+        RechargeRedisKeyBuilder keyBuilder = new RechargeRedisKeyBuilder("test", 8);
+        FakePendingRedisOperations operations = new FakePendingRedisOperations();
+        RedisPendingPersistOrderAdapter adapter = new RedisPendingPersistOrderAdapter(
+                operations,
+                keyBuilder,
+                8,
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(120),
+                PersistedOrderStatePort.noop(),
+                CLOCK);
+        seedPendingOrder(operations, keyBuilder, "A05", "ORDER-1", "OUT-1", "", 10_000);
+        PendingPersistOrderSnapshot snapshot = adapter.selectDueForShard(1, 0, 10, "worker-A").getFirst();
+        operations.hash(keyBuilder.orderKey("A05", "OUT-1")).put("persist_status", "DB_PERSISTED");
+        operations.hash(keyBuilder.orderKey("A05", "OUT-1")).put("persisted_version", "1");
+        operations.hash(keyBuilder.idempotentKey("A05", "OUT-1")).put("persist_status", "DB_PERSISTED");
+
+        adapter.markRepublished(snapshot, PersistMessagePublishResult.confirmed("persist-repub-1", 2), "worker-A");
+
+        assertThat(operations.hash(keyBuilder.orderKey("A05", "OUT-1")))
+                .containsEntry("persist_status", "DB_PERSISTED")
+                .containsEntry("persisted_version", "1")
+                .containsEntry("last_republish_worker", "worker-A")
+                .doesNotContainEntry("persist_status", "PERSIST_QUEUED");
+        assertThat(operations.hash(keyBuilder.idempotentKey("A05", "OUT-1")))
+                .containsEntry("persist_status", "DB_PERSISTED");
+        assertThat(operations.zset(keyBuilder.pendingKey("A05"))).doesNotContainKey("ORDER-1");
+        assertThat(operations.zset(keyBuilder.pendingOrgIndexKey(keyBuilder.pendingOrgBucket("A05"))))
+                .doesNotContainKey("A05");
+    }
+
+    @Test
     void markRepublishFailedDefersNextRetryInPendingAndOrgIndex() {
         RechargeRedisKeyBuilder keyBuilder = new RechargeRedisKeyBuilder("test", 8);
         FakePendingRedisOperations operations = new FakePendingRedisOperations();

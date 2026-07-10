@@ -151,6 +151,23 @@ public class RedisPendingPersistOrderAdapter implements PendingPersistOrderPort 
         idemUpdates.put("updated_at", now);
 
         try {
+            Map<String, String> currentOrder = operations.entries(keyBuilder.orderKey(snapshot.orgCode(), snapshot.outOrderSn()));
+            if (STATUS_DB_PERSISTED.equals(currentOrder.get("persist_status"))) {
+                /*
+                 * docs/交行直充业务系统详细设计.md「20.11 XXL-Job Handler 契约」要求补投任务不能让
+                 * Redis 状态从终态回退。PEND-006 真实联调证明：RabbitMQ confirm 后的 markRepublished
+                 * 可能晚于 Consumer 的 markDbPersisted，此时只能清理残留 pending/org_index，不能再把
+                 * order/idem 回写为 PERSIST_QUEUED。
+                 */
+                long persistedVersion = longField(currentOrder, "persisted_version", snapshot.orderVersion());
+                repairAlreadyPersisted(
+                        snapshot.orgCode(),
+                        snapshot.outOrderSn(),
+                        snapshot.orderId(),
+                        persistedVersion,
+                        workerId);
+                return;
+            }
             operations.putAll(keyBuilder.orderKey(snapshot.orgCode(), snapshot.outOrderSn()), orderUpdates);
             operations.putAll(keyBuilder.idempotentKey(snapshot.orgCode(), snapshot.outOrderSn()), idemUpdates);
             /*
