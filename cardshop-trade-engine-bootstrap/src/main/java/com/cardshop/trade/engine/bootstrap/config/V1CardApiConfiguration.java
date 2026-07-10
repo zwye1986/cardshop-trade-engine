@@ -29,7 +29,6 @@ import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.domain.service.RequestHashCanonicalizer;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import org.springframework.beans.factory.ObjectProvider;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -175,40 +174,58 @@ public class V1CardApiConfiguration {
     }
 
     @Bean
-    @ConditionalOnBean({V1MerchantProfilePort.class, RechargeOrderQueryPort.class})
     @ConditionalOnMissingBean(QueryRechargeOrderUseCase.class)
     public QueryRechargeOrderUseCase v1QueryRechargeOrderUseCase(
             V1ProtocolPrecheckService precheckService,
-            V1MerchantProfilePort merchantProfilePort,
-            RechargeOrderQueryPort orderQueryPort) {
+            ObjectProvider<V1MerchantProfilePort> merchantProfilePortProvider,
+            ObjectProvider<RechargeOrderQueryPort> orderQueryPortProvider) {
+        /*
+         * 参见 docs/交行直充业务系统详细设计.md「20.13.10 查单设计」。V1 查询端口依赖的 Redis/MySQL
+         * 聚合适配器来自 infrastructure 自动配置，真实 dev/test 启动时它们可能晚于 bootstrap 普通配置类
+         * 出现。这里沿用下单/Token 的延迟取 Bean 模式，避免 @ConditionalOnBean 在配置解析期过早失败后
+         * 把 fallback 注册成最终 QueryRechargeOrderUseCase，导致灰度请求误返回“新交易引擎查单暂未启用”。
+         */
+        V1MerchantProfilePort merchantProfilePort = merchantProfilePortProvider.getIfAvailable();
+        RechargeOrderQueryPort orderQueryPort = orderQueryPortProvider.getIfAvailable();
+        if (merchantProfilePort == null || orderQueryPort == null) {
+            return unavailableQueryRechargeOrderUseCase();
+        }
         return new V1QueryRechargeOrderUseCaseService(precheckService, merchantProfilePort, orderQueryPort);
     }
 
-    @Bean
-    @ConditionalOnMissingBean(QueryRechargeOrderUseCase.class)
-    public QueryRechargeOrderUseCase unavailableQueryRechargeOrderUseCase() {
+    private static QueryRechargeOrderUseCase unavailableQueryRechargeOrderUseCase() {
         // TODO(D6): 接入 Redis/MySQL 查单聚合；参见 docs/交行直充业务系统详细设计.md「20.13.10 查单设计」。
         return command -> V1CardApiResult.unavailable("新交易引擎查单暂未启用");
     }
 
     @Bean
-    @ConditionalOnBean({V1MerchantProfilePort.class, RechargeOrderQueryPort.class, InvalidRechargeOrderOutboxPort.class})
     @ConditionalOnMissingBean(InvalidRechargeOrderUseCase.class)
     public InvalidRechargeOrderUseCase v1InvalidRechargeOrderUseCase(
             V1ProtocolPrecheckService precheckService,
-            V1MerchantProfilePort merchantProfilePort,
-            RechargeOrderQueryPort orderQueryPort,
+            ObjectProvider<V1MerchantProfilePort> merchantProfilePortProvider,
+            ObjectProvider<RechargeOrderQueryPort> orderQueryPortProvider,
             ObjectProvider<InvalidRechargeOrderOutboxPort> invalidOrderOutboxPortProvider) {
+        /*
+         * 参见 docs/交行直充业务系统详细设计.md「20.13.11 作废设计」。作废入口除了商户资料和订单查询端口，
+         * 还依赖 MyBatis outbox adapter 暴露的 InvalidRechargeOrderOutboxPort。该 adapter 由
+         * infrastructure 后置自动配置创建；若使用 @ConditionalOnBean，test188 dev 会在真实端口出现前
+         * 注册 fallback，表现为已灰度、已验签但 `/v1/cardapi/order/invalid` 返回“暂未启用”。这里在 Bean
+         * 创建期取真实依赖，缺失时仍 fail closed，不把未装配环境伪装成可作废。
+         */
+        V1MerchantProfilePort merchantProfilePort = merchantProfilePortProvider.getIfAvailable();
+        RechargeOrderQueryPort orderQueryPort = orderQueryPortProvider.getIfAvailable();
+        InvalidRechargeOrderOutboxPort invalidOrderOutboxPort = invalidOrderOutboxPortProvider.getIfAvailable();
+        if (merchantProfilePort == null || orderQueryPort == null || invalidOrderOutboxPort == null) {
+            return unavailableInvalidRechargeOrderUseCase();
+        }
         return new V1InvalidRechargeOrderUseCaseService(
                 precheckService,
                 merchantProfilePort,
                 orderQueryPort,
-                invalidOrderOutboxPortProvider.getObject());
+                invalidOrderOutboxPort);
     }
 
-    @Bean
-    @ConditionalOnMissingBean(InvalidRechargeOrderUseCase.class)
-    public InvalidRechargeOrderUseCase unavailableInvalidRechargeOrderUseCase() {
+    private static InvalidRechargeOrderUseCase unavailableInvalidRechargeOrderUseCase() {
         // TODO(D6): 接入作废状态机和供应商撤单能力；参见 docs/交行直充业务系统详细设计.md「20.13.11 作废设计」。
         return command -> V1CardApiResult.unavailable("新交易引擎作废暂未启用");
     }

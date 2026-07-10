@@ -2,7 +2,9 @@ package com.cardshop.trade.engine.bootstrap.config;
 
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
 import com.cardshop.trade.engine.api.v1.usecase.V1CreateRechargeOrderUseCaseService;
+import com.cardshop.trade.engine.api.v1.usecase.V1InvalidRechargeOrderUseCaseService;
 import com.cardshop.trade.engine.api.v1.usecase.V1IssueTokenUseCaseService;
+import com.cardshop.trade.engine.api.v1.usecase.V1QueryRechargeOrderUseCaseService;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
@@ -129,9 +131,11 @@ class V1CardApiConfigurationTest {
                 .withBean(RechargeOrderQueryPort.class, () -> interfaceProxy(RechargeOrderQueryPort.class))
                 .run(context -> {
                     assertThat(context).hasBean("v1QueryRechargeOrderUseCase");
-                    assertThat(context).doesNotHaveBean("v1InvalidRechargeOrderUseCase");
-                    assertThat(context).hasBean("unavailableInvalidRechargeOrderUseCase");
+                    assertThat(context).hasBean("v1InvalidRechargeOrderUseCase");
+                    assertThat(context).doesNotHaveBean("unavailableInvalidRechargeOrderUseCase");
                     assertThat(context).hasSingleBean(InvalidRechargeOrderUseCase.class);
+                    assertThat(context.getBean(InvalidRechargeOrderUseCase.class))
+                            .isNotInstanceOf(V1InvalidRechargeOrderUseCaseService.class);
                 });
     }
 
@@ -149,6 +153,18 @@ class V1CardApiConfigurationTest {
                 .withUserConfiguration(V1CardApiConfiguration.class, StubBeans.class, LateV1DependencyBeans.class)
                 .run(context -> assertThat(context.getBean(CreateRechargeOrderUseCase.class))
                         .isInstanceOf(V1CreateRechargeOrderUseCaseService.class));
+    }
+
+    @Test
+    void registersRealQueryAndInvalidUseCasesWhenDependenciesComeFromLaterConfiguration() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(V1CardApiConfiguration.class, StubBeans.class, LateV1DependencyBeans.class)
+                .run(context -> {
+                    assertThat(context.getBean(QueryRechargeOrderUseCase.class))
+                            .isInstanceOf(V1QueryRechargeOrderUseCaseService.class);
+                    assertThat(context.getBean(InvalidRechargeOrderUseCase.class))
+                            .isInstanceOf(V1InvalidRechargeOrderUseCaseService.class);
+                });
     }
 
     private static <T> T interfaceProxy(Class<T> interfaceType) {
@@ -234,6 +250,16 @@ class V1CardApiConfigurationTest {
         @Bean
         V1ProductCandidateSelector v1ProductCandidateSelector() {
             return interfaceProxy(V1ProductCandidateSelector.class);
+        }
+
+        @Bean
+        RechargeOrderQueryPort rechargeOrderQueryPort() {
+            return interfaceProxy(RechargeOrderQueryPort.class);
+        }
+
+        @Bean
+        InvalidRechargeOrderOutboxPort invalidRechargeOrderOutboxPort() {
+            return InvalidRechargeOrderOutboxPort.noop();
         }
     }
 }
