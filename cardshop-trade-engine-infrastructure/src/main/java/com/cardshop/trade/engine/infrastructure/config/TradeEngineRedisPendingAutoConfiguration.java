@@ -6,12 +6,18 @@ import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcilePort;
 import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
+import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceReconcileAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RedisDirectRechargeFrequencyAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeCacheRepairAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPendingPersistOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
 import java.time.Clock;
@@ -100,6 +106,39 @@ public class TradeEngineRedisPendingAutoConfiguration {
             TradeEngineProperties properties) {
         int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 3);
         return new RedisDirectRechargeFrequencyAdapter(redisTemplate, Duration.ofMillis(timeoutMs));
+    }
+
+    /**
+     * 创建 V1 查单/作废共用的订单快照查询端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」和「20.13.11 作废设计」。
+     * test188 dev 曾出现普通 {@link TradeEngineInfrastructureConfiguration} 早于 RedisTemplate 条件判断执行，
+     * 导致 {@link RechargeOrderQueryPort} 没有注册，V1 查询/作废 use case 只能拿到 bootstrap fallback，
+     * `/v1/cardapi/order/invalid` 即使已灰度且验签通过也返回“新交易引擎作废暂未启用”。这里放到 Redis reactive
+     * 后置自动配置中兜底创建真实端口：Redis 始终作为受理期短期事实来源；MySQL Mapper 已存在时再叠加最终事实兜底。
+     */
+    @Bean
+    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
+    @ConditionalOnMissingBean(RechargeOrderQueryPort.class)
+    public RechargeOrderQueryPort rechargeOrderQueryPort(
+            ReactiveStringRedisTemplate redisTemplate,
+            RechargeRedisKeyBuilder keyBuilder,
+            TradeEngineProperties properties,
+            ObjectProvider<McOrderMapper> orderMapperProvider,
+            ObjectProvider<RechargeOrderExtMapper> extMapperProvider) {
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
+        RechargeOrderQueryPort redisQueryPort = new RedisRechargeOrderQueryAdapter(
+                redisTemplate,
+                keyBuilder,
+                Duration.ofMillis(timeoutMs));
+        McOrderMapper orderMapper = orderMapperProvider.getIfAvailable();
+        RechargeOrderExtMapper extMapper = extMapperProvider.getIfAvailable();
+        if (orderMapper == null || extMapper == null) {
+            return redisQueryPort;
+        }
+        return new FallbackRechargeOrderQueryAdapter(
+                redisQueryPort,
+                new MybatisRechargeOrderQueryAdapter(orderMapper, extMapper));
     }
 
     /**

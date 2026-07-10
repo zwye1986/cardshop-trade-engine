@@ -402,6 +402,7 @@ public class TradeEngineInfrastructureConfiguration {
 
     @Bean
     @ConditionalOnBean(ReactiveStringRedisTemplate.class)
+    @ConditionalOnMissingBean(RechargeOrderQueryPort.class)
     public RechargeOrderQueryPort rechargeOrderQueryPort(
             ReactiveStringRedisTemplate redisTemplate,
             RechargeRedisKeyBuilder keyBuilder,
