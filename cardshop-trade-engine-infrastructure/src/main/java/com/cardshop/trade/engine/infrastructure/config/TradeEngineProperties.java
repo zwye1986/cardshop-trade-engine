@@ -86,6 +86,11 @@ public class TradeEngineProperties {
      */
     private final Integration integration = new Integration();
 
+    /**
+     * XXL-Job 执行器配置；参见详细设计「20.11 XXL-Job Handler 契约」和高可用设计「17. 分片补偿与对账任务」。
+     */
+    private final XxlJob xxlJob = new XxlJob();
+
     public String getEnvironment() {
         return environment;
     }
@@ -144,6 +149,10 @@ public class TradeEngineProperties {
 
     public Integration getIntegration() {
         return integration;
+    }
+
+    public XxlJob getXxlJob() {
+        return xxlJob;
     }
 
     /**
@@ -1233,6 +1242,145 @@ public class TradeEngineProperties {
 
         public void setManualJobTimeoutMs(int manualJobTimeoutMs) {
             this.manualJobTimeoutMs = manualJobTimeoutMs;
+        }
+    }
+
+    /**
+     * XXL-Job 执行器配置。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」。真实 handler
+     * Bean 可以常驻应用上下文，便于 SDK 扫描；执行器网络注册必须由 {@link #enabled} 显式打开，避免 dev/test
+     * 未配置调度中心时应用启动去绑定端口或注册错误地址。
+     */
+    public static class XxlJob {
+
+        /**
+         * 是否启动 XXL-Job executor。默认 false，dev/test 完成调度中心配置后再打开。
+         */
+        private boolean enabled = false;
+
+        /**
+         * XXL-Job admin 地址，多个地址用英文逗号分隔。
+         */
+        private String adminAddresses = "";
+
+        /**
+         * 调度中心访问 token。该值属于密钥，必须来自环境变量或 Nacos，不能提交明文。
+         */
+        private String accessToken = "";
+
+        /**
+         * 执行器网络与日志配置。
+         */
+        private final Executor executor = new Executor();
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public String getAdminAddresses() {
+            return adminAddresses;
+        }
+
+        public void setAdminAddresses(String adminAddresses) {
+            this.adminAddresses = adminAddresses;
+        }
+
+        public String getAccessToken() {
+            return accessToken;
+        }
+
+        public void setAccessToken(String accessToken) {
+            this.accessToken = accessToken;
+        }
+
+        public Executor getExecutor() {
+            return executor;
+        }
+
+        public static class Executor {
+
+            /**
+             * XXL-Job 执行器 AppName，需要和调度中心执行器配置一致。
+             */
+            private String appname = "cardshop-trade-engine";
+
+            /**
+             * 外部可访问地址。为空时由 XXL-Job SDK 根据 ip/port 生成。
+             */
+            private String address = "";
+
+            /**
+             * 执行器绑定 IP。为空时由 XXL-Job SDK 自动探测。
+             */
+            private String ip = "";
+
+            /**
+             * 执行器内嵌 RPC 端口。
+             */
+            private int port = 19999;
+
+            /**
+             * XXL-Job 执行日志目录。
+             */
+            private String logpath = "/data/logs/cardshop-trade-engine/xxl-job";
+
+            /**
+             * 执行日志保留天数。
+             */
+            private int logRetentionDays = 30;
+
+            public String getAppname() {
+                return appname;
+            }
+
+            public void setAppname(String appname) {
+                this.appname = appname;
+            }
+
+            public String getAddress() {
+                return address;
+            }
+
+            public void setAddress(String address) {
+                this.address = address;
+            }
+
+            public String getIp() {
+                return ip;
+            }
+
+            public void setIp(String ip) {
+                this.ip = ip;
+            }
+
+            public int getPort() {
+                return port;
+            }
+
+            public void setPort(int port) {
+                this.port = port;
+            }
+
+            public String getLogpath() {
+                return logpath;
+            }
+
+            public void setLogpath(String logpath) {
+                this.logpath = logpath;
+            }
+
+            public int getLogRetentionDays() {
+                return logRetentionDays;
+            }
+
+            public void setLogRetentionDays(int logRetentionDays) {
+                this.logRetentionDays = logRetentionDays;
+            }
         }
     }
 }

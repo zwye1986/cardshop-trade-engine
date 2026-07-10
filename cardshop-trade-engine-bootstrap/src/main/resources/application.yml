@@ -89,6 +89,17 @@ trade:
       config-changed-retry-max-ms: 2000
     integration:
       manual-job-timeout-ms: 30000
+    xxl-job:
+      enabled: false
+      admin-addresses: ${XXL_JOB_ADMIN_ADDRESSES:}
+      access-token: ${XXL_JOB_ACCESS_TOKEN:}
+      executor:
+        appname: ${XXL_JOB_EXECUTOR_APPNAME:cardshop-trade-engine}
+        address: ${XXL_JOB_EXECUTOR_ADDRESS:}
+        ip: ${XXL_JOB_EXECUTOR_IP:}
+        port: ${XXL_JOB_EXECUTOR_PORT:19999}
+        logpath: ${XXL_JOB_EXECUTOR_LOGPATH:/data/logs/cardshop-trade-engine/xxl-job}
+        log-retention-days: ${XXL_JOB_EXECUTOR_LOG_RETENTION_DAYS:30}
     routing:
       enabled: true
       legacy-base-url: ${LEGACY_CARD_SHOP_BASE_URL:}
