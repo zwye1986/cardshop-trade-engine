@@ -225,6 +225,47 @@ class RechargeOutboxWorkerServiceTest {
     }
 
     @Test
+    void dispatchRetryableSupplierFailureKeepsOutboxRetriableWithoutTerminalSideEffects() {
+        FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(dispatchableOrder());
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.retryableFailed("", "500", "supplier http status not 2xx", "server error"));
+        FakeFrequencyPort frequencyPort = new FakeFrequencyPort(true);
+        FakeNotifyTaskPort notifyTaskPort = new FakeNotifyTaskPort();
+        FakeBalanceDeltaOutboxPort balanceDeltaOutboxPort = new FakeBalanceDeltaOutboxPort();
+        FakeBalanceReleasePort balanceReleasePort = new FakeBalanceReleasePort(BalanceReservationReleaseResult.releasedSuccess());
+
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGateway,
+                frequencyPort,
+                balanceDeltaOutboxPort,
+                balanceReleasePort,
+                notifyTaskPort,
+                new FixedNotifyPayloadSigner(),
+                CLOCK,
+                settings());
+
+        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(outboxPort.successes).isEmpty();
+        assertThat(outboxPort.failures).singleElement().satisfies(failure -> {
+            assertThat(failure.errorMessage()).contains("supplier http status not 2xx");
+            assertThat(failure.nextRetryDelay()).isEqualTo(Duration.ofSeconds(5));
+        });
+        assertThat(orderPort.statusUpdates)
+                .extracting(OrderFulfillmentStatusUpdate::dispatchStatus)
+                .containsExactly(FulfillmentDispatchStatus.DISPATCHING);
+        assertThat(orderPort.balanceReleasedOrderIds).isEmpty();
+        assertThat(balanceReleasePort.commands).isEmpty();
+        assertThat(balanceDeltaOutboxPort.commands).isEmpty();
+        assertThat(notifyTaskPort.createdTasks).isEmpty();
+        assertThat(frequencyPort.releasedOrderIds).isEmpty();
+    }
+
+    @Test
     void dispatchFailureRetriesOutboxWithoutBalanceDeltaWhenRedisReleaseFails() {
         FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
         FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(dispatchableOrder());

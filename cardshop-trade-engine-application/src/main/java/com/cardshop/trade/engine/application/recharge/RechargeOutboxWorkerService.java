@@ -215,6 +215,16 @@ public class RechargeOutboxWorkerService {
                 outboxPort.markSuccess(event);
                 return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
             }
+            case RETRYABLE_FAILED -> {
+                /*
+                 * docs/交行直充业务系统详细设计.md「20.13.9 派单 Outbox」要求供应商派单具备退避重试。
+                 * HTTP 5xx、超时、连接异常属于“本次调用不可确认”，不是供应商明确拒绝；这里不能释放
+                 * Redis reservation、不能生成失败回调，也不能把 outbox 标成 SUCCESS。保持订单处于
+                 * DISPATCHING/PROCESSING，由 outbox 下次重试用同一 event_id 幂等号继续推进。
+                 */
+                markFailedOrManualRequired(event, response.responseMessage(), settings.retryBackoff());
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
             default -> throw new IllegalStateException("unsupported supplier status: " + response.status());
         }
     }
@@ -416,6 +426,7 @@ public class RechargeOutboxWorkerService {
             case SUCCESS -> "success";
             case PROCESSING -> "processing";
             case FAILED -> "fail";
+            case RETRYABLE_FAILED -> "retryable_fail";
         };
         return new SupplierFlowUpdateCommand(
                 flowId,

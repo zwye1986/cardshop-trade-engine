@@ -125,13 +125,26 @@ public class HttpRechargeSupplierGatewayAdapter implements RechargeSupplierGatew
                         decision.sampledOccurrence(),
                         ex);
             }
-            return SupplierGatewayResponse.failed("", "SUPPLIER_HTTP_EXCEPTION", ex.getMessage(), EMPTY_JSON);
+            /*
+             * docs/交行直充业务系统详细设计.md「20.13.9 派单 Outbox」要求网络超时、连接异常这类
+             * 不可确认窗口回到 outbox 退避重试。这里不能返回明确 FAILED，否则 application Worker
+             * 会按供应商终态失败释放余额并创建商户失败回调，SUP-002 会被误判为业务失败。
+             */
+            return SupplierGatewayResponse.retryableFailed("", "SUPPLIER_HTTP_EXCEPTION", ex.getMessage(), EMPTY_JSON);
         }
     }
 
     private SupplierGatewayResponse parseResponse(int statusCode, String body) throws java.io.IOException {
         if (statusCode < HTTP_SUCCESS_MIN || statusCode >= HTTP_SUCCESS_MAX_EXCLUSIVE) {
-            return SupplierGatewayResponse.failed("", String.valueOf(statusCode), "supplier http status not 2xx", body);
+            /*
+             * HTTP 5xx/网关错误只证明供应商入口暂不可用，不代表订单在供应商侧明确失败；按可重试失败
+             * 交回 outbox。若供应商业务拒绝，应返回 2xx + 业务失败状态，由下方 JSON 解析为 FAILED。
+             */
+            return SupplierGatewayResponse.retryableFailed(
+                    "",
+                    String.valueOf(statusCode),
+                    "supplier http status not 2xx",
+                    body);
         }
         JsonNode root = objectMapper.readTree(StringUtils.hasText(body) ? body : EMPTY_JSON);
         String status = text(root, FIELD_STATUS, text(root, FIELD_ORDER_STATUS, ""));
