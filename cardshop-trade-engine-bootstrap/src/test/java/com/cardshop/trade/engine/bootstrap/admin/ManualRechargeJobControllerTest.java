@@ -148,6 +148,42 @@ class ManualRechargeJobControllerTest {
     }
 
     @Test
+    void registersWithOutboxPublishJobWhenWorkerComesFromLaterAutoConfiguration() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(
+                        TradeEngineReliabilityConfiguration.class,
+                        EarlyPublisherConfiguration.class,
+                        ManualRechargeJobController.class)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withConfiguration(AutoConfigurations.of(
+                        LaterOutboxWorkerAutoConfiguration.class,
+                        TradeEngineCompensationJobAutoConfiguration.class))
+                .withPropertyValues(
+                        "spring.profiles.active=dev",
+                        "trade.engine.integration.manual-job-enabled=true")
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargeOutboxWorkerService.class);
+                    assertThat(context).hasSingleBean(RechargeOutboxPublishJob.class);
+                    assertThat(context).hasSingleBean(ManualRechargeJobController.class);
+
+                    var controller = context.getBean(ManualRechargeJobController.class);
+                    var response = controller.runOutboxPublishOnce(
+                                    new ManualRechargeJobController.ManualJobRunRequest(
+                                            1,
+                                            0,
+                                            1,
+                                            "test188-outbox-late"),
+                                    exchange("127.0.0.1"))
+                            .block();
+
+                    assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+                    assertThat(response.getBody()).isNotNull();
+                    assertThat(response.getBody().status()).isEqualTo("OK");
+                });
+    }
+
+
+    @Test
     void runsPersistMqRepublishJobForLoopbackRequest() {
         RecordingPendingPort pendingPort = new RecordingPendingPort(List.of(pendingSnapshot("ORDER-1")));
         ManualRechargeJobController controller = controller(pendingPort);
@@ -833,6 +869,15 @@ class ManualRechargeJobControllerTest {
         @Bean
         RecordingPendingPort pendingPersistOrderPort() {
             return new RecordingPendingPort(List.of(pendingSnapshot("ORDER-LATE")));
+        }
+    }
+
+    @AutoConfiguration(before = TradeEngineCompensationJobAutoConfiguration.class)
+    static class LaterOutboxWorkerAutoConfiguration {
+
+        @Bean
+        RechargeOutboxWorkerService rechargeOutboxWorkerService() {
+            return new RecordingOutboxWorkerService(RechargeOutboxBatchResult.empty());
         }
     }
 

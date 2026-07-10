@@ -2,7 +2,9 @@ package com.cardshop.trade.engine.bootstrap.config;
 
 import com.cardshop.trade.engine.application.recharge.PendingPersistOrderPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
 import com.cardshop.trade.engine.application.recharge.RechargePersistMqRepublishService;
+import com.cardshop.trade.engine.job.recharge.RechargeOutboxPublishJob;
 import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -27,7 +29,8 @@ import org.springframework.context.annotation.Bean;
  */
 @AutoConfiguration(afterName = {
         "com.cardshop.trade.engine.infrastructure.config.TradeEngineRedisPendingAutoConfiguration",
-        "com.cardshop.trade.engine.infrastructure.config.TradeEngineMybatisPersistenceAutoConfiguration"
+        "com.cardshop.trade.engine.infrastructure.config.TradeEngineMybatisPersistenceAutoConfiguration",
+        "com.cardshop.trade.engine.infrastructure.config.TradeEngineFulfillmentAutoConfiguration"
 })
 public class TradeEngineCompensationJobAutoConfiguration {
 
@@ -62,5 +65,22 @@ public class TradeEngineCompensationJobAutoConfiguration {
     public RechargePersistMqRepublishJob rechargePersistMqRepublishJob(
             RechargePersistMqRepublishService service) {
         return new RechargePersistMqRepublishJob(service);
+    }
+
+    /**
+     * 创建供应商派单/作废 outbox 的人工联调与调度共用 job facade。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
+     * 「20.13.9 派单 Outbox」。真实 dev/test 中 {@link RechargeOutboxWorkerService} 由 infrastructure 的后置自动配置
+     * 在 MyBatis/Redis/供应商 HTTP 端口都可见后创建；如果只依赖普通 bootstrap 配置类，可能因为条件判断过早而
+     * 跳过 {@link RechargeOutboxPublishJob}，导致 `/internal/integration/recharge/jobs/outbox-publish/run-once`
+     * 返回 “job is not available”。这里在 auto-configuration 阶段兜底创建 job facade，但仍要求真实 worker
+     * 存在，避免没有履约能力时误报扫描成功。
+     */
+    @Bean
+    @ConditionalOnBean(RechargeOutboxWorkerService.class)
+    @ConditionalOnMissingBean(RechargeOutboxPublishJob.class)
+    public RechargeOutboxPublishJob rechargeOutboxPublishJob(RechargeOutboxWorkerService service) {
+        return new RechargeOutboxPublishJob(service);
     }
 }

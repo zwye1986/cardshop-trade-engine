@@ -250,6 +250,8 @@ class RechargeOutboxWorkerServiceTest {
         RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
 
         assertThat(result.failed()).isEqualTo(1);
+        assertThat(orderPort.flowUpdates).singleElement().satisfies(update ->
+                assertThat(update.status()).isEqualTo("processing"));
         assertThat(outboxPort.successes).isEmpty();
         assertThat(outboxPort.failures).singleElement().satisfies(failure -> {
             assertThat(failure.errorMessage()).contains("supplier http status not 2xx");

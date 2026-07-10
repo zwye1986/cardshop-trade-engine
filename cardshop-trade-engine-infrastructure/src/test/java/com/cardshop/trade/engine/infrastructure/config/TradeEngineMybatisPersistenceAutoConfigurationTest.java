@@ -2,10 +2,19 @@ package com.cardshop.trade.engine.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
+import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
+import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOutboxAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.baomidou.mybatisplus.autoconfigure.DdlApplicationRunner;
@@ -13,6 +22,7 @@ import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
+import java.time.Clock;
 import javax.sql.DataSource;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.junit.jupiter.api.Nested;
@@ -40,6 +50,7 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
     void registersPersistencePortWhenMappersComeFromLaterAutoConfiguration() {
         new ApplicationContextRunner()
                 .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(Clock.class, Clock::systemUTC)
                 .withConfiguration(AutoConfigurations.of(
                         TestMapperAutoConfiguration.class,
                         TradeEngineMybatisPersistenceAutoConfiguration.class))
@@ -47,6 +58,29 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                     assertThat(context).hasSingleBean(RechargeOrderPersistencePort.class);
                     assertThat(context.getBean(RechargeOrderPersistencePort.class))
                             .isInstanceOf(MybatisRechargeOrderPersistenceAdapter.class);
+                });
+    }
+
+    @Test
+    void registersOutboxWorkerMysqlPortsWhenMappersComeFromLaterAutoConfiguration() {
+        new ApplicationContextRunner()
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withConfiguration(AutoConfigurations.of(
+                        TestMapperAutoConfiguration.class,
+                        TradeEngineMybatisPersistenceAutoConfiguration.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargeOutboxPort.class);
+                    assertThat(context.getBean(RechargeOutboxPort.class))
+                            .isInstanceOf(MybatisRechargeOutboxAdapter.class);
+                    assertThat(context).hasSingleBean(RechargeFulfillmentOrderPort.class);
+                    assertThat(context.getBean(RechargeFulfillmentOrderPort.class))
+                            .isInstanceOf(MybatisRechargeFulfillmentOrderAdapter.class);
+                    assertThat(context).hasSingleBean(RechargeNotifyTaskPort.class);
+                    assertThat(context).hasSingleBean(RechargeNotifyWorkerTaskPort.class);
+                    assertThat(context.getBean(RechargeNotifyTaskPort.class))
+                            .isSameAs(context.getBean(RechargeNotifyWorkerTaskPort.class))
+                            .isInstanceOf(MybatisRechargeNotifyTaskAdapter.class);
                 });
     }
 
@@ -100,6 +134,16 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         @Bean
         McDepartRecordMapper mcDepartRecordMapper() {
             return mapperProxy(McDepartRecordMapper.class);
+        }
+
+        @Bean
+        McOrderSupplierFlowMapper mcOrderSupplierFlowMapper() {
+            return mapperProxy(McOrderSupplierFlowMapper.class);
+        }
+
+        @Bean
+        RechargeNotifyTaskMapper rechargeNotifyTaskMapper() {
+            return mapperProxy(RechargeNotifyTaskMapper.class);
         }
     }
 

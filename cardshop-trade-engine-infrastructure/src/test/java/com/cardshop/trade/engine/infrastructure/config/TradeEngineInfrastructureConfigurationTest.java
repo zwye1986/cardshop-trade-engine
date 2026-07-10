@@ -48,6 +48,7 @@ import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptExecuto
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisSessionFactory;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPendingPersistOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisDirectRechargeFrequencyAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
@@ -200,6 +201,21 @@ class TradeEngineInfrastructureConfigurationTest {
                     assertThat(context).hasSingleBean(PendingPersistOrderPort.class);
                     assertThat(context.getBean(PendingPersistOrderPort.class))
                             .isInstanceOf(RedisPendingPersistOrderAdapter.class);
+                });
+    }
+
+    @Test
+    void redisPendingAutoConfigurationCreatesDirectFrequencyPortWhenRedisTemplateExists() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(RechargeRedisKeyBuilder.class, () -> new RechargeRedisKeyBuilder("cardshop:trade", 16))
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(DirectRechargeFrequencyPort.class);
+                    assertThat(context.getBean(DirectRechargeFrequencyPort.class))
+                            .isInstanceOf(RedisDirectRechargeFrequencyAdapter.class);
                 });
     }
 

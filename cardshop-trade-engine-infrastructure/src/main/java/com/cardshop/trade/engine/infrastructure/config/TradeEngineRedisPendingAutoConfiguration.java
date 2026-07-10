@@ -1,5 +1,6 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
+import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
 import com.cardshop.trade.engine.application.recharge.PendingPersistOrderPort;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
@@ -9,6 +10,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalan
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
+import com.cardshop.trade.engine.infrastructure.redis.RedisDirectRechargeFrequencyAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeCacheRepairAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPendingPersistOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
@@ -80,6 +82,24 @@ public class TradeEngineRedisPendingAutoConfiguration {
                 properties,
                 persistedOrderStatePortProvider.getIfAvailable(PersistedOrderStatePort::noop),
                 clock);
+    }
+
+    /**
+     * 创建同账号直充限频端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」。派单 worker 在调用供应商前
+     * 必须先抢同账号限频锁，并在明确终态或可重试失败窗口按 owner 释放/保留。该端口依赖
+     * {@link ReactiveStringRedisTemplate}，需要和 pending 端口一样放到 Redis 后置自动配置中，避免普通配置类
+     * 早于 RedisTemplate 条件判断而跳过，最终让 `RechargeOutboxWorkerService` 无法创建。
+     */
+    @Bean
+    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
+    @ConditionalOnMissingBean(DirectRechargeFrequencyPort.class)
+    public DirectRechargeFrequencyPort directRechargeFrequencyPort(
+            ReactiveStringRedisTemplate redisTemplate,
+            TradeEngineProperties properties) {
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 3);
+        return new RedisDirectRechargeFrequencyAdapter(redisTemplate, Duration.ofMillis(timeoutMs));
     }
 
     /**

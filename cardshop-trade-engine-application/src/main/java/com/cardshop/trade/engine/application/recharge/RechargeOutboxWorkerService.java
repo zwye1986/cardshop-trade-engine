@@ -426,7 +426,13 @@ public class RechargeOutboxWorkerService {
             case SUCCESS -> "success";
             case PROCESSING -> "processing";
             case FAILED -> "fail";
-            case RETRYABLE_FAILED -> "retryable_fail";
+            /*
+             * mc_order_supplier_flow.status 是旧卡管 varchar(10)，DDL 注释只约定 new/success/fail/processing。
+             * docs/交行直充业务系统详细设计.md「20.13.9 派单 Outbox」中的可重试失败表示供应商结果未确认，
+             * 不是业务终态失败；写旧表时保持 processing，详细错误原因放到 response_result/remark 和 outbox
+             * last_error 中，避免因状态值超长导致 SUP-002 的退避重试被数据库兼容问题打断。
+             */
+            case RETRYABLE_FAILED -> "processing";
         };
         return new SupplierFlowUpdateCommand(
                 flowId,
