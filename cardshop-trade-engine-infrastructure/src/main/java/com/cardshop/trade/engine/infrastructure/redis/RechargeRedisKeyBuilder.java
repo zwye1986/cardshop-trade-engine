@@ -150,6 +150,26 @@ public final class RechargeRedisKeyBuilder {
     }
 
     /**
+     * 构造商户实时余额 hash key。
+     *
+     * <p>参见高可用设计「5. 关键 Redis Key 设计」。缓存修复和余额对账只能通过该方法定位余额基线，
+     * 避免手工拼接 hash tag 造成跨槽或污染其他 profile 前缀。
+     */
+    public String balanceKey(String orgCode) {
+        return key("recharge:" + orgTag(orgCode) + ":balance");
+    }
+
+    /**
+     * 构造商户余额修复锁 key。
+     *
+     * <p>参见高可用设计「17.4 缓存修复任务」。预热/重建余额基线前必须持有该锁，接口线程在锁存在时
+     * fail closed，避免一边修复一边继续写入不完整基线。
+     */
+    public String balanceRepairingLockKey(String orgCode) {
+        return key("recharge:" + orgTag(orgCode) + ":balance:repairing_lock");
+    }
+
+    /**
      * 构造商户级待持久化订单 ZSET。
      */
     public String pendingKey(String orgCode) {

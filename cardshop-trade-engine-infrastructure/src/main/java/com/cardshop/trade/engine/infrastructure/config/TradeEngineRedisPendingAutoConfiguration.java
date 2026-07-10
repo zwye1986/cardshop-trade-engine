@@ -3,7 +3,13 @@ package com.cardshop.trade.engine.infrastructure.config;
 import com.cardshop.trade.engine.application.recharge.PendingPersistOrderPort;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcilePort;
+import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceReconcileAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
+import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeCacheRepairAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPendingPersistOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
 import java.time.Clock;
@@ -74,5 +80,53 @@ public class TradeEngineRedisPendingAutoConfiguration {
                 properties,
                 persistedOrderStatePortProvider.getIfAvailable(PersistedOrderStatePort::noop),
                 clock);
+    }
+
+    /**
+     * 创建余额对账端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.5 余额对账任务」。该端口同时依赖
+     * MySQL 旧余额、未完成余额刷账 outbox 和 Redis 实时余额，因此必须等 RedisTemplate 与 MyBatis Mapper
+     * 都存在后才注册；缺任一依赖时保持 bootstrap 构造参数级 noop，不能伪装成真实对账能力。
+     */
+    @Bean
+    @ConditionalOnBean({ReactiveStringRedisTemplate.class, McExtDepartMapper.class, RechargeOutboxMapper.class})
+    @ConditionalOnMissingBean(RechargeBalanceReconcilePort.class)
+    public RechargeBalanceReconcilePort rechargeBalanceReconcilePort(
+            McExtDepartMapper extDepartMapper,
+            RechargeOutboxMapper outboxMapper,
+            ReactiveStringRedisTemplate redisTemplate,
+            RechargeRedisKeyBuilder keyBuilder,
+            TradeEngineProperties properties) {
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
+        return new MybatisRechargeBalanceReconcileAdapter(
+                extDepartMapper,
+                outboxMapper,
+                redisTemplate,
+                keyBuilder,
+                Duration.ofMillis(timeoutMs));
+    }
+
+    /**
+     * 创建 Redis 缓存修复端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.4 缓存修复任务」。当前首版只修复商户余额
+     * 基线，且必须持有 repairing lock 后写 Redis；商品配置修复需要完整商品源字段，保留为后续独立任务。
+     */
+    @Bean
+    @ConditionalOnBean({ReactiveStringRedisTemplate.class, McExtDepartMapper.class})
+    @ConditionalOnMissingBean(RechargeCacheRepairPort.class)
+    public RechargeCacheRepairPort rechargeCacheRepairPort(
+            McExtDepartMapper extDepartMapper,
+            ReactiveStringRedisTemplate redisTemplate,
+            RechargeRedisKeyBuilder keyBuilder,
+            TradeEngineProperties properties) {
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
+        return new RedisRechargeCacheRepairAdapter(
+                extDepartMapper,
+                redisTemplate,
+                keyBuilder,
+                Duration.ofMinutes(5),
+                Duration.ofMillis(timeoutMs));
     }
 }

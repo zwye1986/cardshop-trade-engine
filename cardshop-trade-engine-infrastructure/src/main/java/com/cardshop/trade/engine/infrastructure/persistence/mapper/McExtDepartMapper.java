@@ -2,6 +2,7 @@ package com.cardshop.trade.engine.infrastructure.persistence.mapper;
 
 import com.cardshop.trade.engine.infrastructure.persistence.V1MerchantProfileReader;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McExtDepartDO;
+import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -82,6 +83,30 @@ public interface McExtDepartMapper extends V1MerchantProfileReader {
             limit 1
             """)
     McExtDepartDO selectByOrgCode(@Param("orgCode") String orgCode);
+
+    /**
+     * 按商户维度扫描余额修复/对账候选行。
+     *
+     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.4 缓存修复任务」和「17.5 余额对账任务」。
+     * 分片字段使用 {@code org_code}，只返回重建 Redis 余额基线所需的最小字段，避免把 app_secret/aes_key
+     * 等密钥字段带入后台日志或任务上下文。
+     */
+    @Select("""
+            select
+              id,
+              org_code as orgCode,
+              coalesce(balance, 0) as balance
+            from mc_ext_depart
+            where org_code is not null
+              and org_code <> ''
+              and mod(crc32(org_code), #{shardTotal}) = #{shardIndex}
+            order by org_code asc
+            limit #{limit}
+            """)
+    List<McExtDepartDO> selectBalanceRowsForShard(
+            @Param("shardTotal") int shardTotal,
+            @Param("shardIndex") int shardIndex,
+            @Param("limit") int limit);
 
     /**
      * 原子增量更新商户最终余额。

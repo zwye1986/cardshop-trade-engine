@@ -8,18 +8,45 @@ import com.cardshop.trade.engine.application.recharge.PendingPersistOrderSnapsho
 import com.cardshop.trade.engine.application.recharge.PersistMessagePublishResult;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
+import com.cardshop.trade.engine.application.recharge.BalanceReservationReleasePort;
+import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
+import com.cardshop.trade.engine.application.recharge.MerchantNotifyPayloadSigner;
+import com.cardshop.trade.engine.application.recharge.MerchantNotifySendResult;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushService;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcilePort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcileService;
+import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
+import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairService;
 import com.cardshop.trade.engine.application.recharge.RechargeCompensationBatchResult;
+import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
+import com.cardshop.trade.engine.application.recharge.RechargeNotifyBatchResult;
+import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort;
+import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerService;
+import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerSettings;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxBatchResult;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerSettings;
 import com.cardshop.trade.engine.application.recharge.RechargePersistMqRepublishService;
+import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
 import com.cardshop.trade.engine.bootstrap.config.TradeEngineCompensationJobAutoConfiguration;
 import com.cardshop.trade.engine.bootstrap.config.TradeEngineReliabilityConfiguration;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
+import com.cardshop.trade.engine.job.recharge.RechargeBalanceDeltaFlushJob;
+import com.cardshop.trade.engine.job.recharge.RechargeBalanceReconcileJob;
+import com.cardshop.trade.engine.job.recharge.RechargeCacheRepairJob;
+import com.cardshop.trade.engine.job.recharge.RechargeOutboxPublishJob;
 import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.lang.reflect.Proxy;
 import java.net.InetSocketAddress;
+import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -242,6 +269,140 @@ class ManualRechargeJobControllerTest {
         assertThat(json).contains("\"scanned\":0");
     }
 
+    @Test
+    void runsOutboxPublishJobForLoopbackRequest() {
+        RecordingOutboxWorkerService outboxWorkerService = new RecordingOutboxWorkerService(
+                new RechargeOutboxBatchResult(2, 2, 1, 1, 0));
+        ManualRechargeJobController controller = controllerWithCompensationJobs(
+                new RechargeOutboxPublishJob(outboxWorkerService),
+                new RecordingNotifyWorkerService(new RechargeNotifyBatchResult(0, 0, 0, 0, 0)),
+                new RechargeBalanceDeltaFlushJob(new RechargeBalanceDeltaFlushService(RechargeBalanceDeltaFlushPort.noop())));
+        var request = new ManualRechargeJobController.ManualJobRunRequest(4, 2, 20, "test188-outbox-worker");
+
+        var response = controller.runOutboxPublishOnce(request, exchange("127.0.0.1")).block();
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().status()).isEqualTo("OK");
+        assertThat(response.getBody().scanned()).isEqualTo(2);
+        assertThat(response.getBody().succeeded()).isEqualTo(1);
+        assertThat(response.getBody().failed()).isEqualTo(1);
+        assertThat(outboxWorkerService.calls).containsExactly("4:2:20:test188-outbox-worker");
+    }
+
+    @Test
+    void runsNotifyRetryWorkerForLoopbackRequest() {
+        RecordingNotifyWorkerService notifyWorkerService = new RecordingNotifyWorkerService(
+                new RechargeNotifyBatchResult(3, 3, 2, 1, 0));
+        ManualRechargeJobController controller = controllerWithCompensationJobs(
+                new RechargeOutboxPublishJob(new RecordingOutboxWorkerService(RechargeOutboxBatchResult.empty())),
+                notifyWorkerService,
+                new RechargeBalanceDeltaFlushJob(new RechargeBalanceDeltaFlushService(RechargeBalanceDeltaFlushPort.noop())));
+        var request = new ManualRechargeJobController.ManualJobRunRequest(1, 0, 30, "test188-notify-worker");
+
+        var response = controller.runNotifyRetryOnce(request, exchange("127.0.0.1")).block();
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().status()).isEqualTo("OK");
+        assertThat(response.getBody().scanned()).isEqualTo(3);
+        assertThat(response.getBody().succeeded()).isEqualTo(2);
+        assertThat(response.getBody().failed()).isEqualTo(1);
+        assertThat(notifyWorkerService.calls).containsExactly("30:test188-notify-worker");
+    }
+
+    @Test
+    void runsBalanceDeltaFlushJobForLoopbackRequest() {
+        RecordingBalanceDeltaFlushPort balancePort = new RecordingBalanceDeltaFlushPort(
+                new RechargeCompensationBatchResult(4, 4, 0, 0));
+        ManualRechargeJobController controller = controllerWithCompensationJobs(
+                new RechargeOutboxPublishJob(new RecordingOutboxWorkerService(RechargeOutboxBatchResult.empty())),
+                new RecordingNotifyWorkerService(new RechargeNotifyBatchResult(0, 0, 0, 0, 0)),
+                new RechargeBalanceDeltaFlushJob(new RechargeBalanceDeltaFlushService(balancePort)));
+        var request = new ManualRechargeJobController.ManualJobRunRequest(8, 3, 40, "test188-balance-worker");
+
+        var response = controller.runBalanceDeltaFlushOnce(request, exchange("127.0.0.1")).block();
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().status()).isEqualTo("OK");
+        assertThat(response.getBody().scanned()).isEqualTo(4);
+        assertThat(response.getBody().succeeded()).isEqualTo(4);
+        assertThat(balancePort.calls).containsExactly("8:3:40:test188-balance-worker");
+    }
+
+    @Test
+    void runsBalanceReconcileJobForLoopbackRequest() {
+        RecordingBalanceReconcilePort reconcilePort = new RecordingBalanceReconcilePort(
+                new RechargeCompensationBatchResult(2, 2, 0, 0));
+        ManualRechargeJobController controller = controllerWithAllCompensationJobs(
+                new RechargeBalanceReconcileJob(new RechargeBalanceReconcileService(reconcilePort)),
+                new RechargeCacheRepairJob(new RechargeCacheRepairService(RechargeCacheRepairPort.noop())));
+        var request = new ManualRechargeJobController.ManualJobRunRequest(4, 1, 25, "test188-reconcile-worker");
+
+        var response = controller.runBalanceReconcileOnce(request, exchange("127.0.0.1")).block();
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().status()).isEqualTo("OK");
+        assertThat(response.getBody().scanned()).isEqualTo(2);
+        assertThat(response.getBody().succeeded()).isEqualTo(2);
+        assertThat(reconcilePort.calls).containsExactly("4:1:25:test188-reconcile-worker");
+    }
+
+    @Test
+    void runsCacheRepairJobForLoopbackRequest() {
+        RecordingCacheRepairPort cacheRepairPort = new RecordingCacheRepairPort(
+                new RechargeCompensationBatchResult(1, 1, 0, 0));
+        ManualRechargeJobController controller = controllerWithAllCompensationJobs(
+                new RechargeBalanceReconcileJob(new RechargeBalanceReconcileService(RechargeBalanceReconcilePort.noop())),
+                new RechargeCacheRepairJob(new RechargeCacheRepairService(cacheRepairPort)));
+        var request = new ManualRechargeJobController.ManualJobRunRequest(2, 0, 5, "test188-cache-worker");
+
+        var response = controller.runCacheRepairOnce(request, exchange("127.0.0.1")).block();
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().status()).isEqualTo("OK");
+        assertThat(response.getBody().scanned()).isEqualTo(1);
+        assertThat(response.getBody().succeeded()).isEqualTo(1);
+        assertThat(cacheRepairPort.calls).containsExactly("2:0:5:test188-cache-worker");
+    }
+
+    @Test
+    void rejectsNonLoopbackOutboxRequestBeforeJobRuns() {
+        RecordingOutboxWorkerService outboxWorkerService = new RecordingOutboxWorkerService(
+                new RechargeOutboxBatchResult(1, 1, 1, 0, 0));
+        ManualRechargeJobController controller = controllerWithCompensationJobs(
+                new RechargeOutboxPublishJob(outboxWorkerService),
+                new RecordingNotifyWorkerService(new RechargeNotifyBatchResult(0, 0, 0, 0, 0)),
+                new RechargeBalanceDeltaFlushJob(new RechargeBalanceDeltaFlushService(RechargeBalanceDeltaFlushPort.noop())));
+        var request = new ManualRechargeJobController.ManualJobRunRequest(1, 0, 10, "test188-outbox-worker");
+
+        var response = controller.runOutboxPublishOnce(request, exchange("203.0.113.10")).block();
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().status()).isEqualTo("REJECTED");
+        assertThat(outboxWorkerService.calls).isEmpty();
+    }
+
+    @Test
+    void rejectsInvalidBalanceDeltaFlushParametersBeforeJobRuns() {
+        RecordingBalanceDeltaFlushPort balancePort = new RecordingBalanceDeltaFlushPort(
+                new RechargeCompensationBatchResult(1, 1, 0, 0));
+        ManualRechargeJobController controller = controllerWithCompensationJobs(
+                new RechargeOutboxPublishJob(new RecordingOutboxWorkerService(RechargeOutboxBatchResult.empty())),
+                new RecordingNotifyWorkerService(new RechargeNotifyBatchResult(0, 0, 0, 0, 0)),
+                new RechargeBalanceDeltaFlushJob(new RechargeBalanceDeltaFlushService(balancePort)));
+        var request = new ManualRechargeJobController.ManualJobRunRequest(1, 1, 10, "test188-balance-worker");
+
+        assertThatThrownBy(() -> controller.runBalanceDeltaFlushOnce(request, exchange("127.0.0.1")))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("shardIndex must be less than shardTotal");
+        assertThat(balancePort.calls).isEmpty();
+    }
+
     private static ManualRechargeJobController controller(RecordingPendingPort pendingPort) {
         return controller(pendingPort, Duration.ofSeconds(30));
     }
@@ -267,6 +428,39 @@ class ManualRechargeJobControllerTest {
                 .remoteAddress(new InetSocketAddress(host, 18080))
                 .build();
         return MockServerWebExchange.from(request);
+    }
+
+    private static ManualRechargeJobController controllerWithCompensationJobs(
+            RechargeOutboxPublishJob outboxPublishJob,
+            RechargeNotifyWorkerService notifyWorkerService,
+            RechargeBalanceDeltaFlushJob balanceDeltaFlushJob) {
+        return new ManualRechargeJobController(
+                new RechargePersistMqRepublishJob(
+                        new RechargePersistMqRepublishService(
+                                PendingPersistOrderPort.noop(),
+                                new AlwaysConfirmedPublisher())),
+                Optional.of(outboxPublishJob),
+                Optional.of(notifyWorkerService),
+                Optional.of(balanceDeltaFlushJob),
+                Optional.empty(),
+                Optional.empty(),
+                Duration.ofSeconds(30));
+    }
+
+    private static ManualRechargeJobController controllerWithAllCompensationJobs(
+            RechargeBalanceReconcileJob balanceReconcileJob,
+            RechargeCacheRepairJob cacheRepairJob) {
+        return new ManualRechargeJobController(
+                new RechargePersistMqRepublishJob(
+                        new RechargePersistMqRepublishService(
+                                PendingPersistOrderPort.noop(),
+                                new AlwaysConfirmedPublisher())),
+                Optional.of(new RechargeOutboxPublishJob(new RecordingOutboxWorkerService(RechargeOutboxBatchResult.empty()))),
+                Optional.of(new RecordingNotifyWorkerService(new RechargeNotifyBatchResult(0, 0, 0, 0, 0))),
+                Optional.of(new RechargeBalanceDeltaFlushJob(new RechargeBalanceDeltaFlushService(RechargeBalanceDeltaFlushPort.noop()))),
+                Optional.of(balanceReconcileJob),
+                Optional.of(cacheRepairJob),
+                Duration.ofSeconds(30));
     }
 
     private static PendingPersistOrderSnapshot pendingSnapshot(String orderId) {
@@ -447,6 +641,168 @@ class ManualRechargeJobControllerTest {
                 PersistTradeOrderMessage message) {
             return CompletableFuture.completedFuture(PersistMessagePublishResult.confirmed(message.messageId(), 1));
         }
+    }
+
+    private static final class RecordingOutboxWorkerService extends RechargeOutboxWorkerService {
+
+        private final RechargeOutboxBatchResult result;
+        private final List<String> calls = new ArrayList<>();
+
+        private RecordingOutboxWorkerService(RechargeOutboxBatchResult result) {
+            super(
+                    unusedInterface(RechargeOutboxPort.class),
+                    unusedInterface(RechargeFulfillmentOrderPort.class),
+                    unusedInterface(RechargeSupplierGatewayPort.class),
+                    unusedInterface(DirectRechargeFrequencyPort.class),
+                    command -> {
+                    },
+                    BalanceReservationReleasePort.noop(),
+                    task -> {
+                    },
+                    new EmptyMerchantNotifyPayloadSigner(),
+                    Clock.systemUTC(),
+                    new RechargeOutboxWorkerSettings(
+                            Duration.ofSeconds(1),
+                            Duration.ofSeconds(1),
+                            Duration.ofSeconds(1),
+                            Duration.ofSeconds(1),
+                            Duration.ofSeconds(1)));
+            this.result = result;
+        }
+
+        @Override
+        public RechargeOutboxBatchResult processDue(int shardTotal, int shardIndex, int limit, String workerId) {
+            calls.add(shardTotal + ":" + shardIndex + ":" + limit + ":" + workerId);
+            return result;
+        }
+    }
+
+    private static final class RecordingNotifyWorkerService extends RechargeNotifyWorkerService {
+
+        private final RechargeNotifyBatchResult result;
+        private final List<String> calls = new ArrayList<>();
+
+        private RecordingNotifyWorkerService(RechargeNotifyBatchResult result) {
+            super(
+                    unusedInterface(RechargeNotifyWorkerTaskPort.class),
+                    request -> MerchantNotifySendResult.success(200, "{}"),
+                    Clock.systemUTC(),
+                    new RechargeNotifyWorkerSettings(Duration.ofSeconds(1), Duration.ofSeconds(1)));
+            this.result = result;
+        }
+
+        @Override
+        public RechargeNotifyBatchResult processDue(int limit, String workerId) {
+            calls.add(limit + ":" + workerId);
+            return result;
+        }
+    }
+
+    private static final class RecordingBalanceDeltaFlushPort implements RechargeBalanceDeltaFlushPort {
+
+        private final RechargeCompensationBatchResult result;
+        private final List<String> calls = new ArrayList<>();
+
+        private RecordingBalanceDeltaFlushPort(RechargeCompensationBatchResult result) {
+            this.result = result;
+        }
+
+        @Override
+        public RechargeCompensationBatchResult flushDue(
+                int shardTotal,
+                int shardIndex,
+                int limit,
+                String workerId) {
+            calls.add(shardTotal + ":" + shardIndex + ":" + limit + ":" + workerId);
+            return result;
+        }
+    }
+
+    private static final class RecordingBalanceReconcilePort implements RechargeBalanceReconcilePort {
+
+        private final RechargeCompensationBatchResult result;
+        private final List<String> calls = new ArrayList<>();
+
+        private RecordingBalanceReconcilePort(RechargeCompensationBatchResult result) {
+            this.result = result;
+        }
+
+        @Override
+        public RechargeCompensationBatchResult reconcileDue(
+                int shardTotal,
+                int shardIndex,
+                int limit,
+                String workerId) {
+            calls.add(shardTotal + ":" + shardIndex + ":" + limit + ":" + workerId);
+            return result;
+        }
+    }
+
+    private static final class RecordingCacheRepairPort implements RechargeCacheRepairPort {
+
+        private final RechargeCompensationBatchResult result;
+        private final List<String> calls = new ArrayList<>();
+
+        private RecordingCacheRepairPort(RechargeCompensationBatchResult result) {
+            this.result = result;
+        }
+
+        @Override
+        public RechargeCompensationBatchResult repairDue(
+                int shardTotal,
+                int shardIndex,
+                int limit,
+                String workerId) {
+            calls.add(shardTotal + ":" + shardIndex + ":" + limit + ":" + workerId);
+            return result;
+        }
+    }
+
+    private static final class EmptyMerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigner {
+        @Override
+        public Map<String, String> signOrderStatus(
+                com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrder order,
+                String orderStatus,
+                java.time.Instant now) {
+            return Map.of();
+        }
+
+        @Override
+        public Map<String, String> signWriteOff(
+                com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrder order,
+                java.time.Instant invalidTime) {
+            return Map.of();
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static <T> T unusedInterface(Class<T> type) {
+        return (T) Proxy.newProxyInstance(
+                type.getClassLoader(),
+                new Class<?>[] {type},
+                (proxy, method, args) -> defaultValue(method.getReturnType()));
+    }
+
+    private static Object defaultValue(Class<?> returnType) {
+        if (returnType == boolean.class) {
+            return false;
+        }
+        if (returnType == int.class) {
+            return 0;
+        }
+        if (returnType == long.class) {
+            return 0L;
+        }
+        if (returnType == void.class) {
+            return null;
+        }
+        if (returnType == Optional.class) {
+            return Optional.empty();
+        }
+        if (returnType == List.class) {
+            return List.of();
+        }
+        return null;
     }
 
     @AutoConfiguration(before = TradeEngineCompensationJobAutoConfiguration.class)

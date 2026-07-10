@@ -47,6 +47,12 @@ public class McExtDepartDO {
     @TableField("depart_status")
     private String departStatus;
 
+    /**
+     * 旧系统商户最终余额，单位分。
+     */
+    @TableField("balance")
+    private Long balance;
+
     public Long getId() {
         return id;
     }
@@ -93,5 +99,13 @@ public class McExtDepartDO {
 
     public void setDepartStatus(String departStatus) {
         this.departStatus = departStatus;
+    }
+
+    public Long getBalance() {
+        return balance;
+    }
+
+    public void setBalance(Long balance) {
+        this.balance = balance;
     }
 }
