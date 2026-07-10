@@ -3,15 +3,18 @@ package com.cardshop.trade.engine.infrastructure.config;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOutboxAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
@@ -31,6 +34,7 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.datasource.AbstractDataSource;
@@ -84,6 +88,30 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                 });
     }
 
+    @Test
+    void registersBalanceDeltaFlushPortAfterTransactionManagerAutoConfiguration() {
+        new ApplicationContextRunner()
+                .withBean(DataSource.class, TradeEngineMybatisPersistenceAutoConfigurationTest::dataSource)
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withConfiguration(AutoConfigurations.of(
+                        TestMapperAutoConfiguration.class,
+                        TradeEngineMybatisPersistenceAutoConfiguration.class,
+                        DataSourceTransactionManagerAutoConfiguration.class))
+                .run(context -> {
+                    /*
+                     * 参见高可用设计「17.2 分片规则」。BAL-001 在 test188 dev 暴露过
+                     * `PlatformTransactionManager` 已实例化、但余额刷账端口因自动配置顺序过早而没有注册，
+                     * 人工 job 固定返回 scanned=0。这里故意把本自动配置写在事务管理器自动配置之前，
+                     * 要求 @AutoConfiguration(after=...) 能把真实端口延后到事务管理器之后创建。
+                     */
+                    assertThat(context).hasSingleBean(RechargeBalanceDeltaFlushPort.class);
+                    assertThat(context.getBean(RechargeBalanceDeltaFlushPort.class))
+                            .isInstanceOf(MybatisRechargeBalanceDeltaFlushAdapter.class);
+                });
+    }
+
     @Nested
     class MybatisPlusDdlRunnerCompatibility {
 
@@ -134,6 +162,11 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         @Bean
         McDepartRecordMapper mcDepartRecordMapper() {
             return mapperProxy(McDepartRecordMapper.class);
+        }
+
+        @Bean
+        McExtDepartMapper mcExtDepartMapper() {
+            return mapperProxy(McExtDepartMapper.class);
         }
 
         @Bean

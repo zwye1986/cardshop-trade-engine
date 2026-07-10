@@ -1,5 +1,6 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
+import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
 import com.cardshop.trade.engine.application.recharge.PendingPersistOrderPort;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
@@ -39,11 +40,12 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
  * 的条件判断出现。若只在普通配置类中按 RedisTemplate 做 {@code @ConditionalOnBean}，应用会有 Redis
  * 客户端却缺少 {@link RedisPendingPersistOrderAdapter}，人工补投入口表现为一直 {@code scanned=0}。
  *
- * <p>该自动配置在 Redis reactive auto-configuration 后兜底创建快照读取端口和 pending 扫描端口。两个端口都只在
- * Redis 客户端真实存在时注册；没有 Redis 的 local/slice test 仍由 bootstrap 层构造参数级 noop 兜底，避免把
- * noop 注册成全局 Bean 后抢占真实端口。
+ * <p>该自动配置在 Redis reactive auto-configuration 后兜底创建快照读取端口和 pending 扫描端口。D12
+ * 余额对账/缓存修复同时依赖 Redis 与 MyBatis Mapper，因此还必须排在 MyBatis-Plus 自动配置之后，避免
+ * test188 dev 出现 RedisTemplate 已有、Mapper 条件过早失败、`balance-reconcile/cache-repair` 永远走 noop。
+ * 没有 Redis 的 local/slice test 仍由 bootstrap 层构造参数级 noop 兜底，避免把 noop 注册成全局 Bean 后抢占真实端口。
  */
-@AutoConfiguration(after = RedisReactiveAutoConfiguration.class)
+@AutoConfiguration(after = {RedisReactiveAutoConfiguration.class, MybatisPlusAutoConfiguration.class})
 public class TradeEngineRedisPendingAutoConfiguration {
 
     /**
@@ -145,19 +147,78 @@ public class TradeEngineRedisPendingAutoConfiguration {
      * 创建余额对账端口。
      *
      * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.5 余额对账任务」。该端口同时依赖
-     * MySQL 旧余额、未完成余额刷账 outbox 和 Redis 实时余额，因此必须等 RedisTemplate 与 MyBatis Mapper
-     * 都存在后才注册；缺任一依赖时保持 bootstrap 构造参数级 noop，不能伪装成真实对账能力。
+     * MySQL 旧余额、未完成余额刷账 outbox 和 Redis 实时余额。test188 dev 曾出现 Redis 后置配置早于
+     * Mapper 条件判断执行，导致真实 RedisTemplate 存在但对账端口缺失。这里不再用 Mapper 做 Bean 条件：
+     * 如果 Bean 创建时 Mapper 已就绪，直接返回真实 adapter；否则返回执行期晚解析端口，真正执行时仍缺 Mapper
+     * 就 fail-fast，让人工入口返回 FAILED，而不是静默 scanned=0。
      */
     @Bean
-    @ConditionalOnBean({ReactiveStringRedisTemplate.class, McExtDepartMapper.class, RechargeOutboxMapper.class})
+    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
     @ConditionalOnMissingBean(RechargeBalanceReconcilePort.class)
     public RechargeBalanceReconcilePort rechargeBalanceReconcilePort(
-            McExtDepartMapper extDepartMapper,
-            RechargeOutboxMapper outboxMapper,
+            ObjectProvider<McExtDepartMapper> extDepartMapperProvider,
+            ObjectProvider<RechargeOutboxMapper> outboxMapperProvider,
             ReactiveStringRedisTemplate redisTemplate,
             RechargeRedisKeyBuilder keyBuilder,
             TradeEngineProperties properties) {
         int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
+        McExtDepartMapper extDepartMapper = extDepartMapperProvider.getIfAvailable();
+        RechargeOutboxMapper outboxMapper = outboxMapperProvider.getIfAvailable();
+        if (extDepartMapper != null && outboxMapper != null) {
+            return balanceReconcilePort(extDepartMapper, outboxMapper, redisTemplate, keyBuilder, timeoutMs);
+        }
+        return (shardTotal, shardIndex, limit, workerId) -> {
+            McExtDepartMapper lateExtDepartMapper = extDepartMapperProvider.getIfAvailable();
+            RechargeOutboxMapper lateOutboxMapper = outboxMapperProvider.getIfAvailable();
+            if (lateExtDepartMapper == null || lateOutboxMapper == null) {
+                throw new IllegalStateException(
+                        "RechargeBalanceReconcilePort requires McExtDepartMapper and RechargeOutboxMapper");
+            }
+            return balanceReconcilePort(
+                    lateExtDepartMapper,
+                    lateOutboxMapper,
+                    redisTemplate,
+                    keyBuilder,
+                    timeoutMs)
+                    .reconcileDue(shardTotal, shardIndex, limit, workerId);
+        };
+    }
+
+    private static RechargeCacheRepairPort cacheRepairPort(
+            ObjectProvider<McExtDepartMapper> extDepartMapperProvider,
+            ReactiveStringRedisTemplate redisTemplate,
+            RechargeRedisKeyBuilder keyBuilder,
+            int timeoutMs) {
+        McExtDepartMapper extDepartMapper = extDepartMapperProvider.getIfAvailable();
+        if (extDepartMapper != null) {
+            return new RedisRechargeCacheRepairAdapter(
+                    extDepartMapper,
+                    redisTemplate,
+                    keyBuilder,
+                    Duration.ofMinutes(5),
+                    Duration.ofMillis(timeoutMs));
+        }
+        return (shardTotal, shardIndex, limit, workerId) -> {
+            McExtDepartMapper lateExtDepartMapper = extDepartMapperProvider.getIfAvailable();
+            if (lateExtDepartMapper == null) {
+                throw new IllegalStateException("RechargeCacheRepairPort requires McExtDepartMapper");
+            }
+            return new RedisRechargeCacheRepairAdapter(
+                    lateExtDepartMapper,
+                    redisTemplate,
+                    keyBuilder,
+                    Duration.ofMinutes(5),
+                    Duration.ofMillis(timeoutMs))
+                    .repairDue(shardTotal, shardIndex, limit, workerId);
+        };
+    }
+
+    private static RechargeBalanceReconcilePort balanceReconcilePort(
+            McExtDepartMapper extDepartMapper,
+            RechargeOutboxMapper outboxMapper,
+            ReactiveStringRedisTemplate redisTemplate,
+            RechargeRedisKeyBuilder keyBuilder,
+            int timeoutMs) {
         return new MybatisRechargeBalanceReconcileAdapter(
                 extDepartMapper,
                 outboxMapper,
@@ -171,21 +232,17 @@ public class TradeEngineRedisPendingAutoConfiguration {
      *
      * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.4 缓存修复任务」。当前首版只修复商户余额
      * 基线，且必须持有 repairing lock 后写 Redis；商品配置修复需要完整商品源字段，保留为后续独立任务。
+     * 与对账端口一样，这里避免用 Mapper 做启动期条件，防止 Redis 自动配置早到时把 CACHE-001 入口永久降级。
      */
     @Bean
-    @ConditionalOnBean({ReactiveStringRedisTemplate.class, McExtDepartMapper.class})
+    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
     @ConditionalOnMissingBean(RechargeCacheRepairPort.class)
     public RechargeCacheRepairPort rechargeCacheRepairPort(
-            McExtDepartMapper extDepartMapper,
+            ObjectProvider<McExtDepartMapper> extDepartMapperProvider,
             ReactiveStringRedisTemplate redisTemplate,
             RechargeRedisKeyBuilder keyBuilder,
             TradeEngineProperties properties) {
         int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
-        return new RedisRechargeCacheRepairAdapter(
-                extDepartMapper,
-                redisTemplate,
-                keyBuilder,
-                Duration.ofMinutes(5),
-                Duration.ofMillis(timeoutMs));
+        return cacheRepairPort(extDepartMapperProvider, redisTemplate, keyBuilder, timeoutMs);
     }
 }

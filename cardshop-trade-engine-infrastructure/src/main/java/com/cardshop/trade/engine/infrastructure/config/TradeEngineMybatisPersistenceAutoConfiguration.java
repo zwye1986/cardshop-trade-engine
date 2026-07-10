@@ -28,6 +28,8 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
+import org.springframework.boot.autoconfigure.transaction.TransactionAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.transaction.PlatformTransactionManager;
 
@@ -41,12 +43,18 @@ import org.springframework.transaction.PlatformTransactionManager;
  * {@code PersistRechargeOrderConsumerService} 和 Rabbit listener 缺失，最终表现为应用健康但 RabbitMQ 没有
  * connection/consumer。
  *
- * <p>因此 MySQL 异步落库端口在 MyBatis 自动配置之后再兜底创建。基础设施普通配置类中的同名 Bean 仍保留给
- * slice test 或显式提供 Mapper 的局部上下文；本自动配置只要求 {@link SqlSessionFactory} 已经存在，然后把四个
- * 必需 Mapper 作为构造参数直接注入。若 mapper scan 漏掉任一 Mapper，dev/test/prod 应在启动期 fail-fast，
- * 不能静默缺失 Consumer 后继续对外显示健康。
+ * <p>因此 MySQL 异步落库端口在 MyBatis 自动配置之后再兜底创建。D12 余额刷账端口还依赖事务管理器，
+ * 必须同时排在 Spring Boot 事务管理器自动配置之后；否则 test188 dev 会出现应用已有
+ * {@link PlatformTransactionManager} 实例、但 {@link RechargeBalanceDeltaFlushPort} 条件判断过早失败，
+ * 人工刷账一直 scanned=0。基础设施普通配置类中的同名 Bean 仍保留给 slice test 或显式提供 Mapper 的局部上下文；
+ * 本自动配置只要求 {@link SqlSessionFactory} 已经存在，然后把四个必需 Mapper 作为构造参数直接注入。
+ * 若 mapper scan 漏掉任一 Mapper，dev/test/prod 应在启动期 fail-fast，不能静默缺失 Consumer 后继续对外显示健康。
  */
-@AutoConfiguration(after = MybatisPlusAutoConfiguration.class)
+@AutoConfiguration(after = {
+        MybatisPlusAutoConfiguration.class,
+        DataSourceTransactionManagerAutoConfiguration.class,
+        TransactionAutoConfiguration.class
+})
 @ConditionalOnClass({MybatisPlusAutoConfiguration.class, MybatisRechargeOrderPersistenceAdapter.class})
 public class TradeEngineMybatisPersistenceAutoConfiguration {
 

@@ -2,10 +2,16 @@ package com.cardshop.trade.engine.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcilePort;
+import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceReconcileAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
+import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeCacheRepairAdapter;
 import java.lang.reflect.Proxy;
 import java.time.Clock;
 import org.junit.jupiter.api.Test;
@@ -35,6 +41,30 @@ class TradeEngineRedisPendingAutoConfigurationTest {
                 .withBean(Clock.class, Clock::systemUTC)
                 .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
                 .run(context -> assertThat(context).hasSingleBean(RechargeOrderQueryPort.class));
+    }
+
+    @Test
+    void registersBalanceReconcileAndCacheRepairPortsWhenRedisAndMappersAreAvailable() {
+        new ApplicationContextRunner()
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineRedisPendingAutoConfigurationTest::redisTemplate)
+                .withBean(RechargeRedisKeyBuilder.class, () -> new RechargeRedisKeyBuilder("cardshop:trade", 128))
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withUserConfiguration(BalanceMapperBeans.class)
+                .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
+                .run(context -> {
+                    /*
+                     * 参见高可用设计「17.4 缓存修复任务」和「17.5 余额对账任务」。BAL-002/CACHE-001
+                     * 同时依赖 RedisTemplate 与 MyBatis Mapper；若 Redis 后置配置早于 Mapper 条件判断执行，
+                     * job facade 会长期退回 noop。本测试锁定 Redis+Mapper 条件齐备时必须创建真实 D12 端口。
+                     */
+                    assertThat(context).hasSingleBean(RechargeBalanceReconcilePort.class);
+                    assertThat(context.getBean(RechargeBalanceReconcilePort.class))
+                            .isInstanceOf(MybatisRechargeBalanceReconcileAdapter.class);
+                    assertThat(context).hasSingleBean(RechargeCacheRepairPort.class);
+                    assertThat(context.getBean(RechargeCacheRepairPort.class))
+                            .isInstanceOf(RedisRechargeCacheRepairAdapter.class);
+                });
     }
 
     @Test
@@ -75,6 +105,19 @@ class TradeEngineRedisPendingAutoConfigurationTest {
         @Bean
         RechargeOrderExtMapper rechargeOrderExtMapper() {
             return proxy(RechargeOrderExtMapper.class);
+        }
+    }
+
+    static class BalanceMapperBeans {
+
+        @Bean
+        McExtDepartMapper mcExtDepartMapper() {
+            return proxy(McExtDepartMapper.class);
+        }
+
+        @Bean
+        RechargeOutboxMapper rechargeOutboxMapper() {
+            return proxy(RechargeOutboxMapper.class);
         }
     }
 }

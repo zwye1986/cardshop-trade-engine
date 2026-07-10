@@ -115,8 +115,15 @@ public class TradeEngineReliabilityConfiguration {
     @ConditionalOnMissingBean(RechargeBalanceDeltaFlushService.class)
     public RechargeBalanceDeltaFlushService rechargeBalanceDeltaFlushService(
             ObjectProvider<RechargeBalanceDeltaFlushPort> portProvider) {
-        return new RechargeBalanceDeltaFlushService(
-                portProvider.getIfAvailable(RechargeBalanceDeltaFlushPort::noop));
+        /*
+         * 参见高可用设计「17.2 分片规则」和「17.5 余额对账任务」。D12 端口由 MyBatis/Redis 后置配置提供，
+         * 在 test188 dev 曾出现 bootstrap service 先实例化、此时 ObjectProvider 只能返回 noop，导致
+         * `balance-delta-flush` 明明有到期 BALANCE_DELTA_FLUSH 行却 scanned=0。这里必须保留 provider
+         * 并在每次执行时再解析真实端口，避免启动顺序把 noop 固化进长期运行的 Job service。
+         */
+        return new RechargeBalanceDeltaFlushService((shardTotal, shardIndex, limit, workerId) ->
+                portProvider.getIfAvailable(RechargeBalanceDeltaFlushPort::noop)
+                        .flushDue(shardTotal, shardIndex, limit, workerId));
     }
 
     @Bean
@@ -131,8 +138,13 @@ public class TradeEngineReliabilityConfiguration {
     @ConditionalOnMissingBean(RechargeBalanceReconcileService.class)
     public RechargeBalanceReconcileService rechargeBalanceReconcileService(
             ObjectProvider<RechargeBalanceReconcilePort> portProvider) {
-        return new RechargeBalanceReconcileService(
-                portProvider.getIfAvailable(RechargeBalanceReconcilePort::noop));
+        /*
+         * 与余额刷账同源：余额对账真实端口依赖 MySQL Mapper、RedisTemplate 和 keyBuilder，可能晚于
+         * bootstrap service 出现。调用时晚绑定可以保证 BAL-002 使用真实对账端口，而不是启动早期的 noop。
+         */
+        return new RechargeBalanceReconcileService((shardTotal, shardIndex, limit, workerId) ->
+                portProvider.getIfAvailable(RechargeBalanceReconcilePort::noop)
+                        .reconcileDue(shardTotal, shardIndex, limit, workerId));
     }
 
     @Bean
@@ -147,8 +159,13 @@ public class TradeEngineReliabilityConfiguration {
     @ConditionalOnMissingBean(RechargeCacheRepairService.class)
     public RechargeCacheRepairService rechargeCacheRepairService(
             ObjectProvider<RechargeCacheRepairPort> portProvider) {
-        return new RechargeCacheRepairService(
-                portProvider.getIfAvailable(RechargeCacheRepairPort::noop));
+        /*
+         * 缓存修复首版依赖 Redis 和商户余额读端，dev/test 联调时同样不能在 bootstrap 阶段定格为 noop。
+         * 这里保持构造参数级降级，但把降级决策推迟到 runOnce 执行时。
+         */
+        return new RechargeCacheRepairService((shardTotal, shardIndex, limit, workerId) ->
+                portProvider.getIfAvailable(RechargeCacheRepairPort::noop)
+                        .repairDue(shardTotal, shardIndex, limit, workerId));
     }
 
     @Bean
