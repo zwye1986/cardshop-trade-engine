@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.v1;
 /**
  * `/v1/cardapi` 旧协议返回码模板。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.1 协议基线」。枚举只承载稳定的
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。枚举只承载稳定的
  * code/default msg 映射；运行时动态文案和 data 仍由 {@link V1CardApiResult} 表达，避免把响应载荷固化到枚举实例。
  */
 public enum V1CardApiResultStatus {
@@ -20,7 +20,7 @@ public enum V1CardApiResultStatus {
      */
     ORDER_DUPLICATE("505", "订单号重复"),
     /**
-     * 旧协议订单查询/作废未命中订单时返回 505 + 订单不存在；参见详细设计「20.13.10 查单设计」。
+     * 旧协议订单查询/作废未命中订单时返回 505 + 订单不存在；参见详细设计「3. API/V1 接入层」。
      */
     ORDER_NOT_FOUND("505", "订单不存在"),
     /**

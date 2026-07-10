@@ -6,7 +6,7 @@ import java.util.Objects;
 /**
  * Redis-first 创建直充订单的应用层命令。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
  * 该命令把协议层已经确认的商户身份、Java 候选校验结果、商品候选快照、配置版本和 request_hash
  * 一次性传给 Redis 接单端口；Redis Lua 会基于这些字段做最终动态校验并原子写入订单快照、幂等、
  * pending 和事件索引。

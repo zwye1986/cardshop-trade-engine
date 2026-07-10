@@ -10,7 +10,7 @@ import java.time.LocalDateTime;
  * 旧系统订单事实表 `mc_order` 的最小持久化对象。
  *
  * <p>字段映射对应 {@code docs/交行直充业务系统详细设计.md} 的「6.2 `mc_order` 字段说明」
- * 和「20.7 MyBatis Mapper 细节」。旧表字段名保持 `order_Id/out_orderId/produt_code` 等历史命名，
+ * 和「8. MySQL/Liquibase 持久化层」。旧表字段名保持 `order_Id/out_orderId/produt_code` 等历史命名，
  * 新服务代码侧使用规范 Java 属性名，并通过 MyBatis-Plus 注解显式映射。
  */
 @TableName("mc_order")

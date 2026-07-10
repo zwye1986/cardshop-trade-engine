@@ -21,7 +21,7 @@ import java.util.Optional;
 /**
  * 基于 MyBatis 的商户回调任务适配器。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.12 回调设计」。创建任务按 task_id
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。创建任务按 task_id
  * 幂等，发送前通过状态和租约抢占，失败按退避时间重试。
  */
 public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort, RechargeNotifyWorkerTaskPort {

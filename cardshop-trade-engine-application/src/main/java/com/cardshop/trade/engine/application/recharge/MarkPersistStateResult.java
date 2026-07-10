@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.recharge;
 /**
  * Redis 持久化状态推进结果。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * Consumer 或补偿任务在 MySQL 事务提交/失败后，会通过 `markDbPersisted.lua` 或
  * `markPersistFailed.lua` 推进 Redis 订单快照；该结果只描述 Redis 状态推进是否成功，不代表 MySQL 事务本身。
  *

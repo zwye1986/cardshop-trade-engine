@@ -5,8 +5,8 @@ import java.util.List;
 /**
  * Redis 接单异常自动核查仓储端口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.8 接单异常核查表」和
- * 「20.13.6 Redis Lua 下单结果」。application 层通过该端口领取待核查异常并推进核查状态，
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「14.3 MySQL 表字段」和
+ * 「6. Redis 受理与缓存层」。application 层通过该端口领取待核查异常并推进核查状态，
  * 不直接依赖 `recharge_accept_anomaly` 表结构或 MyBatis。
  */
 public interface AcceptAnomalyCheckRepositoryPort {

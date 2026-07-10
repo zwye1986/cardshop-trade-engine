@@ -14,7 +14,7 @@ import org.springframework.util.StringUtils;
 /**
  * Persist Consumer 使用的 Redis 完整订单快照读取适配器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * 查单适配器只映射接口响应字段；Consumer 写 `mc_order` 需要商品、账号、回调、request_hash 元数据等完整字段，
  * 因此这里单独实现完整快照端口，避免复用查单快照导致 MySQL 落库信息缺失。
  */

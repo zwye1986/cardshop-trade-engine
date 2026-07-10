@@ -48,6 +48,7 @@ import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptExecuto
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisSessionFactory;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPendingPersistOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisDirectRechargeFrequencyAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
@@ -69,6 +70,7 @@ import org.springframework.amqp.rabbit.annotation.RabbitListenerAnnotationBeanPo
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.RabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.listener.MessageListenerContainer;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.data.redis.connection.ReactiveRedisConnection;
@@ -83,7 +85,7 @@ import reactor.core.publisher.Mono;
 /**
  * 基础设施自动配置测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.14 实施任务拆分」任务 5 和任务 6。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「13. 测试与验收标准」任务 5 和任务 6。
  * Redis key builder 与脚本加载器是纯本地组件，应始终可装配；Redis 接单端口依赖真实 Redis 客户端，
  * local profile 排除 Redis 自动配置时不能因为缺少客户端导致应用启动失败。
  */
@@ -163,8 +165,24 @@ class TradeEngineInfrastructureConfigurationTest {
     }
 
     @Test
-    void createsPersistOrderSnapshotPortWhenRedisTemplateExists() {
+    void leavesPersistOrderSnapshotPortToRedisPendingAutoConfigurationWhenRedisTemplateExists() {
         contextRunner
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
+                .run(context -> assertThat(context).doesNotHaveBean(PersistOrderSnapshotPort.class));
+    }
+
+    @Test
+    void leavesPendingPersistOrderPortToRedisPendingAutoConfigurationWhenRedisTemplateExists() {
+        contextRunner
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
+                .run(context -> assertThat(context).doesNotHaveBean(PendingPersistOrderPort.class));
+    }
+
+    @Test
+    void redisPendingAutoConfigurationCreatesPersistOrderSnapshotPortWhenRedisTemplateExists() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(TradeEngineInfrastructureConfiguration.class)
+                .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
                 .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
                 .run(context -> {
                     assertThat(context).hasSingleBean(PersistOrderSnapshotPort.class);
@@ -174,13 +192,30 @@ class TradeEngineInfrastructureConfigurationTest {
     }
 
     @Test
-    void createsPendingPersistOrderPortWhenRedisTemplateExists() {
-        contextRunner
+    void redisPendingAutoConfigurationCreatesPendingPersistOrderPortWhenRedisTemplateExists() {
+        new ApplicationContextRunner()
+                .withUserConfiguration(TradeEngineInfrastructureConfiguration.class)
+                .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
                 .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
                 .run(context -> {
                     assertThat(context).hasSingleBean(PendingPersistOrderPort.class);
                     assertThat(context.getBean(PendingPersistOrderPort.class))
                             .isInstanceOf(RedisPendingPersistOrderAdapter.class);
+                });
+    }
+
+    @Test
+    void redisPendingAutoConfigurationCreatesDirectFrequencyPortWhenRedisTemplateExists() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(RechargeRedisKeyBuilder.class, () -> new RechargeRedisKeyBuilder("cardshop:trade", 16))
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(DirectRechargeFrequencyPort.class);
+                    assertThat(context.getBean(DirectRechargeFrequencyPort.class))
+                            .isInstanceOf(RedisDirectRechargeFrequencyAdapter.class);
                 });
     }
 
@@ -224,6 +259,7 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withUserConfiguration(
                         TradeEngineInfrastructureConfiguration.class,
                         LateInfrastructureDependencyBeans.class)
+                .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
                 .run(context -> {
                     assertThat(context.getBean(V1TokenStorePort.class))
                             .isInstanceOf(RedisV1TokenStoreAdapter.class);
@@ -238,6 +274,10 @@ class TradeEngineInfrastructureConfigurationTest {
                             .isInstanceOf(RabbitPersistRechargeOrderMessagePublisher.class);
                     assertThat(context.getBean(RechargeRedisScriptExecutor.class))
                             .isInstanceOf(SpringDataRechargeRedisScriptExecutor.class);
+                    assertThat(context.getBean(PersistOrderSnapshotPort.class))
+                            .isInstanceOf(RedisPersistOrderSnapshotAdapter.class);
+                    assertThat(context.getBean(PendingPersistOrderPort.class))
+                            .isInstanceOf(RedisPendingPersistOrderAdapter.class);
                 });
     }
 

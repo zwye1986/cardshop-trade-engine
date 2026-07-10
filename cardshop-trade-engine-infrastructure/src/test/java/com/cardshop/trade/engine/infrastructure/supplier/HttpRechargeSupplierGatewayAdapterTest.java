@@ -26,8 +26,8 @@ import org.junit.jupiter.api.Test;
 /**
  * HTTP 供应商 Gateway fake server 联调测试。
  *
- * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」和
- * 「20.13.11 作废设计」。D9/D10 启用真实 Worker 前，至少要证明配置化 HTTP 适配器能对本地 fake server
+ * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和
+ * 「9.2 作废设计」。D9/D10 启用真实 Worker 前，至少要证明配置化 HTTP 适配器能对本地 fake server
  * 发起真实 JSON 请求、解析供应商成功/处理中响应，并把请求幂等号固定为 outbox event_id。
  */
 class HttpRechargeSupplierGatewayAdapterTest {
@@ -45,6 +45,8 @@ class HttpRechargeSupplierGatewayAdapterTest {
         server.setExecutor(executor);
         server.createContext("/dispatch", exchange -> respond(exchange, 200,
                 "{\"status\":\"SUCCESS\",\"code\":\"0\",\"message\":\"ok\",\"supplier_order_id\":\"SUP-1\"}"));
+        server.createContext("/dispatch-5xx", exchange -> respond(exchange, 500,
+                "{\"status\":\"ERROR\",\"code\":\"E_500\",\"message\":\"temporary unavailable\"}"));
         server.createContext("/invalid", exchange -> respond(exchange, 200,
                 "{\"status\":\"PROCESSING\",\"code\":\"202\",\"message\":\"invalid accepted\",\"supplier_order_id\":\"SUP-X\"}"));
         server.start();
@@ -88,6 +90,27 @@ class HttpRechargeSupplierGatewayAdapterTest {
     }
 
     @Test
+    void dispatchHttp5xxIsRetryableFailureRatherThanSupplierTerminalFailure() {
+        HttpRechargeSupplierGatewayAdapter adapter = adapter("/dispatch-5xx", "/invalid");
+
+        var response = adapter.dispatch(new SupplierDispatchGatewayRequest(
+                "dispatch-ORDER-1",
+                "ORDER-1",
+                "OUT-1",
+                "A36",
+                "13800138000",
+                "PARENT-1",
+                "SKU-1",
+                "FNK_CGS_BX",
+                5200L,
+                Map.of("outbox_payload", "{\"order_id\":\"ORDER-1\"}")));
+
+        assertThat(response.status()).isEqualTo(SupplierGatewayStatus.RETRYABLE_FAILED);
+        assertThat(response.responseCode()).isEqualTo("500");
+        assertThat(response.responseMessage()).contains("not 2xx");
+    }
+
+    @Test
     void invalidPostsJsonToFakeSupplierAndParsesProcessingResponse() {
         HttpRechargeSupplierGatewayAdapter adapter = adapter();
 
@@ -111,9 +134,13 @@ class HttpRechargeSupplierGatewayAdapterTest {
     }
 
     private HttpRechargeSupplierGatewayAdapter adapter() {
+        return adapter("/dispatch", "/invalid");
+    }
+
+    private HttpRechargeSupplierGatewayAdapter adapter(String dispatchPath, String invalidPath) {
         var endpoint = new HttpRechargeSupplierGatewayAdapter.SupplierChannelEndpoint(
-                endpoint("/dispatch").toString(),
-                endpoint("/invalid").toString(),
+                endpoint(dispatchPath).toString(),
+                endpoint(invalidPath).toString(),
                 Duration.ofSeconds(2));
         return new HttpRechargeSupplierGatewayAdapter(
                 Map.of("FNK_CGS_BX", endpoint),

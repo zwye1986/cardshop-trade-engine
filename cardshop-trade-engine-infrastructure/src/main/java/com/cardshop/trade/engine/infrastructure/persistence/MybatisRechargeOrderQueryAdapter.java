@@ -18,7 +18,7 @@ import org.springframework.util.StringUtils;
 /**
  * 基于 MyBatis 的 MySQL 查单兜底适配器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」。该适配器只读取
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。该适配器只读取
  * `mc_order` 和 `recharge_order_ext`，不调用供应商、不推进订单状态；供应商状态推进必须由 outbox/XXL-Job
  * 异步完成，避免高频查单放大供应商压力。
  */

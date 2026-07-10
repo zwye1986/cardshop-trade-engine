@@ -12,7 +12,7 @@ import org.apache.ibatis.annotations.Mapper;
 /**
  * 商户回调通知任务 Mapper。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「20.13.12 回调设计」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「9.3 回调设计」。
  */
 @Mapper
 public interface RechargeNotifyTaskMapper extends BaseMapper<RechargeNotifyTaskDO> {

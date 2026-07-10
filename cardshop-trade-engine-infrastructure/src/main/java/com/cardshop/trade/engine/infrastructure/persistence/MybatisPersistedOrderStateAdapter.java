@@ -12,7 +12,7 @@ import org.springframework.util.StringUtils;
 /**
  * 基于 `recharge_order_ext` 的 MySQL 已落库状态确认适配器。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」。Redis pending
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」。Redis pending
  * 补投任务在重发 MQ 前必须先查 MySQL，若 `persist_status=DB_PERSISTED` 且 `persisted_version`
  * 已覆盖 Redis 订单版本，则只修复 Redis pending 状态，不再向 RabbitMQ 投递重复消息。
  */

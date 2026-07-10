@@ -2,6 +2,7 @@ package com.cardshop.trade.engine.infrastructure.persistence.mapper;
 
 import com.cardshop.trade.engine.infrastructure.persistence.V1MerchantProfileReader;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McExtDepartDO;
+import java.util.List;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -10,7 +11,7 @@ import org.apache.ibatis.annotations.Update;
 /**
  * 旧卡管商户扩展表 `mc_ext_depart` Mapper。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
  * 当前部署包未启用 MyBatis-Plus 通用 SQL 注入，因此 V1 运行期 Reader 使用显式单表
  * {@code @Select}，避免依赖 {@code BaseMapper.selectOne/selectList} 在运行期缺少 mapped statement。
  */
@@ -46,7 +47,7 @@ public interface McExtDepartMapper extends V1MerchantProfileReader {
     /**
      * 按旧系统 `/auth/getToken` 凭证语义读取商户资料；启停状态交由应用用例统一转换为 401。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.5 Token 生成接口」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
      * 这里不能追加 {@code limit 1}：appId/appSecret 代表签发凭证，若旧表出现重复数据，应让 MyBatis
      * 对单对象返回的非唯一结果抛出异常，再由适配器失败关闭，避免把 token 签发到任意一条商户记录上。
      */
@@ -82,6 +83,30 @@ public interface McExtDepartMapper extends V1MerchantProfileReader {
             limit 1
             """)
     McExtDepartDO selectByOrgCode(@Param("orgCode") String orgCode);
+
+    /**
+     * 按商户维度扫描余额修复/对账候选行。
+     *
+     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.4 缓存修复任务」和「17.5 余额对账任务」。
+     * 分片字段使用 {@code org_code}，只返回重建 Redis 余额基线所需的最小字段，避免把 app_secret/aes_key
+     * 等密钥字段带入后台日志或任务上下文。
+     */
+    @Select("""
+            select
+              id,
+              org_code as orgCode,
+              coalesce(balance, 0) as balance
+            from mc_ext_depart
+            where org_code is not null
+              and org_code <> ''
+              and mod(crc32(org_code), #{shardTotal}) = #{shardIndex}
+            order by org_code asc
+            limit #{limit}
+            """)
+    List<McExtDepartDO> selectBalanceRowsForShard(
+            @Param("shardTotal") int shardTotal,
+            @Param("shardIndex") int shardIndex,
+            @Param("limit") int limit);
 
     /**
      * 原子增量更新商户最终余额。

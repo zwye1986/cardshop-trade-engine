@@ -5,7 +5,7 @@ import java.util.Optional;
 /**
  * 直充订单查询端口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」。查单应 Redis 优先、
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。查单应 Redis 优先、
  * MySQL 兜底；D4 先接入 Redis 快照，MySQL 兜底在异步落库闭环完成后继续补齐。
  */
 public interface RechargeOrderQueryPort {

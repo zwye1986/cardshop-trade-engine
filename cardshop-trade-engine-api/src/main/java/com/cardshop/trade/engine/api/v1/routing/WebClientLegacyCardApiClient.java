@@ -17,7 +17,7 @@ import java.net.URI;
 /**
  * 使用 WebClient 转发原卡管 `/v1/cardapi` 请求。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.1.1 `/v1/cardapi` 路由兼容设计」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「3. API/V1 接入层」。
  * 代理只负责透传，不解析业务明文；日志只记录路径、HTTP 方法和配置可用性，不输出 token 或请求体。
  */
 @Component

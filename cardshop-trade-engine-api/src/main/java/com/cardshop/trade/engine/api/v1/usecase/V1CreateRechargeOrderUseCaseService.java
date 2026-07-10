@@ -51,8 +51,8 @@ import java.util.concurrent.Executor;
 /**
  * V1 创建直充订单新链路用例。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」、
- * 「20.13.5 商品选择规则」和「20.13.6 Redis Lua 下单结果」。该用例完成协议预检、request_hash、
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」、
+ * 「5. Domain 状态与业务规则」和「6. Redis 受理与缓存层」。该用例完成协议预检、request_hash、
  * Java 商品候选校验、Redis-first 原子接单、Redis WAIT 和 RabbitMQ publisher confirm。
  * MySQL 落库仍由后续 Consumer 异步完成，本用例只保证接口返回前订单进入可恢复的 Redis/MQ 通道。
  */
@@ -211,7 +211,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     /**
      * Redis HA Guard 和 RabbitMQ publisher breaker 必须在 Redis accept Lua 之前检查。
      *
-     * <p>参见详细设计「20.5 下单服务实现细节」。如果 Redis 主从切换/修复窗口或 MQ 全局不可用时仍继续写
+     * <p>参见详细设计「4. Application 用例编排层」。如果 Redis 主从切换/修复窗口或 MQ 全局不可用时仍继续写
      * Redis，会制造大量只能依赖补偿任务追平的 pending 订单，因此这里 fail closed。
      */
     private CompletionStage<V1CardApiResult> acceptAfterDependencyGate(Preparation preparation) {
@@ -437,7 +437,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         } catch (IllegalArgumentException ex) {
             /*
              * 这是商户请求参数校验路径，非法 URL 应返回 PARAM_ERROR，不应进入系统故障告警。
-             * 参见 docs/交行直充业务系统详细设计.md「20.13.3 SM4 解密与 SM3 验签」的协议预检边界。
+             * 参见 docs/交行直充业务系统详细设计.md「3. API/V1 接入层」的协议预检边界。
              */
             log.debug("V1直充notify_url格式非法 notifyUrlLength={}", value == null ? 0 : value.length(), ex);
             return false;
@@ -485,7 +485,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         }
         /*
          * anomaly 写库是旁路证据留存，不能参与 HTTP 响应耗时；否则 tradeDbTaskExecutor 或 MySQL 抖动会把
-         * “稍后查单”的保守响应拖到调用方超时。参见详细设计「20.13.6 Redis Lua 下单结果」。
+         * “稍后查单”的保守响应拖到调用方超时。参见详细设计「6. Redis 受理与缓存层」。
          */
         closeRedisWriteForUnknownAccept(preparation.acceptCommand, acceptResult, waitResult, cancelResult);
         recordWaitCancelFailedAnomalyAsync(preparation.acceptCommand, acceptResult, waitResult, cancelResult);
@@ -495,8 +495,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     /**
      * WAIT 未达标且 cancel 失败时关闭 Redis 写入。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」和
-     * 「20.5 下单服务实现细节」。此时不能确认 Redis 主从切换后订单、余额预扣和 pending 是否仍可见；
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」和
+     * 「4. Application 用例编排层」。此时不能确认 Redis 主从切换后订单、余额预扣和 pending 是否仍可见；
      * 继续接单会扩大待核查窗口，所以必须先 fail closed，再由 anomaly 自动核查或人工处理决定恢复。
      */
     private void closeRedisWriteForUnknownAccept(
@@ -516,7 +516,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             /*
              * RedisHaGuardPort.closeWrite 当前必须是本机内存或等价的快速操作，不能在 HTTP 响应路径同步做
              * Nacos/Sentinel/DB 等网络 I/O；若后续实现需要远程持久化关闭状态，应在端口内部异步化或引入独立任务。
-             * 参见 docs/交行直充业务系统详细设计.md「9.3 Redis HA Guard」。
+             * 参见 docs/交行直充业务系统详细设计.md「6.3 Redis HA Guard 与状态未知窗口」。
              */
             redisHaGuardPort.closeWrite("WAIT_FAILED_CANCEL_FAILED", context);
         } catch (RuntimeException ex) {
@@ -535,7 +535,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     /**
      * 将 MyBatis anomaly 写库隔离到 tradeDbTaskExecutor。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
      * Redis WAIT/cancel 的 CompletionStage 可能由 Lettuce/Redis 回调线程完成，不能在该线程上同步写 MySQL；
      * 因此这里显式切换到交易 DB executor，并把调度失败也降级为告警，保持接口响应语义不变。
      */
@@ -569,7 +569,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     /**
      * WAIT 未达标且 cancel 也未确认时，Redis 中可能仍保留订单、余额预扣和 pending 索引。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
      * 这里登记 `recharge_accept_anomaly` 是为了给后续自动核查任务留下入口；登记失败不能改变接口响应，
      * 因为调用方已经只能得到“稍后查单”的保守语义。
      */

@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.v1;
 /**
  * V1 作废接口生成 INVALID_ORDER outbox 的命令。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.11 作废设计」。接口线程只写可靠事件，
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.2 作废设计」。接口线程只写可靠事件，
  * 不直接调用供应商作废。
  *
  * @param orgCode 商户编码，对应 {@code recharge_outbox.org_code}

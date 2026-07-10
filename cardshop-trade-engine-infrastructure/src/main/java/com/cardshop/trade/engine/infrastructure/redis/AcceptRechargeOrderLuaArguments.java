@@ -7,7 +7,7 @@ import java.util.List;
 /**
  * `accept_recharge_order.lua` 的 KEYS 和 ARGV 映射对象。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.6 Redis Lua 入参与 Key 构造」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.1 Redis Lua 入参与 Key 构造」。
  * Lua 入参是位置协议，字段扩展只能在该类和脚本中同步完成，不能在适配器内临时拼接字符串列表。
  */
 record AcceptRechargeOrderLuaArguments(List<String> keys, List<String> args) {

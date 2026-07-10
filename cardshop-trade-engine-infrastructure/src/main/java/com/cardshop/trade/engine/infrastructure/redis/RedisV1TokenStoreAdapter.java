@@ -15,7 +15,7 @@ import java.util.Optional;
 /**
  * 基于 Redis 的 V1 Token 共享存储适配器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.1.1 `/v1/cardapi` 路由兼容设计」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
  * 新旧系统共享 {@code token:app_id:{appId}} key，保证灰度期间新服务签发的 token 能按旧规则校验。
  */
 public class RedisV1TokenStoreAdapter implements V1TokenStorePort {

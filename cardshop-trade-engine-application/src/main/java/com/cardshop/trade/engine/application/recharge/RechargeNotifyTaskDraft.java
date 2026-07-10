@@ -6,7 +6,7 @@ import java.util.Map;
 /**
  * 创建商户回调任务的命令。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.12 回调设计」。payload 中空字段必须保留，
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。payload 中空字段必须保留，
  * 并且 sign 已在创建任务前计算完成，Worker 重试时不重新解释业务字段。
  *
  * @param taskId 回调任务唯一 ID，对应 {@code recharge_notify_task.task_id}

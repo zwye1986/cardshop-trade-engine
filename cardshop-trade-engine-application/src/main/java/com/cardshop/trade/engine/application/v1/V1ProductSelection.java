@@ -5,7 +5,7 @@ import com.cardshop.trade.engine.domain.order.ValidationStatus;
 /**
  * V1 直充商品选择结果。
  *
- * <p>字段含义对应 {@code docs/交行直充业务系统详细设计.md}「20.13.5 商品选择规则」。
+ * <p>字段含义对应 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
  * 即使 Java 候选校验失败，也会保留父商品、失败码和配置版本，让 Redis Lua 在验签通过后写入失败订单快照。
  *
  * @param parentProductId 调用方传入的父商品编码

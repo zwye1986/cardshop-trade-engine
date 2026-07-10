@@ -10,7 +10,7 @@ import java.util.TreeMap;
 /**
  * 直充受理请求幂等哈希规范化器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.9 请求哈希和幂等设计」：
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「14.2 Application 对象字段」：
  * 哈希只表达一次商户业务受理请求的身份，不纳入 {@code timestamp}、{@code nonce_str}、{@code sign}
  * 和来源 IP 等重放或传输字段，避免同一业务请求因重试参数变化被误判为新单。
  */

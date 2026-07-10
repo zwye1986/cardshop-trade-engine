@@ -13,7 +13,7 @@ import org.apache.ibatis.annotations.Mapper;
 /**
  * Redis 受理状态未知异常 Mapper。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「20.13.6 Redis Lua 下单结果」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「6. Redis 受理与缓存层」。
  */
 @Mapper
 public interface RechargeAcceptAnomalyMapper extends BaseMapper<RechargeAcceptAnomalyDO> {
@@ -21,8 +21,8 @@ public interface RechargeAcceptAnomalyMapper extends BaseMapper<RechargeAcceptAn
     /**
      * 按 `anomaly_id` 幂等登记受理异常。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「20.8 接单异常核查表」和
-     * 「20.13.6 Redis Lua 下单结果」。WAIT/cancel 异常属于旁路证据留存，上游重试可能让同一订单同一异常
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「14.3 MySQL 表字段」和
+     * 「6. Redis 受理与缓存层」。WAIT/cancel 异常属于旁路证据留存，上游重试可能让同一订单同一异常
      * 被登记多次；这里刷新最近错误和更新时间，但保留首次写入的 raw_context/status，避免已进入核查或人工处理的记录
      * 被重复登记覆盖。
      */
@@ -79,7 +79,7 @@ public interface RechargeAcceptAnomalyMapper extends BaseMapper<RechargeAcceptAn
     /**
      * 读取一批仍需自动核查的异常记录。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」。当前 D5B 表结构尚未包含
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」。当前 D5B 表结构尚未包含
      * `locked_until`，因此这里做固定上限保护，避免异常积压时单次任务扫出过大结果集；后续补租约字段时可升级为
      * CAS claim。
      */
@@ -114,7 +114,7 @@ public interface RechargeAcceptAnomalyMapper extends BaseMapper<RechargeAcceptAn
      * 写入自动核查三方证据并推进最终状态。
      *
      * <p>自动核查可能由多个节点或多次任务并发触发。参见
-     * {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」：D5B 尚未引入 `locked_until`
+     * {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」：D5B 尚未引入 `locked_until`
      * 租约字段，因此这里至少用状态条件保护终态记录，避免慢核查任务覆盖已经人工或自动 resolved 的结果。
      */
     default int updateCheckResult(RechargeAcceptAnomalyDO row) {

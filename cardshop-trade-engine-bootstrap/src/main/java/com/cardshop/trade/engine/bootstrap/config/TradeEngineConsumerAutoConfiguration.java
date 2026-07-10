@@ -14,7 +14,7 @@ import org.springframework.context.annotation.Bean;
 /**
  * Redis/MQ 到 MySQL 异步落库 Consumer 核心服务的后置自动配置。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。真实 dev/test/prod
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。真实 dev/test/prod
  * 中 {@link RechargeOrderPersistencePort} 可能由 MyBatis 后置自动配置创建，晚于普通 bootstrap configuration；
  * 如果只在普通配置类中按该端口做 {@code @ConditionalOnBean}，Consumer 核心服务会被提前跳过，进而使 Rabbit
  * listener 无法创建。该自动配置在依赖端口就绪后再兜底装配 Consumer，避免 Redis 已接单但 MQ/MySQL 链路没有

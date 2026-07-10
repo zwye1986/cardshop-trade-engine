@@ -10,8 +10,8 @@ import org.junit.jupiter.api.Test;
 /**
  * `accept_recharge_order.lua` 脚本契约测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.6 Redis Lua 入参与 Key 构造」
- * 和「20.13.6 Redis Lua 下单结果」。该测试不替代真实 Redis 集成测试，但能阻止脚本漏掉 D4 必须的
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.1 Redis Lua 入参与 Key 构造」
+ * 和「6. Redis 受理与缓存层」。该测试不替代真实 Redis 集成测试，但能阻止脚本漏掉 D4 必须的
  * 幂等、nonce、配置版本、余额预扣、pending、org_index 和订单事件写入。
  */
 class AcceptRechargeOrderLuaContractTest {

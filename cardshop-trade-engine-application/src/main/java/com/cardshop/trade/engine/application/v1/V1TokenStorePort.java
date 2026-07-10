@@ -6,7 +6,7 @@ import java.util.Optional;
 /**
  * V1 Token 共享存储端口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.1.1 `/v1/cardapi` 路由兼容设计」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
  * 旧系统使用 Redis key {@code token:app_id:{appId}} 保存最新 JWT，新服务生成和校验 token
  * 必须复用同一 key 空间，保证灰度切流期间调用方无需重新适配。
  */

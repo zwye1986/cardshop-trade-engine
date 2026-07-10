@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.domain.order;
 /**
  * Redis、RabbitMQ、MySQL 之间的订单持久化状态。
  *
- * <p>状态语义对应 {@code docs/交行直充业务系统详细设计.md} 的「20.3 错误码与状态码」。
+ * <p>状态语义对应 {@code docs/交行直充业务系统详细设计.md} 的「5. Domain 状态与业务规则」。
  * 该枚举只描述订单事实从 Redis 受理到 MySQL 落库的技术状态，不承载供应商派单、回调或作废等业务履约状态。
  */
 public enum PersistStatus {

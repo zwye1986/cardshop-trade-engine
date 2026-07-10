@@ -8,7 +8,7 @@ import java.util.Optional;
 /**
  * Redis 优先、MySQL 兜底的查单组合端口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」。Redis 是受理期短期事实来源，
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。Redis 是受理期短期事实来源，
  * MySQL 是最终事实来源；因此查单应先读 Redis 快照，Redis 未命中时再兜底读取 `mc_order`，避免已落库订单在
  * Redis TTL 或修复窗口后被误报为不存在。
  */

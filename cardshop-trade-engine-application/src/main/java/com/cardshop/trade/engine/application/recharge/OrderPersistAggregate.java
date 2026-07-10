@@ -7,7 +7,7 @@ import java.util.Objects;
 /**
  * Consumer 准备写入 MySQL 的订单聚合。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * 该对象把 MQ 消息、Redis/MQ 快照来源和落库时间合并成 infrastructure 可直接映射到
  * `mc_order`、`recharge_order_ext` 和 `recharge_outbox` 的最小事实集合。
  *
@@ -32,7 +32,7 @@ public record OrderPersistAggregate(
     /**
      * 只有业务校验通过且允许派单的订单才生成供应商派单 outbox。
      *
-     * <p>业务失败订单必须落库留痕，但不能派单；参见详细设计「20.13.8 异步落库 Consumer」
+     * <p>业务失败订单必须落库留痕，但不能派单；参见详细设计「8.3 异步落库 Consumer」
      * 对失败订单不生成 `SUPPLIER_DISPATCH` outbox 的约束。
      */
     public boolean dispatchOutboxRequired() {

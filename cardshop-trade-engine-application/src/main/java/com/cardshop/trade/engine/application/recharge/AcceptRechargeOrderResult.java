@@ -5,7 +5,7 @@ import java.util.Objects;
 /**
  * Redis-first 下单受理结果。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
  * 该对象只表达 Redis 接单阶段的结果，不混入 WAIT、MQ confirm、MySQL 落库或供应商派单状态。
  *
  * @param status Lua 受理结果码
@@ -42,7 +42,7 @@ public record AcceptRechargeOrderResult(
     /**
      * Redis 写入开关或 HA Guard 已关闭时的统一失败结果。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。该失败发生在 Lua 写入前，
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。该失败发生在 Lua 写入前，
      * 因此 `orderWritten=false`，调用方不能执行 WAIT、MQ confirm 或作废回滚。
      */
     public static AcceptRechargeOrderResult redisWriteDisabled(String orderId) {

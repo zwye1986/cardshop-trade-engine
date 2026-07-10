@@ -10,8 +10,8 @@ import org.springframework.context.annotation.Configuration;
 /**
  * `trade.engine.*` 配置绑定测试。
  *
- * <p>配置字段对应 {@code docs/交行直充业务系统详细设计.md}「7.4 核心配置项」和
- * 「20.10 Nacos 配置全量模板」。新增配置项时应同步补充默认值和环境覆盖测试，防止 Nacos 模板、
+ * <p>配置字段对应 {@code docs/交行直充业务系统详细设计.md}「11. 配置中心、部署与健康检查」和
+ * 「11. 配置中心、部署与健康检查」。新增配置项时应同步补充默认值和环境覆盖测试，防止 Nacos 模板、
  * 本地 YAML 与 Java 绑定对象语义漂移。
  */
 class TradeEnginePropertiesTest {
@@ -48,6 +48,7 @@ class TradeEnginePropertiesTest {
             assertThat(properties.getBalance().getOwnerMode()).isEqualTo("NEW");
             assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(16);
             assertThat(properties.getThreadPool().getDbMaxSize()).isEqualTo(32);
+            assertThat(properties.getIntegration().getManualJobTimeoutMs()).isEqualTo(30000);
         });
     }
 
@@ -70,7 +71,8 @@ class TradeEnginePropertiesTest {
                         "trade.engine.routing.supported-paths[0]=/v1/cardapi/order/getRechargeOrder",
                         "trade.engine.v1.crypto.key-rotation-previous-enabled=false",
                         "trade.engine.thread-pool.db-core-size=4",
-                        "trade.engine.thread-pool.db-max-size=8")
+                        "trade.engine.thread-pool.db-max-size=8",
+                        "trade.engine.integration.manual-job-timeout-ms=12345")
                 .run(context -> {
                     var properties = context.getBean(TradeEngineProperties.class);
 
@@ -92,6 +94,7 @@ class TradeEnginePropertiesTest {
                     assertThat(properties.getV1().getCrypto().isKeyRotationPreviousEnabled()).isFalse();
                     assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(4);
                     assertThat(properties.getThreadPool().getDbMaxSize()).isEqualTo(8);
+                    assertThat(properties.getIntegration().getManualJobTimeoutMs()).isEqualTo(12345);
                 });
     }
 

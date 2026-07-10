@@ -12,8 +12,8 @@ import org.springframework.util.StringUtils;
 /**
  * 交易引擎 readiness 探针。
  *
- * <p>探针字段对应 {@code docs/交行直充业务系统详细设计.md} 的「16.2 健康检查」和
- * {@code docs/交行直充业务系统详细设计.md} 的「7.4 核心配置项」。当前 D1 阶段只暴露配置态，
+ * <p>探针字段对应 {@code docs/交行直充业务系统详细设计.md} 的「11. 配置中心、部署与健康检查」和
+ * {@code docs/交行直充业务系统详细设计.md} 的「11. 配置中心、部署与健康检查」。当前 D1 阶段只暴露配置态，
  * 后续接入 Redis、RabbitMQ、MySQL 后，再按设计文档扩展外部依赖检查。
  */
 @Component("tradeEngineReadiness")
@@ -39,7 +39,7 @@ public class TradeEngineReadinessIndicator implements HealthIndicator {
         var snapshot = ReadinessSnapshot.from(properties);
         logReadinessRisks(snapshot);
 
-        // TODO(D8): 当 externalCheckEnabled=true 时接入 Redis、RabbitMQ、MySQL 真实连通性检查；参见 docs/交行直充业务系统详细设计.md「16.2 健康检查」。
+        // TODO(D8): 当 externalCheckEnabled=true 时接入 Redis、RabbitMQ、MySQL 真实连通性检查；参见 docs/交行直充业务系统详细设计.md「11. 配置中心、部署与健康检查」。
         return Health.up()
                 .withDetail("environment", snapshot.environment())
                 .withDetail("redisWriteEnabled", snapshot.redisWriteEnabled())

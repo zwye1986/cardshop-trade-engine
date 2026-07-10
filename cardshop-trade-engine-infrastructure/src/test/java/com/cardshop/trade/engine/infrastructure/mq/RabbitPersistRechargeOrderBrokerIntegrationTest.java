@@ -43,8 +43,8 @@ import org.springframework.amqp.rabbit.listener.api.ChannelAwareMessageListener;
 /**
  * RabbitMQ 真实 broker 集成测试。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」和
- * 「20.13.8 异步落库 Consumer」。该测试不会默认连接本机 RabbitMQ，只有显式设置
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「7. RabbitMQ 持久化消息层」和
+ * 「8.3 异步落库 Consumer」。该测试不会默认连接本机 RabbitMQ，只有显式设置
  * {@code TRADE_ENGINE_RABBITMQ_IT_ENABLED=true} 时才执行，避免普通单元测试依赖外部中间件。
  *
  * <p>执行示例：

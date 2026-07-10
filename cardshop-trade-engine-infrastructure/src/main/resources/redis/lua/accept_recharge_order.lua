@@ -1,5 +1,5 @@
 -- accept_recharge_order.lua
--- docs/交行直充业务系统详细设计.md「20.6 Redis Lua 入参与 Key 构造」「20.13.6 Redis Lua 下单结果」
+-- docs/交行直充业务系统详细设计.md「6.1 Redis Lua 入参与 Key 构造」「6. Redis 受理与缓存层」
 -- 本脚本只处理 Redis 原子受理；WAIT、cancel 和 MQ confirm 由 Java 编排层在同一接单链路继续推进。
 
 -- KEYS

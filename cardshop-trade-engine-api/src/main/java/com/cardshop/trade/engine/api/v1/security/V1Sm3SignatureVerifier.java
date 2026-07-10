@@ -14,7 +14,7 @@ import java.util.TreeMap;
 /**
  * `/v1/cardapi` SM3 签名校验器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.3 SM4 解密与 SM3 验签」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「3. API/V1 接入层」。
  * 拼接规则兼容旧系统 {@code CardApiUtil.sortMapByAscii}：字段名 ASCII 升序，格式为
  * {@code key=value,key=value}，再对拼接串计算 SM3 hex。签名比较大小写兼容。
  */

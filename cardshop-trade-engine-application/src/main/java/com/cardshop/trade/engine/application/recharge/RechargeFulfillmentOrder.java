@@ -7,7 +7,7 @@ import com.cardshop.trade.engine.domain.order.ValidationStatus;
 /**
  * 供应商履约所需的订单事实快照。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」。Worker 只读取
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。Worker 只读取
  * 派单、作废、回调必要字段，不把旧表全部字段暴露给 application 层。
  *
  * @param orderId 平台订单号，对应旧表 {@code mc_order.order_Id}

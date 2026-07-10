@@ -13,7 +13,7 @@ import java.util.Optional;
 /**
  * 基于旧卡管 `mc_ext_depart` 的 V1 商户资料适配器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
  * 该适配器只读商户安全资料，不写余额、不写订单，避免和旧卡管余额链路发生双写。
  */
 public class MybatisV1MerchantProfileAdapter implements V1MerchantProfilePort {
@@ -37,7 +37,7 @@ public class MybatisV1MerchantProfileAdapter implements V1MerchantProfilePort {
     }
 
     /**
-     * `/auth/getToken` 使用 appId/appSecret 定位唯一商户，参见详细设计「20.13.5 Token 生成接口」。
+     * `/auth/getToken` 使用 appId/appSecret 定位唯一商户，参见详细设计「3. API/V1 接入层」。
      * 旧表若出现重复凭证，不能静默挑选第一条，否则后续 SM4 密钥、机构号和 Redis token 归属都可能错位；
      * 因此捕获 MyBatis-Plus 非唯一结果并按凭证错误处理，日志只记录 appId，避免泄露 appSecret。
      */

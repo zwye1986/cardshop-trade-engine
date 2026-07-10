@@ -13,7 +13,7 @@ import org.junit.jupiter.api.io.TempDir;
 /**
  * 部署交付物契约测试。
  *
- * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「16. 部署设计」中定义的打包脚本、启动脚本、
+ * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「11. 配置中心、部署与健康检查」中定义的打包脚本、启动脚本、
  * zip 内启动说明和环境变量模板约束，避免后续测试/生产部署时把中间件配置散落到多个入口。
  */
 class DeploymentArtifactContractTest {

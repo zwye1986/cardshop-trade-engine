@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 /**
  * V1 商户回调签名测试。
  *
- * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「20.13.12 回调设计」的空字段保留和 SM3
+ * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」的空字段保留和 SM3
  * 签名规则。回调 payload 的 key 不能因为 Java null 或业务字段缺失而被省略。
  */
 class V1MerchantNotifyPayloadSignerTest {

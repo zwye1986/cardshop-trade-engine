@@ -183,6 +183,19 @@ trade:
       publish-confirm-timeout-ms: 1000
     fault-injection:
       enabled: false
+    integration:
+      manual-job-enabled: false
+    xxl-job:
+      enabled: false
+      admin-addresses: \${XXL_JOB_ADMIN_ADDRESSES:}
+      access-token: \${XXL_JOB_ACCESS_TOKEN:}
+      executor:
+        appname: cardshop-trade-engine-dev
+        address:
+        ip:
+        port: 19999
+        logpath: /data/logs/cardshop-trade-engine/xxl-job
+        log-retention-days: 30
 YAML
 
 printf 'Publishing Nacos config dataId=%s namespace=%s group=%s server=%s\n' \

@@ -5,8 +5,8 @@ import java.util.Map;
 /**
  * Redis HA 写入门禁端口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」和
- * 「20.5 下单服务实现细节」。下单入口只关心“当前是否允许继续写 Redis”和“遇到状态未知窗口时关闭写入”，
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」和
+ * 「4. Application 用例编排层」。下单入口只关心“当前是否允许继续写 Redis”和“遇到状态未知窗口时关闭写入”，
  * 不直接依赖 Sentinel、Lettuce 事件或 Nacos 动态配置等基础设施细节。
  */
 public interface RedisHaGuardPort {

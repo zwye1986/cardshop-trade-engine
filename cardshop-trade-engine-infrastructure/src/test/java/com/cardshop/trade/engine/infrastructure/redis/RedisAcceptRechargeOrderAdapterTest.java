@@ -15,7 +15,7 @@ import reactor.core.publisher.Mono;
 /**
  * Redis 接单适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
  * 适配器必须在 Redis 写开关关闭时 fail closed；写开关打开时只能调用固定 Lua 脚本并映射返回结果。
  */
 class RedisAcceptRechargeOrderAdapterTest {

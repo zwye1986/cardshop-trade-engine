@@ -8,7 +8,7 @@ import org.apache.ibatis.annotations.Mapper;
 /**
  * 旧系统商户资金流水表 `mc_depart_record` Mapper。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * 新服务通过 Liquibase 为 `type=1 + order_id` 增加生成列唯一键 `trade_engine_record_key`，
  * 本 Mapper 使用 `on duplicate key update` 实现 DB 级幂等，避免 RabbitMQ 重投或补偿任务并发导致重复扣款流水。
  */

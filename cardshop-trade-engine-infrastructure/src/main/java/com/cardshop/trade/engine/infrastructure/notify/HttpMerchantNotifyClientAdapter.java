@@ -19,7 +19,7 @@ import org.slf4j.LoggerFactory;
 /**
  * 商户回调 HTTP 客户端适配器。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.12 回调设计」。只有商户响应 JSON 中
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。只有商户响应 JSON 中
  * {@code code=200} 时才视为成功；非 200、网络异常和解析异常均交给回调 Worker 重试。
  */
 public class HttpMerchantNotifyClientAdapter implements MerchantNotifyClientPort {

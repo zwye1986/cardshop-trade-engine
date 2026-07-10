@@ -13,7 +13,7 @@ import java.util.Base64;
 /**
  * `/v1/cardapi` 请求体解码器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「20.13.3 SM4 解密与 SM3 验签」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「3. API/V1 接入层」。
  * 兼容旧系统 {@code SM4CryptoUtils}：密文格式为 {@code Base64(16字节IV + SM4-CBC密文)}，
  * 当前 aesKey 必须为 16 位 ASCII 字符串。
  */
@@ -50,7 +50,7 @@ public class V1RequestBodyCodec {
      * 解码 SM4 密文请求体。
      */
     public <T> T decodeSm4(String encryptedBody, String aesKey, Class<T> targetType) {
-        // TODO(D13): 接入 current/previous key 轮换窗口和密钥命中审计；参见 docs/交行直充业务系统详细设计.md「20.13.3 SM4 解密与 SM3 验签」。
+        // TODO(D13): 接入 current/previous key 轮换窗口和密钥命中审计；参见 docs/交行直充业务系统详细设计.md「3. API/V1 接入层」。
         byte[] plainBytes = decryptLegacySm4(encryptedBody, aesKey);
         return decodePlain(new String(plainBytes, StandardCharsets.UTF_8), targetType);
     }

@@ -17,7 +17,7 @@ import org.slf4j.LoggerFactory;
 /**
  * Redis/MQ 到 MySQL 的异步落库 Consumer 核心服务。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * 本类不直接绑定 RabbitMQ listener，也不直接依赖 MyBatis 事务；它只负责选择快照、调用事务写库端口、
  * 并在事务提交后推进 Redis `DB_PERSISTED` 标记。后续 Rabbit adapter 可以根据返回结果决定 ack/nack。
  */
@@ -59,7 +59,7 @@ public class PersistRechargeOrderConsumerService {
     /**
      * 创建异步落库 Consumer 核心服务。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
      * `redisMarkTimeout` 只约束 MySQL 事务之后的 Redis 状态推进调用，避免 RabbitMQ consumer 线程因
      * Redis 客户端 hang 住而无限阻塞；MySQL 已提交后的 `markDbPersisted` 超时会 ack 当前消息并交给补偿修复，
      * MySQL 失败后的 `markPersistFailed` 超时则保持当前消息可重试。
@@ -308,7 +308,7 @@ public class PersistRechargeOrderConsumerService {
             return;
         }
         /*
-         * 参见 docs/交行直充业务系统详细设计.md「20.13.8 异步落库 Consumer」。
+         * 参见 docs/交行直充业务系统详细设计.md「8.3 异步落库 Consumer」。
          * consumer 线程超时返回后，底层 Redis 调用可能仍挂起；显式取消用于触发适配器 Reactor 链路的
          * doFinally，释放同 session Redis 连接，避免高频超时继续耗尽连接池。
          */

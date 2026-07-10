@@ -10,7 +10,7 @@ import org.slf4j.LoggerFactory;
 /**
  * Redis pending 到 RabbitMQ 的 MQ 补投服务。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.11 XXL-Job Handler 契约」和
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「10.1 XXL-Job Handler 契约」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「17.3 MQ 补投任务」。本服务只做补投编排：
  * pending 扫描、claim 锁、MySQL 二次确认和 Redis 状态推进由 {@link PendingPersistOrderPort} 实现；
  * RabbitMQ confirm、mandatory return 和重试细节由 {@link PersistRechargeOrderMessagePublisher} 实现。

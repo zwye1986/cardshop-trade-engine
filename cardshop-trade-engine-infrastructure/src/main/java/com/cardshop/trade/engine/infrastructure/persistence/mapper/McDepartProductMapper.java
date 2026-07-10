@@ -11,7 +11,7 @@ import java.util.List;
 /**
  * 旧卡管商户商品关系表 `mc_depart_product` Mapper。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.5 商品选择规则」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
  * 旧系统 XML 通过多表关联返回商品快照；新服务拆成显式单表查询后在 Java 内组装，
  * 避免依赖 MyBatis-Plus BaseMapper 通用 statement，也遵守 SQL 禁止多表关联要求。
  */

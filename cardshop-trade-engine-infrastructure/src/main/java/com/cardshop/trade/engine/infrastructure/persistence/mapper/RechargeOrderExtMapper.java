@@ -9,7 +9,7 @@ import org.apache.ibatis.annotations.Mapper;
 /**
  * 新链路订单扩展表 Mapper。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「20.7 MyBatis Mapper 细节」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「8. MySQL/Liquibase 持久化层」。
  * 更新持久化状态时必须保证版本只前进，防止旧 MQ 快照覆盖新 Redis 订单版本。
  */
 @Mapper

@@ -10,6 +10,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 /**
  * 可靠事件表 Mapper。
@@ -23,7 +25,7 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
     /**
      * 幂等写入可靠事件。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
      * Persist Consumer 可能因为 RabbitMQ 重投重复处理同一订单，`SUPPLIER_DISPATCH` outbox 必须按
      * `event_id` 幂等插入，避免唯一键冲突被误判为数据库故障。
      */
@@ -70,6 +72,22 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
               event_id = event_id
             """)
     int insertIfAbsent(RechargeOutboxDO outbox);
+
+    /**
+     * 汇总未完成的余额 delta。
+     *
+     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.5 余额对账任务」。对账时不能只比较
+     * `mc_ext_depart.balance` 和 Redis available；还必须把尚未刷入旧表的 `BALANCE_DELTA_FLUSH` 事件纳入
+     * 投影，否则正在重试的刷账事件会被误报为资金差异。
+     */
+    @Select("""
+            select coalesce(sum(cast(json_unquote(json_extract(payload, '$.delta_amount')) as signed)), 0)
+            from recharge_outbox
+            where org_code = #{orgCode}
+              and event_type = 'BALANCE_DELTA_FLUSH'
+              and status <> 'SUCCESS'
+            """)
+    Long sumUnfinishedBalanceDelta(@Param("orgCode") String orgCode);
 
     /**
      * 扫描到期事件和租约失效事件。

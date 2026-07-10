@@ -8,7 +8,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Redis Lua 脚本加载器契约测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.14 实施任务拆分」任务 5。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「13. 测试与验收标准」任务 5。
  * 脚本必须从 classpath 固定路径加载，后续适配器才能使用 Spring Data Redis 的 SHA 缓存机制执行脚本。
  */
 class RechargeRedisScriptLoaderTest {

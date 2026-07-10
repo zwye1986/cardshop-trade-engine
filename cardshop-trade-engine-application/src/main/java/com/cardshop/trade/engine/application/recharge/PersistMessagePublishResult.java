@@ -3,8 +3,8 @@ package com.cardshop.trade.engine.application.recharge;
 /**
  * RabbitMQ 持久化消息 publisher confirm 结果。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.5 下单服务实现细节」
- * 和「20.9 RabbitMQ 声明契约」。confirm 成功只表示 broker 已接收消息，MySQL 落库仍由 Consumer 异步完成。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「4. Application 用例编排层」
+ * 和「7. RabbitMQ 持久化消息层」。confirm 成功只表示 broker 已接收消息，MySQL 落库仍由 Consumer 异步完成。
  *
  * @param confirmed broker 是否确认接收
  * @param messageId 持久化消息 ID

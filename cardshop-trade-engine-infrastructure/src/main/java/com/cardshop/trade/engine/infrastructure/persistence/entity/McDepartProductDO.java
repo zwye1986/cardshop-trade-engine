@@ -8,7 +8,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
 /**
  * 旧卡管商户商品关系表 `mc_depart_product` 的最小持久化对象。
  *
- * <p>字段来源对应 {@code docs/交行直充业务系统详细设计.md}「20.13.5 商品选择规则」。
+ * <p>字段来源对应 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
  * 该表表达商户对父商品下某个子商品的销售权限和商户售价。
  */
 @TableName("mc_depart_product")

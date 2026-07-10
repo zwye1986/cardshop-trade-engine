@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 /**
  * 商户回调通知任务表 `recharge_notify_task`。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「20.13.12 回调设计」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「9.3 回调设计」。
  * 回调失败时通过状态、重试次数和租约字段进行后台重试。
  */
 @TableName("recharge_notify_task")

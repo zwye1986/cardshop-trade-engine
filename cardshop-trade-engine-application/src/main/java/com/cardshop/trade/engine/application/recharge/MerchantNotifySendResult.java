@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.recharge;
 /**
  * 商户回调发送结果。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.12 回调设计」。只有商户明确返回
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。只有商户明确返回
  * {@code code=200} 或适配器判定成功时才能标记任务 SUCCESS。
  *
  * @param success 是否可将回调任务标记为 SUCCESS

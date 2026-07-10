@@ -1,5 +1,5 @@
 -- mark_persist_queued.lua
--- docs/交行直充业务系统详细设计.md「20.5 下单服务实现细节」
+-- docs/交行直充业务系统详细设计.md「4. Application 用例编排层」
 -- RabbitMQ publisher confirm ack 后推进 Redis 持久化状态。该脚本不清理 pending，pending 只能在 MySQL 已落库后清理。
 
 -- KEYS

@@ -56,8 +56,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * V1 创建直充订单新链路用例测试。
  *
- * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「20.13.3 SM4 解密与 SM3 验签」、
- * 「20.13.5 商品选择规则」和「20.13.6 Redis Lua 下单结果」。旧卡管 V3/V2 的核心兼容点是：
+ * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」、
+ * 「5. Domain 状态与业务规则」和「6. Redis 受理与缓存层」。旧卡管 V3/V2 的核心兼容点是：
  * `product_id` 表示父商品编码，验签通过后再按父商品选择可售子商品并进入 Redis 原子接单。
  */
 class V1CreateRechargeOrderUseCaseServiceTest {

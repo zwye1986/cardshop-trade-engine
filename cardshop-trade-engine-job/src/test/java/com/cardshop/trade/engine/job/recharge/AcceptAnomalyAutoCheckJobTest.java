@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 /**
  * 接单异常自动核查任务入口测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」和
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」和
  * 「17. 分片补偿与对账任务」。job 模块先提供无调度框架依赖的任务入口，后续接入 XXL-Job 时只需要把
  * handler 参数解析后委托给该类。
  */

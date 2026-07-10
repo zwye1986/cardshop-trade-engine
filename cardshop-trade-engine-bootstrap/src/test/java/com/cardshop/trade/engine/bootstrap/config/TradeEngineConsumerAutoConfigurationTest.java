@@ -23,7 +23,7 @@ import org.springframework.context.annotation.Bean;
 /**
  * 异步落库 Consumer 核心服务后置自动配置测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。真实运行时
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。真实运行时
  * {@link RechargeOrderPersistencePort} 可能来自 MyBatis 后置自动配置，普通 bootstrap configuration 过早按该端口做
  * {@code @ConditionalOnBean} 会跳过 {@link PersistRechargeOrderConsumerService}，进而导致 Rabbit listener 无法创建。
  * 这里固化 Consumer 必须能在依赖端口后置出现时被兜底装配。

@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Redis HA Guard 本地写入熔断测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」。当前 D5B 先实现应用节点内
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」。当前 D5B 先实现应用节点内
  * fail closed：Nacos 静态开关和运行时关闭任一为 false，都不得继续执行 Redis 写入型 Lua。
  */
 class InMemoryRedisHaGuardTest {

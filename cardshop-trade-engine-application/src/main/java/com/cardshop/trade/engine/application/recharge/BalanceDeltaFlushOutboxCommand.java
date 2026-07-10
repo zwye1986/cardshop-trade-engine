@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.recharge;
 /**
  * 余额 delta 刷账 outbox 写入命令。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.2 作废设计」和
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.2 作废设计」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「14.7 `mc_ext_depart.balance` 刷账协议」。供应商失败、
  * 作废成功或退款完成后，必须生成正向 delta 事件，把 Redis 已释放的预扣金额同步沉淀回旧表最终余额。
  *

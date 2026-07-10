@@ -20,7 +20,7 @@ import org.springframework.amqp.core.MessageProperties;
 /**
  * RabbitMQ 持久化消息 listener 适配层测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.8 异步落库 Consumer」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * listener 只负责协议反序列化和 manual ack/nack；快照选择、MySQL 事务和 Redis mark 语义必须留在
  * {@code PersistRechargeOrderConsumerService} 中，避免 RabbitMQ 适配层承载业务分支。
  */

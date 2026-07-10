@@ -10,7 +10,7 @@ import java.util.Objects;
 /**
  * Redis 接单状态未知异常登记请求。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」中的
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」中的
  * `recharge_accept_anomaly` 流程。该对象只携带后续核查所需的非敏感上下文，不能写入原始请求体、密钥、
  * token 或手机号等敏感载荷；后续核查任务应基于这里的 `orgCode/outOrderSn/orderId/requestHash` 再回查
  * Redis、RabbitMQ 和 MySQL。
@@ -58,7 +58,7 @@ public record AcceptAnomalyRecord(
     /**
      * 拷贝核查上下文并冻结，防止调用方在登记后继续修改证据快照。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
      * `raw_context` 最终写入 JSON，允许保存“字段存在但暂时未知”的 null 值；因此不能使用
      * {@link Map#copyOf(Map)}，它会拒绝 null value 并在异常路径上反而丢失核查入口。
      */

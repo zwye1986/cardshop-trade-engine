@@ -16,8 +16,8 @@ import java.util.Objects;
 /**
  * 基于 MyBatis 的接单状态未知异常登记适配器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」和
- * 「20.8 接单异常核查表」。该适配器只负责把 application 层的异常登记请求落入
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」和
+ * 「14.3 MySQL 表字段」。该适配器只负责把 application 层的异常登记请求落入
  * `recharge_accept_anomaly`，不在这里执行 Redis/MySQL/MQ 三方核查；核查和状态推进属于后续 D5B/XXL-Job。
  */
 public class MybatisAcceptAnomalyRecordAdapter implements AcceptAnomalyRecordPort {
@@ -29,7 +29,7 @@ public class MybatisAcceptAnomalyRecordAdapter implements AcceptAnomalyRecordPor
     /**
      * 生产构造器，使用 Mapper 的幂等登记 SQL。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.8 接单异常核查表」。同一订单同一异常类型可能因上游
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「14.3 MySQL 表字段」。同一订单同一异常类型可能因上游
      * 重试重复进入登记逻辑，生产路径不能依赖唯一键异常作为幂等控制，否则会把预期重复登记误报成数据库写入故障。
      */
     public MybatisAcceptAnomalyRecordAdapter(

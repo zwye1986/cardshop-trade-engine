@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Redis Key 构造契约测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.6 Redis Lua 入参与 Key 构造」和
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.1 Redis Lua 入参与 Key 构造」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「5. 关键 Redis Key 设计」。
  * 下单 Lua 的 KEYS 顺序是 Java 适配器和 Lua 脚本之间的强契约，任何顺序漂移都可能导致扣错余额或写错订单。
  */

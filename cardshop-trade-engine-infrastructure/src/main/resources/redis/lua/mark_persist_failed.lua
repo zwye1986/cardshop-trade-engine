@@ -1,5 +1,5 @@
 -- mark_persist_failed.lua
--- docs/交行直充业务系统详细设计.md「20.13.8 MySQL 异步落库」
+-- docs/交行直充业务系统详细设计.md「8.3 异步落库 Consumer」
 -- Consumer 落库失败时刷新 Redis 失败原因和下次补偿时间；不能删除 pending，否则订单会失去恢复入口。
 
 -- KEYS

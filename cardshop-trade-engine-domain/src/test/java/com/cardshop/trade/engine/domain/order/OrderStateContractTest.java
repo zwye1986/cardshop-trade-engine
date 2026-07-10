@@ -7,8 +7,8 @@ import org.junit.jupiter.api.Test;
 /**
  * D2 领域状态契约测试。
  *
- * <p>状态定义对应 {@code docs/交行直充业务系统详细设计.md} 的「20.3 错误码与状态码」
- * 和「20.4 领域对象和端口接口」。状态枚举先作为跨模块语言，后续状态机实现必须复用这些枚举。
+ * <p>状态定义对应 {@code docs/交行直充业务系统详细设计.md} 的「5. Domain 状态与业务规则」
+ * 和「5. Domain 状态与业务规则」。状态枚举先作为跨模块语言，后续状态机实现必须复用这些枚举。
  */
 class OrderStateContractTest {
 

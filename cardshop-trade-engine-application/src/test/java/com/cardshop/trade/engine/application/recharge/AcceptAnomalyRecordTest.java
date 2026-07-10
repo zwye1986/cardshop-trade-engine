@@ -11,7 +11,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 /**
  * Redis 接单异常登记请求测试。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
  * 异常上下文是后续核查 Redis/MySQL/MQ 的证据入口，必须允许“字段存在但值未知”的 null 值，
  * 同时不能被调用方在构造后继续修改。
  */

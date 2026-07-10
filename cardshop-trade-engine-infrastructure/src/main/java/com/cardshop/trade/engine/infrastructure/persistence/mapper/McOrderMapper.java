@@ -9,7 +9,7 @@ import org.apache.ibatis.annotations.Mapper;
 /**
  * 旧系统订单事实表 `mc_order` Mapper。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「20.7 MyBatis Mapper 细节」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「8. MySQL/Liquibase 持久化层」。
  * 查询优先使用 MyBatis-Plus LambdaWrapper；幂等插入因需要 `on duplicate key update` 使用单表注解 SQL。
  */
 @Mapper

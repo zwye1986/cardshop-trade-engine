@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.recharge;
 /**
  * Redis Lua 下单受理结果码。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
  * 这里保留 Lua 返回码的领域语义，接口层后续再映射为旧 V1 协议的 code/msg/data。
  */
 public enum AcceptRechargeOrderStatus {

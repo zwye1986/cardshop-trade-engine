@@ -22,8 +22,8 @@ import org.slf4j.LoggerFactory;
 /**
  * 基于 MyBatis 的接单异常自动核查仓储适配器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.8 接单异常核查表」和
- * 「20.13.6 Redis Lua 下单结果」。该适配器负责把 application 层的核查状态推进写回
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「14.3 MySQL 表字段」和
+ * 「6. Redis 受理与缓存层」。该适配器负责把 application 层的核查状态推进写回
  * `recharge_accept_anomaly`；核查决策本身由 {@code AcceptAnomalyAutoCheckService} 完成。
  */
 public class MybatisAcceptAnomalyCheckRepositoryAdapter implements AcceptAnomalyCheckRepositoryPort {

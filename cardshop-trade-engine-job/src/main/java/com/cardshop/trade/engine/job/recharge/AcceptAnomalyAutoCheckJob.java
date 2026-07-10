@@ -7,8 +7,8 @@ import java.util.Objects;
 /**
  * 接单异常自动核查任务入口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」、
- * 「17. 分片补偿与对账任务」和「20.13.6 Redis Lua 下单结果」。该类刻意不直接依赖 XXL-Job：
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」、
+ * 「17. 分片补偿与对账任务」和「6. Redis 受理与缓存层」。该类刻意不直接依赖 XXL-Job：
  * D5B 先沉淀稳定的任务调用边界，后续接入调度框架时只需要把分片参数和批量大小解析后委托到这里，
  * 避免调度框架 API 泄漏到 application 层。
  */

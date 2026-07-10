@@ -13,7 +13,7 @@ import org.springframework.util.StringUtils;
 /**
  * Redis 订单快照查询适配器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.10 查单设计」。D4 阶段 Redis 是异步落库前
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。D4 阶段 Redis 是异步落库前
  * 的短期事实来源，查单和作废入口都先读取该 hash；MySQL 兜底在 D7/D8 落库闭环完成后补充。
  */
 public class RedisRechargeOrderQueryAdapter implements RechargeOrderQueryPort {

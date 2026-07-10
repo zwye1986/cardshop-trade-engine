@@ -9,7 +9,7 @@ import java.util.zip.CRC32;
 /**
  * 直充 Redis Key 构造器。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.6 Redis Lua 入参与 Key 构造」和
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.1 Redis Lua 入参与 Key 构造」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「5. 关键 Redis Key 设计」。下单 Lua 使用固定 KEYS
  * 位置语义，因此所有 key 必须由该类集中构造，避免 Java 适配器、补偿任务和 Lua 脚本分别拼接造成顺序漂移。
  */
@@ -30,7 +30,7 @@ public final class RechargeRedisKeyBuilder {
     }
 
     /**
-     * 构造 `accept_recharge_order.lua` 所需 KEYS，顺序必须与详细设计「20.6」保持一致。
+     * 构造 `accept_recharge_order.lua` 所需 KEYS，顺序必须与详细设计「6.1」保持一致。
      */
     public List<String> acceptKeys(AcceptRechargeOrderCommand command) {
         String orgTag = orgTag(command.orgCode());
@@ -53,7 +53,7 @@ public final class RechargeRedisKeyBuilder {
     /**
      * 构造 `cancel_unconfirmed_accept.lua` 所需 KEYS。
      *
-     * <p>参见详细设计「20.5 下单服务实现细节」第 8-10 步。WAIT 失败回滚必须和 pending/org_index
+     * <p>参见详细设计「4. Application 用例编排层」第 8-10 步。WAIT 失败回滚必须和 pending/org_index
      * 维护在同一个 Lua 中完成，避免 Java 先删 pending 再删 org_index 时丢失新写入商户索引。
      */
     public List<String> cancelUnconfirmedAcceptKeys(AcceptRechargeOrderCommand command) {
@@ -85,7 +85,7 @@ public final class RechargeRedisKeyBuilder {
     /**
      * 构造 `mark_db_persisted.lua` 所需 KEYS。
      *
-     * <p>参见详细设计「20.13.8 MySQL 异步落库」。Consumer 事务提交后必须原子推进 Redis
+     * <p>参见详细设计「8.3 异步落库 Consumer」。Consumer 事务提交后必须原子推进 Redis
      * `persist_status=DB_PERSISTED`，并同时清理 pending 与 org_index，避免补投任务重复投递已经落库的订单。
      */
     public List<String> markDbPersistedKeys(AcceptRechargeOrderCommand command) {
@@ -95,7 +95,7 @@ public final class RechargeRedisKeyBuilder {
     /**
      * 构造 `mark_persist_failed.lua` 所需 KEYS。
      *
-     * <p>参见详细设计「20.13.8 MySQL 异步落库」。落库失败时不能删除 pending，只能刷新失败原因和下次重试时间，
+     * <p>参见详细设计「8.3 异步落库 Consumer」。落库失败时不能删除 pending，只能刷新失败原因和下次重试时间，
      * 让补偿任务继续基于 pending/org_index 扫描。
      */
     public List<String> markPersistFailedKeys(AcceptRechargeOrderCommand command) {
@@ -122,7 +122,7 @@ public final class RechargeRedisKeyBuilder {
     /**
      * 构造查单/作废入口读取的 Redis 订单快照 key。
      *
-     * <p>参见详细设计「20.13.10 查单设计」。接口层只知道商户订单号，因此 Redis 查询必须基于
+     * <p>参见详细设计「3. API/V1 接入层」。接口层只知道商户订单号，因此 Redis 查询必须基于
      * `orgCode + outOrderSn` 定位订单 hash；后续 MySQL 兜底也应沿用同一个业务主键。
      */
     public String orderKey(String orgCode, String outOrderSn) {
@@ -132,7 +132,7 @@ public final class RechargeRedisKeyBuilder {
     /**
      * 构造订单幂等 hash key。
      *
-     * <p>参见详细设计「20.6 Redis Lua 入参与 Key 构造」。MQ 补投任务在 confirm 成功后需要同步推进
+     * <p>参见详细设计「6.1 Redis Lua 入参与 Key 构造」。MQ 补投任务在 confirm 成功后需要同步推进
      * idem hash 中的 {@code persist_status/persist_msg_id}，避免查单或后续异常核查只看到旧状态。
      */
     public String idempotentKey(String orgCode, String outOrderSn) {
@@ -150,6 +150,26 @@ public final class RechargeRedisKeyBuilder {
     }
 
     /**
+     * 构造商户实时余额 hash key。
+     *
+     * <p>参见高可用设计「5. 关键 Redis Key 设计」。缓存修复和余额对账只能通过该方法定位余额基线，
+     * 避免手工拼接 hash tag 造成跨槽或污染其他 profile 前缀。
+     */
+    public String balanceKey(String orgCode) {
+        return key("recharge:" + orgTag(orgCode) + ":balance");
+    }
+
+    /**
+     * 构造商户余额修复锁 key。
+     *
+     * <p>参见高可用设计「17.4 缓存修复任务」。预热/重建余额基线前必须持有该锁，接口线程在锁存在时
+     * fail closed，避免一边修复一边继续写入不完整基线。
+     */
+    public String balanceRepairingLockKey(String orgCode) {
+        return key("recharge:" + orgTag(orgCode) + ":balance:repairing_lock");
+    }
+
+    /**
      * 构造商户级待持久化订单 ZSET。
      */
     public String pendingKey(String orgCode) {
@@ -159,7 +179,7 @@ public final class RechargeRedisKeyBuilder {
     /**
      * 构造 Redis pending 订单级补投 claim 锁。
      *
-     * <p>参见详细设计「20.11 XXL-Job Handler 契约」。补投任务必须按订单获取
+     * <p>参见详细设计「10.1 XXL-Job Handler 契约」。补投任务必须按订单获取
      * {@code persist:claim:{orderId}}，避免多分片或多执行器同时重发同一条持久化 MQ 消息。
      */
     public String persistClaimKey(String orgCode, String orderId) {

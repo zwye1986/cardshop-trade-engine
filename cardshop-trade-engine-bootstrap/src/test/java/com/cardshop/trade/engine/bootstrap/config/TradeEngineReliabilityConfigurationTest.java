@@ -24,6 +24,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcilePo
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcileService;
 import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
 import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairService;
+import com.cardshop.trade.engine.application.recharge.RechargeCompensationBatchResult;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerSettings;
 import com.cardshop.trade.engine.application.recharge.RechargePersistMqRepublishService;
@@ -46,17 +47,20 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.MessageListenerContainer;
 import org.springframework.amqp.rabbit.listener.RabbitListenerContainerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 
 /**
  * 交易可靠性补偿服务装配测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 Redis HA Guard」。只有异常核查仓储和订单查询端口
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6.3 Redis HA Guard 与状态未知窗口」。只有异常核查仓储和订单查询端口
  * 同时存在时，才装配自动核查服务。
  */
 class TradeEngineReliabilityConfigurationTest {
@@ -114,6 +118,41 @@ class TradeEngineReliabilityConfigurationTest {
     }
 
     @Test
+    void d12CompensationServicesResolveLatePortsWhenJobRuns() {
+        TradeEngineReliabilityConfiguration configuration = new TradeEngineReliabilityConfiguration();
+        MutableObjectProvider<RechargeBalanceDeltaFlushPort> deltaPortProvider = new MutableObjectProvider<>();
+        MutableObjectProvider<RechargeBalanceReconcilePort> reconcilePortProvider = new MutableObjectProvider<>();
+        MutableObjectProvider<RechargeCacheRepairPort> cacheRepairPortProvider = new MutableObjectProvider<>();
+
+        /*
+         * 参见高可用设计「17.2 分片规则」和「17.5 余额对账任务」。test188 dev 的 BAL-001
+         * 现场证明：bootstrap service 构造时如果过早解析 ObjectProvider，会把 noop 端口固化到
+         * 后续所有人工 Job 中，表现为 MySQL 已有到期 BALANCE_DELTA_FLUSH 但 runOnce scanned=0。
+         * 这个回归测试先在 provider 为空时构造 service，再补入真实端口，要求执行时能晚绑定真实端口。
+         */
+        RechargeBalanceDeltaFlushService deltaService =
+                configuration.rechargeBalanceDeltaFlushService(deltaPortProvider);
+        RechargeBalanceReconcileService reconcileService =
+                configuration.rechargeBalanceReconcileService(reconcilePortProvider);
+        RechargeCacheRepairService cacheRepairService =
+                configuration.rechargeCacheRepairService(cacheRepairPortProvider);
+
+        deltaPortProvider.set((shardTotal, shardIndex, limit, workerId) ->
+                new RechargeCompensationBatchResult(1, 1, 0, 0));
+        reconcilePortProvider.set((shardTotal, shardIndex, limit, workerId) ->
+                new RechargeCompensationBatchResult(1, 0, 1, 0));
+        cacheRepairPortProvider.set((shardTotal, shardIndex, limit, workerId) ->
+                new RechargeCompensationBatchResult(1, 1, 0, 0));
+
+        assertThat(deltaService.flushDue(128, 92, 1, "BAL-001"))
+                .isEqualTo(new RechargeCompensationBatchResult(1, 1, 0, 0));
+        assertThat(reconcileService.reconcileDue(128, 53, 1, "BAL-002"))
+                .isEqualTo(new RechargeCompensationBatchResult(1, 0, 1, 0));
+        assertThat(cacheRepairService.repairDue(128, 53, 1, "CACHE-001"))
+                .isEqualTo(new RechargeCompensationBatchResult(1, 1, 0, 0));
+    }
+
+    @Test
     void registersOutboxPublishJobWhenOutboxWorkerServiceIsPresent() {
         contextRunner
                 .withBean(RechargeOutboxWorkerService.class, TradeEngineReliabilityConfigurationTest::outboxWorkerService)
@@ -143,6 +182,45 @@ class TradeEngineReliabilityConfigurationTest {
         @Override
         public java.util.concurrent.CompletionStage<PersistMessagePublishResult> publish(PersistTradeOrderMessage message) {
             return CompletableFuture.completedFuture(PersistMessagePublishResult.confirmed(message.messageId(), 1));
+        }
+    }
+
+    private static final class MutableObjectProvider<T> implements ObjectProvider<T> {
+
+        private final AtomicReference<T> value = new AtomicReference<>();
+
+        void set(T value) {
+            this.value.set(value);
+        }
+
+        @Override
+        public T getObject(Object... args) {
+            return getObject();
+        }
+
+        @Override
+        public T getObject() {
+            T current = value.get();
+            if (current == null) {
+                throw new org.springframework.beans.factory.NoSuchBeanDefinitionException(Object.class);
+            }
+            return current;
+        }
+
+        @Override
+        public T getIfAvailable() {
+            return value.get();
+        }
+
+        @Override
+        public T getIfUnique() {
+            return value.get();
+        }
+
+        @Override
+        public Stream<T> stream() {
+            T current = value.get();
+            return current == null ? Stream.empty() : Stream.of(current);
         }
     }
 

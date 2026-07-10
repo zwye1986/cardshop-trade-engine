@@ -9,7 +9,7 @@ import java.time.LocalDateTime;
 /**
  * Redis 受理状态未知异常表 `recharge_accept_anomaly`。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「20.13.6 Redis Lua 下单结果」。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「6. Redis 受理与缓存层」。
  * 该表不是订单事实表，只记录 WAIT 失败且无法确认 Redis 脚本结果等需要核查的窗口。
  */
 @TableName("recharge_accept_anomaly")

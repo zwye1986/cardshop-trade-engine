@@ -26,8 +26,8 @@ import org.springframework.context.annotation.Bean;
 /**
  * RabbitMQ listener 后置自动配置测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.9 RabbitMQ 声明契约」和
- * 「20.13.8 异步落库 Consumer」。真实 dev/test/prod 中 {@link RabbitTemplate} 来自 Spring Boot
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「7. RabbitMQ 持久化消息层」和
+ * 「8.3 异步落库 Consumer」。真实 dev/test/prod 中 {@link RabbitTemplate} 来自 Spring Boot
  * AMQP 自动配置，业务侧 {@code @Configuration} 过早使用 {@code @ConditionalOnBean(RabbitTemplate.class)}
  * 会在 Rabbit 自动配置注册前被判定为不满足，最终表现为应用健康但 RabbitMQ 管理端没有 connection/consumer。
  * 这里用后置自动配置模拟该顺序，防止 listener 再次被静默跳过。

@@ -29,7 +29,7 @@ public class LegacyFormatRechargeOrderIdGenerator implements RechargeOrderIdGene
     @Override
     public String nextOrderId() {
         String prefix = LocalDateTime.now(clock).format(ORDER_SECOND);
-        // TODO(D5): 接入 Redis `order:order_id:{yyyyMMdd}` 日维度递增序列，严格复刻旧卡管 generateOrderSn；参见 docs/交行直充业务系统详细设计.md「20.13.2 V1 请求 DTO 和字段来源」。
+        // TODO(D5): 接入 Redis `order:order_id:{yyyyMMdd}` 日维度递增序列，严格复刻旧卡管 generateOrderSn；参见 docs/交行直充业务系统详细设计.md「14.1 V1 DTO 字段」。
         return prefix + "%010d".formatted(Math.floorMod(RANDOM.nextLong(), 10_000_000_000L));
     }
 }

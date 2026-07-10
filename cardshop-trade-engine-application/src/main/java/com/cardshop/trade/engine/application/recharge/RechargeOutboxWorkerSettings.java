@@ -6,7 +6,7 @@ import java.util.Objects;
 /**
  * outbox 履约 Worker 的租约、重试和限频参数。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「20.13.9 派单 Outbox」和
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和
  * {@code docs/交行直充业务系统高可用方案设计.md}「6.6 新增表」。这些参数只影响后台推进节奏，
  * 不改变 Redis 接单和 MySQL 最终事实语义。
  *

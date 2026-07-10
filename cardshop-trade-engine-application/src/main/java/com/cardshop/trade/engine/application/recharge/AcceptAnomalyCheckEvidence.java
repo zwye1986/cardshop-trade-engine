@@ -7,7 +7,7 @@ import java.util.Map;
 /**
  * Redis 接单异常核查证据。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
  * 三个 Map 会分别写入 `redis_check_result`、`mysql_check_result`、`mq_check_result`。
  * 当前 D5B 只完成读侧可判定的最小闭环，后续 D7/D8 接入真实 MQ confirm/Consumer 后可扩展 MQ 证据字段。
  *

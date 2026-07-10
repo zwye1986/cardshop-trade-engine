@@ -5,7 +5,7 @@ import java.util.concurrent.CompletionStage;
 /**
  * Redis-first 下单受理端口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
  * application 层只依赖该端口表达“把订单原子受理到 Redis”的能力，不感知 Spring Data Redis、
  * Lua 脚本或 Redis 拓扑细节，保证 Redis 适配器可独立测试和替换。
  */

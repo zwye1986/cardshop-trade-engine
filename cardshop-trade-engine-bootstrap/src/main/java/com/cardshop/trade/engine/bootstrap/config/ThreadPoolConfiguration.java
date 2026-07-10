@@ -12,7 +12,7 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 /**
  * 交易引擎线程池配置。
  *
- * <p>线程池隔离策略来自 {@code docs/交行直充业务系统详细设计.md} 的「7.4 核心配置项」
+ * <p>线程池隔离策略来自 {@code docs/交行直充业务系统详细设计.md} 的「11. 配置中心、部署与健康检查」
  * 和 {@code docs/交行直充业务系统高可用方案设计.md} 的「3.7 线程池与隔离」。
  * 数据库落库、MQ Confirm、供应商 I/O 分别使用独立执行器，避免单个外部依赖阻塞拖垮整条交易链路。
  */
@@ -41,7 +41,7 @@ public class ThreadPoolConfiguration {
     /**
      * MQ Publisher Confirm 执行器。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「10.3 Publisher Confirm」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「7. RabbitMQ 持久化消息层」。
      */
     @Bean
     @Qualifier("tradeMqConfirmTaskExecutor")
@@ -57,7 +57,7 @@ public class ThreadPoolConfiguration {
     /**
      * 外部供应商 I/O 执行器。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「20.13.9 派单 Outbox」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「9.1 派单 Outbox」。
      */
     @Bean
     @Qualifier("tradeSupplierIoTaskExecutor")

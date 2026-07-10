@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.application.recharge;
 /**
  * Redis 接单状态未知异常登记端口。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.13.6 Redis Lua 下单结果」。下单用例只知道
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。下单用例只知道
  * “需要登记异常”，不关心异常最终写入 MySQL、日志系统还是后续人工队列；这样 application/API 层不会反向依赖
  * MyBatis 或具体表结构。实现方应保证失败可观测，调用方会把登记失败视为旁路失败，不改变接口返回。
  */

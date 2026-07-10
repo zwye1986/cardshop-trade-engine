@@ -18,8 +18,8 @@ import org.junit.jupiter.api.Test;
 /**
  * 接单异常自动核查 MyBatis 仓储适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「20.8 接单异常核查表」和
- * 「20.13.6 Redis Lua 下单结果」。该测试只验证 application 端口到 `recharge_accept_anomaly` 行的字段映射，
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「14.3 MySQL 表字段」和
+ * 「6. Redis 受理与缓存层」。该测试只验证 application 端口到 `recharge_accept_anomaly` 行的字段映射，
  * 不启动真实 MyBatis 容器。
  */
 class MybatisAcceptAnomalyCheckRepositoryAdapterTest {
