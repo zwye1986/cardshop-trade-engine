@@ -32,6 +32,7 @@ public class RechargeOutboxWorkerService {
     private final RechargeOutboxPort outboxPort;
     private final RechargeFulfillmentOrderPort orderPort;
     private final RechargeSupplierGatewayPort supplierGatewayPort;
+    private final SupplierQueryOutboxPort supplierQueryOutboxPort;
     private final DirectRechargeFrequencyPort frequencyPort;
     private final BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort;
     private final BalanceReservationReleasePort balanceReservationReleasePort;
@@ -40,6 +41,12 @@ public class RechargeOutboxWorkerService {
     private final Clock clock;
     private final RechargeOutboxWorkerSettings settings;
 
+    /**
+     * 保留旧构造签名供已有 slice/unit test 使用；真实履约 Bean 必须注入查单 outbox 端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」：如果该兼容构造器被用于真实
+     * 运行时，供应商处理中会显式失败并进入派单事件重试，不会静默丢失查单事件。
+     */
     public RechargeOutboxWorkerService(
             RechargeOutboxPort outboxPort,
             RechargeFulfillmentOrderPort orderPort,
@@ -51,9 +58,39 @@ public class RechargeOutboxWorkerService {
             MerchantNotifyPayloadSigner notifyPayloadSigner,
             Clock clock,
             RechargeOutboxWorkerSettings settings) {
+        this(
+                outboxPort,
+                orderPort,
+                supplierGatewayPort,
+                command -> {
+                    throw new IllegalStateException("SupplierQueryOutboxPort is required for processing orders");
+                },
+                frequencyPort,
+                balanceDeltaFlushOutboxPort,
+                balanceReservationReleasePort,
+                notifyTaskPort,
+                notifyPayloadSigner,
+                clock,
+                settings);
+    }
+
+    public RechargeOutboxWorkerService(
+            RechargeOutboxPort outboxPort,
+            RechargeFulfillmentOrderPort orderPort,
+            RechargeSupplierGatewayPort supplierGatewayPort,
+            SupplierQueryOutboxPort supplierQueryOutboxPort,
+            DirectRechargeFrequencyPort frequencyPort,
+            BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
+            BalanceReservationReleasePort balanceReservationReleasePort,
+            RechargeNotifyTaskPort notifyTaskPort,
+            MerchantNotifyPayloadSigner notifyPayloadSigner,
+            Clock clock,
+            RechargeOutboxWorkerSettings settings) {
         this.outboxPort = Objects.requireNonNull(outboxPort, "outboxPort must not be null");
         this.orderPort = Objects.requireNonNull(orderPort, "orderPort must not be null");
         this.supplierGatewayPort = Objects.requireNonNull(supplierGatewayPort, "supplierGatewayPort must not be null");
+        this.supplierQueryOutboxPort = Objects.requireNonNull(
+                supplierQueryOutboxPort, "supplierQueryOutboxPort must not be null");
         this.frequencyPort = Objects.requireNonNull(frequencyPort, "frequencyPort must not be null");
         this.balanceDeltaFlushOutboxPort = Objects.requireNonNull(
                 balanceDeltaFlushOutboxPort, "balanceDeltaFlushOutboxPort must not be null");
@@ -94,6 +131,7 @@ public class RechargeOutboxWorkerService {
         try {
             return switch (event.eventType()) {
                 case SUPPLIER_DISPATCH -> handleSupplierDispatch(event);
+                case SUPPLIER_QUERY -> handleSupplierQuery(event);
                 case INVALID_ORDER -> handleInvalidOrder(event);
                 default -> {
                     String reason = "unsupported outbox event type: " + event.eventType();
@@ -118,6 +156,13 @@ public class RechargeOutboxWorkerService {
         if (!order.dispatchable()) {
             if (order.terminalFailureAwaitingBalanceRelease()) {
                 return completeTerminalBalanceRelease(event, order, "供应商失败终态补偿释放预扣");
+            }
+            if (order.orderStatus() == ORDER_STATUS_SUPPLIER_ACCEPTED) {
+                /*
+                 * 派单返回处理中后，如果应用在“查单事件插入”和“派单事件成功回写”之间宕机，
+                 * 恢复时订单已是供应商受理态。这里再次按稳定 event_id 补写查单事件，避免该窗口丢失后续终态推进。
+                 */
+                enqueueSupplierQuery(event, order);
             }
             outboxPort.markSuccess(event);
             return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
@@ -191,6 +236,7 @@ public class RechargeOutboxWorkerService {
                         null,
                         null,
                         "供应商已受理，等待最终结果"));
+                enqueueSupplierQuery(event, order);
                 outboxPort.markSuccess(event);
                 return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
             }
@@ -226,6 +272,122 @@ public class RechargeOutboxWorkerService {
                 return RechargeOutboxBatchResult.Outcome.FAILED;
             }
             default -> throw new IllegalStateException("unsupported supplier status: " + response.status());
+        }
+    }
+
+    /**
+     * 处理供应商处理中订单的异步查单事件。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和
+     * {@code docs/交行直充业务系统高可用方案设计.md}「17.1 任务清单」。查单仍返回处理中或传输层不可确认
+     * 结果时只退避当前查单事件；只有供应商明确给出成功/失败，才复用派单终态副作用，包括回调、频控释放和余额释放。
+     */
+    private RechargeOutboxBatchResult.Outcome handleSupplierQuery(RechargeOutboxEvent event) {
+        RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
+        if (order == null) {
+            markFailedOrManualRequired(event, "order not found for supplier query", settings.retryBackoff());
+            return RechargeOutboxBatchResult.Outcome.FAILED;
+        }
+        if (order.terminalFailureAwaitingBalanceRelease()) {
+            createOrderStatusNotifyTask(order, LegacyOrderStatusCode.FAILED);
+            return completeTerminalBalanceRelease(event, order, "供应商查单终态补偿释放预扣");
+        }
+        if (order.orderStatus() == ORDER_STATUS_FAILED) {
+            createOrderStatusNotifyTask(order, LegacyOrderStatusCode.FAILED);
+            frequencyPort.releaseIfOwned(
+                    order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
+            outboxPort.markSuccess(event);
+            return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+        }
+        if (order.orderStatus() == ORDER_STATUS_SUCCESS) {
+            // 终态已写入但回调或 outbox 成功回写可能尚未完成，依赖 notify task/event_id 幂等重放副作用。
+            createOrderStatusNotifyTask(order, LegacyOrderStatusCode.SUCCESS);
+            frequencyPort.releaseIfOwned(
+                    order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
+            outboxPort.markSuccess(event);
+            return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+        }
+        if (order.orderStatus() != ORDER_STATUS_SUPPLIER_ACCEPTED) {
+            // 订单已经由其他重试或人工流程推进终态，当前查单事件只需关闭，不能重复调用供应商。
+            outboxPort.markSuccess(event);
+            return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+        }
+
+        SupplierQueryGatewayRequest request = queryRequest(event, order);
+        long flowId = orderPort.insertSupplierFlowStart(new SupplierFlowStartCommand(
+                order.orderId(),
+                order.outOrderSn(),
+                order.supplierChannel(),
+                "new",
+                "供应商查单中",
+                request.supplierRequestId(),
+                queryRequestPayload(request)));
+        SupplierGatewayResponse response = supplierGatewayPort.query(request);
+        orderPort.updateSupplierFlow(flowUpdate(flowId, response));
+        return finishSupplierQuery(event, order, flowId, response);
+    }
+
+    private RechargeOutboxBatchResult.Outcome finishSupplierQuery(
+            RechargeOutboxEvent event,
+            RechargeFulfillmentOrder order,
+            long flowId,
+            SupplierGatewayResponse response) {
+        switch (response.status()) {
+            case SUCCESS -> {
+                orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
+                        order.orderId(),
+                        FulfillmentDispatchStatus.SUCCESS,
+                        ORDER_STATUS_SUCCESS,
+                        DATA_STATUS_PROCESSED,
+                        flowId,
+                        response.responseCode(),
+                        null,
+                        "供应商查单确认成功"));
+                createOrderStatusNotifyTask(order, LegacyOrderStatusCode.SUCCESS);
+                frequencyPort.releaseIfOwned(
+                        order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
+                outboxPort.markSuccess(event);
+                return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+            }
+            case FAILED -> {
+                orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
+                        order.orderId(),
+                        FulfillmentDispatchStatus.FAILED,
+                        ORDER_STATUS_FAILED,
+                        DATA_STATUS_PROCESSED,
+                        flowId,
+                        response.responseCode(),
+                        response.responseMessage(),
+                        response.responseMessage()));
+                createOrderStatusNotifyTask(order, LegacyOrderStatusCode.FAILED);
+                if (!releaseBalanceReservationAndEnqueueDelta(event, order, response.responseMessage())) {
+                    frequencyPort.releaseIfOwned(
+                            order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
+                    return RechargeOutboxBatchResult.Outcome.FAILED;
+                }
+                frequencyPort.releaseIfOwned(
+                        order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
+                outboxPort.markSuccess(event);
+                return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+            }
+            case PROCESSING -> {
+                orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
+                        order.orderId(),
+                        FulfillmentDispatchStatus.SUPPLIER_ACCEPTED,
+                        ORDER_STATUS_SUPPLIER_ACCEPTED,
+                        DATA_STATUS_PROCESSING,
+                        flowId,
+                        response.responseCode(),
+                        response.responseMessage(),
+                        "供应商仍在处理中"));
+                markFailedOrManualRequired(event, response.responseMessage(), settings.retryBackoff());
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
+            case RETRYABLE_FAILED -> {
+                markFailedOrManualRequired(event, response.responseMessage(), settings.retryBackoff());
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
+            default -> throw new IllegalStateException("unsupported supplier query status: " + response.status());
         }
     }
 
@@ -284,6 +446,8 @@ public class RechargeOutboxWorkerService {
         if (!releaseBalanceReservationAndEnqueueDelta(event, order, reason)) {
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
+        frequencyPort.releaseIfOwned(
+                order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
         outboxPort.markSuccess(event);
         return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
     }
@@ -408,6 +572,32 @@ public class RechargeOutboxWorkerService {
                 Map.of("outbox_payload", event.payload()));
     }
 
+    private static SupplierQueryGatewayRequest queryRequest(RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
+        return new SupplierQueryGatewayRequest(
+                event.eventId(),
+                order.orderId(),
+                order.outOrderSn(),
+                order.orgCode(),
+                order.account(),
+                order.supplierChannel(),
+                Map.of("outbox_payload", event.payload()));
+    }
+
+    private void enqueueSupplierQuery(RechargeOutboxEvent dispatchEvent, RechargeFulfillmentOrder order) {
+        supplierQueryOutboxPort.enqueueSupplierQuery(new SupplierQueryOutboxCommand(
+                supplierQueryEventId(order.orderId()),
+                order.orgCode(),
+                order.orderId(),
+                order.outOrderSn(),
+                order.account(),
+                order.supplierChannel(),
+                dispatchEvent.payload()));
+    }
+
+    private static String supplierQueryEventId(String orderId) {
+        return "supplier-query-" + orderId;
+    }
+
     private static Map<String, Object> requestPayload(SupplierDispatchGatewayRequest request) {
         return Map.ofEntries(
                 Map.entry("supplier_request_id", request.supplierRequestId()),
@@ -419,6 +609,16 @@ public class RechargeOutboxWorkerService {
                 Map.entry("selected_product_id", request.selectedProductId()),
                 Map.entry("supplier_channel", request.supplierChannel()),
                 Map.entry("order_price", request.orderPrice()));
+    }
+
+    private static Map<String, Object> queryRequestPayload(SupplierQueryGatewayRequest request) {
+        return Map.ofEntries(
+                Map.entry("supplier_request_id", request.supplierRequestId()),
+                Map.entry("order_id", request.orderId()),
+                Map.entry("out_order_sn", request.outOrderSn()),
+                Map.entry("org_code", request.orgCode()),
+                Map.entry("account", request.account()),
+                Map.entry("supplier_channel", request.supplierChannel()));
     }
 
     private static SupplierFlowUpdateCommand flowUpdate(long flowId, SupplierGatewayResponse response) {

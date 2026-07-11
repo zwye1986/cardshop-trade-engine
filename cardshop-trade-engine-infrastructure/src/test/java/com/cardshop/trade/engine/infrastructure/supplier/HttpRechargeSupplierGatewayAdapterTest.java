@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.cardshop.trade.engine.application.recharge.SupplierDispatchGatewayRequest;
 import com.cardshop.trade.engine.application.recharge.SupplierGatewayStatus;
 import com.cardshop.trade.engine.application.recharge.SupplierInvalidGatewayRequest;
+import com.cardshop.trade.engine.application.recharge.SupplierQueryGatewayRequest;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -47,6 +48,8 @@ class HttpRechargeSupplierGatewayAdapterTest {
                 "{\"status\":\"SUCCESS\",\"code\":\"0\",\"message\":\"ok\",\"supplier_order_id\":\"SUP-1\"}"));
         server.createContext("/dispatch-5xx", exchange -> respond(exchange, 500,
                 "{\"status\":\"ERROR\",\"code\":\"E_500\",\"message\":\"temporary unavailable\"}"));
+        server.createContext("/query", exchange -> respond(exchange, 200,
+                "{\"status\":\"SUCCESS\",\"code\":\"0\",\"message\":\"query success\",\"supplier_order_id\":\"SUP-Q-1\"}"));
         server.createContext("/invalid", exchange -> respond(exchange, 200,
                 "{\"status\":\"PROCESSING\",\"code\":\"202\",\"message\":\"invalid accepted\",\"supplier_order_id\":\"SUP-X\"}"));
         server.start();
@@ -133,13 +136,59 @@ class HttpRechargeSupplierGatewayAdapterTest {
         });
     }
 
+    @Test
+    void queryPostsOrderIdentityToConfiguredQueryEndpointAndParsesSuccessResponse() {
+        HttpRechargeSupplierGatewayAdapter adapter = adapter("/dispatch", "/query", "/invalid");
+
+        var response = adapter.query(new SupplierQueryGatewayRequest(
+                "supplier-query-ORDER-1",
+                "ORDER-1",
+                "OUT-1",
+                "A36",
+                "13800138000",
+                "FNK_CGS_BX",
+                Map.of("outbox_payload", "{}")));
+
+        assertThat(response.status()).isEqualTo(SupplierGatewayStatus.SUCCESS);
+        assertThat(response.supplierOrderId()).isEqualTo("SUP-Q-1");
+        assertThat(requestBodies).singleElement().satisfies(body -> {
+            assertThat(body).contains("\"supplier_request_id\":\"supplier-query-ORDER-1\"");
+            assertThat(body).contains("\"order_id\":\"ORDER-1\"");
+            assertThat(body).contains("\"out_order_sn\":\"OUT-1\"");
+            assertThat(body).contains("\"supplier_channel\":\"FNK_CGS_BX\"");
+        });
+    }
+
+    @Test
+    void queryWithoutConfiguredUrlRemainsRetryableAndDoesNotLookLikeSupplierFailure() {
+        HttpRechargeSupplierGatewayAdapter adapter = adapter();
+
+        var response = adapter.query(new SupplierQueryGatewayRequest(
+                "supplier-query-ORDER-1",
+                "ORDER-1",
+                "OUT-1",
+                "A36",
+                "13800138000",
+                "FNK_CGS_BX",
+                Map.of()));
+
+        assertThat(response.status()).isEqualTo(SupplierGatewayStatus.RETRYABLE_FAILED);
+        assertThat(response.responseCode()).isEqualTo("SUPPLIER_QUERY_NOT_CONFIGURED");
+    }
+
     private HttpRechargeSupplierGatewayAdapter adapter() {
         return adapter("/dispatch", "/invalid");
     }
 
     private HttpRechargeSupplierGatewayAdapter adapter(String dispatchPath, String invalidPath) {
+        return adapter(dispatchPath, "", invalidPath);
+    }
+
+    private HttpRechargeSupplierGatewayAdapter adapter(
+            String dispatchPath, String queryPath, String invalidPath) {
         var endpoint = new HttpRechargeSupplierGatewayAdapter.SupplierChannelEndpoint(
                 endpoint(dispatchPath).toString(),
+                queryPath.isBlank() ? "" : endpoint(queryPath).toString(),
                 endpoint(invalidPath).toString(),
                 Duration.ofSeconds(2));
         return new HttpRechargeSupplierGatewayAdapter(

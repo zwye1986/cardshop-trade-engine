@@ -21,6 +21,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePo
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
 import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
+import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
@@ -449,6 +450,7 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(RechargeOutboxPort.class, () -> interfaceProxy(RechargeOutboxPort.class))
                 .withBean(RechargeFulfillmentOrderPort.class, () -> interfaceProxy(RechargeFulfillmentOrderPort.class))
                 .withBean(RechargeSupplierGatewayPort.class, () -> interfaceProxy(RechargeSupplierGatewayPort.class))
+                .withBean(SupplierQueryOutboxPort.class, () -> interfaceProxy(SupplierQueryOutboxPort.class))
                 .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
                 .withBean(BalanceDeltaFlushOutboxPort.class, BalanceDeltaFlushOutboxPort::noop)
                 .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
@@ -466,6 +468,7 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(RechargeOutboxPort.class, () -> interfaceProxy(RechargeOutboxPort.class))
                 .withBean(RechargeFulfillmentOrderPort.class, () -> interfaceProxy(RechargeFulfillmentOrderPort.class))
                 .withBean(RechargeSupplierGatewayPort.class, () -> interfaceProxy(RechargeSupplierGatewayPort.class))
+                .withBean(SupplierQueryOutboxPort.class, () -> interfaceProxy(SupplierQueryOutboxPort.class))
                 .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
                 .withBean(BalanceDeltaFlushOutboxPort.class, BalanceDeltaFlushOutboxPort::noop)
                 .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
