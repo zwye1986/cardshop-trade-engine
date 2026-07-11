@@ -61,6 +61,7 @@ cp "$JAR_PATH" "$RELEASE_DIR/app/"
 cp "$ROOT_DIR/deploy/bin/start.sh" "$RELEASE_DIR/bin/start.sh"
 cp "$ROOT_DIR/deploy/config/env.example" "$RELEASE_DIR/config/env.example"
 cp "$ROOT_DIR/deploy/nacos/cardshop-trade-engine-dev.example.yaml" "$RELEASE_DIR/nacos/cardshop-trade-engine-dev.example.yaml"
+cp -R "$ROOT_DIR/deploy/monitoring" "$RELEASE_DIR/monitoring"
 cp "$ROOT_DIR/deploy/STARTUP.md" "$RELEASE_DIR/STARTUP.md"
 chmod +x "$RELEASE_DIR/bin/start.sh"
 
