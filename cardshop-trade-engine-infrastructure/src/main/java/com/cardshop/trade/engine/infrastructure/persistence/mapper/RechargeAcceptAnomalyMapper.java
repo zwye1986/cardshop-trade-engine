@@ -7,6 +7,7 @@ import com.cardshop.trade.engine.domain.order.AcceptAnomalyStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeAcceptAnomalyDO;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 
@@ -60,6 +61,23 @@ public interface RechargeAcceptAnomalyMapper extends BaseMapper<RechargeAcceptAn
               updated_at = values(updated_at)
             """)
     int insertOrRefreshByAnomalyId(RechargeAcceptAnomalyDO row);
+
+    /**
+     * 汇总未关闭接单异常数量。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。监控只按异常类型和状态聚合，
+     * 不暴露订单号、商户订单号或 request_hash。
+     */
+    @org.apache.ibatis.annotations.Select("""
+            select
+              anomaly_type,
+              status,
+              count(*) as count
+            from recharge_accept_anomaly
+            where status in ('INIT', 'CHECKING', 'MANUAL_REQUIRED')
+            group by anomaly_type, status
+            """)
+    List<Map<String, Object>> selectObservabilityOpenMetrics();
 
     /**
      * 按商户订单号读取仍需自动或人工核查的异常记录。

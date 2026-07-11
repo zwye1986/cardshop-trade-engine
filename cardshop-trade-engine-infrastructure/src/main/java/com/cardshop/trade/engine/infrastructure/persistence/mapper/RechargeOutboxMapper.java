@@ -8,6 +8,7 @@ import com.cardshop.trade.engine.domain.order.TaskStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -88,6 +89,24 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
               and status <> 'SUCCESS'
             """)
     Long sumUnfinishedBalanceDelta(@Param("orgCode") String orgCode);
+
+    /**
+     * 汇总 outbox 未完成事件数量和最大滞留时间。
+     *
+     * <p>参见 {@code docs/开发进度.md}「5.1 监控告警最小闭环执行边界」。该 SQL 只返回低基数
+     * event_type/status 聚合值，不返回订单号或商户号，避免业务监控制造高基数标签。
+     */
+    @Select("""
+            select
+              event_type,
+              status,
+              count(*) as count,
+              coalesce(timestampdiff(second, min(coalesce(created_at, updated_at, #{now})), #{now}), 0) as max_age_seconds
+            from recharge_outbox
+            where status in ('INIT', 'PROCESSING', 'FAILED', 'MANUAL_REQUIRED')
+            group by event_type, status
+            """)
+    List<Map<String, Object>> selectObservabilityOutboxMetrics(@Param("now") LocalDateTime now);
 
     /**
      * 扫描到期事件和租约失效事件。

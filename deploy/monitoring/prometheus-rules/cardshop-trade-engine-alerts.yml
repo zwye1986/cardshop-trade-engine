@@ -1,0 +1,175 @@
+# cardshop-trade-engine 业务监控告警模板。
+#
+# 口径说明：
+# 1. 本文件只固化 Prometheus/Alertmanager 可导入的规则模板，不代表规则已经发布到真实告警平台。
+# 2. 应用侧指标来自 /actuator/prometheus，标签必须保持低基数；不要把订单号、商户订单号、手机号、账号或密钥加入 label。
+# 3. RabbitMQ depth 仍通过 RabbitMQ management Prometheus/exporter 或受控运维探针采集；不要把 management 凭据放进业务应用。
+# 4. dev/test/prod 的 MySQL 事实仍按设计与旧卡管系统共享库/共享表口径执行，本文件不引入独立 schema。
+
+groups:
+  - name: cardshop-trade-engine-business
+    interval: 30s
+    rules:
+      - alert: CardshopTradeRedisPendingDue
+        expr: sum by (environment) (trade_engine_redis_pending_due{environment!=""}) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: cardshop-trade-engine
+          scope: redis-pending
+        annotations:
+          summary: "Redis pending 已到期但未落库（{{ $labels.environment }}）"
+          description: "trade_engine_redis_pending_due 持续大于 0，说明存在到期待补投订单。先确认 RabbitMQ 主队列/retry/DLQ、Consumer 和补投 job，再按固定人工入口或 XXL-Job 推进。"
+          runbook: "deploy/monitoring/README.md#redis-pending-告警"
+
+      - alert: CardshopTradeRedisPendingTooOld
+        expr: max by (environment) (trade_engine_redis_pending_max_age_seconds{environment!=""}) > 300
+        for: 1m
+        labels:
+          severity: critical
+          service: cardshop-trade-engine
+          scope: redis-pending
+        annotations:
+          summary: "Redis pending 超过保护窗口（{{ $labels.environment }}）"
+          description: "最老 Redis pending 已超过 300 秒，订单可能长时间未成为 MySQL 最终事实。应暂停扩大流量，核查补投、RabbitMQ confirm/Consumer、MySQL 写入和 Redis pending org_index。"
+          runbook: "deploy/monitoring/README.md#redis-pending-告警"
+
+      - alert: CardshopTradeOutboxFailedOrManual
+        expr: sum by (environment, status, event_type) (trade_engine_outbox_pending{environment!="",status=~"FAILED|MANUAL_REQUIRED"}) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: cardshop-trade-engine
+          scope: outbox
+        annotations:
+          summary: "Outbox 存在失败或待人工事件（{{ $labels.environment }}）"
+          description: "event_type={{ $labels.event_type }} status={{ $labels.status }} 存在未关闭事件。检查 supplier/notify/balance/cache 对应固定 job，必要时人工确认后重试或关闭。"
+          runbook: "deploy/monitoring/README.md#outbox-告警"
+
+      - alert: CardshopTradeOutboxTooOld
+        expr: max by (environment, status, event_type) (trade_engine_outbox_max_age_seconds{environment!="",status!="SUCCESS"}) > 600
+        for: 5m
+        labels:
+          severity: warning
+          service: cardshop-trade-engine
+          scope: outbox
+        annotations:
+          summary: "Outbox 堆积超过 10 分钟（{{ $labels.environment }}）"
+          description: "event_type={{ $labels.event_type }} status={{ $labels.status }} 的最老事件超过 600 秒。核查 worker/XXL-Job 是否运行、共享旧库下是否存在 dev/test worker 抢占样本、下游供应商/回调是否异常。"
+          runbook: "deploy/monitoring/README.md#outbox-告警"
+
+      - alert: CardshopTradeAcceptAnomalyOpen
+        expr: sum by (environment, status, anomaly_type) (trade_engine_accept_anomaly_open{environment!="",status=~"INIT|CHECKING|MANUAL_REQUIRED"}) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: cardshop-trade-engine
+          scope: accept-anomaly
+        annotations:
+          summary: "Redis 接单异常待核查（{{ $labels.environment }}）"
+          description: "anomaly_type={{ $labels.anomaly_type }} status={{ $labels.status }} 存在未关闭异常。该类异常可能对应 Lua timeout、Redis BUSY 或状态未知，必须核对 Redis/MQ/MySQL 三侧事实。"
+          runbook: "deploy/monitoring/README.md#接单异常告警"
+
+      - alert: CardshopTradeBalanceDiffDetected
+        expr: max by (environment) (trade_engine_balance_reconcile_diff_orgs{environment!=""}) > 0
+        for: 3m
+        labels:
+          severity: critical
+          service: cardshop-trade-engine
+          scope: balance
+        annotations:
+          summary: "余额对账发现差异商户（{{ $labels.environment }}）"
+          description: "余额对账差异商户数持续非 0。先冻结扩大切流，核查 mc_ext_depart.balance、Redis available、未完成 BALANCE_DELTA_FLUSH 和 balance owner。"
+          runbook: "deploy/monitoring/README.md#余额对账告警"
+
+      - alert: CardshopTradeRedisWaitNotConfirmed
+        expr: sum by (environment, result, fail_code) (increase(trade_engine_redis_wait_total{environment!="",result!="confirmed"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: cardshop-trade-engine
+          scope: redis-wait
+        annotations:
+          summary: "Redis WAIT 未确认（{{ $labels.environment }}）"
+          description: "result={{ $labels.result }} fail_code={{ $labels.fail_code }} 在 5 分钟内出现 WAIT 未确认。具备副本环境时应按预案关闭新写入并核查 Redis 主从/网络；单机 test 环境需确认 wait-replicas 口径。"
+          runbook: "deploy/monitoring/README.md#redis-waitlua-告警"
+
+      - alert: CardshopTradeRedisLuaSlow
+        expr: sum by (environment, operation, result) (increase(trade_engine_redis_lua_slow_total{environment!=""}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: cardshop-trade-engine
+          scope: redis-lua
+        annotations:
+          summary: "Redis Lua 慢执行（{{ $labels.environment }}）"
+          description: "operation={{ $labels.operation }} result={{ $labels.result }} 在 5 分钟内出现慢执行。核查 Redis CPU、慢日志、热点商户、pending/org_index 热点和网络延迟。"
+          runbook: "deploy/monitoring/README.md#redis-waitlua-告警"
+
+      - alert: CardshopTradeMqPublishConfirmFailed
+        expr: sum by (environment, result, fail_code) (increase(trade_engine_mq_publish_confirm_total{environment!="",result!="confirmed"}[5m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: cardshop-trade-engine
+          scope: rabbitmq-publish
+        annotations:
+          summary: "RabbitMQ 发布 confirm 异常（{{ $labels.environment }}）"
+          description: "result={{ $labels.result }} fail_code={{ $labels.fail_code }} 在 5 分钟内出现发布失败或未确认。核查 publisher confirm、mandatory return、exchange/binding、broker 状态和 Redis pending 补偿。"
+          runbook: "deploy/monitoring/README.md#rabbitmq-publish-告警"
+
+      - alert: CardshopTradeMqPublishBreakerOpen
+        expr: max by (environment) (trade_engine_mq_publish_breaker_open{environment!=""}) == 1
+        for: 30s
+        labels:
+          severity: critical
+          service: cardshop-trade-engine
+          scope: rabbitmq-publish
+        annotations:
+          summary: "RabbitMQ 发布熔断打开（{{ $labels.environment }}）"
+          description: "RabbitMQ 发布熔断已打开。应阻断新下单进入 Redis Lua，核查 broker、网络、exchange/binding 和 pending 补投入口。"
+          runbook: "deploy/monitoring/README.md#rabbitmq-publish-告警"
+
+  - name: cardshop-trade-engine-rabbitmq-external
+    interval: 30s
+    rules:
+      - alert: CardshopTradeRabbitPersistQueueBacklog
+        expr: |
+          sum by (vhost, queue) (
+            rabbitmq_queue_messages_ready{vhost=~"cardshop-trade-(dev|test|prod)",queue="recharge.persist.mysql.queue"}
+            +
+            rabbitmq_queue_messages_unacked{vhost=~"cardshop-trade-(dev|test|prod)",queue="recharge.persist.mysql.queue"}
+          ) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: cardshop-trade-engine
+          scope: rabbitmq-depth
+        annotations:
+          summary: "RabbitMQ 持久化主队列堆积（{{ $labels.vhost }}）"
+          description: "{{ $labels.queue }} 出现 ready/unacked 堆积超过 1 分钟。核查 Consumer 数、ack、MySQL 写入、retry/DLQ 和应用 readiness。"
+          runbook: "deploy/monitoring/README.md#rabbitmq-depth-外部探针"
+
+      - alert: CardshopTradeRabbitPersistRetryBacklog
+        expr: sum by (vhost, queue) (rabbitmq_queue_messages_ready{vhost=~"cardshop-trade-(dev|test|prod)",queue="recharge.persist.mysql.retry.queue"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: cardshop-trade-engine
+          scope: rabbitmq-depth
+        annotations:
+          summary: "RabbitMQ retry 队列持续有消息（{{ $labels.vhost }}）"
+          description: "{{ $labels.queue }} 持续有消息，说明 Consumer 或 MySQL 写入存在可恢复失败。结合应用 error/warn 日志与 retry 次数判断是否需要人工介入。"
+          runbook: "deploy/monitoring/README.md#rabbitmq-depth-外部探针"
+
+      - alert: CardshopTradeRabbitPersistDlqNotEmpty
+        expr: sum by (vhost, queue) (rabbitmq_queue_messages_ready{vhost=~"cardshop-trade-(dev|test|prod)",queue="recharge.persist.mysql.dlq"}) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: cardshop-trade-engine
+          scope: rabbitmq-depth
+        annotations:
+          summary: "RabbitMQ DLQ 非空（{{ $labels.vhost }}）"
+          description: "{{ $labels.queue }} 非空。需要保留消息证据，核查 poison message、幂等冲突、落库异常和 Redis/MQ snapshot；不要直接清空队列。"
+          runbook: "deploy/monitoring/README.md#rabbitmq-depth-外部探针"

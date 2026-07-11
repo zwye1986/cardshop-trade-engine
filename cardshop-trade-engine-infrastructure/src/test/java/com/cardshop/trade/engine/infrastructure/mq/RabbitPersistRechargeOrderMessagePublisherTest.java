@@ -5,7 +5,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.cardshop.trade.engine.application.recharge.PersistMessagePublishResult;
 import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
+import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
+import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilitySnapshotProvider;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -134,6 +137,36 @@ class RabbitPersistRechargeOrderMessagePublisherTest {
         assertThat(publisher.isAvailable()).isFalse();
     }
 
+    @Test
+    void recordsConfirmFailureAndBreakerMetrics() {
+        var registry = new SimpleMeterRegistry();
+        var metrics = new TradeEngineObservabilityMetrics(
+                TradeEngineObservabilitySnapshotProvider.empty(),
+                "test",
+                java.time.Duration.ofMillis(30));
+        metrics.bindTo(registry);
+        var operations = new RecordingRabbitPersistMessageOperations(false);
+        var properties = properties(1, 500);
+        properties.getMq().getBreaker().setFailureThreshold(1);
+        var publisher = publisher(operations, properties, Runnable::run, metrics);
+
+        PersistMessagePublishResult result = publisher.publish(message()).toCompletableFuture().join();
+
+        assertThat(result.confirmed()).isFalse();
+        assertThat(registry.get("trade.engine.mq.publish.confirm.total")
+                        .tag("environment", "test")
+                        .tag("result", "failed")
+                        .tag("fail_code", "CONFIRM_NACK")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("trade.engine.mq.publish.breaker.open")
+                        .tag("environment", "test")
+                        .gauge()
+                        .value())
+                .isEqualTo(1.0);
+    }
+
     private static RabbitPersistRechargeOrderMessagePublisher publisher(
             RabbitPersistMessageOperations operations,
             TradeEngineProperties properties) {
@@ -150,6 +183,20 @@ class RabbitPersistRechargeOrderMessagePublisherTest {
                 properties,
                 CLOCK,
                 mqConfirmExecutor);
+    }
+
+    private static RabbitPersistRechargeOrderMessagePublisher publisher(
+            RabbitPersistMessageOperations operations,
+            TradeEngineProperties properties,
+            Executor mqConfirmExecutor,
+            TradeEngineObservabilityMetrics metrics) {
+        return new RabbitPersistRechargeOrderMessagePublisher(
+                operations,
+                new ObjectMapper(),
+                properties,
+                CLOCK,
+                mqConfirmExecutor,
+                metrics);
     }
 
     private static TradeEngineProperties properties(int retryTimes, int confirmTimeoutMs) {

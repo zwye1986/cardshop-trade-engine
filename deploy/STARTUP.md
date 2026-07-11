@@ -7,6 +7,7 @@ cardshop-trade-engine-<version>/
   app/cardshop-trade-engine-bootstrap-<version>.jar
   bin/start.sh
   config/env.example
+  monitoring/
   nacos/cardshop-trade-engine-dev.example.yaml
   logs/
   STARTUP.md
@@ -108,3 +109,12 @@ Health endpoints:
 /actuator/health/readiness
 /actuator/prometheus
 ```
+
+## Monitoring Templates
+
+The release package includes `monitoring/prometheus-rules/cardshop-trade-engine-alerts.yml`
+and `monitoring/grafana/cardshop-trade-engine-overview.json`. They are importable
+templates for Prometheus/Alertmanager and Grafana, not proof that production
+alerts have been published. RabbitMQ queue depth still comes from the RabbitMQ
+management Prometheus/exporter or an operations probe; do not add RabbitMQ
+management credentials to the business application.

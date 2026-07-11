@@ -12,6 +12,9 @@ import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
+import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
+import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilitySnapshotProvider;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -259,6 +262,57 @@ class RedisSessionAcceptReliabilityAdapterTest {
 
         assertUnknownAcceptHandled(result, sessionFactory, haGuard, anomalyPort, AcceptAnomalyType.ACCEPT_STATE_UNKNOWN);
         assertThat(result.failReason()).contains("Redis Lua 执行状态未知");
+    }
+
+    @Test
+    void recordsWaitAndLuaMetricsWithoutOrderLabels() {
+        var registry = new SimpleMeterRegistry();
+        var metrics = new TradeEngineObservabilityMetrics(
+                TradeEngineObservabilitySnapshotProvider.empty(),
+                "test",
+                Duration.ofNanos(1));
+        metrics.bindTo(registry);
+        var sessionFactory = new RecordingSessionFactory(List.of(Mono.just(acceptedLuaResult())));
+        var adapter = new RedisSessionAcceptReliabilityAdapter(
+                sessionFactory,
+                new RechargeRedisKeyBuilder("cardshop:trade", 128),
+                new RechargeRedisScriptLoader(),
+                properties(true, 2, 120),
+                RedisHaGuardPort.noop(),
+                AcceptAnomalyRecordPort.noop(),
+                Runnable::run,
+                metrics);
+
+        AcceptRechargeOrderResult acceptResult = adapter.accept(sampleCommand()).toCompletableFuture().join();
+        sessionFactory.sessions.getFirst().waitResult = Mono.just(1L);
+        adapter.waitForReplication(sampleCommand(), acceptResult).toCompletableFuture().join();
+
+        assertThat(registry.get("trade.engine.redis.lua.duration")
+                        .tag("environment", "test")
+                        .tag("operation", "accept")
+                        .tag("result", "success")
+                        .timer()
+                        .count())
+                .isEqualTo(1L);
+        assertThat(registry.get("trade.engine.redis.lua.slow.total")
+                        .tag("environment", "test")
+                        .tag("operation", "accept")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("trade.engine.redis.wait.total")
+                        .tag("environment", "test")
+                        .tag("result", "missed")
+                        .tag("fail_code", "REPLICAS_NOT_REACHED")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        assertThat(registry.getMeters()
+                        .stream()
+                        .flatMap(meter -> meter.getId().getTags().stream())
+                        .map(tag -> tag.getKey())
+                        .toList())
+                .doesNotContain("orderId", "outOrderSn", "orgCode");
     }
 
     private static RedisSessionAcceptReliabilityAdapter adapter(

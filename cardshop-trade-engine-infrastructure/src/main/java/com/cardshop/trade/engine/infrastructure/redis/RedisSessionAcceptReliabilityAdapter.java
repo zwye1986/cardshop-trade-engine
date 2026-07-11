@@ -14,6 +14,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityP
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
+import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
 import java.time.Duration;
 import java.util.Locale;
@@ -72,6 +73,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
     private final RedisHaGuardPort redisHaGuardPort;
     private final AcceptAnomalyRecordPort acceptAnomalyRecordPort;
     private final Executor acceptAnomalyRecordExecutor;
+    private final TradeEngineObservabilityMetrics observabilityMetrics;
     private final AcceptRechargeOrderLuaResultMapper acceptResultMapper = new AcceptRechargeOrderLuaResultMapper();
     private final Map<String, RechargeRedisSession> pendingSessions = new ConcurrentHashMap<>();
     private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
@@ -101,6 +103,26 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
             RedisHaGuardPort redisHaGuardPort,
             AcceptAnomalyRecordPort acceptAnomalyRecordPort,
             Executor acceptAnomalyRecordExecutor) {
+        this(
+                sessionFactory,
+                keyBuilder,
+                scriptLoader,
+                properties,
+                redisHaGuardPort,
+                acceptAnomalyRecordPort,
+                acceptAnomalyRecordExecutor,
+                TradeEngineObservabilityMetrics.noop());
+    }
+
+    public RedisSessionAcceptReliabilityAdapter(
+            RechargeRedisSessionFactory sessionFactory,
+            RechargeRedisKeyBuilder keyBuilder,
+            RechargeRedisScriptLoader scriptLoader,
+            TradeEngineProperties properties,
+            RedisHaGuardPort redisHaGuardPort,
+            AcceptAnomalyRecordPort acceptAnomalyRecordPort,
+            Executor acceptAnomalyRecordExecutor,
+            TradeEngineObservabilityMetrics observabilityMetrics) {
         this.sessionFactory = sessionFactory;
         this.keyBuilder = keyBuilder;
         this.scriptLoader = scriptLoader;
@@ -110,6 +132,9 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 ? AcceptAnomalyRecordPort.noop()
                 : acceptAnomalyRecordPort;
         this.acceptAnomalyRecordExecutor = acceptAnomalyRecordExecutor == null ? Runnable::run : acceptAnomalyRecordExecutor;
+        this.observabilityMetrics = observabilityMetrics == null
+                ? TradeEngineObservabilityMetrics.noop()
+                : observabilityMetrics;
     }
 
     @Override
@@ -146,6 +171,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                     AcceptRechargeOrderResult.redisUnavailable(command.orderId(), "Redis 会话不可用"));
         }
 
+        long startNanos = System.nanoTime();
         return session
                 .execute(acceptScript, luaArguments.keys(), luaArguments.args())
                 .switchIfEmpty(Mono.just(AcceptRechargeOrderResult.redisUnavailable(
@@ -153,8 +179,10 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 .map(result -> result instanceof AcceptRechargeOrderResult acceptResult
                         ? acceptResult
                         : acceptResultMapper.map(result))
+                .doOnNext(ignored -> recordRedisLua("accept", startNanos, true))
                 .doOnNext(result -> retainSessionOnlyForWrittenOrder(command, session, result))
                 .onErrorResume(ex -> {
+                    recordRedisLua("accept", startNanos, false);
                     closeWithErrorLog(session);
                     AcceptAnomalyType anomalyType = classifyAcceptAnomalyType(ex);
                     closeRedisWriteForUnknownAccept(command, anomalyType, ex);
@@ -182,6 +210,7 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         int replicas = properties.getRedis().getWaitReplicas();
         if (replicas <= 0) {
             releaseSession(acceptResult.orderId());
+            observabilityMetrics.recordRedisWait("confirmed", "none");
             return CompletableFuture.completedFuture(ReplicationWaitResult.confirmed(0));
         }
 
@@ -194,8 +223,8 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                     acceptResult.orderId(),
                     decision.occurrence(),
                     decision.sampledOccurrence()));
-            return CompletableFuture.completedFuture(
-                    ReplicationWaitResult.missed(0, "REDIS_SESSION_NOT_FOUND"));
+            observabilityMetrics.recordRedisWait("missed", "REDIS_SESSION_NOT_FOUND");
+            return CompletableFuture.completedFuture(ReplicationWaitResult.missed(0, "REDIS_SESSION_NOT_FOUND"));
         }
 
         Duration timeout = Duration.ofMillis(Math.max(1, properties.getRedis().getWaitTimeoutMs()));
@@ -203,14 +232,17 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 .map(actual -> {
                     if (actual >= replicas) {
                         releaseSession(acceptResult.orderId());
+                        observabilityMetrics.recordRedisWait("confirmed", "none");
                         return ReplicationWaitResult.confirmed(actual);
                     }
+                    observabilityMetrics.recordRedisWait("missed", "REPLICAS_NOT_REACHED");
                     return ReplicationWaitResult.missed(
                             actual,
                             "WAIT replicas not reached: expected=%d, actual=%d".formatted(replicas, actual));
                 })
                 .onErrorResume(ex -> {
                     releaseSession(acceptResult.orderId());
+                    observabilityMetrics.recordRedisWait("missed", "WAIT_ERROR");
                     logSampledError(LOG_EVENT_WAIT_FAILED, decision -> log.error(
                             "Redis WAIT执行失败 orgCode={}, outOrderSn={}, orderId={}, replicas={}, timeoutMs={}, occurrence={}, sampled={}",
                             command.orgCode(),
@@ -258,14 +290,17 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 Long.toString(command.orderAmountCent()),
                 Long.toString(command.nowEpochMillis()),
                 reason == null ? "" : reason);
+        long startNanos = System.nanoTime();
         return session
                 .execute(
                         scriptLoader.cancelUnconfirmedAcceptScript(),
                         keyBuilder.cancelUnconfirmedAcceptKeys(command),
                         args)
                 .map(RedisSessionAcceptReliabilityAdapter::toCancelResult)
+                .doOnNext(ignored -> recordRedisLua("cancel", startNanos, true))
                 .doFinally(signal -> closeWithErrorLog(sessionToClose))
                 .onErrorResume(ex -> {
+                    recordRedisLua("cancel", startNanos, false);
                     logSampledError(LOG_EVENT_CANCEL_LUA_FAILED, decision -> log.error(
                             "Redis取消未确认接单失败 orgCode={}, outOrderSn={}, orderId={}, occurrence={}, sampled={}",
                             command.orgCode(),
@@ -311,11 +346,14 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 persistMessageId == null ? "" : persistMessageId,
                 Integer.toString(Math.max(1, publishCount)),
                 Long.toString(command.nowEpochMillis()));
+        long startNanos = System.nanoTime();
         return session
                 .execute(scriptLoader.markPersistQueuedScript(), keyBuilder.markPersistQueuedKeys(command), args)
                 .map(RedisSessionAcceptReliabilityAdapter::toMarkResult)
+                .doOnNext(ignored -> recordRedisLua("mark_persist_queued", startNanos, true))
                 .doFinally(signal -> closeWithErrorLog(sessionToClose))
                 .onErrorResume(ex -> {
+                    recordRedisLua("mark_persist_queued", startNanos, false);
                     logSampledError(LOG_EVENT_MARK_QUEUED_LUA_FAILED, decision -> log.error(
                             "Redis持久化状态推进失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}, occurrence={}, sampled={}",
                             command.orgCode(),
@@ -367,11 +405,14 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 Long.toString(Math.max(0, persistedVersion)),
                 Long.toString(nowEpochMillis),
                 Long.toString(terminalTtlSeconds));
+        long startNanos = System.nanoTime();
         return session
                 .execute(scriptLoader.markDbPersistedScript(), keyBuilder.markDbPersistedKeys(command), args)
                 .map(RedisSessionAcceptReliabilityAdapter::toPersistStateMarkResult)
+                .doOnNext(ignored -> recordRedisLua("mark_db_persisted", startNanos, true))
                 .doFinally(signal -> closeWithErrorLog(sessionToClose))
                 .onErrorResume(ex -> {
+                    recordRedisLua("mark_db_persisted", startNanos, false);
                     logSampledError(LOG_EVENT_MARK_DB_LUA_FAILED, decision -> log.error(
                             "Redis落库完成状态推进失败 orgCode={}, outOrderSn={}, orderId={}, occurrence={}, sampled={}",
                             command.orgCode(),
@@ -426,11 +467,14 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
                 failCode == null ? "" : failCode,
                 failReason == null ? "" : failReason,
                 Integer.toString(Math.max(0, retryCount)));
+        long startNanos = System.nanoTime();
         return session
                 .execute(scriptLoader.markPersistFailedScript(), keyBuilder.markPersistFailedKeys(command), args)
                 .map(RedisSessionAcceptReliabilityAdapter::toPersistStateMarkResult)
+                .doOnNext(ignored -> recordRedisLua("mark_persist_failed", startNanos, true))
                 .doFinally(signal -> closeWithErrorLog(sessionToClose))
                 .onErrorResume(ex -> {
+                    recordRedisLua("mark_persist_failed", startNanos, false);
                     logSampledError(LOG_EVENT_MARK_FAILED_LUA_FAILED, decision -> log.error(
                             "Redis落库失败状态推进失败 orgCode={}, outOrderSn={}, orderId={}, failCode={}, occurrence={}, sampled={}",
                             command.orgCode(),
@@ -657,6 +701,13 @@ public class RedisSessionAcceptReliabilityAdapter implements AcceptRechargeOrder
         if (decision.shouldLog()) {
             logger.accept(decision);
         }
+    }
+
+    private void recordRedisLua(String operation, long startNanos, boolean success) {
+        observabilityMetrics.recordRedisLua(
+                operation,
+                Duration.ofNanos(Math.max(0, System.nanoTime() - startNanos)),
+                success);
     }
 
     private static CancelUnconfirmedAcceptResult toCancelResult(Object rawResult) {

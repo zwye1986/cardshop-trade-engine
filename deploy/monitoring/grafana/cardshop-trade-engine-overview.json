@@ -1,0 +1,394 @@
+{
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "sum(trade_engine_redis_pending{environment=~\"$environment\"})",
+          "legendFormat": "pending total",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(trade_engine_redis_pending_due{environment=~\"$environment\"})",
+          "legendFormat": "pending due",
+          "refId": "B"
+        }
+      ],
+      "title": "Redis pending",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 8,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "max(trade_engine_redis_pending_max_age_seconds{environment=~\"$environment\"})",
+          "legendFormat": "oldest pending seconds",
+          "refId": "A"
+        },
+        {
+          "expr": "max(trade_engine_outbox_max_age_seconds{environment=~\"$environment\",status!=\"SUCCESS\"})",
+          "legendFormat": "oldest outbox seconds",
+          "refId": "B"
+        }
+      ],
+      "title": "Oldest backlog age",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 8,
+        "x": 16,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "expr": "sum(trade_engine_accept_anomaly_open{environment=~\"$environment\",status=~\"INIT|CHECKING|MANUAL_REQUIRED\"})",
+          "legendFormat": "open anomalies",
+          "refId": "A"
+        },
+        {
+          "expr": "max(trade_engine_balance_reconcile_diff_orgs{environment=~\"$environment\"})",
+          "legendFormat": "balance diff orgs",
+          "refId": "B"
+        }
+      ],
+      "title": "Anomaly and balance diff",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
+      "id": 4,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (status, event_type) (trade_engine_outbox_pending{environment=~\"$environment\"})",
+          "legendFormat": "{{status}} / {{event_type}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Outbox pending by status and event type",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
+      "id": 5,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (result, fail_code) (increase(trade_engine_mq_publish_confirm_total{environment=~\"$environment\"}[5m]))",
+          "legendFormat": "mq {{result}} / {{fail_code}}",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (result, fail_code) (increase(trade_engine_redis_wait_total{environment=~\"$environment\"}[5m]))",
+          "legendFormat": "wait {{result}} / {{fail_code}}",
+          "refId": "B"
+        }
+      ],
+      "title": "WAIT and MQ confirm result increase in 5m",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 13
+      },
+      "id": 6,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "max by (operation, result) (trade_engine_redis_lua_duration_seconds_max{environment=~\"$environment\"})",
+          "legendFormat": "{{operation}} / {{result}} max",
+          "refId": "A"
+        }
+      ],
+      "title": "Redis Lua duration max",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 13
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (queue) (rabbitmq_queue_messages_ready{vhost=~\"cardshop-trade-(dev|test|prod)\",queue=~\"recharge\\\\.persist\\\\.mysql\\\\.(queue|retry\\\\.queue|dlq)\"})",
+          "legendFormat": "{{queue}} ready",
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (queue) (rabbitmq_queue_messages_unacked{vhost=~\"cardshop-trade-(dev|test|prod)\",queue=~\"recharge\\\\.persist\\\\.mysql\\\\.queue\"})",
+          "legendFormat": "{{queue}} unacked",
+          "refId": "B"
+        }
+      ],
+      "title": "RabbitMQ external queue depth",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 39,
+  "tags": [
+    "cardshop-trade-engine",
+    "business-observability"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "selected": true,
+          "text": "Prometheus",
+          "value": "Prometheus"
+        },
+        "hide": 0,
+        "includeAll": false,
+        "label": "Prometheus datasource",
+        "multi": false,
+        "name": "DS_PROMETHEUS",
+        "options": [],
+        "query": "prometheus",
+        "refresh": 1,
+        "regex": "",
+        "type": "datasource"
+      },
+      {
+        "current": {
+          "selected": true,
+          "text": "test",
+          "value": "test"
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "definition": "label_values(trade_engine_redis_pending, environment)",
+        "hide": 0,
+        "includeAll": false,
+        "label": "environment",
+        "multi": true,
+        "name": "environment",
+        "options": [],
+        "query": {
+          "query": "label_values(trade_engine_redis_pending, environment)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 1,
+        "regex": "",
+        "sort": 1,
+        "type": "query"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "cardshop-trade-engine overview",
+  "uid": "cardshop-trade-engine-overview",
+  "version": 1,
+  "weekStart": ""
+}
