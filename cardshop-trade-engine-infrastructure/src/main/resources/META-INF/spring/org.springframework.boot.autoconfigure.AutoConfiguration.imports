@@ -2,3 +2,4 @@ com.cardshop.trade.engine.infrastructure.config.MybatisPlusDdlRunnerCompatibilit
 com.cardshop.trade.engine.infrastructure.config.TradeEngineMybatisPersistenceAutoConfiguration
 com.cardshop.trade.engine.infrastructure.config.TradeEngineRedisPendingAutoConfiguration
 com.cardshop.trade.engine.infrastructure.config.TradeEngineFulfillmentAutoConfiguration
+com.cardshop.trade.engine.infrastructure.config.TradeEngineObservabilityAutoConfiguration

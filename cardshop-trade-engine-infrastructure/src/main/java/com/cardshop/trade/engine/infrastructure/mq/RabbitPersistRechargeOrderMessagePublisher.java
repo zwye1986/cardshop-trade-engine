@@ -4,6 +4,7 @@ import com.cardshop.trade.engine.application.recharge.PersistMessagePublishResul
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
+import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
@@ -36,6 +37,7 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
     private final TradeEngineProperties properties;
     private final Clock clock;
     private final Executor mqConfirmExecutor;
+    private final TradeEngineObservabilityMetrics observabilityMetrics;
     private final AtomicInteger consecutiveFailures = new AtomicInteger();
     private volatile Instant breakerOpenUntil = Instant.EPOCH;
 
@@ -53,11 +55,24 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
             TradeEngineProperties properties,
             Clock clock,
             Executor mqConfirmExecutor) {
+        this(operations, objectMapper, properties, clock, mqConfirmExecutor, TradeEngineObservabilityMetrics.noop());
+    }
+
+    public RabbitPersistRechargeOrderMessagePublisher(
+            RabbitPersistMessageOperations operations,
+            ObjectMapper objectMapper,
+            TradeEngineProperties properties,
+            Clock clock,
+            Executor mqConfirmExecutor,
+            TradeEngineObservabilityMetrics observabilityMetrics) {
         this.operations = Objects.requireNonNull(operations, "operations must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
         this.properties = Objects.requireNonNull(properties, "properties must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.mqConfirmExecutor = Objects.requireNonNull(mqConfirmExecutor, "mqConfirmExecutor must not be null");
+        this.observabilityMetrics = observabilityMetrics == null
+                ? TradeEngineObservabilityMetrics.noop()
+                : observabilityMetrics;
     }
 
     @Override
@@ -72,6 +87,7 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
     public CompletionStage<PersistMessagePublishResult> publish(PersistTradeOrderMessage message) {
         Objects.requireNonNull(message, "message must not be null");
         if (!isAvailable()) {
+            observabilityMetrics.recordMqPublishConfirm("failed", "MQ_BREAKER_OPEN");
             return CompletableFuture.completedFuture(PersistMessagePublishResult.failed(
                     message.messageId(),
                     0,
@@ -84,6 +100,7 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
         } catch (JsonProcessingException ex) {
             log.error("Redis订单持久化消息序列化失败 orgCode={}, outOrderSn={}, orderId={}, messageId={}",
                     message.orgCode(), message.outOrderSn(), message.orderId(), message.messageId(), ex);
+            observabilityMetrics.recordMqPublishConfirm("failed", "MESSAGE_SERIALIZE_FAILED");
             return CompletableFuture.completedFuture(PersistMessagePublishResult.failed(
                     message.messageId(),
                     0,
@@ -107,6 +124,7 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
         } catch (RuntimeException ex) {
             log.error("Redis订单持久化消息发送异常 orgCode={}, outOrderSn={}, orderId={}, messageId={}, attempt={}",
                     message.orgCode(), message.outOrderSn(), message.orderId(), message.messageId(), attempt, ex);
+            observabilityMetrics.recordMqPublishConfirm("failed", "PUBLISH_EXCEPTION");
             return retryOrFail(message, payload, attempt, "PUBLISH_EXCEPTION", ex.getMessage());
         }
 
@@ -136,12 +154,14 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
                                     message.messageId(),
                                     attempt,
                                     failReason);
+                            observabilityMetrics.recordMqPublishConfirm("failed", "MANDATORY_RETURN");
                             return PersistMessagePublishResult.failed(
                                     message.messageId(),
                                     attempt,
                                     "MANDATORY_RETURN",
                                     failReason);
                         }
+                        observabilityMetrics.recordMqPublishConfirm("confirmed", "none");
                         recordSuccess();
                         return PersistMessagePublishResult.confirmed(message.messageId(), attempt);
                     }
@@ -157,6 +177,7 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
                             attempt,
                             failCode,
                             failReason);
+                    observabilityMetrics.recordMqPublishConfirm("failed", failCode);
                     return PersistMessagePublishResult.failed(message.messageId(), attempt, failCode, failReason);
                 }, mqConfirmExecutor)
                 .thenCompose(result -> handlePublishAttemptResult(message, payload, attempt, result));
@@ -211,6 +232,7 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
     private void recordSuccess() {
         consecutiveFailures.set(0);
         breakerOpenUntil = Instant.EPOCH;
+        observabilityMetrics.setMqPublishBreakerOpen(false);
     }
 
     private void recordFailure() {
@@ -221,6 +243,7 @@ public class RabbitPersistRechargeOrderMessagePublisher implements PersistRechar
         int failures = consecutiveFailures.incrementAndGet();
         if (failures >= Math.max(1, breaker.getFailureThreshold())) {
             breakerOpenUntil = clock.instant().plusSeconds(Math.max(1, breaker.getOpenSeconds()));
+            observabilityMetrics.setMqPublishBreakerOpen(true);
             // TODO(D5): 实现 rollingWindowSeconds 与 halfOpenPermits 的完整滑动窗口/半开探测；参见 docs/交行直充业务系统高可用方案设计.md「14.3 Redis 成功但 MQ confirm 失败协议」。
             log.warn("RabbitMQ发布熔断打开 failures={}, openSeconds={}",
                     failures, breaker.getOpenSeconds());

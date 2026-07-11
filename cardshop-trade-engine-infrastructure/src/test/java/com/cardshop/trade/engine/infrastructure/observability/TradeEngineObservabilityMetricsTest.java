@@ -1,0 +1,168 @@
+package com.cardshop.trade.engine.infrastructure.observability;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import com.cardshop.trade.engine.domain.order.AcceptAnomalyStatus;
+import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
+import com.cardshop.trade.engine.domain.order.OutboxEventType;
+import com.cardshop.trade.engine.domain.order.TaskStatus;
+import io.micrometer.core.instrument.Meter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
+import org.springframework.boot.test.system.CapturedOutput;
+import org.springframework.boot.test.system.OutputCaptureExtension;
+
+/**
+ * 交易引擎业务监控指标测试。
+ *
+ * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「12.2 指标」和
+ * {@code docs/开发进度.md}「5.1 监控告警最小闭环执行边界」。测试只允许低基数标签进入 Micrometer，
+ * 避免把订单号、商户订单号或商户号打成 Prometheus time-series。
+ */
+@ExtendWith(OutputCaptureExtension.class)
+class TradeEngineObservabilityMetricsTest {
+
+    @Test
+    void registersLowCardinalityBusinessGaugesFromSnapshotProvider() {
+        var registry = new SimpleMeterRegistry();
+        var provider = new StaticSnapshotProvider(new TradeEngineObservabilitySnapshot(
+                new TradeEngineObservabilitySnapshot.RedisPending(12, 5, 90),
+                Map.of(
+                        new TradeEngineObservabilitySnapshot.OutboxKey(
+                                OutboxEventType.SUPPLIER_DISPATCH.name(), TaskStatus.INIT.name()),
+                        new TradeEngineObservabilitySnapshot.CountAge(3, 120),
+                        new TradeEngineObservabilitySnapshot.OutboxKey(
+                                OutboxEventType.BALANCE_DELTA_FLUSH.name(), TaskStatus.MANUAL_REQUIRED.name()),
+                        new TradeEngineObservabilitySnapshot.CountAge(1, 600)),
+                Map.of(
+                        new TradeEngineObservabilitySnapshot.AcceptAnomalyKey(
+                                AcceptAnomalyType.LUA_TIMEOUT.name(), AcceptAnomalyStatus.MANUAL_REQUIRED.name()),
+                        2L),
+                4,
+                false));
+        new TradeEngineObservabilityMetrics(provider, "test", Duration.ofMillis(30)).bindTo(registry);
+
+        assertThat(registry.get("trade.engine.redis.pending.total").tag("environment", "test").gauge().value())
+                .isEqualTo(12.0);
+        assertThat(registry.get("trade.engine.redis.pending.due").tag("environment", "test").gauge().value())
+                .isEqualTo(5.0);
+        assertThat(registry.get("trade.engine.redis.pending.max.age.seconds").tag("environment", "test").gauge().value())
+                .isEqualTo(90.0);
+        assertThat(registry.get("trade.engine.outbox.pending")
+                        .tag("environment", "test")
+                        .tag("event_type", OutboxEventType.SUPPLIER_DISPATCH.name())
+                        .tag("status", TaskStatus.INIT.name())
+                        .gauge()
+                        .value())
+                .isEqualTo(3.0);
+        assertThat(registry.get("trade.engine.outbox.max.age.seconds")
+                        .tag("environment", "test")
+                        .tag("event_type", OutboxEventType.BALANCE_DELTA_FLUSH.name())
+                        .tag("status", TaskStatus.MANUAL_REQUIRED.name())
+                        .gauge()
+                        .value())
+                .isEqualTo(600.0);
+        assertThat(registry.get("trade.engine.accept.anomaly.open")
+                        .tag("environment", "test")
+                        .tag("anomaly_type", AcceptAnomalyType.LUA_TIMEOUT.name())
+                        .tag("status", AcceptAnomalyStatus.MANUAL_REQUIRED.name())
+                        .gauge()
+                        .value())
+                .isEqualTo(2.0);
+        assertThat(registry.get("trade.engine.balance.reconcile.diff.orgs")
+                        .tag("environment", "test")
+                        .gauge()
+                        .value())
+                .isEqualTo(4.0);
+
+        List<String> tagKeys = registry.getMeters()
+                .stream()
+                .map(Meter::getId)
+                .flatMap(id -> id.getTags().stream())
+                .map(tag -> tag.getKey())
+                .toList();
+        assertThat(tagKeys)
+                .doesNotContain("orderId", "outOrderSn", "orgCode", "phone", "account");
+    }
+
+    @Test
+    void recordsWaitLuaMqAndBreakerEventsWithLowCardinalityTags() {
+        var registry = new SimpleMeterRegistry();
+        var metrics = new TradeEngineObservabilityMetrics(
+                TradeEngineObservabilitySnapshotProvider.empty(),
+                "test",
+                Duration.ofMillis(30));
+        metrics.bindTo(registry);
+
+        metrics.recordRedisWait("missed", "WAIT_ERROR");
+        metrics.recordRedisLua("accept", Duration.ofMillis(45), true);
+        metrics.recordRedisLua("mark_db_persisted", Duration.ofMillis(5), true);
+        metrics.recordMqPublishConfirm("failed", "CONFIRM_TIMEOUT");
+        metrics.setMqPublishBreakerOpen(true);
+
+        assertThat(registry.get("trade.engine.redis.wait.total")
+                        .tag("environment", "test")
+                        .tag("result", "missed")
+                        .tag("fail_code", "WAIT_ERROR")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("trade.engine.redis.lua.slow.total")
+                        .tag("environment", "test")
+                        .tag("operation", "accept")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("trade.engine.redis.lua.duration")
+                        .tag("environment", "test")
+                        .tag("operation", "accept")
+                        .timer()
+                        .count())
+                .isEqualTo(1L);
+        assertThat(registry.get("trade.engine.mq.publish.confirm.total")
+                        .tag("environment", "test")
+                        .tag("result", "failed")
+                        .tag("fail_code", "CONFIRM_TIMEOUT")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("trade.engine.mq.publish.breaker.open")
+                        .tag("environment", "test")
+                        .gauge()
+                        .value())
+                .isEqualTo(1.0);
+    }
+
+    @Test
+    void logsAndReturnsEmptyGaugeValuesWhenSnapshotProviderFails(CapturedOutput output) {
+        var registry = new SimpleMeterRegistry();
+        var metrics = new TradeEngineObservabilityMetrics(
+                () -> {
+                    throw new IllegalStateException("provider exploded");
+                },
+                "test",
+                Duration.ofMillis(30));
+        metrics.bindTo(registry);
+
+        double value = registry.get("trade.engine.redis.pending.total")
+                .tag("environment", "test")
+                .gauge()
+                .value();
+
+        assertThat(value).isZero();
+        assertThat(output).contains("交易引擎业务监控 Gauge 快照读取失败");
+    }
+
+    private record StaticSnapshotProvider(TradeEngineObservabilitySnapshot snapshot)
+            implements TradeEngineObservabilitySnapshotProvider {
+
+        @Override
+        public TradeEngineObservabilitySnapshot currentSnapshot() {
+            return snapshot;
+        }
+    }
+}

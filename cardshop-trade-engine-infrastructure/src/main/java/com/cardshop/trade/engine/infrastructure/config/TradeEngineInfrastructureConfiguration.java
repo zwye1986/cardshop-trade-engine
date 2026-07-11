@@ -44,6 +44,7 @@ import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMes
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitTemplatePersistMessageOperations;
 import com.cardshop.trade.engine.infrastructure.notify.HttpMerchantNotifyClientAdapter;
+import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
 import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyRecordAdapter;
@@ -243,7 +244,8 @@ public class TradeEngineInfrastructureConfiguration {
             TradeEngineProperties properties,
             RedisHaGuardPort redisHaGuardPort,
             ObjectProvider<AcceptAnomalyRecordPort> acceptAnomalyRecordPortProvider,
-            @Qualifier("tradeDbTaskExecutor") ObjectProvider<Executor> acceptAnomalyRecordExecutorProvider) {
+            @Qualifier("tradeDbTaskExecutor") ObjectProvider<Executor> acceptAnomalyRecordExecutorProvider,
+            ObjectProvider<TradeEngineObservabilityMetrics> observabilityMetricsProvider) {
         /*
          * accept Lua timeout/BUSY 属于“Redis 可能已写入但 Java 未拿到返回”的状态未知窗口。
          * 这里把 anomaly 写库端口和 DB executor 一起注入 Redis adapter：adapter 负责发现 Redis 协议边界异常，
@@ -256,7 +258,8 @@ public class TradeEngineInfrastructureConfiguration {
                 properties,
                 redisHaGuardPort,
                 acceptAnomalyRecordPortProvider.getIfAvailable(AcceptAnomalyRecordPort::noop),
-                acceptAnomalyRecordExecutorProvider.getIfAvailable(() -> Runnable::run));
+                acceptAnomalyRecordExecutorProvider.getIfAvailable(() -> Runnable::run),
+                observabilityMetricsProvider.getIfAvailable(TradeEngineObservabilityMetrics::noop));
     }
 
     @Bean
@@ -283,7 +286,8 @@ public class TradeEngineInfrastructureConfiguration {
             ObjectProvider<RabbitTemplate> rabbitTemplateProvider,
             ObjectMapper objectMapper,
             TradeEngineProperties properties,
-            @Qualifier("tradeMqConfirmTaskExecutor") ObjectProvider<Executor> mqConfirmExecutorProvider) {
+            @Qualifier("tradeMqConfirmTaskExecutor") ObjectProvider<Executor> mqConfirmExecutorProvider,
+            ObjectProvider<TradeEngineObservabilityMetrics> observabilityMetricsProvider) {
         RabbitTemplate rabbitTemplate = rabbitTemplateProvider.getIfAvailable();
         Executor mqConfirmExecutor = mqConfirmExecutorProvider.getIfAvailable();
         if (rabbitTemplate == null || mqConfirmExecutor == null) {
@@ -294,7 +298,8 @@ public class TradeEngineInfrastructureConfiguration {
                 objectMapper,
                 properties,
                 Clock.systemUTC(),
-                mqConfirmExecutor);
+                mqConfirmExecutor,
+                observabilityMetricsProvider.getIfAvailable(TradeEngineObservabilityMetrics::noop));
     }
 
     /**
