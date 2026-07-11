@@ -28,6 +28,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerSettings;
 import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
+import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
@@ -547,6 +548,7 @@ public class TradeEngineInfrastructureConfiguration {
             int timeoutMs = endpoint.getTimeoutMs() == null ? defaultTimeoutMs : Math.max(100, endpoint.getTimeoutMs());
             channels.put(channel, new HttpRechargeSupplierGatewayAdapter.SupplierChannelEndpoint(
                     endpoint.getDispatchUrl(),
+                    endpoint.getQueryUrl(),
                     endpoint.getInvalidUrl(),
                     Duration.ofMillis(timeoutMs)));
         });
@@ -558,6 +560,7 @@ public class TradeEngineInfrastructureConfiguration {
             RechargeOutboxPort.class,
             RechargeFulfillmentOrderPort.class,
             RechargeSupplierGatewayPort.class,
+            SupplierQueryOutboxPort.class,
             DirectRechargeFrequencyPort.class,
             BalanceDeltaFlushOutboxPort.class,
             BalanceReservationReleasePort.class,
@@ -569,6 +572,7 @@ public class TradeEngineInfrastructureConfiguration {
             RechargeOutboxPort outboxPort,
             RechargeFulfillmentOrderPort orderPort,
             RechargeSupplierGatewayPort supplierGatewayPort,
+            SupplierQueryOutboxPort supplierQueryOutboxPort,
             DirectRechargeFrequencyPort frequencyPort,
             BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
             BalanceReservationReleasePort balanceReservationReleasePort,
@@ -584,6 +588,7 @@ public class TradeEngineInfrastructureConfiguration {
                 outboxPort,
                 orderPort,
                 supplierGatewayPort,
+                supplierQueryOutboxPort,
                 frequencyPort,
                 balanceDeltaFlushOutboxPort,
                 balanceReservationReleasePort,

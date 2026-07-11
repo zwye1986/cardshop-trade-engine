@@ -97,7 +97,10 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
                 shardTotal,
                 shardIndex,
                 limit,
-                List.of(OutboxEventType.SUPPLIER_DISPATCH.name(), OutboxEventType.INVALID_ORDER.name()));
+                List.of(
+                        OutboxEventType.SUPPLIER_DISPATCH.name(),
+                        OutboxEventType.SUPPLIER_QUERY.name(),
+                        OutboxEventType.INVALID_ORDER.name()));
     }
 
     /**

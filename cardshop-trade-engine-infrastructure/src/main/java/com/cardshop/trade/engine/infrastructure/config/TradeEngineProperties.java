@@ -1078,6 +1078,7 @@ public class TradeEngineProperties {
         public static class Channel {
 
             private String dispatchUrl = "";
+            private String queryUrl = "";
             private String invalidUrl = "";
             private Integer timeoutMs;
 
@@ -1087,6 +1088,14 @@ public class TradeEngineProperties {
 
             public void setDispatchUrl(String dispatchUrl) {
                 this.dispatchUrl = dispatchUrl;
+            }
+
+            public String getQueryUrl() {
+                return queryUrl;
+            }
+
+            public void setQueryUrl(String queryUrl) {
+                this.queryUrl = queryUrl;
             }
 
             public String getInvalidUrl() {

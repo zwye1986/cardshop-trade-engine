@@ -5,6 +5,8 @@ import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxCom
 import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
+import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxCommand;
+import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxCommand;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
@@ -28,7 +30,7 @@ import java.util.Objects;
  * outbox 的 {@code shard_key} 固定使用 {@code event_id}，避免不同任务混用分片语义。
  */
 public class MybatisRechargeOutboxAdapter
-        implements RechargeOutboxPort, InvalidRechargeOrderOutboxPort, BalanceDeltaFlushOutboxPort {
+        implements RechargeOutboxPort, SupplierQueryOutboxPort, InvalidRechargeOrderOutboxPort, BalanceDeltaFlushOutboxPort {
 
     private static final int DEFAULT_MAX_RETRY_COUNT = 10;
     private static final ZoneId LEGACY_CARDSHOP_DB_ZONE = ZoneId.of("Asia/Shanghai");
@@ -143,6 +145,32 @@ public class MybatisRechargeOutboxAdapter
     }
 
     @Override
+    public void enqueueSupplierQuery(SupplierQueryOutboxCommand command) {
+        Objects.requireNonNull(command, "command must not be null");
+        LocalDateTime now = now();
+        RechargeOutboxDO outbox = new RechargeOutboxDO();
+        outbox.setEventId(command.eventId());
+        outbox.setEventType(OutboxEventType.SUPPLIER_QUERY.name());
+        outbox.setOrgCode(command.orgCode());
+        outbox.setOrderId(command.orderId());
+        outbox.setOutOrderSn(command.outOrderSn());
+        outbox.setPayload(supplierQueryPayload(command));
+        outbox.setStatus(TaskStatus.INIT.name());
+        outbox.setRetryCount(0);
+        outbox.setMaxRetryCount(DEFAULT_MAX_RETRY_COUNT);
+        outbox.setNextRetryTime(now);
+        outbox.setLockedBy(null);
+        outbox.setLockedUntil(null);
+        outbox.setVersion(0L);
+        outbox.setLastError("");
+        outbox.setShardKey(command.eventId());
+        outbox.setCreatedAt(now);
+        outbox.setUpdatedAt(now);
+        // event_id 唯一键保证 dispatch 重试或 Worker 宕机恢复时不会重复创建查单事件。
+        writer.insertIfAbsent(outbox);
+    }
+
+    @Override
     public void enqueueBalanceDeltaFlush(BalanceDeltaFlushOutboxCommand command) {
         Objects.requireNonNull(command, "command must not be null");
         LocalDateTime now = now();
@@ -208,6 +236,20 @@ public class MybatisRechargeOutboxAdapter
                     "reason", command.reason() == null ? "" : command.reason()));
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("serialize balance delta flush outbox payload failed", ex);
+        }
+    }
+
+    private String supplierQueryPayload(SupplierQueryOutboxCommand command) {
+        try {
+            return objectMapper.writeValueAsString(Map.of(
+                    "org_code", command.orgCode(),
+                    "order_id", command.orderId(),
+                    "out_order_sn", command.outOrderSn(),
+                    "account", command.account(),
+                    "supplier_channel", command.supplierChannel(),
+                    "source_payload", command.payload() == null ? "{}" : command.payload()));
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("serialize supplier query outbox payload failed", ex);
         }
     }
 

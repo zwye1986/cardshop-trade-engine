@@ -123,6 +123,7 @@ class MapperContractTest {
 
         assertThat(mapper)
                 .contains("LambdaQueryWrapper")
+                .contains("OutboxEventType.SUPPLIER_QUERY.name()")
                 .contains("RechargeOutboxDO::getStatus")
                 .contains("TaskStatus.INIT.name()")
                 .contains("TaskStatus.FAILED.name()")

@@ -70,6 +70,7 @@ class TradeEnginePropertiesTest {
                         "trade.engine.routing.gray-org-codes[0]=A11",
                         "trade.engine.routing.supported-paths[0]=/v1/cardapi/order/getRechargeOrder",
                         "trade.engine.v1.crypto.key-rotation-previous-enabled=false",
+                        "trade.engine.supplier.channels.fake.query-url=http://127.0.0.1:18082/supplier/query",
                         "trade.engine.thread-pool.db-core-size=4",
                         "trade.engine.thread-pool.db-max-size=8",
                         "trade.engine.integration.manual-job-timeout-ms=12345")
@@ -92,6 +93,8 @@ class TradeEnginePropertiesTest {
                     assertThat(properties.getRouting().getSupportedPaths())
                             .containsExactly("/v1/cardapi/order/getRechargeOrder");
                     assertThat(properties.getV1().getCrypto().isKeyRotationPreviousEnabled()).isFalse();
+                    assertThat(properties.getSupplier().getChannels().get("fake").getQueryUrl())
+                            .isEqualTo("http://127.0.0.1:18082/supplier/query");
                     assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(4);
                     assertThat(properties.getThreadPool().getDbMaxSize()).isEqualTo(8);
                     assertThat(properties.getIntegration().getManualJobTimeoutMs()).isEqualTo(12345);

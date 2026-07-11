@@ -6,6 +6,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPor
 import com.cardshop.trade.engine.application.recharge.SupplierDispatchGatewayRequest;
 import com.cardshop.trade.engine.application.recharge.SupplierGatewayResponse;
 import com.cardshop.trade.engine.application.recharge.SupplierInvalidGatewayRequest;
+import com.cardshop.trade.engine.application.recharge.SupplierQueryGatewayRequest;
 import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -86,6 +87,25 @@ public class HttpRechargeSupplierGatewayAdapter implements RechargeSupplierGatew
                 Map.entry("product_id", request.productId()),
                 Map.entry("selected_product_id", request.selectedProductId()),
                 Map.entry("order_price", request.orderPrice())));
+    }
+
+    @Override
+    public SupplierGatewayResponse query(SupplierQueryGatewayRequest request) {
+        SupplierChannelEndpoint endpoint = channels.get(request.supplierChannel());
+        if (endpoint == null || !StringUtils.hasText(endpoint.queryUrl())) {
+            return SupplierGatewayResponse.retryableFailed(
+                    "",
+                    "SUPPLIER_QUERY_NOT_CONFIGURED",
+                    "supplier query url not configured",
+                    EMPTY_JSON);
+        }
+        return post(endpoint.queryUrl(), endpoint.timeout(), Map.ofEntries(
+                Map.entry("supplier_request_id", request.supplierRequestId()),
+                Map.entry("order_id", request.orderId()),
+                Map.entry("out_order_sn", request.outOrderSn()),
+                Map.entry("org_code", request.orgCode()),
+                Map.entry("account", request.account()),
+                Map.entry("supplier_channel", request.supplierChannel())));
     }
 
     @Override
@@ -185,10 +205,15 @@ public class HttpRechargeSupplierGatewayAdapter implements RechargeSupplierGatew
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和「9.2 作废设计」。
      *
      * @param dispatchUrl 派单请求地址，用于供应商履约下发
+     * @param queryUrl 查单请求地址，用于查询供应商已受理订单的最终状态
      * @param invalidUrl 作废请求地址，用于已受理订单的供应商侧撤销
      * @param timeout HTTP 请求超时时间；为空、零值或负值时默认 3 秒
      */
-    public record SupplierChannelEndpoint(String dispatchUrl, String invalidUrl, Duration timeout) {
+    public record SupplierChannelEndpoint(String dispatchUrl, String queryUrl, String invalidUrl, Duration timeout) {
+
+        public SupplierChannelEndpoint(String dispatchUrl, String invalidUrl, Duration timeout) {
+            this(dispatchUrl, "", invalidUrl, timeout);
+        }
 
         public SupplierChannelEndpoint {
             timeout = timeout == null || timeout.isZero() || timeout.isNegative()

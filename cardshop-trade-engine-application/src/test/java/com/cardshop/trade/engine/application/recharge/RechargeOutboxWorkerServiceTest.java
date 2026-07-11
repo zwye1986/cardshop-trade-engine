@@ -109,11 +109,13 @@ class RechargeOutboxWorkerServiceTest {
         FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
                 SupplierGatewayResponse.processing("SUP-1002", "PENDING", "accepted", "{\"status\":\"PROCESSING\"}"));
         FakeNotifyTaskPort notifyTaskPort = new FakeNotifyTaskPort();
+        FakeSupplierQueryOutboxPort queryOutboxPort = new FakeSupplierQueryOutboxPort();
 
         RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
                 outboxPort,
                 orderPort,
                 supplierGateway,
+                queryOutboxPort,
                 new FakeFrequencyPort(true),
                 BalanceDeltaFlushOutboxPort.noop(),
                 BalanceReservationReleasePort.noop(),
@@ -128,6 +130,178 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(orderPort.statusUpdates.getLast().dispatchStatus()).isEqualTo(FulfillmentDispatchStatus.SUPPLIER_ACCEPTED);
         assertThat(orderPort.statusUpdates.getLast().orderStatus()).isEqualTo(13);
         assertThat(notifyTaskPort.createdTasks).isEmpty();
+        assertThat(queryOutboxPort.commands).singleElement().satisfies(command -> {
+            assertThat(command.eventId()).isEqualTo("supplier-query-ORDER-1");
+            assertThat(command.orderId()).isEqualTo("ORDER-1");
+            assertThat(command.supplierChannel()).isEqualTo("FNK_CGS_BX");
+        });
+    }
+
+    @Test
+    void supplierQueryProcessingKeepsOrderInSupplierAcceptedAndRetriesQueryEvent() {
+        FakeOutboxPort outboxPort = new FakeOutboxPort(supplierQueryOutbox());
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(supplierAcceptedOrder());
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("unused", "0", "unused", "{}"),
+                SupplierGatewayResponse.processing("SUP-1002", "PENDING", "still processing", "{\"status\":\"PROCESSING\"}"));
+        FakeNotifyTaskPort notifyTaskPort = new FakeNotifyTaskPort();
+        FakeFrequencyPort frequencyPort = new FakeFrequencyPort(true);
+
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGateway,
+                new FakeSupplierQueryOutboxPort(),
+                frequencyPort,
+                BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(),
+                notifyTaskPort,
+                new FixedNotifyPayloadSigner(),
+                CLOCK,
+                settings());
+
+        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(supplierGateway.queryRequests).singleElement().satisfies(request -> {
+            assertThat(request.supplierRequestId()).isEqualTo("supplier-query-ORDER-1");
+            assertThat(request.orderId()).isEqualTo("ORDER-1");
+        });
+        assertThat(outboxPort.successes).isEmpty();
+        assertThat(outboxPort.failures).singleElement().satisfies(failure -> {
+            assertThat(failure.eventId()).isEqualTo("supplier-query-ORDER-1");
+            assertThat(failure.nextRetryDelay()).isEqualTo(Duration.ofSeconds(5));
+        });
+        assertThat(orderPort.statusUpdates).singleElement().satisfies(update -> {
+            assertThat(update.dispatchStatus()).isEqualTo(FulfillmentDispatchStatus.SUPPLIER_ACCEPTED);
+            assertThat(update.orderStatus()).isEqualTo(13);
+        });
+        assertThat(notifyTaskPort.createdTasks).isEmpty();
+        assertThat(frequencyPort.releasedOrderIds).isEmpty();
+    }
+
+    @Test
+    void supplierQuerySuccessAdvancesOrderToSuccessAndCreatesNotifyTask() {
+        FakeOutboxPort outboxPort = new FakeOutboxPort(supplierQueryOutbox());
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(supplierAcceptedOrder());
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("unused", "0", "unused", "{}"),
+                SupplierGatewayResponse.success("SUP-1002", "0", "success", "{\"status\":\"SUCCESS\"}"));
+        FakeNotifyTaskPort notifyTaskPort = new FakeNotifyTaskPort();
+        FakeFrequencyPort frequencyPort = new FakeFrequencyPort(true);
+
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGateway,
+                new FakeSupplierQueryOutboxPort(),
+                frequencyPort,
+                BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(),
+                notifyTaskPort,
+                new FixedNotifyPayloadSigner(),
+                CLOCK,
+                settings());
+
+        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+
+        assertThat(result.succeeded()).isEqualTo(1);
+        assertThat(outboxPort.successes).containsExactly("supplier-query-ORDER-1");
+        assertThat(orderPort.statusUpdates).singleElement().satisfies(update -> {
+            assertThat(update.dispatchStatus()).isEqualTo(FulfillmentDispatchStatus.SUCCESS);
+            assertThat(update.orderStatus()).isEqualTo(12);
+            assertThat(update.dataStatus()).isEqualTo("PROCESSED");
+        });
+        assertThat(orderPort.flowStarts).singleElement().satisfies(flow ->
+                assertThat(flow.supplierRequestId()).isEqualTo("supplier-query-ORDER-1"));
+        assertThat(orderPort.flowUpdates).singleElement().satisfies(update ->
+                assertThat(update.status()).isEqualTo("success"));
+        assertThat(notifyTaskPort.createdTasks).singleElement().satisfies(task -> {
+            assertThat(task.taskId()).isEqualTo("notify-order-ORDER-1-12");
+            assertThat(task.payload()).containsEntry("orderStatus", "12");
+        });
+        assertThat(frequencyPort.releasedOrderIds).containsExactly("ORDER-1");
+    }
+
+    @Test
+    void supplierQueryRetryAfterOrderSuccessReplaysNotifyAndFrequencySideEffectsWithoutQueryingSupplier() {
+        FakeOutboxPort outboxPort = new FakeOutboxPort(supplierQueryOutbox());
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(successfulOrder());
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("unused", "0", "unused", "{}"));
+        FakeNotifyTaskPort notifyTaskPort = new FakeNotifyTaskPort();
+        FakeFrequencyPort frequencyPort = new FakeFrequencyPort(true);
+
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGateway,
+                new FakeSupplierQueryOutboxPort(),
+                frequencyPort,
+                BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(),
+                notifyTaskPort,
+                new FixedNotifyPayloadSigner(),
+                CLOCK,
+                settings());
+
+        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+
+        assertThat(result.succeeded()).isEqualTo(1);
+        assertThat(supplierGateway.queryRequests).isEmpty();
+        assertThat(outboxPort.successes).containsExactly("supplier-query-ORDER-1");
+        assertThat(notifyTaskPort.createdTasks).singleElement().satisfies(task ->
+                assertThat(task.taskId()).isEqualTo("notify-order-ORDER-1-12"));
+        assertThat(frequencyPort.releasedOrderIds).containsExactly("ORDER-1");
+    }
+
+    @Test
+    void supplierQueryFailureAdvancesOrderToFailedAndReleasesReservedBalance() {
+        FakeOutboxPort outboxPort = new FakeOutboxPort(supplierQueryOutbox());
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(supplierAcceptedOrder());
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("unused", "0", "unused", "{}"),
+                SupplierGatewayResponse.failed("SUP-1002", "E_SUP", "supplier rejected", "{\"status\":\"FAILED\"}"));
+        FakeNotifyTaskPort notifyTaskPort = new FakeNotifyTaskPort();
+        FakeFrequencyPort frequencyPort = new FakeFrequencyPort(true);
+        FakeBalanceDeltaOutboxPort balanceDeltaOutboxPort = new FakeBalanceDeltaOutboxPort();
+        FakeBalanceReleasePort balanceReleasePort = new FakeBalanceReleasePort(
+                BalanceReservationReleaseResult.releasedSuccess());
+
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGateway,
+                new FakeSupplierQueryOutboxPort(),
+                frequencyPort,
+                balanceDeltaOutboxPort,
+                balanceReleasePort,
+                notifyTaskPort,
+                new FixedNotifyPayloadSigner(),
+                CLOCK,
+                settings());
+
+        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+
+        assertThat(result.succeeded()).isEqualTo(1);
+        assertThat(outboxPort.successes).containsExactly("supplier-query-ORDER-1");
+        assertThat(orderPort.statusUpdates).singleElement().satisfies(update -> {
+            assertThat(update.dispatchStatus()).isEqualTo(FulfillmentDispatchStatus.FAILED);
+            assertThat(update.orderStatus()).isEqualTo(6);
+            assertThat(update.dataStatus()).isEqualTo("PROCESSED");
+        });
+        assertThat(notifyTaskPort.createdTasks).singleElement().satisfies(task ->
+                assertThat(task.taskId()).isEqualTo("notify-order-ORDER-1-6"));
+        assertThat(balanceReleasePort.commands).singleElement().satisfies(command -> {
+            assertThat(command.releaseEventId()).isEqualTo("supplier-query-ORDER-1");
+            assertThat(command.amount()).isEqualTo(5200L);
+        });
+        assertThat(balanceDeltaOutboxPort.commands).singleElement().satisfies(command -> {
+            assertThat(command.deltaAmount()).isEqualTo(5200L);
+            assertThat(command.deltaType()).isEqualTo("RELEASE");
+        });
+        assertThat(orderPort.balanceReleasedOrderIds).containsExactly("ORDER-1");
+        assertThat(frequencyPort.releasedOrderIds).containsExactly("ORDER-1");
     }
 
     @Test
@@ -411,6 +585,21 @@ class RechargeOutboxWorkerServiceTest {
                 "");
     }
 
+    private static RechargeOutboxEvent supplierQueryOutbox() {
+        return new RechargeOutboxEvent(
+                "supplier-query-ORDER-1",
+                OutboxEventType.SUPPLIER_QUERY,
+                "A36",
+                "ORDER-1",
+                "OUT-1",
+                "{\"order_id\":\"ORDER-1\"}",
+                0,
+                10,
+                7L,
+                LocalDateTime.of(2026, 7, 8, 11, 20),
+                "");
+    }
+
     private static RechargeOutboxEvent exhaustedOutbox(OutboxEventType eventType) {
         return new RechargeOutboxEvent(
                 "dispatch-ORDER-1",
@@ -453,6 +642,42 @@ class RechargeOutboxWorkerServiceTest {
                 5200L,
                 "https://merchant.example/notify",
                 2,
+                "DB_PERSISTED",
+                "PASSED",
+                true,
+                true);
+    }
+
+    private static RechargeFulfillmentOrder supplierAcceptedOrder() {
+        return new RechargeFulfillmentOrder(
+                "ORDER-1",
+                "OUT-1",
+                "A36",
+                "13800138000",
+                "PARENT-1",
+                "SKU-1",
+                "FNK_CGS_BX",
+                5200L,
+                "https://merchant.example/notify",
+                13,
+                "DB_PERSISTED",
+                "PASSED",
+                true,
+                true);
+    }
+
+    private static RechargeFulfillmentOrder successfulOrder() {
+        return new RechargeFulfillmentOrder(
+                "ORDER-1",
+                "OUT-1",
+                "A36",
+                "13800138000",
+                "PARENT-1",
+                "SKU-1",
+                "FNK_CGS_BX",
+                5200L,
+                "https://merchant.example/notify",
+                12,
                 "DB_PERSISTED",
                 "PASSED",
                 true,
@@ -558,11 +783,20 @@ class RechargeOutboxWorkerServiceTest {
     private static final class FakeSupplierGatewayPort implements RechargeSupplierGatewayPort {
 
         private final SupplierGatewayResponse response;
+        private final SupplierGatewayResponse queryResponse;
         private final List<SupplierDispatchGatewayRequest> dispatchRequests = new ArrayList<>();
+        private final List<SupplierQueryGatewayRequest> queryRequests = new ArrayList<>();
         private final List<SupplierInvalidGatewayRequest> invalidRequests = new ArrayList<>();
 
         private FakeSupplierGatewayPort(SupplierGatewayResponse response) {
+            this(response, response);
+        }
+
+        private FakeSupplierGatewayPort(
+                SupplierGatewayResponse response,
+                SupplierGatewayResponse queryResponse) {
             this.response = response;
+            this.queryResponse = queryResponse;
         }
 
         @Override
@@ -572,9 +806,25 @@ class RechargeOutboxWorkerServiceTest {
         }
 
         @Override
+        public SupplierGatewayResponse query(SupplierQueryGatewayRequest request) {
+            queryRequests.add(request);
+            return queryResponse;
+        }
+
+        @Override
         public SupplierGatewayResponse invalid(SupplierInvalidGatewayRequest request) {
             invalidRequests.add(request);
             return response;
+        }
+    }
+
+    private static final class FakeSupplierQueryOutboxPort implements SupplierQueryOutboxPort {
+
+        private final List<SupplierQueryOutboxCommand> commands = new ArrayList<>();
+
+        @Override
+        public void enqueueSupplierQuery(SupplierQueryOutboxCommand command) {
+            commands.add(command);
         }
     }
 

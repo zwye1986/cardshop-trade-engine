@@ -14,6 +14,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerSettings;
 import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
+import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.recharge.V1MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import java.time.Clock;
@@ -54,6 +55,7 @@ public class TradeEngineFulfillmentAutoConfiguration {
             RechargeOutboxPort.class,
             RechargeFulfillmentOrderPort.class,
             RechargeSupplierGatewayPort.class,
+            SupplierQueryOutboxPort.class,
             DirectRechargeFrequencyPort.class,
             BalanceDeltaFlushOutboxPort.class,
             BalanceReservationReleasePort.class,
@@ -65,6 +67,7 @@ public class TradeEngineFulfillmentAutoConfiguration {
             RechargeOutboxPort outboxPort,
             RechargeFulfillmentOrderPort orderPort,
             RechargeSupplierGatewayPort supplierGatewayPort,
+            SupplierQueryOutboxPort supplierQueryOutboxPort,
             DirectRechargeFrequencyPort frequencyPort,
             BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
             BalanceReservationReleasePort balanceReservationReleasePort,
@@ -80,6 +83,7 @@ public class TradeEngineFulfillmentAutoConfiguration {
                 outboxPort,
                 orderPort,
                 supplierGatewayPort,
+                supplierQueryOutboxPort,
                 frequencyPort,
                 balanceDeltaFlushOutboxPort,
                 balanceReservationReleasePort,

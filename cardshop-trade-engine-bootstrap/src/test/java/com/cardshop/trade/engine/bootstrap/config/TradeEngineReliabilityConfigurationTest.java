@@ -295,6 +295,12 @@ class TradeEngineReliabilityConfigurationTest {
                     }
 
                     @Override
+                    public com.cardshop.trade.engine.application.recharge.SupplierGatewayResponse query(
+                            com.cardshop.trade.engine.application.recharge.SupplierQueryGatewayRequest request) {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    @Override
                     public com.cardshop.trade.engine.application.recharge.SupplierGatewayResponse invalid(
                             com.cardshop.trade.engine.application.recharge.SupplierInvalidGatewayRequest request) {
                         throw new UnsupportedOperationException();

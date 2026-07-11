@@ -10,5 +10,12 @@ public interface RechargeSupplierGatewayPort {
 
     SupplierGatewayResponse dispatch(SupplierDispatchGatewayRequest request);
 
+    /**
+     * 查询供应商已受理订单的最新状态。
+     *
+     * <p>查询仍由 Outbox Worker 异步调用，不能在商户接口线程同步修改订单状态。
+     */
+    SupplierGatewayResponse query(SupplierQueryGatewayRequest request);
+
     SupplierGatewayResponse invalid(SupplierInvalidGatewayRequest request);
 }
