@@ -61,9 +61,11 @@ import com.cardshop.trade.engine.infrastructure.persistence.V1DepartProductReade
 import com.cardshop.trade.engine.infrastructure.persistence.V1MerchantProfileReader;
 import com.cardshop.trade.engine.infrastructure.persistence.V1ProductReader;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartProductMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McProductMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
@@ -489,15 +491,35 @@ public class TradeEngineInfrastructureConfiguration {
     }
 
     @Bean
-    @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class, McOrderSupplierFlowMapper.class})
+    @ConditionalOnBean({
+            McOrderMapper.class,
+            RechargeOrderExtMapper.class,
+            McOrderSupplierFlowMapper.class,
+            McDepartProductMapper.class,
+            McProductMapper.class
+    })
     @ConditionalOnMissingBean(RechargeFulfillmentOrderPort.class)
     public RechargeFulfillmentOrderPort rechargeFulfillmentOrderPort(
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper,
+            McDepartProductMapper departProductMapper,
+            McProductMapper productMapper,
             ObjectMapper objectMapper,
             Clock clock) {
-        return new MybatisRechargeFulfillmentOrderAdapter(orderMapper, extMapper, flowMapper, objectMapper, clock);
+        /*
+         * 参见详细设计「9.1 派单 Outbox」。供应商 failover 必须读取 mc_depart_product/mc_product
+         * 才能复刻旧卡管候选排序并执行健康直充过滤；如果商品 Mapper 不在条件里，适配器会退化为只派当前渠道。
+         * 普通配置类用于 slice test 和显式 Mapper 局部上下文，因此也要把商品 Mapper 放进条件和构造参数。
+         */
+        return new MybatisRechargeFulfillmentOrderAdapter(
+                orderMapper,
+                extMapper,
+                flowMapper,
+                departProductMapper,
+                productMapper,
+                objectMapper,
+                clock);
     }
 
     @Bean

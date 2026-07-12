@@ -91,7 +91,7 @@ class V1MerchantAndProductAdapterTest {
     }
 
     @Test
-    void selectsDeterministicProductCandidateWithoutJoinQuery() {
+    void selectsStockProductBeforeHigherSortNonStockCandidateLikeLegacyListByProductId() {
         V1DepartProductReader departProductReader = (orgCode, parentProductId) -> List.of(
                 departProduct(3L, "73301291", 5200L, 10L),
                 departProduct(2L, "73301290", 5200L, 20L),
@@ -109,8 +109,81 @@ class V1MerchantAndProductAdapterTest {
 
         assertThat(selection.validationStatus()).isEqualTo(ValidationStatus.PASSED);
         assertThat(selection.parentProductId()).isEqualTo("73301280");
-        assertThat(selection.selectedProductId()).isEqualTo("73301290");
+        assertThat(selection.selectedProductId()).isEqualTo("73301291");
+        assertThat(selection.supplierChannel()).isEqualTo("stock");
         assertThat(selection.salePriceCent()).isEqualTo(5200L);
+        assertThat(selection.productName()).isEqualTo("话费50元A");
+        assertThat(selection.productConfigVersion()).isEqualTo(12L);
+    }
+
+    @Test
+    void usesHighestPriceSnapshotWhileLegacyDispatchOrderSelectsSupplierCandidate() {
+        V1DepartProductReader departProductReader = (orgCode, parentProductId) -> List.of(
+                departProduct(1L, "73301290", 5300L, 20L),
+                departProduct(2L, "73301291", 5200L, 10L));
+        V1ProductReader productReader = productIds -> List.of(
+                product("73301290", "TF_KA", "话费50元B", 1, "codekey", 5000L, 4900L, 11L),
+                product("73301291", "stock", "话费50元A", 1, "codekey", 5000L, 4900L, 12L));
+
+        MybatisV1ProductCandidateSelector selector = new MybatisV1ProductCandidateSelector(
+                departProductReader,
+                productReader);
+
+        V1ProductSelection selection = selector.select("A36", "73301280", "18186222336");
+
+        assertThat(selection.validationStatus()).isEqualTo(ValidationStatus.PASSED);
+        assertThat(selection.selectedProductId()).isEqualTo("73301291");
+        assertThat(selection.supplierChannel()).isEqualTo("stock");
+        assertThat(selection.productName()).isEqualTo("话费50元A");
+        assertThat(selection.salePriceCent()).isEqualTo(5300L);
+        assertThat(selection.faceValueCent()).isEqualTo(5000L);
+        assertThat(selection.basePriceCent()).isEqualTo(4900L);
+        assertThat(selection.productConfigVersion()).isEqualTo(11L);
+    }
+
+    @Test
+    void excludesNonRechargeProductFromActualDispatchCandidate() {
+        V1DepartProductReader departProductReader = (orgCode, parentProductId) -> List.of(
+                departProduct(1L, "73301290", 5300L, 10L),
+                departProduct(2L, "73301291", 5200L, 99L));
+        V1ProductReader productReader = productIds -> List.of(
+                product("73301290", "TF_KA", "话费50元直充", 1, "codekey", 5000L, 4900L, 11L),
+                product("73301291", "stock", "非直充库存商品", 0, "code", 5000L, 4900L, 12L));
+
+        MybatisV1ProductCandidateSelector selector = new MybatisV1ProductCandidateSelector(
+                departProductReader,
+                productReader);
+
+        V1ProductSelection selection = selector.select("A36", "73301280", "18186222336");
+
+        assertThat(selection.validationStatus()).isEqualTo(ValidationStatus.PASSED);
+        assertThat(selection.selectedProductId()).isEqualTo("73301290");
+        assertThat(selection.supplierChannel()).isEqualTo("TF_KA");
+        assertThat(selection.productType()).isEqualTo(1);
+        assertThat(selection.salePriceCent()).isEqualTo(5300L);
+        assertThat(selection.productConfigVersion()).isEqualTo(11L);
+    }
+
+    @Test
+    void excludesBelowBasePriceProductFromActualDispatchCandidate() {
+        V1DepartProductReader departProductReader = (orgCode, parentProductId) -> List.of(
+                departProduct(1L, "73301290", 5300L, 10L),
+                departProduct(2L, "73301291", 4800L, 99L));
+        V1ProductReader productReader = productIds -> List.of(
+                product("73301290", "TF_KA", "话费50元健康商品", 1, "codekey", 5000L, 4900L, 11L),
+                product("73301291", "stock", "低于底价库存商品", 1, "codekey", 5000L, 4900L, 12L));
+
+        MybatisV1ProductCandidateSelector selector = new MybatisV1ProductCandidateSelector(
+                departProductReader,
+                productReader);
+
+        V1ProductSelection selection = selector.select("A36", "73301280", "18186222336");
+
+        assertThat(selection.validationStatus()).isEqualTo(ValidationStatus.PASSED);
+        assertThat(selection.selectedProductId()).isEqualTo("73301290");
+        assertThat(selection.supplierChannel()).isEqualTo("TF_KA");
+        assertThat(selection.salePriceCent()).isEqualTo(5300L);
+        assertThat(selection.basePriceCent()).isEqualTo(4900L);
         assertThat(selection.productConfigVersion()).isEqualTo(11L);
     }
 
