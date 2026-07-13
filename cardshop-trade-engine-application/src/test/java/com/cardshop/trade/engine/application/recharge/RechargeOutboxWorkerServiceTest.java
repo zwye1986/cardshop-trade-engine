@@ -400,66 +400,6 @@ class RechargeOutboxWorkerServiceTest {
     }
 
     @Test
-    void dispatchFailureTriesNextLegacyCandidateBeforeTerminalFailure() {
-        FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
-        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(dispatchableOrder())
-                .withDispatchCandidates(List.of(
-                        candidate("SKU-1", "FNK_CGS_BX", "话费50元原渠道"),
-                        candidate("SKU-2", "stock", "话费50元库存")));
-        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(List.of(
-                SupplierGatewayResponse.failed("SUP-FAIL-1", "E_SUP", "supplier rejected", "{\"status\":\"FAILED\"}"),
-                SupplierGatewayResponse.success("SUP-1002", "0", "success", "{\"status\":\"SUCCESS\"}")));
-        FakeFrequencyPort frequencyPort = new FakeFrequencyPort(true);
-        FakeNotifyTaskPort notifyTaskPort = new FakeNotifyTaskPort();
-        FakeBalanceDeltaOutboxPort balanceDeltaOutboxPort = new FakeBalanceDeltaOutboxPort();
-        FakeBalanceReleasePort balanceReleasePort = new FakeBalanceReleasePort(BalanceReservationReleaseResult.releasedSuccess());
-
-        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
-                outboxPort,
-                orderPort,
-                supplierGateway,
-                frequencyPort,
-                balanceDeltaOutboxPort,
-                balanceReleasePort,
-                notifyTaskPort,
-                new FixedNotifyPayloadSigner(),
-                CLOCK,
-                settings());
-
-        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
-
-        assertThat(result.succeeded()).isEqualTo(1);
-        assertThat(supplierGateway.dispatchRequests)
-                .extracting(SupplierDispatchGatewayRequest::supplierChannel)
-                .containsExactly("FNK_CGS_BX", "stock");
-        assertThat(supplierGateway.dispatchRequests)
-                .extracting(SupplierDispatchGatewayRequest::selectedProductId)
-                .containsExactly("SKU-1", "SKU-2");
-        assertThat(orderPort.flowStarts)
-                .extracting(SupplierFlowStartCommand::channel)
-                .containsExactly("FNK_CGS_BX", "stock");
-        assertThat(orderPort.flowUpdates)
-                .extracting(SupplierFlowUpdateCommand::status)
-                .containsExactly("fail", "success");
-        assertThat(orderPort.candidateSwitches).singleElement().satisfies(command -> {
-            assertThat(command.orderId()).isEqualTo("ORDER-1");
-            assertThat(command.selectedProductId()).isEqualTo("SKU-2");
-            assertThat(command.supplierChannel()).isEqualTo("stock");
-            assertThat(command.productName()).isEqualTo("话费50元库存");
-            assertThat(command.reason()).contains("supplier rejected");
-        });
-        assertThat(orderPort.statusUpdates)
-                .extracting(OrderFulfillmentStatusUpdate::dispatchStatus)
-                .containsExactly(FulfillmentDispatchStatus.DISPATCHING, FulfillmentDispatchStatus.SUCCESS);
-        assertThat(notifyTaskPort.createdTasks).singleElement().satisfies(task ->
-                assertThat(task.payload()).containsEntry("orderStatus", "12"));
-        assertThat(balanceReleasePort.commands).isEmpty();
-        assertThat(balanceDeltaOutboxPort.commands).isEmpty();
-        assertThat(frequencyPort.releasedOrderIds).containsExactly("ORDER-1");
-        assertThat(outboxPort.successes).containsExactly("dispatch-ORDER-1");
-    }
-
-    @Test
     void dispatchRetryableSupplierFailureKeepsOutboxRetriableWithoutTerminalSideEffects() {
         FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
         FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(dispatchableOrder());
@@ -763,13 +703,6 @@ class RechargeOutboxWorkerServiceTest {
                 true);
     }
 
-    private static RechargeFulfillmentCandidate candidate(
-            String selectedProductId,
-            String supplierChannel,
-            String productName) {
-        return new RechargeFulfillmentCandidate(selectedProductId, supplierChannel, productName);
-    }
-
     private static final class FakeOutboxPort implements RechargeOutboxPort {
 
         private final RechargeOutboxEvent event;
@@ -809,13 +742,11 @@ class RechargeOutboxWorkerServiceTest {
         }
     }
 
-    private static final class FakeFulfillmentOrderPort implements RechargeFulfillmentOrderPort {
+        private static final class FakeFulfillmentOrderPort implements RechargeFulfillmentOrderPort {
 
         private final RechargeFulfillmentOrder order;
-        private List<RechargeFulfillmentCandidate> dispatchCandidates = List.of();
         private final List<SupplierFlowStartCommand> flowStarts = new ArrayList<>();
         private final List<SupplierFlowUpdateCommand> flowUpdates = new ArrayList<>();
-        private final List<RechargeFulfillmentCandidateSwitchCommand> candidateSwitches = new ArrayList<>();
         private final List<OrderFulfillmentStatusUpdate> statusUpdates = new ArrayList<>();
         private final List<String> balanceReleasedOrderIds = new ArrayList<>();
 
@@ -823,22 +754,9 @@ class RechargeOutboxWorkerServiceTest {
             this.order = order;
         }
 
-        private FakeFulfillmentOrderPort withDispatchCandidates(List<RechargeFulfillmentCandidate> dispatchCandidates) {
-            this.dispatchCandidates = dispatchCandidates;
-            return this;
-        }
-
         @Override
         public Optional<RechargeFulfillmentOrder> findByOrderId(String orderId) {
             return Optional.of(order);
-        }
-
-        @Override
-        public List<RechargeFulfillmentCandidate> findDispatchCandidates(RechargeFulfillmentOrder order) {
-            if (dispatchCandidates.isEmpty()) {
-                return RechargeFulfillmentOrderPort.super.findDispatchCandidates(order);
-            }
-            return dispatchCandidates;
         }
 
         @Override
@@ -850,11 +768,6 @@ class RechargeOutboxWorkerServiceTest {
         @Override
         public void updateSupplierFlow(SupplierFlowUpdateCommand command) {
             flowUpdates.add(command);
-        }
-
-        @Override
-        public void switchFulfillmentCandidate(RechargeFulfillmentCandidateSwitchCommand command) {
-            candidateSwitches.add(command);
         }
 
         @Override

@@ -17,21 +17,16 @@ import java.util.stream.Collectors;
  * 基于旧卡管商品表的 V1 直充商品候选选择器。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
- * 旧卡管 `listByProductId` 通过多表关联取商户可售子商品；本实现拆成两次单表查询后在内存里组装，
- * 并按确定性规则选择候选，避免多节点因数据库默认顺序不同选到不同渠道。
- *
- * <p>这里要同时兼容两类历史语义：一是旧卡管按 `stock` 优先、`sort` 倒序选择实际派单子商品；
- * 二是旧卡管用同一父商品下最高商户售价冻结订单金额、面值、券类型和商品配置版本。为避免这两个快照跨到
- * 非直充或低于底价的子商品，新链路先收敛出“健康直充候选”集合，再分别计算派单目标和最高价金额快照。
+ * `/v1/cardapi/order/createRechargeOrder` 接口文档中的 {@code product_id} 是平台提供的产品编号，
+ * 新链路按该编号同时匹配 {@code mc_depart_product.product_id} 和 {@code mc_product.product_id}。
+ * 旧卡管按 {@code parent_id} 拉取 sibling 商品、再按 stock/sort 或最高价择优的实现存在价格/类型/派单目标
+ * 错位风险，本选择器不再复刻那段语义。
  */
 public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSelector {
 
     private static final int DIRECT_RECHARGE_PRODUCT_TYPE = 1;
     private static final long DEFAULT_SORT_VALUE = 0L;
     private static final long DEFAULT_PRODUCT_CONFIG_VERSION = 1L;
-    private static final int STOCK_CHANNEL_PRIORITY = 0;
-    private static final int DEFAULT_CHANNEL_PRIORITY = 99;
-    private static final String STOCK_CHANNEL = "stock";
 
     private final V1DepartProductReader departProductReader;
     private final V1ProductReader productReader;
@@ -44,126 +39,96 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
     }
 
     @Override
-    public V1ProductSelection select(String orgCode, String parentProductId, String account) {
-        List<McDepartProductDO> departProducts = departProductReader.selectEnabledByOrgAndParent(orgCode, parentProductId);
+    public V1ProductSelection select(String orgCode, String productId, String account) {
+        List<McDepartProductDO> departProducts = departProductReader.selectEnabledByOrgAndProduct(orgCode, productId);
         if (departProducts.isEmpty()) {
-            return V1ProductSelection.failed(parentProductId, "PRODUCT_NO_PERMISSION", "商品无权限", 1L);
+            return V1ProductSelection.failed(productId, "PRODUCT_NO_PERMISSION", "商品无权限", 1L);
         }
 
-        List<String> productIds = departProducts.stream()
+        List<String> productIds = exactDepartProducts(productId, departProducts).stream()
                 .map(McDepartProductDO::getProductId)
                 .filter(Objects::nonNull)
                 .distinct()
                 .toList();
         if (productIds.isEmpty()) {
-            return V1ProductSelection.failed(parentProductId, "PRODUCT_NO_PERMISSION", "商品无权限", 1L);
+            return V1ProductSelection.failed(productId, "PRODUCT_NO_PERMISSION", "商品无权限", 1L);
         }
         /*
          * 参见详细设计「5. Domain 状态与业务规则」：Mapper 层只做单表查询，避免在新服务中复制旧 XML join。
-         * 这里用 product_id 把 mc_depart_product 的商户售价和 mc_product 的供应商配置重新拼成候选快照。
+         * 这里用同一个请求 product_id 把商户售价和商品供应商配置重新拼成唯一快照；后续所有价格、类型、
+         * 面值、版本和派单渠道都来自这个快照，不能再跨 sibling 商品混用。
          */
         Map<String, McProductDO> products = productReader.selectEnabledByProductIds(productIds).stream()
                 .collect(Collectors.toMap(McProductDO::getProductId, Function.identity(), (left, right) -> left));
-        List<Candidate> candidates = departProducts.stream()
+        List<Candidate> candidates = exactDepartProducts(productId, departProducts).stream()
                 .map(departProduct -> new Candidate(departProduct, products.get(departProduct.getProductId())))
                 .filter(candidate -> candidate.product() != null)
-                .sorted(legacyDispatchComparator())
+                .sorted(exactProductDuplicateComparator())
                 .toList();
         if (candidates.isEmpty()) {
-            return V1ProductSelection.failed(parentProductId, "PRODUCT_NO_PERMISSION", "商品无权限", 1L);
+            return V1ProductSelection.failed(productId, "PRODUCT_NO_PERMISSION", "商品无权限", 1L);
         }
 
-        /*
-         * 旧卡管 validateProductVo 会先按 listByProductId 的 stock/sort 顺序拿到候选列表，
-         * 再用 max(price) 的候选做金额快照；真正写入 order.produt_code/url 的是循环中第一个可发货候选。
-         * 新链路按详细设计「5. Domain 状态与业务规则」只处理 product_type=1，且不能把低于底价的
-         * 子商品放入派单集合，因此先过滤健康直充候选，再在同一集合里分别取派单候选和最高价快照。
-         */
-        List<Candidate> healthyCandidates = candidates.stream()
-                .filter(MybatisV1ProductCandidateSelector::isDirectRechargeProduct)
-                .filter(MybatisV1ProductCandidateSelector::isPriceHealthy)
-                .toList();
-        if (healthyCandidates.isEmpty()) {
-            return invalidSelection(parentProductId, candidates);
+        Candidate selected = candidates.getFirst();
+        V1ProductSelection snapshot = toSelection(productId, selected, ValidationStatus.PASSED, "", "");
+        if (productType(selected.product()) != DIRECT_RECHARGE_PRODUCT_TYPE) {
+            return toSelection(productId, selected, ValidationStatus.FAILED, "NOT_RECHARGE_PRODUCT", "该商品不是直充产品！");
         }
-
-        Candidate selected = healthyCandidates.getFirst();
-        Candidate pricedSnapshot = highestPriceCandidate(healthyCandidates, selected);
-        V1ProductSelection snapshot = toSelection(parentProductId, selected, pricedSnapshot, ValidationStatus.PASSED, "", "");
+        if (price(selected.departProduct()) < basePrice(selected.product())) {
+            return toSelection(productId, selected, ValidationStatus.FAILED, "PRICE_INVALID", "卡劵价格异常！");
+        }
         return snapshot;
     }
 
-    private static V1ProductSelection invalidSelection(String parentProductId, List<Candidate> candidates) {
+    private static List<McDepartProductDO> exactDepartProducts(String productId, List<McDepartProductDO> departProducts) {
         /*
-         * 候选整体无健康直充商品时仍要返回一个可落库的失败快照，保持失败订单可追溯。
-         * 失败原因优先按最高价候选判断，是为了复刻旧卡管 validateProductVo 对商品类型和价格异常的提示口径；
-         * 该结果不会进入供应商派单，因为 validationStatus 会被写成 FAILED。参见详细设计「5. Domain 状态与业务规则」。
+         * 生产 Mapper 已经使用 product_id 精确过滤；这里再做一次防御性过滤，是为了防止测试替身、
+         * 未来局部实现或数据访问回退误把同父商品 sibling 返回给 selector。只要不是请求 product_id，
+         * 就不能参与受理价格和供应商路由。参见详细设计「5. Domain 状态与业务规则」。
          */
-        Candidate selected = candidates.getFirst();
-        Candidate pricedSnapshot = highestPriceCandidate(candidates, selected);
-        if (!isDirectRechargeProduct(pricedSnapshot)) {
-            return toSelection(parentProductId, selected, pricedSnapshot,
-                    ValidationStatus.FAILED, "NOT_RECHARGE_PRODUCT", "该商品不是直充产品！");
-        }
-        if (!isPriceHealthy(pricedSnapshot)) {
-            return toSelection(parentProductId, selected, pricedSnapshot,
-                    ValidationStatus.FAILED, "PRICE_INVALID", "卡劵价格异常！");
-        }
-        return toSelection(parentProductId, selected, pricedSnapshot,
-                ValidationStatus.FAILED, "PRODUCT_NO_PERMISSION", "商品无权限");
+        return departProducts.stream()
+                .filter(departProduct -> Objects.equals(productId, departProduct.getProductId()))
+                .toList();
     }
 
-    private static Candidate highestPriceCandidate(List<Candidate> candidates, Candidate fallback) {
+    private static Comparator<Candidate> exactProductDuplicateComparator() {
         /*
-         * candidates 已按 legacyDispatchComparator 排过序；max(price) 在价格并列时保留 encounter order 的
-         * 第一个元素，因此 productConfigVersion 不依赖数据库默认返回顺序。参见详细设计「5. Domain 状态与业务规则」。
-         */
-        return candidates.stream()
-                .max(Comparator.comparingLong(candidate -> price(candidate.departProduct())))
-                .orElse(fallback);
-    }
-
-    private static Comparator<Candidate> legacyDispatchComparator() {
-        /*
-         * 旧卡管 `listByProductId` 的 ORDER BY 是 stock 渠道优先、sort 倒序。
-         * productId 和关系表 id 只作为确定性兜底，防止同 sort 时不同数据库实例返回顺序不同，
-         * 进而造成同一父商品在多实例间派到不同供应商。参见详细设计「5. Domain 状态与业务规则」。
+         * 正常数据下同一商户同一 product_id 只有一条启用授权。若旧库出现重复脏数据，仍要给出稳定结果：
+         * 先取售价最高的授权，避免低价重复行导致误判低于底价；再按 sort/id 兜底，避免数据库默认顺序
+         * 让 productConfigVersion 或订单金额在多实例间抖动。这里的排序只处理“同一 product_id 的重复授权”，
+         * 绝不允许 sibling 商品参与选择。参见详细设计「5. Domain 状态与业务规则」。
          */
         return Comparator
-                .comparingInt((Candidate candidate) -> channelPriority(candidate.product().getChannel()))
+                .comparingLong((Candidate candidate) -> price(candidate.departProduct())).reversed()
                 .thenComparing(Comparator.comparingLong((Candidate candidate) -> sort(candidate.departProduct())).reversed())
                 .thenComparing(candidate -> defaultString(candidate.product().getProductId()))
                 .thenComparingLong(candidate -> id(candidate.departProduct()));
     }
 
     private static V1ProductSelection toSelection(
-            String parentProductId,
+            String productId,
             Candidate selected,
-            Candidate pricedSnapshot,
             ValidationStatus validationStatus,
             String failCode,
             String failReason) {
         McDepartProductDO selectedDepartProduct = selected.departProduct();
         McProductDO selectedProduct = selected.product();
-        McDepartProductDO pricedDepartProduct = pricedSnapshot.departProduct();
-        McProductDO pricedProduct = pricedSnapshot.product();
         /*
-         * `selected` 写入旧表 produt_code/supplier_channel/product_name，代表真实供应商履约目标；
-         * `pricedSnapshot` 写入 order_price/product_type/coupon_type/value/version，代表旧卡管最高价冻结快照。
-         * 二者允许不同，但只允许来自同一个健康直充候选集合，避免金额和派单商品跨到非直充或低价异常配置。
+         * 接口文档 product_id 精确匹配后，Redis product_id、旧表 parent_id、旧表 produt_code 和供应商渠道
+         * 都来自同一个商品快照。这样类型校验、售价/底价校验、扣款金额、失败退款金额和实际派单商品保持一致。
          * 参见详细设计「5. Domain 状态与业务规则」。
          */
         return new V1ProductSelection(
-                parentProductId,
+                productId,
                 selectedDepartProduct.getProductId(),
                 defaultString(selectedProduct.getChannel()),
                 defaultString(selectedProduct.getProductName()),
-                defaultString(pricedProduct.getCouponType()),
-                productType(pricedProduct),
-                price(pricedDepartProduct),
-                value(pricedProduct),
-                basePrice(pricedProduct),
-                version(pricedProduct),
+                defaultString(selectedProduct.getCouponType()),
+                productType(selectedProduct),
+                price(selectedDepartProduct),
+                value(selectedProduct),
+                basePrice(selectedProduct),
+                version(selectedProduct),
                 validationStatus,
                 failCode,
                 failReason);
@@ -179,14 +144,6 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
 
     private static long id(McDepartProductDO departProduct) {
         return departProduct.getId() == null ? Long.MAX_VALUE : departProduct.getId();
-    }
-
-    private static boolean isDirectRechargeProduct(Candidate candidate) {
-        return productType(candidate.product()) == DIRECT_RECHARGE_PRODUCT_TYPE;
-    }
-
-    private static boolean isPriceHealthy(Candidate candidate) {
-        return price(candidate.departProduct()) >= basePrice(candidate.product());
     }
 
     private static long value(McProductDO product) {
@@ -205,10 +162,6 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
         return product.getVersion() == null || product.getVersion() <= 0
                 ? DEFAULT_PRODUCT_CONFIG_VERSION
                 : product.getVersion();
-    }
-
-    private static int channelPriority(String channel) {
-        return STOCK_CHANNEL.equalsIgnoreCase(channel) ? STOCK_CHANNEL_PRIORITY : DEFAULT_CHANNEL_PRIORITY;
     }
 
     private static String defaultString(String value) {

@@ -245,7 +245,7 @@ class TradeEngineInfrastructureConfigurationTest {
     @Test
     void createsV1ProductCandidateSelectorWhenReadersExist() {
         contextRunner
-                .withBean(V1DepartProductReader.class, () -> (orgCode, parentProductId) -> List.of())
+                .withBean(V1DepartProductReader.class, () -> (orgCode, productId) -> List.of())
                 .withBean(V1ProductReader.class, () -> productIds -> List.of())
                 .run(context -> {
                     assertThat(context).hasSingleBean(V1ProductCandidateSelector.class);
@@ -631,7 +631,7 @@ class TradeEngineInfrastructureConfigurationTest {
 
         @Bean
         V1DepartProductReader v1DepartProductReader() {
-            return (orgCode, parentProductId) -> List.of();
+            return (orgCode, productId) -> List.of();
         }
 
         @Bean

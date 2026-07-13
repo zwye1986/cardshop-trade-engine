@@ -23,7 +23,7 @@ class AcceptRechargeOrderCommandTest {
         assertThat(command.outOrderSn()).isEqualTo("OUT-1001");
         assertThat(command.orderId()).isEqualTo("202607051337458961474292");
         assertThat(command.productId()).isEqualTo("73301280");
-        assertThat(command.selectedProductId()).isEqualTo("73301289");
+        assertThat(command.selectedProductId()).isEqualTo("73301280");
         assertThat(command.requestHash()).isEqualTo("hash-v1");
         assertThat(command.requestHashVersion()).isEqualTo("v1");
         assertThat(command.candidateValidationStatus()).isEqualTo(ValidationStatus.PASSED);
@@ -39,7 +39,7 @@ class AcceptRechargeOrderCommandTest {
                         "OUT-1001",
                         "202607051337458961474292",
                         "73301280",
-                        "73301289",
+                        "73301280",
                         "18186222336",
                         "http://merchant.example/callback",
                         "nonce-12345678901234567890123456",
@@ -72,7 +72,7 @@ class AcceptRechargeOrderCommandTest {
                 "OUT-1001",
                 "202607051337458961474292",
                 "73301280",
-                "73301289",
+                "73301280",
                 "18186222336",
                 "http://merchant.example/callback",
                 "nonce-12345678901234567890123456",

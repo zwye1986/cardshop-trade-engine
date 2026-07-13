@@ -47,7 +47,7 @@ public class McOrderDO {
     private String productCode;
 
     /**
-     * 父商品编码。
+     * 外部请求 product_id。旧字段名为 parent_id，但新链路不再按父商品寻找 sibling 商品。
      */
     @TableField("parent_id")
     private String parentId;

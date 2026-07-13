@@ -10,7 +10,6 @@ import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.cardshop.trade.engine.application.recharge.FulfillmentDispatchStatus;
 import com.cardshop.trade.engine.application.recharge.OrderFulfillmentStatusUpdate;
-import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentCandidateSwitchCommand;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
@@ -28,8 +27,8 @@ import org.mockito.ArgumentCaptor;
 /**
  * MyBatis 供应商履约订单适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。候选切换和终态回写
- * 需要保持旧表 `mc_order` 的排障字段一致，避免供应商实际履约商品、商品名和流水号互相错位。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。终态回写需要保持旧表
+ * `mc_order` 的排障字段一致，便于按订单快速定位最后一次供应商流水。
  */
 class MybatisRechargeFulfillmentOrderAdapterTest {
 
@@ -38,24 +37,6 @@ class MybatisRechargeFulfillmentOrderAdapterTest {
         MybatisConfiguration configuration = new MybatisConfiguration();
         TableInfoHelper.initTableInfo(new MapperBuilderAssistant(configuration, ""), McOrderDO.class);
         TableInfoHelper.initTableInfo(new MapperBuilderAssistant(configuration, ""), RechargeOrderExtDO.class);
-    }
-
-    @Test
-    void switchCandidateAlwaysOverwritesProductNameEvenWhenBlank() {
-        McOrderMapper orderMapper = mock(McOrderMapper.class);
-        MybatisRechargeFulfillmentOrderAdapter adapter = adapter(orderMapper);
-
-        adapter.switchFulfillmentCandidate(new RechargeFulfillmentCandidateSwitchCommand(
-                "ORDER-1001",
-                "SKU-STOCK",
-                "stock",
-                "",
-                "切换到库存渠道"));
-
-        ArgumentCaptor<LambdaUpdateWrapper<McOrderDO>> wrapperCaptor =
-                ArgumentCaptor.forClass(LambdaUpdateWrapper.class);
-        verify(orderMapper).update(isNull(), wrapperCaptor.capture());
-        assertThat(wrapperCaptor.getValue().getSqlSet()).contains("product_name");
     }
 
     @Test

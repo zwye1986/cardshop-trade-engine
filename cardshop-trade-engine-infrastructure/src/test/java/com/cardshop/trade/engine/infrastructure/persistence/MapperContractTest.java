@@ -88,6 +88,8 @@ class MapperContractTest {
         assertThat(departProductMapper)
                 .contains("@Select")
                 .contains("from mc_depart_product")
+                .contains("and product_id = #{productId}")
+                .doesNotContain("and parent_id = #{parentProductId}")
                 .doesNotContain("selectList(")
                 .doesNotContain("LambdaQueryWrapper")
                 .doesNotContainIgnoringCase(" join ");

@@ -6,10 +6,10 @@ import com.cardshop.trade.engine.domain.order.ValidationStatus;
  * V1 直充商品选择结果。
  *
  * <p>字段含义对应 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
- * 即使 Java 候选校验失败，也会保留父商品、失败码和配置版本，让 Redis Lua 在验签通过后写入失败订单快照。
+ * 即使 Java 商品校验失败，也会保留请求商品、失败码和配置版本，让 Redis Lua 在验签通过后写入失败订单快照。
  *
- * @param parentProductId 调用方传入的父商品编码
- * @param selectedProductId 实际派单子商品编码
+ * @param productId 调用方传入的接口 {@code product_id}
+ * @param selectedProductId 实际派单商品编码；按当前接口语义必须和 {@code productId} 相同
  * @param supplierChannel 供应商渠道
  * @param productName 商品名称快照
  * @param couponType 券码类型兼容字段
@@ -23,7 +23,7 @@ import com.cardshop.trade.engine.domain.order.ValidationStatus;
  * @param failReason Java 候选失败原因
  */
 public record V1ProductSelection(
-        String parentProductId,
+        String productId,
         String selectedProductId,
         String supplierChannel,
         String productName,
@@ -38,7 +38,7 @@ public record V1ProductSelection(
         String failReason) {
 
     public static V1ProductSelection passed(
-            String parentProductId,
+            String productId,
             String selectedProductId,
             String supplierChannel,
             String productName,
@@ -49,7 +49,7 @@ public record V1ProductSelection(
             Long basePriceCent,
             Long productConfigVersion) {
         return new V1ProductSelection(
-                parentProductId,
+                productId,
                 selectedProductId,
                 supplierChannel,
                 productName,
@@ -65,13 +65,13 @@ public record V1ProductSelection(
     }
 
     public static V1ProductSelection failed(
-            String parentProductId,
+            String productId,
             String failCode,
             String failReason,
             Long productConfigVersion) {
         return new V1ProductSelection(
-                parentProductId,
-                parentProductId,
+                productId,
+                productId,
                 "",
                 "",
                 "",

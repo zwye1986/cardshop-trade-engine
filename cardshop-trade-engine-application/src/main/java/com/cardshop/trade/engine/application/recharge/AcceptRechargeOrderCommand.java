@@ -15,8 +15,8 @@ import java.util.Objects;
  * @param appId 商户应用 ID，来自 token claim 或商户资料
  * @param outOrderSn 商户订单号，对应 V1 请求 `out_order_sn`
  * @param orderId 新交易引擎生成的平台订单号
- * @param productId 调用方传入的父产品号
- * @param selectedProductId Java 候选商品选择出的实际子产品号
+ * @param productId 调用方传入的接口 {@code product_id}
+ * @param selectedProductId Java 商品选择出的实际派单产品号；当前 V1 语义下必须与 {@code productId} 相同
  * @param account 充值账号
  * @param notifyUrl 商户回调地址
  * @param nonceStr V1 请求防重放随机串

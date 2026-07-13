@@ -61,11 +61,9 @@ import com.cardshop.trade.engine.infrastructure.persistence.V1DepartProductReade
 import com.cardshop.trade.engine.infrastructure.persistence.V1MerchantProfileReader;
 import com.cardshop.trade.engine.infrastructure.persistence.V1ProductReader;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartProductMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.McProductMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
@@ -387,8 +385,8 @@ public class TradeEngineInfrastructureConfiguration {
         V1DepartProductReader departProductReader = departProductReaderProvider.getIfAvailable();
         V1ProductReader productReader = productReaderProvider.getIfAvailable();
         if (departProductReader == null || productReader == null) {
-            return (orgCode, parentProductId, account) -> V1ProductSelection.failed(
-                    parentProductId,
+            return (orgCode, productId, account) -> V1ProductSelection.failed(
+                    productId,
                     "PRODUCT_READER_UNAVAILABLE",
                     "商品资料读取端口未装配",
                     1L);
@@ -491,33 +489,22 @@ public class TradeEngineInfrastructureConfiguration {
     }
 
     @Bean
-    @ConditionalOnBean({
-            McOrderMapper.class,
-            RechargeOrderExtMapper.class,
-            McOrderSupplierFlowMapper.class,
-            McDepartProductMapper.class,
-            McProductMapper.class
-    })
+    @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class, McOrderSupplierFlowMapper.class})
     @ConditionalOnMissingBean(RechargeFulfillmentOrderPort.class)
     public RechargeFulfillmentOrderPort rechargeFulfillmentOrderPort(
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper,
-            McDepartProductMapper departProductMapper,
-            McProductMapper productMapper,
             ObjectMapper objectMapper,
             Clock clock) {
         /*
-         * 参见详细设计「9.1 派单 Outbox」。供应商 failover 必须读取 mc_depart_product/mc_product
-         * 才能复刻旧卡管候选排序并执行健康直充过滤；如果商品 Mapper 不在条件里，适配器会退化为只派当前渠道。
-         * 普通配置类用于 slice test 和显式 Mapper 局部上下文，因此也要把商品 Mapper 放进条件和构造参数。
+         * 参见详细设计「9.1 派单 Outbox」。派单阶段只使用订单受理时已按请求 product_id 精确冻结的
+         * `produt_code/url` 快照，不再读取 mc_depart_product/mc_product 做 sibling 候选切换。
          */
         return new MybatisRechargeFulfillmentOrderAdapter(
                 orderMapper,
                 extMapper,
                 flowMapper,
-                departProductMapper,
-                productMapper,
                 objectMapper,
                 clock);
     }

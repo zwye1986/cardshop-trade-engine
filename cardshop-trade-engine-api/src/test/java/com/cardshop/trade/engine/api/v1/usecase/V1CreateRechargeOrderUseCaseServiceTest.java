@@ -57,8 +57,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * V1 创建直充订单新链路用例测试。
  *
  * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」、
- * 「5. Domain 状态与业务规则」和「6. Redis 受理与缓存层」。旧卡管 V3/V2 的核心兼容点是：
- * `product_id` 表示父商品编码，验签通过后再按父商品选择可售子商品并进入 Redis 原子接单。
+ * 「5. Domain 状态与业务规则」和「6. Redis 受理与缓存层」。`product_id` 按接口文档表示平台提供的
+ * 产品编号，验签通过后按该编号精确读取商户授权和商品配置，再进入 Redis 原子接单。
  */
 class V1CreateRechargeOrderUseCaseServiceTest {
 
@@ -71,9 +71,9 @@ class V1CreateRechargeOrderUseCaseServiceTest {
             precheckService(),
             new RequestHashCanonicalizer(),
             (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
-            (orgCode, parentProductId, account) -> V1ProductSelection.passed(
-                    parentProductId,
-                    "73301289",
+            (orgCode, productId, account) -> V1ProductSelection.passed(
+                    productId,
+                    productId,
                     "TF_KA",
                     "话费50元",
                     "codekey",
@@ -114,7 +114,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         assertThat(acceptPort.lastCommand).isNotNull();
         assertThat(acceptPort.lastCommand.orgCode()).isEqualTo("A36");
         assertThat(acceptPort.lastCommand.productId()).isEqualTo("73301280");
-        assertThat(acceptPort.lastCommand.selectedProductId()).isEqualTo("73301289");
+        assertThat(acceptPort.lastCommand.selectedProductId()).isEqualTo("73301280");
         assertThat(acceptPort.lastCommand.orderAmountCent()).isEqualTo(5200L);
         assertThat(acceptPort.lastCommand.candidateValidationStatus()).isEqualTo(ValidationStatus.PASSED);
         assertThat(acceptPort.lastCommand.nextRetryEpochMillis()).isEqualTo(NOW.plus(Duration.ofMinutes(5)).toEpochMilli());
@@ -196,8 +196,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 precheckService(),
                 new RequestHashCanonicalizer(),
                 (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
-                (orgCode, parentProductId, account) -> V1ProductSelection.failed(
-                        parentProductId,
+                (orgCode, productId, account) -> V1ProductSelection.failed(
+                        productId,
                         "PRODUCT_NO_PERMISSION",
                         "商品无权限",
                         11L),
@@ -253,8 +253,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 precheckService(),
                 new RequestHashCanonicalizer(),
                 (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
-                (orgCode, parentProductId, account) -> V1ProductSelection.passed(
-                        parentProductId, "73301289", "TF_KA", "话费50元", "codekey", 1, 5200L, 5000L, 4900L, 11L),
+                (orgCode, productId, account) -> V1ProductSelection.passed(
+                        productId, productId, "TF_KA", "话费50元", "codekey", 1, 5200L, 5000L, 4900L, 11L),
                 localAcceptPort,
                 () -> "202607051337458961474292",
                 CLOCK,
@@ -591,9 +591,9 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 precheckService(),
                 new RequestHashCanonicalizer(),
                 (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
-                (orgCode, parentProductId, account) -> V1ProductSelection.passed(
-                        parentProductId,
-                        "73301289",
+                (orgCode, productId, account) -> V1ProductSelection.passed(
+                        productId,
+                        productId,
                         "TF_KA",
                         "话费50元",
                         "codekey",

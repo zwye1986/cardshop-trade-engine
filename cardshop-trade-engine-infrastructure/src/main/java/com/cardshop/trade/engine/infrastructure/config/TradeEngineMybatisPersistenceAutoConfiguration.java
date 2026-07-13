@@ -16,11 +16,9 @@ import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotif
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOutboxAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartProductMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.McProductMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
@@ -117,10 +115,6 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和「9.2 作废设计」。
      * SUP/INV 联调必须能读取旧订单、写供应商流水并推进 `recharge_order_ext.dispatch_status`；若任一 Mapper
      * 缺失，应在启动期暴露依赖错误，而不是静默跳过 worker。
-     *
-     * <p>{@link McDepartProductMapper} 和 {@link McProductMapper} 也是强依赖：供应商业务失败后的候选切换
-     * 必须重新读取父商品下的健康直充子商品，并排除已失败渠道。缺少这两个 Mapper 时继续启动会把 failover
-     * 静默降级成单渠道派单，违背详细设计「9.1 派单 Outbox」的恢复能力要求。
      */
     @Bean
     @ConditionalOnBean(SqlSessionFactory.class)
@@ -129,16 +123,12 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper,
-            McDepartProductMapper departProductMapper,
-            McProductMapper productMapper,
             ObjectMapper objectMapper,
             Clock clock) {
         return new MybatisRechargeFulfillmentOrderAdapter(
                 orderMapper,
                 extMapper,
                 flowMapper,
-                departProductMapper,
-                productMapper,
                 objectMapper,
                 clock);
     }
