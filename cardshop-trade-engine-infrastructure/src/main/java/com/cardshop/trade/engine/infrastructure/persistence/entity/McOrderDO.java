@@ -149,6 +149,12 @@ public class McOrderDO {
     private String supplierChannel;
 
     /**
+     * 供应商流水主键，对应旧字段 `flow_id`。
+     */
+    @TableField("flow_id")
+    private Long flowId;
+
+    /**
      * 旧系统排障数据 JSON。
      */
     @TableField("res_data")
@@ -358,6 +364,14 @@ public class McOrderDO {
 
     public void setSupplierChannel(String supplierChannel) {
         this.supplierChannel = supplierChannel;
+    }
+
+    public Long getFlowId() {
+        return flowId;
+    }
+
+    public void setFlowId(Long flowId) {
+        this.flowId = flowId;
     }
 
     public String getResData() {

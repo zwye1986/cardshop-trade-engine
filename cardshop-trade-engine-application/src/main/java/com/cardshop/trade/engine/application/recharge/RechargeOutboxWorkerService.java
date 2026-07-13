@@ -4,6 +4,7 @@ import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import org.slf4j.Logger;
@@ -190,18 +191,64 @@ public class RechargeOutboxWorkerService {
                 null,
                 null,
                 "供应商派单中"));
-        SupplierDispatchGatewayRequest request = dispatchRequest(event, order);
-        long flowId = orderPort.insertSupplierFlowStart(new SupplierFlowStartCommand(
-                order.orderId(),
-                order.outOrderSn(),
-                order.supplierChannel(),
-                "new",
-                "准备下单",
-                event.eventId(),
-                requestPayload(request)));
-        SupplierGatewayResponse response = supplierGatewayPort.dispatch(request);
-        orderPort.updateSupplierFlow(flowUpdate(flowId, response));
-        return finishDispatch(event, order, flowId, response);
+        List<RechargeFulfillmentCandidate> candidates = orderPort.findDispatchCandidates(order);
+        if (candidates.isEmpty()) {
+            return finishDispatchFailure(
+                    event,
+                    order,
+                    null,
+                    "NO_AVAILABLE_SUPPLIER",
+                    "获取到对应渠道产品，但是过滤掉失败的产品后，已无可用渠道");
+        }
+
+        SupplierGatewayResponse lastFailure = null;
+        for (int index = 0; index < candidates.size(); index++) {
+            RechargeFulfillmentCandidate candidate = candidates.get(index);
+            RechargeFulfillmentOrder candidateOrder = orderWithCandidate(order, candidate);
+            switchCandidateIfRequired(order, candidate, lastFailure);
+
+            SupplierDispatchGatewayRequest request = dispatchRequest(event, candidateOrder);
+            long flowId = orderPort.insertSupplierFlowStart(new SupplierFlowStartCommand(
+                    candidateOrder.orderId(),
+                    candidateOrder.outOrderSn(),
+                    candidateOrder.supplierChannel(),
+                    "new",
+                    "准备下单",
+                    event.eventId(),
+                    requestPayload(request)));
+            SupplierGatewayResponse response = supplierGatewayPort.dispatch(request);
+            orderPort.updateSupplierFlow(flowUpdate(flowId, response));
+            if (response.status() == SupplierGatewayStatus.FAILED) {
+                lastFailure = response;
+                if (index == candidates.size() - 1) {
+                    return finishDispatchFailure(
+                            event,
+                            candidateOrder,
+                            flowId,
+                            response.responseCode(),
+                            response.responseMessage());
+                }
+                /*
+                 * 旧卡管 deliverOrderCouponRecharge 会把 mc_order_supplier_flow 中已经失败的 channel
+                 * 过滤掉，继续尝试 listByProductIdDIY 排序后的下一个候选。这里在同一次 outbox 执行内
+                 * 直接推进下一候选，避免供应商明确拒绝时过早释放余额并回调失败。参见
+                 * docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」。
+                 */
+                log.warn("供应商派单业务失败，准备尝试下一候选 orderId={}, channel={}, code={}, reason={}",
+                        candidateOrder.orderId(),
+                        candidateOrder.supplierChannel(),
+                        response.responseCode(),
+                        response.responseMessage());
+                continue;
+            }
+            return finishDispatch(event, candidateOrder, flowId, response);
+        }
+        return finishDispatchFailure(
+                event,
+                order,
+                null,
+                lastFailure == null ? "NO_AVAILABLE_SUPPLIER" : lastFailure.responseCode(),
+                lastFailure == null ? "已无可用供应商候选" : lastFailure.responseMessage());
     }
 
     private RechargeOutboxBatchResult.Outcome finishDispatch(
@@ -241,25 +288,12 @@ public class RechargeOutboxWorkerService {
                 return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
             }
             case FAILED -> {
-                orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
-                        order.orderId(),
-                        FulfillmentDispatchStatus.FAILED,
-                        ORDER_STATUS_FAILED,
-                        DATA_STATUS_PROCESSED,
+                return finishDispatchFailure(
+                        event,
+                        order,
                         flowId,
                         response.responseCode(),
-                        response.responseMessage(),
-                        response.responseMessage()));
-                createOrderStatusNotifyTask(order, LegacyOrderStatusCode.FAILED);
-                if (!releaseBalanceReservationAndEnqueueDelta(event, order, response.responseMessage())) {
-                    frequencyPort.releaseIfOwned(
-                            order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
-                    return RechargeOutboxBatchResult.Outcome.FAILED;
-                }
-                frequencyPort.releaseIfOwned(
-                        order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
-                outboxPort.markSuccess(event);
-                return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+                        response.responseMessage());
             }
             case RETRYABLE_FAILED -> {
                 /*
@@ -273,6 +307,33 @@ public class RechargeOutboxWorkerService {
             }
             default -> throw new IllegalStateException("unsupported supplier status: " + response.status());
         }
+    }
+
+    private RechargeOutboxBatchResult.Outcome finishDispatchFailure(
+            RechargeOutboxEvent event,
+            RechargeFulfillmentOrder order,
+            Long flowId,
+            String failCode,
+            String failReason) {
+        orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
+                order.orderId(),
+                FulfillmentDispatchStatus.FAILED,
+                ORDER_STATUS_FAILED,
+                DATA_STATUS_PROCESSED,
+                flowId,
+                failCode,
+                failReason,
+                failReason));
+        createOrderStatusNotifyTask(order, LegacyOrderStatusCode.FAILED);
+        if (!releaseBalanceReservationAndEnqueueDelta(event, order, failReason)) {
+            frequencyPort.releaseIfOwned(
+                    order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
+            return RechargeOutboxBatchResult.Outcome.FAILED;
+        }
+        frequencyPort.releaseIfOwned(
+                order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
+        outboxPort.markSuccess(event);
+        return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
     }
 
     /**
@@ -559,6 +620,45 @@ public class RechargeOutboxWorkerService {
                 order.supplierChannel(),
                 order.orderPrice(),
                 Map.of("outbox_payload", event.payload()));
+    }
+
+    private void switchCandidateIfRequired(
+            RechargeFulfillmentOrder order,
+            RechargeFulfillmentCandidate candidate,
+            SupplierGatewayResponse lastFailure) {
+        if (Objects.equals(order.selectedProductId(), candidate.selectedProductId())
+                && Objects.equals(order.supplierChannel(), candidate.supplierChannel())) {
+            return;
+        }
+        String reason = lastFailure == null
+                ? "切换到旧卡管可用供应商候选"
+                : "上一候选失败，切换供应商：" + lastFailure.responseMessage();
+        orderPort.switchFulfillmentCandidate(new RechargeFulfillmentCandidateSwitchCommand(
+                order.orderId(),
+                candidate.selectedProductId(),
+                candidate.supplierChannel(),
+                candidate.productName(),
+                reason));
+    }
+
+    private static RechargeFulfillmentOrder orderWithCandidate(
+            RechargeFulfillmentOrder order,
+            RechargeFulfillmentCandidate candidate) {
+        return new RechargeFulfillmentOrder(
+                order.orderId(),
+                order.outOrderSn(),
+                order.orgCode(),
+                order.account(),
+                order.productId(),
+                candidate.selectedProductId(),
+                candidate.supplierChannel(),
+                order.orderPrice(),
+                order.notifyUrl(),
+                order.orderStatus(),
+                order.persistStatus(),
+                order.validationStatus(),
+                order.dispatchAllowed(),
+                order.balanceReserved());
     }
 
     private static SupplierInvalidGatewayRequest invalidRequest(RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
