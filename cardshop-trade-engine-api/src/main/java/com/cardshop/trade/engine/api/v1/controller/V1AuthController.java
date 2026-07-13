@@ -21,7 +21,7 @@ import reactor.core.scheduler.Schedulers;
  * 原卡管兼容的 `/v1/cardapi/auth` 入口。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「3. API/V1 接入层」。
- * 灰度命中新交易引擎时，真实签发会访问旧商户表和共享 Redis token key；这些依赖当前仍通过同步端口
+ * 当前 dev/test 临时去灰度，只要路由开关开启且路径受支持就进入新交易引擎。真实签发会访问旧商户表和共享 Redis token key；这些依赖当前仍通过同步端口
  * 适配旧 MyBatis/Redis 语义，因此必须在 controller 层显式放到 boundedElastic，避免 WebFlux Netty
  * 事件循环线程直接等待阻塞 IO。
  */

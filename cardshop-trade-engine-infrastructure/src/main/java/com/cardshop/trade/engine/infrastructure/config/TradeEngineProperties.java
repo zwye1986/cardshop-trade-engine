@@ -37,7 +37,7 @@ public class TradeEngineProperties {
     private final Order order = new Order();
 
     /**
-     * `/v1/cardapi` 灰度路由和旧系统代理配置；参见详细设计「3.1 `/v1/cardapi` 无侵入路由切流」。
+     * `/v1/cardapi` 新链路接管和旧系统代理配置；参见详细设计「3. API/V1 接入层」。
      */
     private final Routing routing = new Routing();
 
@@ -649,10 +649,10 @@ public class TradeEngineProperties {
     }
 
     /**
-     * `/v1/cardapi` 路由与灰度配置。
+     * `/v1/cardapi` 路由与旧链路代理配置。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「3.1 `/v1/cardapi` 无侵入路由切流」和
-     * 「3. API/V1 接入层」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「3. API/V1 接入层」。
+     * 当前 dev/test 只接入 A39 交行机构，暂时不按灰度名单切流；灰度字段保留用于后续恢复灰度或生产切流。
      */
     public static class Routing {
 
@@ -672,12 +672,12 @@ public class TradeEngineProperties {
         private int proxyTimeoutMs = 3000;
 
         /**
-         * 按机构编码灰度切流的白名单。
+         * 按机构编码灰度切流的白名单；当前临时接入口径不参与路由判定，仅保留配置兼容。
          */
         private List<String> grayOrgCodes = new ArrayList<>();
 
         /**
-         * 按应用 ID 灰度切流的白名单。
+         * 按应用 ID 灰度切流的白名单；当前临时接入口径不参与路由判定，仅保留配置兼容。
          */
         private List<String> grayAppIds = new ArrayList<>();
 

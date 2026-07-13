@@ -1,44 +1,32 @@
 package com.cardshop.trade.engine.api.v1.routing;
 
 import com.cardshop.trade.engine.api.v1.security.AuthenticatedMerchant;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
-
-import java.util.Map;
 
 /**
- * `/v1/cardapi` 灰度路由判定服务。
+ * `/v1/cardapi` 路由判定服务。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「3. API/V1 接入层」：
- * 默认保守回退旧系统，只有路径支持且明确命中灰度 appId 或 orgCode 时才进入新链路。
+ * 当前 dev/test 阶段只接入 A39 交行机构，暂时不按灰度名单切流。路由开启且路径受支持时直接进入新链路；
+ * 路由关闭或未知路径才回退旧系统代理，避免未实现路径被新服务误接管。
  */
 @Component
 public class V1RouteDecisionService {
 
-    private static final Logger log = LoggerFactory.getLogger(V1RouteDecisionService.class);
-    private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
-    };
+    private static final String REASON_SUPPORTED_PATH = "supported-path";
 
     private final V1RoutingSettings settings;
-    private final ObjectMapper objectMapper;
 
     @Autowired
     public V1RouteDecisionService(V1RoutingSettings settings) {
-        this(settings, new ObjectMapper());
-    }
-
-    V1RouteDecisionService(V1RoutingSettings settings, ObjectMapper objectMapper) {
         this.settings = settings;
-        this.objectMapper = objectMapper;
     }
 
     /**
-     * Token 申请接口只能从请求体解析 appId；解析失败时回退旧系统保持兼容。
+     * Token 申请接口在当前 A39 接入口径下不再读取 appId 做灰度判定。
+     *
+     * <p>请求体为空、缺 appId 或凭证错误时，应由新链路 token 用例返回旧协议业务错误，而不是绕到旧系统代理。
      */
     public V1RouteDecision decideAuth(String path, String rawBody) {
         V1RouteDecision guardDecision = guard(path);
@@ -46,34 +34,20 @@ public class V1RouteDecisionService {
             return guardDecision;
         }
 
-        String appId = readAppId(rawBody);
-        if (!StringUtils.hasText(appId)) {
-            return V1RouteDecision.legacy("auth-app-id-missing");
-        }
-        if (contains(settings.grayAppIds(), appId)) {
-            return V1RouteDecision.newRoute("gray-app");
-        }
-        return V1RouteDecision.legacy("not-gray-app");
+        return V1RouteDecision.newRoute(REASON_SUPPORTED_PATH);
     }
 
     /**
-     * 下单、查单、作废接口先完成 Token 兼容解析，再按 appId/orgCode 灰度。
+     * 下单、查单、作废接口先完成 Token 兼容解析；当前不再按 appId/orgCode 灰度过滤。
+     *
+     * <p>merchant 为空代表认证失败或缺少 token，仍进入新链路用例，由用例按旧协议返回鉴权失败。
      */
     public V1RouteDecision decideOrder(String path, AuthenticatedMerchant merchant) {
         V1RouteDecision guardDecision = guard(path);
         if (guardDecision != null) {
             return guardDecision;
         }
-        if (merchant == null) {
-            return V1RouteDecision.legacy("merchant-missing");
-        }
-        if (contains(settings.grayOrgCodes(), merchant.orgCode())) {
-            return V1RouteDecision.newRoute("gray-org");
-        }
-        if (contains(settings.grayAppIds(), merchant.appId())) {
-            return V1RouteDecision.newRoute("gray-app");
-        }
-        return V1RouteDecision.legacy("not-gray-merchant");
+        return V1RouteDecision.newRoute(REASON_SUPPORTED_PATH);
     }
 
     public V1RoutingSettings settings() {
@@ -84,39 +58,13 @@ public class V1RouteDecisionService {
         if (!settings.enabled()) {
             return V1RouteDecision.legacy("routing-disabled");
         }
-        if (!contains(settings.supportedPaths(), path)) {
+        if (!isSupportedPath(path)) {
             return V1RouteDecision.legacy("unsupported-path");
         }
         return null;
     }
 
-    private String readAppId(String rawBody) {
-        if (!StringUtils.hasText(rawBody)) {
-            return null;
-        }
-        try {
-            Map<String, Object> body = objectMapper.readValue(rawBody, MAP_TYPE);
-            Object snake = body.get("app_id");
-            Object camel = body.get("appId");
-            Object value = snake == null ? camel : snake;
-            return value == null ? null : String.valueOf(value).trim();
-        } catch (Exception ex) {
-            log.error("V1灰度路由读取appId失败 rawBodyLength={}",
-                    rawBody.length(),
-                    ex);
-            return null;
-        }
-    }
-
-    private static boolean contains(Iterable<String> values, String candidate) {
-        if (!StringUtils.hasText(candidate)) {
-            return false;
-        }
-        for (String value : values) {
-            if (candidate.trim().equals(value)) {
-                return true;
-            }
-        }
-        return false;
+    private boolean isSupportedPath(String path) {
+        return path != null && settings.supportedPaths().contains(path.trim());
     }
 }

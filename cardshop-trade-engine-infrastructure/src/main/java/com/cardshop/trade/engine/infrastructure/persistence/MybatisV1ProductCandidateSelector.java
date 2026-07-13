@@ -127,7 +127,7 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
         /*
          * 旧卡管 `listByProductId` 的 ORDER BY 是 stock 渠道优先、sort 倒序。
          * productId 和关系表 id 只作为确定性兜底，防止同 sort 时不同数据库实例返回顺序不同，
-         * 进而造成同一父商品在灰度多实例间派到不同供应商。参见详细设计「5. Domain 状态与业务规则」。
+         * 进而造成同一父商品在多实例间派到不同供应商。参见详细设计「5. Domain 状态与业务规则」。
          */
         return Comparator
                 .comparingInt((Candidate candidate) -> channelPriority(candidate.product().getChannel()))

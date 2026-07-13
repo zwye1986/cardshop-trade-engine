@@ -361,7 +361,7 @@ public class TradeEngineInfrastructureConfiguration {
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
      * 这里使用配置类显式装配，而不是在适配器类上做条件组件扫描，避免 MyBatis Mapper
-     * 注册顺序导致条件过早判定为不满足，使 `/auth/getToken` 和灰度下单回落到未启用实现。
+     * 注册顺序导致条件过早判定为不满足，使 `/auth/getToken` 和新链路下单回落到未启用实现。
      */
     @Bean
     @ConditionalOnMissingBean(V1MerchantProfilePort.class)

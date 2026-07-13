@@ -41,48 +41,63 @@ class V1RouteDecisionServiceTest {
     }
 
     @Test
-    void authRequestForGrayAppUsesNewRoute() {
-        V1RoutingSettings settings = defaultSettings(true, List.of(), List.of("app-gray", "app-next"));
-
-        V1RouteDecisionService service = new V1RouteDecisionService(settings);
-
-        V1RouteDecision decision = service.decideAuth(
-                "/v1/cardapi/auth/getToken",
-                "{\"app_id\":\"app-next\",\"app_secret\":\"secret\"}"
-        );
-
-        assertThat(decision.target()).isEqualTo(V1RouteTarget.NEW);
-        assertThat(decision.reason()).contains("gray-app");
-    }
-
-    @Test
-    void nonGrayAuthRequestFallsBackToLegacy() {
+    void authRequestForSupportedPathUsesNewRouteWithoutGrayApp() {
         V1RoutingSettings settings = defaultSettings(true, List.of(), List.of("app-gray"));
 
         V1RouteDecisionService service = new V1RouteDecisionService(settings);
 
         V1RouteDecision decision = service.decideAuth(
                 "/v1/cardapi/auth/getToken",
-                "{\"app_id\":\"app-prod\",\"app_secret\":\"secret\"}"
+                "{\"app_id\":\"app-a39\",\"app_secret\":\"secret\"}"
         );
 
-        assertThat(decision.target()).isEqualTo(V1RouteTarget.LEGACY);
-        assertThat(decision.reason()).contains("not-gray");
+        assertThat(decision.target()).isEqualTo(V1RouteTarget.NEW);
+        assertThat(decision.reason()).contains("supported-path");
     }
 
     @Test
-    void orderRequestForGrayOrgUsesNewRoute() {
+    void authRequestWithMissingAppIdStillUsesNewRouteForProtocolLayerValidation() {
+        V1RoutingSettings settings = defaultSettings(true, List.of(), List.of("app-gray"));
+
+        V1RouteDecisionService service = new V1RouteDecisionService(settings);
+
+        V1RouteDecision decision = service.decideAuth(
+                "/v1/cardapi/auth/getToken",
+                "{\"app_secret\":\"secret\"}"
+        );
+
+        assertThat(decision.target()).isEqualTo(V1RouteTarget.NEW);
+        assertThat(decision.reason()).contains("supported-path");
+    }
+
+    @Test
+    void orderRequestForSupportedPathUsesNewRouteWithoutGrayOrg() {
         V1RoutingSettings settings = defaultSettings(true, List.of("A36", "A99"), List.of());
 
         V1RouteDecisionService service = new V1RouteDecisionService(settings);
 
         V1RouteDecision decision = service.decideOrder(
                 "/v1/cardapi/order/createRechargeOrder",
-                new AuthenticatedMerchant("app-prod", "A36")
+                new AuthenticatedMerchant("app-a39", "A39")
         );
 
         assertThat(decision.target()).isEqualTo(V1RouteTarget.NEW);
-        assertThat(decision.reason()).contains("gray-org");
+        assertThat(decision.reason()).contains("supported-path");
+    }
+
+    @Test
+    void orderRequestWithoutAuthenticatedMerchantStillUsesNewRouteForAuthFailure() {
+        V1RoutingSettings settings = defaultSettings(true, List.of("A36"), List.of("app-gray"));
+
+        V1RouteDecisionService service = new V1RouteDecisionService(settings);
+
+        V1RouteDecision decision = service.decideOrder(
+                "/v1/cardapi/order/createRechargeOrder",
+                null
+        );
+
+        assertThat(decision.target()).isEqualTo(V1RouteTarget.NEW);
+        assertThat(decision.reason()).contains("supported-path");
     }
 
     private static V1RoutingSettings defaultSettings(boolean enabled, List<String> grayOrgCodes, List<String> grayAppIds) {

@@ -32,9 +32,9 @@ import java.util.function.Function;
  * 原卡管兼容的 `/v1/cardapi/order` 入口。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「4. Application 用例编排层」、
- * 「3. API/V1 接入层」和「9.2 作废设计」。入口层负责 token 兼容解析、灰度判定和旧系统代理；
+ * 「3. API/V1 接入层」和「9.2 作废设计」。入口层负责 token 兼容解析、临时全量接管路由和旧系统代理兜底；
  * 其中 token 兼容解析可能读取共享 Redis key {@code token:app_id:{appId}}，必须和 Netty
- * 事件循环隔离，避免灰度流量放大后造成 worker 线程饥饿。
+ * 事件循环隔离，避免 V1 流量放大后造成 worker 线程饥饿。
  */
 @RestController
 @RequestMapping("/v1/cardapi/order")
