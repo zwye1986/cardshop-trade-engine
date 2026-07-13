@@ -98,6 +98,55 @@ mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
 
 `dev` 默认端口为 `8080`，可通过 `SERVER_PORT` 覆盖。
 
+## A39 业务请求模拟器
+
+`cardshop-trade-engine-simulator` 可按 `docs/交行直充接口技术文档-V1.1.docx` 模拟 A39 商户侧直充业务：获取 token、按 `aesKey` 生成 SM3 签名、创建直充订单、按响应轮询查单，并启动本地回调接收器。
+
+`base-url` 默认 `http://apitest.kalaiwang.com`，`app-id` 默认 `A35cecjXS7lZ1W30NMN`，`product-id` 默认 `1011`，`account` 默认 `18186222336`，也可以通过参数或环境变量覆盖。`app_secret`、`aesKey` 等敏感值不要写进命令历史可见的脚本或提交到 Git。
+
+```bash
+export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home
+export PATH="$JAVA_HOME/bin:$PATH"
+
+A39_APP_SECRET='***' \
+A39_AES_KEY='***' \
+mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \
+  -Dexec.args="--notify-url http://可被平台访问的地址/callback/order"
+```
+
+常用覆盖参数：
+
+```bash
+--base-url http://apitest.kalaiwang.com
+--base-url http://apitest.kalaiwang.com/testSuite/trade-api/dev
+--app-id A35cecjXS7lZ1W30NMN
+--product-id 1011
+--account 18186222336
+--out-order-sn A39TEST202607130001
+--notify-url http://127.0.0.1:19039/callback/order
+--query-attempts 3
+--query-interval 30s
+--callback-port 19039
+```
+
+如果程序不在被测平台同机运行，`notify-url` 不能使用 `127.0.0.1`，需要填平台能够访问到的公网、内网或 nginx 代理地址。
+
+模拟器会在标准输出打印两类联调日志：
+
+- `[A39][HTTP][request]`：发送请求的 curl，`app_secret` 和 `Authorization` 会脱敏。
+- `[A39][HTTP][response]`：对应 HTTP 响应状态码和响应体原文。
+- `[A39][ORDER][status-change]`：查单得到的 `order_status` 发生变化时记录商户订单号、状态码和来源。
+
+模拟器不进入主服务发布包，需单独打包：
+
+```bash
+./scripts/package-a39-simulator.sh
+```
+
+产物位于 `dist/a39-business-simulator-<version>.zip`，解压后可通过 `bin/run-a39-simulator.sh` 传入同样的参数运行。
+
+打包产物内带有 `config/a39-simulator.env.example`。在部署机复制为 `config/a39-simulator.env` 后填写 `A39_APP_SECRET` 和 `A39_AES_KEY`，运行脚本会自动加载该文件；真实密钥文件不应提交到 Git。
+
 ## 部署打包
 
 生成可部署 zip 包：
