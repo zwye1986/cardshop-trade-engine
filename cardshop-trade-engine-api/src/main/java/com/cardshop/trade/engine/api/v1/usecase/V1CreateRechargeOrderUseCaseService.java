@@ -28,6 +28,7 @@ import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1ProductConfigPreheatPort;
 import com.cardshop.trade.engine.application.v1.V1ProductSelection;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
 import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
@@ -73,6 +74,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     private final RequestHashCanonicalizer requestHashCanonicalizer;
     private final V1MerchantProfilePort merchantProfilePort;
     private final V1ProductCandidateSelector productCandidateSelector;
+    private final V1ProductConfigPreheatPort productConfigPreheatPort;
     private final AcceptRechargeOrderPort acceptRechargeOrderPort;
     private final RechargeAcceptReliabilityPort reliabilityPort;
     private final PersistRechargeOrderMessagePublisher persistMessagePublisher;
@@ -103,6 +105,35 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 new NoopPersistRechargeOrderMessagePublisher(),
                 AcceptAnomalyRecordPort.noop(),
                 RedisHaGuardPort.noop(),
+                V1ProductConfigPreheatPort.noop(),
+                orderIdGenerator,
+                clock,
+                settings,
+                tradeDbTaskExecutor);
+    }
+
+    public V1CreateRechargeOrderUseCaseService(
+            V1ProtocolPrecheckService precheckService,
+            RequestHashCanonicalizer requestHashCanonicalizer,
+            V1MerchantProfilePort merchantProfilePort,
+            V1ProductCandidateSelector productCandidateSelector,
+            AcceptRechargeOrderPort acceptRechargeOrderPort,
+            V1ProductConfigPreheatPort productConfigPreheatPort,
+            RechargeOrderIdGenerator orderIdGenerator,
+            Clock clock,
+            V1RechargeAcceptSettings settings,
+            Executor tradeDbTaskExecutor) {
+        this(
+                precheckService,
+                requestHashCanonicalizer,
+                merchantProfilePort,
+                productCandidateSelector,
+                acceptRechargeOrderPort,
+                new NoopRechargeAcceptReliabilityPort(),
+                new NoopPersistRechargeOrderMessagePublisher(),
+                AcceptAnomalyRecordPort.noop(),
+                RedisHaGuardPort.noop(),
+                productConfigPreheatPort,
                 orderIdGenerator,
                 clock,
                 settings,
@@ -131,6 +162,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 persistMessagePublisher,
                 AcceptAnomalyRecordPort.noop(),
                 RedisHaGuardPort.noop(),
+                V1ProductConfigPreheatPort.noop(),
                 orderIdGenerator,
                 clock,
                 settings,
@@ -160,6 +192,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 persistMessagePublisher,
                 acceptAnomalyRecordPort,
                 RedisHaGuardPort.noop(),
+                V1ProductConfigPreheatPort.noop(),
                 orderIdGenerator,
                 clock,
                 settings,
@@ -180,10 +213,45 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             Clock clock,
             V1RechargeAcceptSettings settings,
             Executor tradeDbTaskExecutor) {
+        this(
+                precheckService,
+                requestHashCanonicalizer,
+                merchantProfilePort,
+                productCandidateSelector,
+                acceptRechargeOrderPort,
+                reliabilityPort,
+                persistMessagePublisher,
+                acceptAnomalyRecordPort,
+                redisHaGuardPort,
+                V1ProductConfigPreheatPort.noop(),
+                orderIdGenerator,
+                clock,
+                settings,
+                tradeDbTaskExecutor);
+    }
+
+    public V1CreateRechargeOrderUseCaseService(
+            V1ProtocolPrecheckService precheckService,
+            RequestHashCanonicalizer requestHashCanonicalizer,
+            V1MerchantProfilePort merchantProfilePort,
+            V1ProductCandidateSelector productCandidateSelector,
+            AcceptRechargeOrderPort acceptRechargeOrderPort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            PersistRechargeOrderMessagePublisher persistMessagePublisher,
+            AcceptAnomalyRecordPort acceptAnomalyRecordPort,
+            RedisHaGuardPort redisHaGuardPort,
+            V1ProductConfigPreheatPort productConfigPreheatPort,
+            RechargeOrderIdGenerator orderIdGenerator,
+            Clock clock,
+            V1RechargeAcceptSettings settings,
+            Executor tradeDbTaskExecutor) {
         this.precheckService = precheckService;
         this.requestHashCanonicalizer = requestHashCanonicalizer;
         this.merchantProfilePort = merchantProfilePort;
         this.productCandidateSelector = productCandidateSelector;
+        this.productConfigPreheatPort = productConfigPreheatPort == null
+                ? V1ProductConfigPreheatPort.noop()
+                : productConfigPreheatPort;
         this.acceptRechargeOrderPort = acceptRechargeOrderPort;
         this.reliabilityPort = reliabilityPort;
         this.persistMessagePublisher = persistMessagePublisher;
@@ -348,6 +416,16 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         ValidationStatus validationStatus = businessFailure == null ? productSelection.validationStatus() : ValidationStatus.FAILED;
         String candidateFailCode = businessFailure == null ? productSelection.failCode() : businessFailure.failCode();
         String candidateFailReason = businessFailure == null ? productSelection.failReason() : businessFailure.failReason();
+        /*
+         * 参见详细设计「6. Redis 受理与缓存层」：候选选择已从 MySQL 形成实际子商品快照，
+         * 在执行接单 Lua 前只补写缺失的子商品配置；已有配置不覆盖，最终版本、价格和类型仍由 Lua 裁决。
+         * 补热触发条件是 productSnapshotAvailable（已选出子商品快照），与候选校验是否通过无关：
+         * NOT_RECHARGE_PRODUCT/PRICE_INVALID 等带快照的候选失败必须照常补热，再由 Lua 落 ACCEPTED_FAILED
+         * 失败订单；仅 PRODUCT_NO_PERMISSION 等未选出子商品的失败不补热，由 Lua fail closed 返回 CONFIG_CHANGED。
+         */
+        if (productSelection.productSnapshotAvailable()) {
+            productConfigPreheatPort.preheatIfMissing(merchant.orgCode(), productSelection);
+        }
 
         var requestHash = requestHashCanonicalizer.canonicalizeRechargeCreate(
                 new RequestHashCanonicalizer.RechargeCreateFields(

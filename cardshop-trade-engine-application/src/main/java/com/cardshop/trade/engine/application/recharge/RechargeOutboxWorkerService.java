@@ -191,7 +191,7 @@ public class RechargeOutboxWorkerService {
                 null,
                 "供应商派单中"));
         /*
-         * 参见详细设计「9.1 派单 Outbox」：新链路严格使用受理阶段按接口 product_id 精确匹配出的
+         * 参见详细设计「9.1 派单 Outbox」：新链路严格使用受理阶段从请求父产品候选中冻结的
          * `selected_product_id/supplier_channel`。供应商业务失败不能切到同父商品的其它供应商，否则会让
          * 订单金额、退款金额、商品类型校验和实际履约商品再次错位。
          */

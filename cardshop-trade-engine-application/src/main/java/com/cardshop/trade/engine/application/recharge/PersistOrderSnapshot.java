@@ -16,8 +16,8 @@ import java.util.Objects;
  * @param appId 商户 appId，用于追踪 V1 请求来源
  * @param orderId 平台订单号，对应旧表 {@code mc_order.order_Id}
  * @param outOrderSn 商户外部订单号，对应旧表 {@code mc_order.out_orderId}
- * @param productId 外部请求 {@code product_id}，对应旧表 {@code mc_order.parent_id}
- * @param selectedProductId 实际落库/派单商品编码，对应旧表 {@code mc_order.produt_code}；当前 V1 语义下与 {@code productId} 相同
+ * @param productId 外部请求父产品号，对应接口 {@code product_id} 和旧表 {@code mc_order.parent_id}
+ * @param selectedProductId 实际落库/派单子商品号，对应旧表 {@code mc_order.produt_code}
  * @param account 直充账号，对应旧表 {@code mc_order.account}
  * @param notifyUrl 商户回调地址，对应旧表 {@code mc_order.callback_url}
  * @param num 下单数量，对应旧表 {@code mc_order.num}

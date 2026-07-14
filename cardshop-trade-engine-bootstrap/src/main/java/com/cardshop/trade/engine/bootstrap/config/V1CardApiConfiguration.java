@@ -25,6 +25,7 @@ import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1ProductConfigPreheatPort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.domain.service.RequestHashCanonicalizer;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
@@ -105,6 +106,7 @@ public class V1CardApiConfiguration {
             ObjectProvider<PersistRechargeOrderMessagePublisher> persistMessagePublisherProvider,
             ObjectProvider<AcceptAnomalyRecordPort> acceptAnomalyRecordPortProvider,
             ObjectProvider<RedisHaGuardPort> redisHaGuardPortProvider,
+            ObjectProvider<V1ProductConfigPreheatPort> productConfigPreheatPortProvider,
             RechargeOrderIdGenerator orderIdGenerator,
             Clock clock,
             V1RechargeAcceptSettings settings,
@@ -131,6 +133,7 @@ public class V1CardApiConfiguration {
                 persistMessagePublisher,
                 acceptAnomalyRecordPortProvider.getIfAvailable(AcceptAnomalyRecordPort::noop),
                 redisHaGuardPortProvider.getIfAvailable(RedisHaGuardPort::noop),
+                productConfigPreheatPortProvider.getIfAvailable(V1ProductConfigPreheatPort::noop),
                 orderIdGenerator,
                 clock,
                 settings,

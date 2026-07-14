@@ -41,13 +41,13 @@ public class McOrderDO {
     private LocalDateTime editTime;
 
     /**
-     * 商品编码，对应旧字段 `produt_code`。
+     * 实际派单子商品号，对应旧字段 `produt_code`。
      */
     @TableField("produt_code")
     private String productCode;
 
     /**
-     * 外部请求 product_id。旧字段名为 parent_id，但新链路不再按父商品寻找 sibling 商品。
+     * 外部请求父产品号，对应接口 `product_id` 和旧字段 `parent_id`。
      */
     @TableField("parent_id")
     private String parentId;

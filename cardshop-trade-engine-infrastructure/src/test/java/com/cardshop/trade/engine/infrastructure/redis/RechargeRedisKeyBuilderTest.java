@@ -36,7 +36,7 @@ class RechargeRedisKeyBuilderTest {
                         "cardshop:trade:recharge:{A36}:order:event:202607051337458961474292:1",
                         "cardshop:trade:recharge:{A36}:nonce:nonce-12345678901234567890123456",
                         "cardshop:trade:recharge:{A36}:merchant:config",
-                        "cardshop:trade:recharge:{A36}:product:73301280:config",
+                        "cardshop:trade:recharge:{A36}:product:73301289:config",
                         "cardshop:trade:recharge:{A36}:balance:repairing_lock",
                         "cardshop:trade:recharge:persist:pending:org_index:" + bucket);
     }

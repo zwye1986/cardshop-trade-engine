@@ -17,10 +17,9 @@ import java.util.stream.Collectors;
  * 基于旧卡管商品表的 V1 直充商品候选选择器。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
- * `/v1/cardapi/order/createRechargeOrder` 接口文档中的 {@code product_id} 是平台提供的产品编号，
- * 新链路按该编号同时匹配 {@code mc_depart_product.product_id} 和 {@code mc_product.product_id}。
- * 旧卡管按 {@code parent_id} 拉取 sibling 商品、再按 stock/sort 或最高价择优的实现存在价格/类型/派单目标
- * 错位风险，本选择器不再复刻那段语义。
+ * `/v1/cardapi/order/createRechargeOrder` 接口文档中的 {@code product_id} 是平台提供给商户请求的
+ * 父产品号；旧卡管按 {@code mc_depart_product.parent_id} 拉取候选子商品，再用子商品
+ * {@code product_id} 作为实际派单商品。
  */
 public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSelector {
 
@@ -45,7 +44,8 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
             return V1ProductSelection.failed(productId, "PRODUCT_NO_PERMISSION", "商品无权限", 1L);
         }
 
-        List<String> productIds = exactDepartProducts(productId, departProducts).stream()
+        List<McDepartProductDO> parentDepartProducts = parentDepartProducts(productId, departProducts);
+        List<String> productIds = parentDepartProducts.stream()
                 .map(McDepartProductDO::getProductId)
                 .filter(Objects::nonNull)
                 .distinct()
@@ -55,15 +55,15 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
         }
         /*
          * 参见详细设计「5. Domain 状态与业务规则」：Mapper 层只做单表查询，避免在新服务中复制旧 XML join。
-         * 这里用同一个请求 product_id 把商户售价和商品供应商配置重新拼成唯一快照；后续所有价格、类型、
-         * 面值、版本和派单渠道都来自这个快照，不能再跨 sibling 商品混用。
+         * 这里先按请求父商品拿到商户授权行，再用授权行里的子商品 product_id 读取商品配置；后续价格、
+         * 类型、面值、版本和派单渠道都来自最终选中的同一个子商品快照。
          */
         Map<String, McProductDO> products = productReader.selectEnabledByProductIds(productIds).stream()
                 .collect(Collectors.toMap(McProductDO::getProductId, Function.identity(), (left, right) -> left));
-        List<Candidate> candidates = exactDepartProducts(productId, departProducts).stream()
+        List<Candidate> candidates = parentDepartProducts.stream()
                 .map(departProduct -> new Candidate(departProduct, products.get(departProduct.getProductId())))
                 .filter(candidate -> candidate.product() != null)
-                .sorted(exactProductDuplicateComparator())
+                .sorted(legacyCandidateComparator())
                 .toList();
         if (candidates.isEmpty()) {
             return V1ProductSelection.failed(productId, "PRODUCT_NO_PERMISSION", "商品无权限", 1L);
@@ -80,26 +80,23 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
         return snapshot;
     }
 
-    private static List<McDepartProductDO> exactDepartProducts(String productId, List<McDepartProductDO> departProducts) {
+    private static List<McDepartProductDO> parentDepartProducts(String productId, List<McDepartProductDO> departProducts) {
         /*
-         * 生产 Mapper 已经使用 product_id 精确过滤；这里再做一次防御性过滤，是为了防止测试替身、
-         * 未来局部实现或数据访问回退误把同父商品 sibling 返回给 selector。只要不是请求 product_id，
-         * 就不能参与受理价格和供应商路由。参见详细设计「5. Domain 状态与业务规则」。
+         * 生产 Mapper 已经使用 parent_id 过滤；这里再做一次防御性过滤，是为了防止测试替身、
+         * 未来局部实现或数据访问回退误把其它父商品的授权行返回给 selector。
          */
         return departProducts.stream()
-                .filter(departProduct -> Objects.equals(productId, departProduct.getProductId()))
+                .filter(departProduct -> Objects.equals(productId, departProduct.getParentId()))
                 .toList();
     }
 
-    private static Comparator<Candidate> exactProductDuplicateComparator() {
+    private static Comparator<Candidate> legacyCandidateComparator() {
         /*
-         * 正常数据下同一商户同一 product_id 只有一条启用授权。若旧库出现重复脏数据，仍要给出稳定结果：
-         * 先取售价最高的授权，避免低价重复行导致误判低于底价；再按 sort/id 兜底，避免数据库默认顺序
-         * 让 productConfigVersion 或订单金额在多实例间抖动。这里的排序只处理“同一 product_id 的重复授权”，
-         * 绝不允许 sibling 商品参与选择。参见详细设计「5. Domain 状态与业务规则」。
+         * 旧卡管 listByProductId 的排序是 stock 渠道优先，其它渠道按 sort desc。这里补上 product_id/id
+         * 兜底，避免同 sort 脏数据在多实例间抖动。
          */
         return Comparator
-                .comparingLong((Candidate candidate) -> price(candidate.departProduct())).reversed()
+                .comparingInt((Candidate candidate) -> stockPriority(candidate.product()))
                 .thenComparing(Comparator.comparingLong((Candidate candidate) -> sort(candidate.departProduct())).reversed())
                 .thenComparing(candidate -> defaultString(candidate.product().getProductId()))
                 .thenComparingLong(candidate -> id(candidate.departProduct()));
@@ -114,9 +111,8 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
         McDepartProductDO selectedDepartProduct = selected.departProduct();
         McProductDO selectedProduct = selected.product();
         /*
-         * 接口文档 product_id 精确匹配后，Redis product_id、旧表 parent_id、旧表 produt_code 和供应商渠道
-         * 都来自同一个商品快照。这样类型校验、售价/底价校验、扣款金额、失败退款金额和实际派单商品保持一致。
-         * 参见详细设计「5. Domain 状态与业务规则」。
+         * 请求 productId 保留为旧表 parent_id；授权行 product_id 是实际派单子商品，对应旧表
+         * produt_code 和 Redis selected_product_id。参见详细设计「5. Domain 状态与业务规则」。
          */
         return new V1ProductSelection(
                 productId,
@@ -129,6 +125,7 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
                 value(selectedProduct),
                 basePrice(selectedProduct),
                 version(selectedProduct),
+                true,
                 validationStatus,
                 failCode,
                 failReason);
@@ -144,6 +141,10 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
 
     private static long id(McDepartProductDO departProduct) {
         return departProduct.getId() == null ? Long.MAX_VALUE : departProduct.getId();
+    }
+
+    private static int stockPriority(McProductDO product) {
+        return "stock".equals(defaultString(product.getChannel())) ? 0 : 99;
     }
 
     private static long value(McProductDO product) {

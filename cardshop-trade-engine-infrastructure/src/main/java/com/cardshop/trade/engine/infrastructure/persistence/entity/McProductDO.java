@@ -9,7 +9,7 @@ import com.baomidou.mybatisplus.annotation.TableName;
  * 旧卡管商品表 `mc_product` 的最小持久化对象。
  *
  * <p>字段来源对应 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
- * 新链路用请求 {@code product_id} 精确读取同一商品的名称、渠道、面值、底价、类型和配置版本。
+ * 新链路用商户授权行里的子商品 {@code product_id} 读取名称、渠道、面值、底价、类型和配置版本。
  */
 @TableName("mc_product")
 public class McProductDO {

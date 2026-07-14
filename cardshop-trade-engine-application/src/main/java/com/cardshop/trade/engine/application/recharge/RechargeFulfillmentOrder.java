@@ -14,8 +14,8 @@ import com.cardshop.trade.engine.domain.order.ValidationStatus;
  * @param outOrderSn 商户外部订单号，对应旧表 {@code mc_order.out_orderId}
  * @param orgCode 商户编码，对应旧表 {@code mc_order.org_code}
  * @param account 直充账号，对应旧表 {@code mc_order.account}
- * @param productId 外部请求 {@code product_id}，对应旧表 {@code mc_order.parent_id}
- * @param selectedProductId 实际履约商品编码，对应旧表 {@code mc_order.produt_code}；当前 V1 语义下与 {@code productId} 相同
+ * @param productId 外部请求父产品号，对应接口 {@code product_id} 和旧表 {@code mc_order.parent_id}
+ * @param selectedProductId 实际履约子商品号，对应旧表 {@code mc_order.produt_code}
  * @param supplierChannel 供应商渠道编码，对应旧表 {@code mc_order.url}
  * @param orderPrice 订单金额，单位分，对应旧表 {@code mc_order.order_price}
  * @param notifyUrl 商户回调地址，对应旧表 {@code mc_order.callback_url}

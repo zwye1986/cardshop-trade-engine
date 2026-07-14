@@ -256,10 +256,10 @@ Create response: code=500, msg=商户配置缺失或版本不一致
 
 ```text
 cardshop:trade:recharge:{A39}:merchant:config
-cardshop:trade:recharge:{A39}:product:<product_id>:config
+cardshop:trade:recharge:{A39}:product:<selected_product_id>:config
 ```
 
-这些 key 的 `version/status/price/product_type` 必须和 MySQL 当前商户、商品授权一致。test188 当前 A39 启用授权商品是 `73300102`、`73300110`；代码内置默认 `product-id=1011` 仍保留，但 test188 本地 `config/a39-simulator.env` 已按当前数据覆盖为 `A39_PRODUCT_ID=73300102`。如果重新解包或换环境后又用 `1011`，会因为 MySQL 未授权或 Redis product config 不存在而再次失败。
+`--product-id` 传入的是 MySQL `mc_depart_product.parent_id` 对应的父产品号，不是最终派单子商品号。服务端会从该父产品下选择子商品，并在 Lua 前按 `selected_product_id` 原子补热缺失配置；已有 key 不覆盖，Lua 仍校验 `version/status/price/product_type`。例如数据库若为父号 `80100022`、子号 `80100023`，模拟器应传 `--product-id 80100022`，Redis key 应检查 `product:80100023:config`。代码内置默认 `product-id=1011` 仍按用户要求保留；test188 或其它环境必须用实际存在的父产品号覆盖。
 
 ### notify_url 设置
 

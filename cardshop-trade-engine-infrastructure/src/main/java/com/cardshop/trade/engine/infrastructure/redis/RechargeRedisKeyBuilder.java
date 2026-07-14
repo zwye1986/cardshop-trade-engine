@@ -45,7 +45,7 @@ public final class RechargeRedisKeyBuilder {
                 key("recharge:" + orgTag + ":order:event:" + command.orderId() + ":1"),
                 key("recharge:" + orgTag + ":nonce:" + command.nonceStr()),
                 key("recharge:" + orgTag + ":merchant:config"),
-                key("recharge:" + orgTag + ":product:" + command.productId() + ":config"),
+                productConfigKey(command.orgCode(), command.selectedProductId()),
                 key("recharge:" + orgTag + ":balance:repairing_lock"),
                 key("recharge:persist:pending:org_index:" + bucket));
     }
@@ -167,6 +167,16 @@ public final class RechargeRedisKeyBuilder {
      */
     public String balanceRepairingLockKey(String orgCode) {
         return key("recharge:" + orgTag(orgCode) + ":balance:repairing_lock");
+    }
+
+    /**
+     * 构造实际派单子商品的动态配置 key。
+     *
+     * <p>参见详细设计「6.1 Redis Lua 入参与 Key 构造」。V1 请求 {@code product_id} 是父产品号，
+     * 商品价格、类型和版本校验必须落到实际派单子商品 {@code selectedProductId} 上。
+     */
+    public String productConfigKey(String orgCode, String selectedProductId) {
+        return key("recharge:" + orgTag(orgCode) + ":product:" + selectedProductId + ":config");
     }
 
     /**

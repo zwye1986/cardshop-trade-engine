@@ -12,7 +12,7 @@
 -- 7 eventKey                recharge:{orgCode}:order:event:{orderId}:1
 -- 8 nonceKey                recharge:{orgCode}:nonce:{nonceStr}
 -- 9 merchantConfigKey       recharge:{orgCode}:merchant:config
--- 10 productConfigKey       recharge:{orgCode}:product:{productId}:config
+-- 10 productConfigKey       recharge:{orgCode}:product:{selectedProductId}:config
 -- 11 repairingLockKey       recharge:{orgCode}:balance:repairing_lock
 -- 12 orgIndexBucketKey      recharge:persist:pending:org_index:{bucket}
 

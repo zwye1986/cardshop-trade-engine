@@ -231,7 +231,8 @@ public class TradeEngineRedisPendingAutoConfiguration {
      * 创建 Redis 缓存修复端口。
      *
      * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.4 缓存修复任务」。当前首版只修复商户余额
-     * 基线，且必须持有 repairing lock 后写 Redis；商品配置修复需要完整商品源字段，保留为后续独立任务。
+     * 基线，且必须持有 repairing lock 后写 Redis；批量商品配置扫描和全量重建保留为后续独立任务，
+     * V1 请求级缺失补热已由 {@code V1ProductConfigPreheatPort} 在接单 Lua 前承担。
      * 与对账端口一样，这里避免用 Mapper 做启动期条件，防止 Redis 自动配置早到时把 CACHE-001 入口永久降级。
      */
     @Bean

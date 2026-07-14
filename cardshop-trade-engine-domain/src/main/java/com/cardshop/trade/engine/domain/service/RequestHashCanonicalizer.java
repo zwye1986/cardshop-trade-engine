@@ -64,7 +64,8 @@ public final class RequestHashCanonicalizer {
     }
 
     /**
-     * 创建直充订单时用于识别商户业务请求的字段集合。
+     * 创建直充订单时用于识别商户业务请求的字段集合。{@code productId} 是请求父产品号，
+     * 服务端派生的实际子商品号不参与幂等摘要。
      */
     public record RechargeCreateFields(
             String orgCode,

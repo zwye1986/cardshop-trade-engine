@@ -38,6 +38,7 @@ import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1ProductConfigPreheatPort;
 import com.cardshop.trade.engine.application.v1.V1ProductSelection;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
@@ -73,6 +74,7 @@ import com.cardshop.trade.engine.infrastructure.redis.InMemoryRedisHaGuard;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisV1ProductConfigPreheatAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisDirectRechargeFrequencyAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptLoader;
@@ -394,6 +396,26 @@ public class TradeEngineInfrastructureConfiguration {
         return new MybatisV1ProductCandidateSelector(departProductReader, productReader);
     }
 
+    /**
+     * 装配 V1 请求级商品配置补热端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。商品选择器已经从
+     * MySQL 形成实际子商品快照；该端口在接单 Lua 前原子补写缺失 key，已有 Redis 配置仍由 Lua 按版本裁决。
+     */
+    @Bean
+    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
+    @ConditionalOnMissingBean(V1ProductConfigPreheatPort.class)
+    public V1ProductConfigPreheatPort v1ProductConfigPreheatPort(
+            ReactiveStringRedisTemplate redisTemplate,
+            RechargeRedisKeyBuilder keyBuilder,
+            TradeEngineProperties properties) {
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
+        return new RedisV1ProductConfigPreheatAdapter(
+                redisTemplate,
+                keyBuilder,
+                Duration.ofMillis(timeoutMs));
+    }
+
     @Bean
     @ConditionalOnMissingBean(V1TokenStorePort.class)
     public V1TokenStorePort v1TokenStorePort(
@@ -498,8 +520,8 @@ public class TradeEngineInfrastructureConfiguration {
             ObjectMapper objectMapper,
             Clock clock) {
         /*
-         * 参见详细设计「9.1 派单 Outbox」。派单阶段只使用订单受理时已按请求 product_id 精确冻结的
-         * `produt_code/url` 快照，不再读取 mc_depart_product/mc_product 做 sibling 候选切换。
+         * 参见详细设计「9.1 派单 Outbox」。派单阶段只使用订单受理时从请求父产品候选中冻结的
+         * `produt_code/url` 子商品快照，不再读取 mc_depart_product/mc_product 做候选切换。
          */
         return new MybatisRechargeFulfillmentOrderAdapter(
                 orderMapper,

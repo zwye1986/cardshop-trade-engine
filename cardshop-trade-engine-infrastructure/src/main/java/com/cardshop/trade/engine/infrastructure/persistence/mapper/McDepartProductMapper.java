@@ -12,18 +12,19 @@ import java.util.List;
  * 旧卡管商户商品关系表 `mc_depart_product` Mapper。
  *
  * <p>参见 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
- * 新服务只按接口文档中的请求 {@code product_id} 精确读取商户授权，再到 {@code mc_product}
- * 读取同一商品的供应商配置；避免依赖 MyBatis-Plus BaseMapper 通用 statement，也遵守 SQL 禁止多表关联要求。
+ * V1 接口请求 {@code product_id} 是商户看到的父产品号，本 Mapper 按旧卡管语义读取该父产品下
+ * 已授权的子商品，再由 Java 层读取 {@code mc_product} 并完成候选排序；避免依赖 MyBatis-Plus
+ * BaseMapper 通用 statement，也遵守 SQL 禁止多表关联要求。
  */
 @Mapper
 public interface McDepartProductMapper extends V1DepartProductReader {
 
     /**
-     * 按商户和请求商品读取已启用的商户商品关系。
+     * 按商户和请求父商品读取已启用的商户商品关系。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」：
-     * `/v1/cardapi/order/createRechargeOrder` 的 {@code product_id} 是平台提供的商品编号，不能再按
-     * {@code parent_id} 拉取 sibling 商品做旧卡管式择优，否则受理价格、商品类型和实际派单目标会错位。
+     * `/v1/cardapi/order/createRechargeOrder` 的 {@code product_id} 是平台提供的父商品编号，
+     * 需要按 {@code parent_id} 拉取该父商品下的候选子商品。
      */
     @Override
     @Select("""
@@ -37,7 +38,7 @@ public interface McDepartProductMapper extends V1DepartProductReader {
               parent_id as parentId
             from mc_depart_product
             where org_code = #{orgCode}
-              and product_id = #{productId}
+              and parent_id = #{productId}
               and status = '1'
             """)
     List<McDepartProductDO> selectEnabledByOrgAndProduct(

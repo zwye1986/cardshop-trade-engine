@@ -26,6 +26,7 @@ import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1ProductConfigPreheatPort;
 import com.cardshop.trade.engine.application.v1.V1ProductSelection;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.domain.service.RequestHashCanonicalizer;
@@ -57,8 +58,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * V1 创建直充订单新链路用例测试。
  *
  * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」、
- * 「5. Domain 状态与业务规则」和「6. Redis 受理与缓存层」。`product_id` 按接口文档表示平台提供的
- * 产品编号，验签通过后按该编号精确读取商户授权和商品配置，再进入 Redis 原子接单。
+ * 「5. Domain 状态与业务规则」和「6. Redis 受理与缓存层」。`product_id` 是请求父产品号，
+ * 验签通过后从商户授权候选中选定子商品并补热缺失配置，再进入 Redis 原子接单。
  */
 class V1CreateRechargeOrderUseCaseServiceTest {
 
@@ -67,13 +68,14 @@ class V1CreateRechargeOrderUseCaseServiceTest {
     private static final Executor SYNC_EXECUTOR = Runnable::run;
 
     private final CapturingAcceptPort acceptPort = new CapturingAcceptPort();
+    private final RecordingProductConfigPreheatPort productConfigPreheatPort = new RecordingProductConfigPreheatPort();
     private final V1CreateRechargeOrderUseCaseService service = new V1CreateRechargeOrderUseCaseService(
             precheckService(),
             new RequestHashCanonicalizer(),
             (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
             (orgCode, productId, account) -> V1ProductSelection.passed(
                     productId,
-                    productId,
+                    "73301289",
                     "TF_KA",
                     "话费50元",
                     "codekey",
@@ -83,6 +85,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                     4900L,
                     11L),
             acceptPort,
+            productConfigPreheatPort,
             () -> "202607051337458961474292",
             CLOCK,
             new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
@@ -114,10 +117,14 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         assertThat(acceptPort.lastCommand).isNotNull();
         assertThat(acceptPort.lastCommand.orgCode()).isEqualTo("A36");
         assertThat(acceptPort.lastCommand.productId()).isEqualTo("73301280");
-        assertThat(acceptPort.lastCommand.selectedProductId()).isEqualTo("73301280");
+        assertThat(acceptPort.lastCommand.selectedProductId()).isEqualTo("73301289");
         assertThat(acceptPort.lastCommand.orderAmountCent()).isEqualTo(5200L);
         assertThat(acceptPort.lastCommand.candidateValidationStatus()).isEqualTo(ValidationStatus.PASSED);
         assertThat(acceptPort.lastCommand.nextRetryEpochMillis()).isEqualTo(NOW.plus(Duration.ofMinutes(5)).toEpochMilli());
+        assertThat(productConfigPreheatPort.orgCode).isEqualTo("A36");
+        assertThat(productConfigPreheatPort.selection).isNotNull();
+        assertThat(productConfigPreheatPort.selection.productId()).isEqualTo("73301280");
+        assertThat(productConfigPreheatPort.selection.selectedProductId()).isEqualTo("73301289");
     }
 
     @Test
@@ -216,6 +223,58 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         assertThat(localAcceptPort.lastCommand.candidateFailCode()).isEqualTo("PRODUCT_NO_PERMISSION");
         assertThat(result.code()).isEqualTo("503");
         assertThat(result.msg()).isEqualTo("商品无权限");
+    }
+
+    @Test
+    void preheatsResolvedChildSnapshotBeforeLuaEvenWhenCandidateValidationFails() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        RecordingProductConfigPreheatPort localPreheatPort = new RecordingProductConfigPreheatPort();
+        localAcceptPort.nextResult = new AcceptRechargeOrderResult(
+                AcceptRechargeOrderStatus.ACCEPTED_FAILED,
+                "202607051337458961474292",
+                "FAILED",
+                "NOT_RECHARGE_PRODUCT",
+                "该商品不是直充产品",
+                false,
+                false,
+                1L);
+        V1CreateRechargeOrderUseCaseService localService = new V1CreateRechargeOrderUseCaseService(
+                precheckService(),
+                new RequestHashCanonicalizer(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (orgCode, productId, account) -> new V1ProductSelection(
+                        productId,
+                        "80100023",
+                        "MINISO",
+                        "名创直充100",
+                        "codekey",
+                        0,
+                        1L,
+                        1L,
+                        1L,
+                        1L,
+                        true,
+                        ValidationStatus.FAILED,
+                        "NOT_RECHARGE_PRODUCT",
+                        "该商品不是直充产品"),
+                localAcceptPort,
+                localPreheatPort,
+                () -> "202607051337458961474292",
+                CLOCK,
+                new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
+                SYNC_EXECUTOR);
+
+        localService.createRechargeOrder(
+                        new V1MerchantCommand("app-gray", "A36", validRawBody(
+                                "OUT-RESOLVED-FAIL",
+                                "nonce-12345678901234567890123460",
+                                1)))
+                .toCompletableFuture()
+                .join();
+
+        assertThat(localPreheatPort.selection).isNotNull();
+        assertThat(localPreheatPort.selection.productSnapshotAvailable()).isTrue();
+        assertThat(localPreheatPort.selection.selectedProductId()).isEqualTo("80100023");
     }
 
     @Test
@@ -654,6 +713,18 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         public CompletableFuture<AcceptRechargeOrderResult> accept(AcceptRechargeOrderCommand command) {
             this.lastCommand = command;
             return CompletableFuture.completedFuture(nextResult);
+        }
+    }
+
+    private static final class RecordingProductConfigPreheatPort implements V1ProductConfigPreheatPort {
+
+        private String orgCode;
+        private V1ProductSelection selection;
+
+        @Override
+        public void preheatIfMissing(String orgCode, V1ProductSelection selection) {
+            this.orgCode = orgCode;
+            this.selection = selection;
         }
     }
 

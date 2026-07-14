@@ -10,6 +10,8 @@
 
 命令行参数提供 `base-url`、`app-id`、`app-secret`、`aes-key`、`product-id`、`account`、`notify-url`、查询次数和间隔等配置。`base-url` 默认 `http://apitest.kalaiwang.com`，并按请求前缀处理，因此也支持 `http://apitest.kalaiwang.com/testSuite/trade-api/dev` 这类带路径的代理前缀；`app-id` 默认 `A35cecjXS7lZ1W30NMN`，`product-id` 默认 `1011`，`account` 默认 `18186222336`，仍支持通过参数或环境变量覆盖；`app-secret/aes-key` 属于凭证，不写入代码仓库，运行脚本会加载部署机本地 `config/a39-simulator.env`。
 
+模拟器传入的 `product-id` 遵循新服务的旧卡管语义，是 `mc_depart_product.parent_id` 对应的父产品号；服务端选择的实际派单子商品号来自授权行和 `mc_product.product_id`。因此模拟器请求号、订单 `product_id` 与 Redis 商品配置 key 不是同一个字段：Redis key 使用 `selected_product_id`，例如父号 `80100022` 选择子号 `80100023` 时使用 `product:80100023:config`。
+
 ## 协议细节
 
 签名规则与旧系统 `CardApiUtil.sortMapByAscii`、当前服务端 `V1Sm3SignatureVerifier` 保持一致：移除 `sign` 字段，加入 `aesKey`，按字段名 ASCII 升序拼接 `key=value`，用逗号连接，再计算 SM3 hex。下单签名字段为 `account/aesKey/nonce_str/notify_url/num/out_order_sn/product_id/timestamp`；查单签名字段为 `aesKey/nonce_str/out_order_sn/timestamp`。

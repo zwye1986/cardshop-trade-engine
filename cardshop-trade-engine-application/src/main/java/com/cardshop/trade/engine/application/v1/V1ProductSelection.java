@@ -8,8 +8,8 @@ import com.cardshop.trade.engine.domain.order.ValidationStatus;
  * <p>字段含义对应 {@code docs/交行直充业务系统详细设计.md}「5. Domain 状态与业务规则」。
  * 即使 Java 商品校验失败，也会保留请求商品、失败码和配置版本，让 Redis Lua 在验签通过后写入失败订单快照。
  *
- * @param productId 调用方传入的接口 {@code product_id}
- * @param selectedProductId 实际派单商品编码；按当前接口语义必须和 {@code productId} 相同
+ * @param productId 调用方传入的父产品号，对应接口 {@code product_id}
+ * @param selectedProductId 实际派单子商品号；无候选失败时使用请求父产品号作为失败快照占位值
  * @param supplierChannel 供应商渠道
  * @param productName 商品名称快照
  * @param couponType 券码类型兼容字段
@@ -18,6 +18,7 @@ import com.cardshop.trade.engine.domain.order.ValidationStatus;
  * @param faceValueCent 商品面值，单位分
  * @param basePriceCent 商品底价，单位分
  * @param productConfigVersion 商品配置版本
+ * @param productSnapshotAvailable 是否已经从 MySQL 选出可用于 Redis 补热的子商品快照；选品业务校验失败不影响该事实
  * @param validationStatus Java 候选校验结果
  * @param failCode Java 候选失败码
  * @param failReason Java 候选失败原因
@@ -33,6 +34,7 @@ public record V1ProductSelection(
         Long faceValueCent,
         Long basePriceCent,
         Long productConfigVersion,
+        boolean productSnapshotAvailable,
         ValidationStatus validationStatus,
         String failCode,
         String failReason) {
@@ -59,6 +61,7 @@ public record V1ProductSelection(
                 faceValueCent,
                 basePriceCent,
                 productConfigVersion,
+                true,
                 ValidationStatus.PASSED,
                 "",
                 "");
@@ -80,6 +83,7 @@ public record V1ProductSelection(
                 0L,
                 0L,
                 productConfigVersion,
+                false,
                 ValidationStatus.FAILED,
                 failCode,
                 failReason);
