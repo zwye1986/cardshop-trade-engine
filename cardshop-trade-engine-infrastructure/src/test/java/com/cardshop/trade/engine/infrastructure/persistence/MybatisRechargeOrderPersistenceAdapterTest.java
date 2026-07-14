@@ -112,6 +112,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.order.getOrderStatus()).isEqualTo(6);
         assertThat(store.order.getFailCode()).isEqualTo("PRODUCT_NOT_ALLOWED");
         assertThat(store.order.getFailReason()).isEqualTo("商品无权限");
+        assertThat(store.order.getRemark()).isEqualTo("商品无权限");
         assertThat(store.ext.getValidationStatus()).isEqualTo("FAILED");
         assertThat(store.ext.getDispatchAllowed()).isFalse();
         assertThat(store.departRecord).isNull();

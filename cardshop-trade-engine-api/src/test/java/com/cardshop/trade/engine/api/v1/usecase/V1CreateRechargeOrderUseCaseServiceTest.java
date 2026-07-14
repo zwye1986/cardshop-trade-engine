@@ -408,6 +408,50 @@ class V1CreateRechargeOrderUseCaseServiceTest {
     }
 
     @Test
+    void publishesMysqlPersistMessageWhenConfigChangedEvenIfRedisOrderWasNotWritten() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        localAcceptPort.nextResult = new AcceptRechargeOrderResult(
+                AcceptRechargeOrderStatus.CONFIG_CHANGED,
+                "202607051337458961474292",
+                "",
+                "PRODUCT_CONFIG_STALE",
+                "商品配置缺失或版本不一致",
+                false,
+                false,
+                0L);
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingPersistPublisher publisher = new RecordingPersistPublisher();
+        V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher);
+
+        V1CardApiResult result = localService.createRechargeOrder(
+                        new V1MerchantCommand(
+                                "app-gray",
+                                "A36",
+                                validRawBody("OUT-CONFIG-CHANGED", "nonce-12345678901234567890123461", 1)))
+                .toCompletableFuture()
+                .join();
+
+        assertThat(result.code()).isEqualTo("500");
+        assertThat(result.msg()).isEqualTo("商品配置缺失或版本不一致");
+        assertThat(reliabilityPort.waitCalls).isZero();
+        assertThat(reliabilityPort.markQueuedCalls).isZero();
+        assertThat(publisher.publishCalls).isEqualTo(1);
+        assertThat(publisher.lastMessage.orderVersion()).isEqualTo(1L);
+        assertThat(publisher.lastMessage.initialOrderSnapshot())
+                .containsEntry("order_id", "202607051337458961474292")
+                .containsEntry("out_order_sn", "OUT-CONFIG-CHANGED")
+                .containsEntry("order_status", "VALIDATION_FAILED")
+                .containsEntry("validation_status", "FAILED")
+                .containsEntry("fail_code", "PRODUCT_CONFIG_STALE")
+                .containsEntry("fail_reason", "商品配置缺失或版本不一致")
+                .containsEntry("dispatch_allowed", false)
+                .containsEntry("balance_reserved", false)
+                .containsEntry("persist_status", "PENDING_MQ")
+                .containsEntry("order_version", 1L)
+                .containsEntry("redis_order_written", false);
+    }
+
+    @Test
     void cancelsUnconfirmedAcceptWhenRedisWaitFails() {
         CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
         RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();

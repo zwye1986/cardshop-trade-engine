@@ -69,6 +69,9 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     private static final int DIRECT_RECHARGE_ORDER_NUM = 1;
     private static final int NONCE_STR_LENGTH = 32;
     private static final int MAX_ACCEPT_ANOMALY_ID_LENGTH = 100;
+    private static final String ORDER_STATUS_ACCEPTED = "ACCEPTED";
+    private static final String ORDER_STATUS_VALIDATION_FAILED = "VALIDATION_FAILED";
+    private static final String REDIS_ORDER_WRITTEN_FIELD = "redis_order_written";
 
     private final V1ProtocolPrecheckService precheckService;
     private final RequestHashCanonicalizer requestHashCanonicalizer;
@@ -307,6 +310,9 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             Preparation preparation,
             AcceptRechargeOrderResult acceptResult) {
         if (!acceptResult.orderWritten()) {
+            if (acceptResult.status() == AcceptRechargeOrderStatus.CONFIG_CHANGED) {
+                return publishMysqlOnlyFailedOrder(preparation, acceptResult);
+            }
             return CompletableFuture.completedFuture(toV1Result(preparation.outOrderSn, acceptResult));
         }
         return reliabilityPort.waitForReplication(preparation.acceptCommand, acceptResult)
@@ -334,6 +340,20 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                         : CompletableFuture.completedFuture(processingResult(preparation.outOrderSn, acceptResult)));
     }
 
+    private CompletionStage<V1CardApiResult> publishMysqlOnlyFailedOrder(
+            Preparation preparation,
+            AcceptRechargeOrderResult acceptResult) {
+        /*
+         * CONFIG_CHANGED 是 Lua 在写 Redis 订单前的 fail closed 结果，但旧卡管仍要求能在 mc_order 查到失败单。
+         * 参见详细设计「6. Redis 受理与缓存层」和「8.3 异步落库 Consumer」：这里只发布携带完整
+         * initial snapshot 的 MySQL 落库消息，并显式标记 redis_order_written=false；Consumer 落库后不能再
+         * 调 markDbPersisted，因为 Redis 中没有对应订单、pending 或幂等快照。
+         */
+        PersistTradeOrderMessage message = buildPersistMessage(preparation.acceptCommand, acceptResult);
+        return persistMessagePublisher.publish(message)
+                .thenApply(publishResult -> toV1Result(preparation.outOrderSn, acceptResult));
+    }
+
     private CompletionStage<V1CardApiResult> markPersistQueued(
             Preparation preparation,
             AcceptRechargeOrderResult acceptResult,
@@ -351,6 +371,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             AcceptRechargeOrderCommand command,
             AcceptRechargeOrderResult acceptResult) {
         String messageId = "persist-" + command.orderId() + "-" + UUID.randomUUID();
+        String validationStatus = validationStatus(acceptResult);
+        long orderVersion = Math.max(1L, acceptResult.orderVersion());
         Map<String, Object> snapshot = Map.ofEntries(
                 Map.entry("order_id", acceptResult.orderId()),
                 Map.entry("org_code", command.orgCode()),
@@ -367,13 +389,15 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 Map.entry("product_type", command.productType()),
                 Map.entry("coupon_type", command.couponType()),
                 Map.entry("supplier_channel", command.supplierChannel()),
-                Map.entry("validation_status", acceptResult.validationStatus()),
+                Map.entry("order_status", orderStatus(validationStatus)),
+                Map.entry("validation_status", validationStatus),
                 Map.entry("fail_code", acceptResult.failCode()),
                 Map.entry("fail_reason", acceptResult.failReason()),
                 Map.entry("dispatch_allowed", acceptResult.dispatchAllowed()),
                 Map.entry("balance_reserved", acceptResult.balanceReserved()),
                 Map.entry("persist_status", PERSIST_STATUS_PENDING_MQ),
-                Map.entry("order_version", acceptResult.orderVersion()),
+                Map.entry("order_version", orderVersion),
+                Map.entry(REDIS_ORDER_WRITTEN_FIELD, acceptResult.orderWritten()),
                 Map.entry("request_hash", command.requestHash()),
                 Map.entry("request_hash_version", command.requestHashVersion()),
                 Map.entry("request_hash_alg", command.requestHashAlg()));
@@ -383,8 +407,21 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 acceptResult.orderId(),
                 command.outOrderSn(),
                 command.requestHash(),
-                Math.max(1L, acceptResult.orderVersion()),
+                orderVersion,
                 snapshot);
+    }
+
+    private static String validationStatus(AcceptRechargeOrderResult acceptResult) {
+        if (StringUtils.hasText(acceptResult.validationStatus())) {
+            return acceptResult.validationStatus();
+        }
+        return acceptResult.dispatchAllowed() ? ValidationStatus.PASSED.name() : ValidationStatus.FAILED.name();
+    }
+
+    private static String orderStatus(String validationStatus) {
+        return ValidationStatus.PASSED.name().equals(validationStatus)
+                ? ORDER_STATUS_ACCEPTED
+                : ORDER_STATUS_VALIDATION_FAILED;
     }
 
     private Preparation prepare(V1MerchantCommand command) {

@@ -40,6 +40,8 @@ public class PersistRechargeOrderConsumerService {
     private static final long RETRY_DELAY_MILLIS = 60_000L;
     private static final Duration DEFAULT_REDIS_MARK_TIMEOUT = Duration.ofSeconds(3);
     private static final int MAX_FAIL_REASON_LENGTH = 500;
+    private static final String FIELD_REDIS_ORDER_WRITTEN = "redis_order_written";
+    private static final String REDIS_FALSE = "0";
 
     private final PersistOrderSnapshotPort snapshotPort;
     private final RechargeOrderPersistencePort persistencePort;
@@ -85,7 +87,8 @@ public class PersistRechargeOrderConsumerService {
      */
     public PersistRechargeOrderResult persist(PersistTradeOrderMessage message) {
         Objects.requireNonNull(message, "message must not be null");
-        SelectedSnapshot selected = selectSnapshot(message);
+        boolean redisOrderWritten = redisOrderWritten(message);
+        SelectedSnapshot selected = selectSnapshot(message, redisOrderWritten);
         OrderPersistAggregate aggregate = new OrderPersistAggregate(
                 message.messageId(),
                 selected.snapshot(),
@@ -105,13 +108,18 @@ public class PersistRechargeOrderConsumerService {
                     decision.sampledOccurrence(),
                     ex));
             String failReason = truncateFailReason(ex.getMessage());
-            markPersistFailed(message, selected.snapshot(), failReason);
+            if (redisOrderWritten) {
+                markPersistFailed(message, selected.snapshot(), failReason);
+            }
             return PersistRechargeOrderResult.persistFailed(
                     selected.persistSource(),
                     MYSQL_PERSIST_FAILED,
                     failReason);
         }
 
+        if (!redisOrderWritten) {
+            return PersistRechargeOrderResult.persisted(selected.persistSource());
+        }
         MarkPersistStateResult markResult = markDbPersisted(message, selected.snapshot());
         if (!markResult.marked()) {
             logSampledError(LOG_EVENT_REDIS_MARK_AFTER_MYSQL_FAILED, decision -> log.error(
@@ -131,7 +139,17 @@ public class PersistRechargeOrderConsumerService {
         return PersistRechargeOrderResult.persisted(selected.persistSource());
     }
 
-    private SelectedSnapshot selectSnapshot(PersistTradeOrderMessage message) {
+    private SelectedSnapshot selectSnapshot(PersistTradeOrderMessage message, boolean redisOrderWritten) {
+        /*
+         * CONFIG_CHANGED 这类失败发生在 Lua 写 Redis 订单前，Producer 会用 redis_order_written=false 标记
+         * “只需要 MySQL 失败事实”。此时 Redis 没有 order hash/pending/幂等快照，不能读取 Redis 快照，也不能在
+         * MySQL 提交后执行 markDbPersisted。参见 docs/交行直充业务系统详细设计.md「8.3 异步落库 Consumer」。
+         */
+        if (!redisOrderWritten) {
+            return new SelectedSnapshot(
+                    PersistOrderSnapshot.fromInitialSnapshot(message),
+                    PersistSource.MQ_SNAPSHOT_FALLBACK);
+        }
         Optional<PersistOrderSnapshot> redisSnapshot;
         try {
             redisSnapshot = snapshotPort.findLatestSnapshot(
@@ -156,6 +174,18 @@ public class PersistRechargeOrderConsumerService {
         return new SelectedSnapshot(
                 PersistOrderSnapshot.fromInitialSnapshot(message),
                 PersistSource.MQ_SNAPSHOT_FALLBACK);
+    }
+
+    private static boolean redisOrderWritten(PersistTradeOrderMessage message) {
+        Object value = message.initialOrderSnapshot().get(FIELD_REDIS_ORDER_WRITTEN);
+        if (value == null) {
+            return true;
+        }
+        if (value instanceof Boolean bool) {
+            return bool;
+        }
+        String text = String.valueOf(value);
+        return !REDIS_FALSE.equals(text) && !"false".equalsIgnoreCase(text);
     }
 
     private MarkPersistStateResult markDbPersisted(

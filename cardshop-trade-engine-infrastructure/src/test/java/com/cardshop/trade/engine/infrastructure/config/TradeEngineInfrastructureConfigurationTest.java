@@ -25,6 +25,7 @@ import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1ProductConfigPreheatPort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
@@ -52,6 +53,7 @@ import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotA
 import com.cardshop.trade.engine.infrastructure.redis.RedisDirectRechargeFrequencyAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisV1ProductConfigPreheatAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.SpringDataRechargeRedisScriptExecutor;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -268,6 +270,8 @@ class TradeEngineInfrastructureConfigurationTest {
                             .isInstanceOf(MybatisV1MerchantProfileAdapter.class);
                     assertThat(context.getBean(V1ProductCandidateSelector.class))
                             .isInstanceOf(MybatisV1ProductCandidateSelector.class);
+                    assertThat(context.getBean(V1ProductConfigPreheatPort.class))
+                            .isInstanceOf(RedisV1ProductConfigPreheatAdapter.class);
                     assertThat(context.getBean(AcceptRechargeOrderPort.class))
                             .isInstanceOf(RedisSessionAcceptReliabilityAdapter.class)
                             .isSameAs(context.getBean(RechargeAcceptReliabilityPort.class));

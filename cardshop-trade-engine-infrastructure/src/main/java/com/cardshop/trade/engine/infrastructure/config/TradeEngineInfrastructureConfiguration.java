@@ -403,12 +403,15 @@ public class TradeEngineInfrastructureConfiguration {
      * MySQL 形成实际子商品快照；该端口在接单 Lua 前原子补写缺失 key，已有 Redis 配置仍由 Lua 按版本裁决。
      */
     @Bean
-    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
     @ConditionalOnMissingBean(V1ProductConfigPreheatPort.class)
     public V1ProductConfigPreheatPort v1ProductConfigPreheatPort(
-            ReactiveStringRedisTemplate redisTemplate,
+            ObjectProvider<ReactiveStringRedisTemplate> redisTemplateProvider,
             RechargeRedisKeyBuilder keyBuilder,
             TradeEngineProperties properties) {
+        ReactiveStringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+        if (redisTemplate == null) {
+            return V1ProductConfigPreheatPort.noop();
+        }
         int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
         return new RedisV1ProductConfigPreheatAdapter(
                 redisTemplate,

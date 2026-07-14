@@ -102,6 +102,72 @@ mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
 
 `cardshop-trade-engine-simulator` 可按 `docs/交行直充接口技术文档-V1.1.docx` 模拟 A39 商户侧直充业务：获取 token、按 `aesKey` 生成 SM3 签名、创建直充订单、按响应轮询查单，并启动本地回调接收器。
 
+### 快速执行清单
+
+模拟器是独立工具包，和交易引擎主服务包分开构建、分开部署。标准流程如下：
+
+1. 本地用 JDK 21 打包：
+
+```bash
+export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home
+export PATH="$JAVA_HOME/bin:$PATH"
+
+./scripts/package-a39-simulator.sh
+```
+
+2. 将 `dist/a39-business-simulator-<version>.zip` 放到目标机器并解压。test188 当前约定目录是：
+
+```bash
+cd /data/apps/cardshop-trade-engine
+unzip a39-business-simulator-<version>.zip
+cd a39-business-simulator-<version>
+```
+
+3. 首次部署时复制配置模板；后续升级包时优先保留已有 `config/a39-simulator.env`，不要覆盖真实密钥：
+
+```bash
+cp config/a39-simulator.env.example config/a39-simulator.env
+vi config/a39-simulator.env
+chmod 600 config/a39-simulator.env
+```
+
+4. 在 `config/a39-simulator.env` 中填写 A39 凭证、JDK 21 路径和本环境产品号。test188 当前 A39 MINISO 样本使用父商品号 `80100022`，不是子商品号 `80100023`：
+
+```bash
+export CARD_SHOP_TRADE_JAVA_HOME='/opt/java/jdk-21.0.11'
+
+export A39_APP_SECRET='***'
+export A39_AES_KEY='***'
+
+export A39_BASE_URL='http://apitest.kalaiwang.com'
+export A39_APP_ID='A35cecjXS7lZ1W30NMN'
+export A39_PRODUCT_ID='80100022'
+export A39_ACCOUNT='18186222336'
+export A39_NUM='1'
+export A39_ORDER_PRICE='0'
+export A39_PRODUCT_TYPE='1'
+export A39_REQUEST_SM4='true'
+export A39_CALLBACK_BIND_HOST='0.0.0.0'
+export A39_CALLBACK_PORT='19039'
+```
+
+5. 先确认脚本和 JDK 正常，再发起一次完整模拟：
+
+```bash
+./bin/run-a39-simulator.sh --help
+
+./bin/run-a39-simulator.sh \
+  --out-order-sn A39TEST$(date +%Y%m%d%H%M%S) \
+  --notify-url http://127.0.0.1:19039/callback/order \
+  --query-attempts 3 \
+  --query-interval 30s \
+  --callback-wait 10m
+```
+
+如果模拟器和被测交易引擎不在同一台机器，`notify-url` 不能使用 `127.0.0.1`，必须换成被测平台能访问到的内网 IP、nginx 代理地址或公网隧道地址。
+
+6. test188 当前 `MINISO` 供应商已在 `cardshop-trade-engine-supplier.yaml` 指向本机 mock：`127.0.0.1:18082/tripartite/coupon/*`，`timeout-ms=10000`。mock 默认按 `1200-9800ms` 返回大部分请求，并用少量 `10500-22000ms` 样本触发供应商超时；因此同一条模拟器命令可能得到成功推进，也可能观察到 outbox 退避重试。
+
 ### 参数注入时机
 
 模拟器不进入主服务发布包，也不会在打包阶段注入 `base_url`、`app_id`、`product_id`、`account`、`out_order_sn`、`app_secret`、`aesKey`、`notify_url` 等业务参数。打包只生成可执行 jar、运行脚本和配置模板；实际参数在运行阶段通过命令行参数或环境变量传入。
@@ -115,6 +181,7 @@ mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
 | `--product-id` | `A39_PRODUCT_ID` | `1011` | 直充产品 ID。 |
 | `--account` | `A39_ACCOUNT` | `18186222336` | 充值账号。 |
 | `--num` | `A39_NUM` | `1` | 下单数量。 |
+| `--order-price` | `A39_ORDER_PRICE` | `0` | 订单金额兼容字段，单位分；当前新链路接单金额以后端选中的商品快照为准，该字段不参与旧协议签名。 |
 | `--product-type` | `A39_PRODUCT_TYPE` | `1` | 产品类型。 |
 | `--out-order-sn` | `A39_OUT_ORDER_SN` | 自动生成 | 商户订单号，重复压测时建议显式传入。 |
 | `--notify-url` | `A39_NOTIFY_URL` | `http://127.0.0.1:<callback-port>/callback/order` | 下单时发送给平台的回调地址。 |
@@ -196,6 +263,7 @@ export A39_APP_ID='A35cecjXS7lZ1W30NMN'
 export A39_PRODUCT_ID='1011'
 export A39_ACCOUNT='18186222336'
 export A39_NUM='1'
+export A39_ORDER_PRICE='0'
 export A39_PRODUCT_TYPE='1'
 export A39_REQUEST_SM4='true'
 export A39_CALLBACK_BIND_HOST='0.0.0.0'
