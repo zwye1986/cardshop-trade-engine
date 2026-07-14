@@ -102,7 +102,36 @@ mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
 
 `cardshop-trade-engine-simulator` 可按 `docs/交行直充接口技术文档-V1.1.docx` 模拟 A39 商户侧直充业务：获取 token、按 `aesKey` 生成 SM3 签名、创建直充订单、按响应轮询查单，并启动本地回调接收器。
 
-`base-url` 默认 `http://apitest.kalaiwang.com`，`app-id` 默认 `A35cecjXS7lZ1W30NMN`，`product-id` 默认 `1011`，`account` 默认 `18186222336`，也可以通过参数或环境变量覆盖。`app_secret`、`aesKey` 等敏感值不要写进命令历史可见的脚本或提交到 Git。
+### 参数注入时机
+
+模拟器不进入主服务发布包，也不会在打包阶段注入 `base_url`、`app_id`、`product_id`、`account`、`out_order_sn`、`app_secret`、`aesKey`、`notify_url` 等业务参数。打包只生成可执行 jar、运行脚本和配置模板；实际参数在运行阶段通过命令行参数或环境变量传入。
+
+非敏感参数已有默认值：
+
+| 参数 | 环境变量 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--base-url` | `A39_BASE_URL` | `http://apitest.kalaiwang.com` | 请求前缀，不包含接口路径。 |
+| `--app-id` | `A39_APP_ID` | `A35cecjXS7lZ1W30NMN` | A39 机构 `app_id`。 |
+| `--product-id` | `A39_PRODUCT_ID` | `1011` | 直充产品 ID。 |
+| `--account` | `A39_ACCOUNT` | `18186222336` | 充值账号。 |
+| `--num` | `A39_NUM` | `1` | 下单数量。 |
+| `--product-type` | `A39_PRODUCT_TYPE` | `1` | 产品类型。 |
+| `--out-order-sn` | `A39_OUT_ORDER_SN` | 自动生成 | 商户订单号，重复压测时建议显式传入。 |
+| `--notify-url` | `A39_NOTIFY_URL` | `http://127.0.0.1:<callback-port>/callback/order` | 下单时发送给平台的回调地址。 |
+| `--callback-bind-host` | `A39_CALLBACK_BIND_HOST` | `0.0.0.0` | 本机回调接收器监听地址。 |
+| `--callback-port` | `A39_CALLBACK_PORT` | `19039` | 本机回调接收器监听端口。 |
+| `--query-attempts` | `A39_QUERY_ATTEMPTS` | `3` | 下单后最多查单次数。 |
+| `--query-interval` | `A39_QUERY_INTERVAL` | `30s` | 查单间隔，支持 `ms`、`s`、`m` 或 ISO-8601 duration。 |
+| `--callback-wait` | `A39_CALLBACK_WAIT` | `10m` | 下单和查单后等待回调的最长时间。 |
+| `--request-sm4` | `A39_REQUEST_SM4` | `true` | 默认模拟真实 V1 订单/查单链路，请求体按 `aesKey` 做 SM4 加密；联调明文环境时显式设为 `false`。 |
+
+`--app-secret` / `A39_APP_SECRET` 和 `--aes-key` / `A39_AES_KEY` 是必填敏感参数。真实值只应写入部署机本地 `config/a39-simulator.env`、临时环境变量或密钥系统，不能提交到 Git，也不建议直接写进会进入 shell 历史的命令行。
+
+test188 的 nginx 只把 `http://apitest.kalaiwang.com/v1/cardapi/**` 转发到新交易引擎；`http://apitest.kalaiwang.com` 域名下的其他路径仍按原有 `location /` 进入旧卡管兜底。因此模拟器默认 `base-url` 可用于当前 A39 业务联调，是因为模拟器只调用 `/v1/cardapi/**` 接口。`/testSuite/trade-api/dev/**` 仍保留给测试辅助前端作为同域代理入口。
+
+### 本地源码运行
+
+源码运行适合本机联调或快速验证参数解析。需要 JDK 21 和 Maven 3.9+：
 
 ```bash
 export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home
@@ -114,38 +143,179 @@ mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \
   -Dexec.args="--notify-url http://可被平台访问的地址/callback/order"
 ```
 
-常用覆盖参数：
+也可以把非敏感参数放到环境变量里，命令行只覆盖本次需要变更的值：
 
 ```bash
---base-url http://apitest.kalaiwang.com
---base-url http://apitest.kalaiwang.com/testSuite/trade-api/dev
---app-id A35cecjXS7lZ1W30NMN
---product-id 1011
---account 18186222336
---out-order-sn A39TEST202607130001
---notify-url http://127.0.0.1:19039/callback/order
---query-attempts 3
---query-interval 30s
---callback-port 19039
+export A39_APP_SECRET='***'
+export A39_AES_KEY='***'
+export A39_PRODUCT_ID='1011'
+export A39_ACCOUNT='18186222336'
+
+mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \
+  -Dexec.args="--out-order-sn A39TEST202607130001 --notify-url http://可被平台访问的地址/callback/order"
 ```
 
-如果程序不在被测平台同机运行，`notify-url` 不能使用 `127.0.0.1`，需要填平台能够访问到的公网、内网或 nginx 代理地址。
+### 单独打包和部署运行
 
-模拟器会在标准输出打印两类联调日志：
-
-- `[A39][HTTP][request]`：发送请求的 curl，`app_secret` 和 `Authorization` 会脱敏。
-- `[A39][HTTP][response]`：对应 HTTP 响应状态码和响应体原文。
-- `[A39][ORDER][status-change]`：查单得到的 `order_status` 发生变化时记录商户订单号、状态码和来源。
-
-模拟器不进入主服务发布包，需单独打包：
+模拟器需要单独打包，不会被 `./scripts/package.sh` 放进主服务发布包。打包命令：
 
 ```bash
 ./scripts/package-a39-simulator.sh
 ```
 
-产物位于 `dist/a39-business-simulator-<version>.zip`，解压后可通过 `bin/run-a39-simulator.sh` 传入同样的参数运行。
+打包产物位于 `dist/a39-business-simulator-<version>.zip`，zip 内容如下：
 
-打包产物内带有 `config/a39-simulator.env.example`。在部署机复制为 `config/a39-simulator.env` 后填写 `A39_APP_SECRET` 和 `A39_AES_KEY`，运行脚本会自动加载该文件；真实密钥文件不应提交到 Git。
+```text
+a39-business-simulator-<version>/
+  app/cardshop-trade-engine-simulator-<version>.jar
+  bin/run-a39-simulator.sh
+  config/a39-simulator.env.example
+```
+
+部署机解压后，先复制本地配置文件并填写敏感值：
+
+```bash
+cd /opt/cardshop
+unzip /path/to/a39-business-simulator-<version>.zip
+cd a39-business-simulator-<version>
+
+cp config/a39-simulator.env.example config/a39-simulator.env
+vi config/a39-simulator.env
+```
+
+`config/a39-simulator.env` 示例：
+
+```bash
+export CARD_SHOP_TRADE_JAVA_HOME='/opt/java/jdk-21.0.11'
+
+export A39_APP_SECRET='***'
+export A39_AES_KEY='***'
+
+export A39_BASE_URL='http://apitest.kalaiwang.com'
+export A39_APP_ID='A35cecjXS7lZ1W30NMN'
+export A39_PRODUCT_ID='1011'
+export A39_ACCOUNT='18186222336'
+export A39_NUM='1'
+export A39_PRODUCT_TYPE='1'
+export A39_REQUEST_SM4='true'
+export A39_CALLBACK_BIND_HOST='0.0.0.0'
+export A39_CALLBACK_PORT='19039'
+```
+
+启动一次完整模拟：
+
+```bash
+./bin/run-a39-simulator.sh \
+  --out-order-sn A39TEST202607130001 \
+  --notify-url http://可被平台访问的地址/callback/order
+```
+
+运行脚本会自动 `source config/a39-simulator.env`，并参考 `scripts/package.sh` 的规则探测 JDK 21：优先使用 `CARD_SHOP_TRADE_JAVA_HOME`，其次是 `JAVA_HOME`，再依次尝试 test188 当前路径 `/opt/java/jdk-21.0.11`、`/usr/local/jdk-21`、`/opt/jdk-21` 和 macOS 默认路径 `/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home`。命令行参数优先级高于同名环境变量，适合每次运行时临时覆盖 `product-id`、`account`、`out-order-sn`、`notify-url` 等字段。
+
+如果启动时报：
+
+```text
+UnsupportedClassVersionError: ... class file version 65.0 ... recognizes class file versions up to 52.0
+```
+
+说明当前实际执行的是 Java 8。`65.0` 是 Java 21 字节码，`52.0` 是 Java 8 运行时。处理方式是在部署机安装 JDK 21，然后在 `config/a39-simulator.env` 中设置：
+
+```bash
+export CARD_SHOP_TRADE_JAVA_HOME='/opt/java/jdk-21.0.11'
+```
+
+也可以直接检查当前运行时：
+
+```bash
+${CARD_SHOP_TRADE_JAVA_HOME:-$JAVA_HOME}/bin/java -version
+java -version
+```
+
+确保 `./bin/run-a39-simulator.sh` 能拿到 Java 21 后再启动。
+
+如果 token 阶段报：
+
+```text
+getToken failed: code=401, msg=凭证错误
+```
+
+说明请求已经到达服务端，但 `app_id + app_secret` 在目标环境的 `mc_ext_depart` 中没有匹配到启用商户。优先检查：
+
+- `config/a39-simulator.env` 中的 `A39_APP_SECRET` 是否仍是模板值 `***`，以及是否和 `A39_APP_ID` 属于同一商户。
+- 运行脚本是否加载的是当前包下的 `config/a39-simulator.env`，不是其他目录的旧文件。
+- 请求日志里的 curl 是否为 `http://apitest.kalaiwang.com/v1/cardapi/auth/getToken`；该路径在 test188 nginx 中必须直接转发到新交易引擎。
+- 服务端目标环境的 `mc_ext_depart.app_id/app_secret/depart_status` 是否存在且启用。
+
+如果下单阶段报：
+
+```text
+Create response: code=500, msg=商户配置缺失或版本不一致
+```
+
+说明请求已经通过 token、SM4 解密和 SM3 验签，进入 Redis 受理 Lua 后因为商户或商品配置基线缺失而 fail closed。优先检查目标 Redis 是否存在：
+
+```text
+cardshop:trade:recharge:{A39}:merchant:config
+cardshop:trade:recharge:{A39}:product:<product_id>:config
+```
+
+这些 key 的 `version/status/price/product_type` 必须和 MySQL 当前商户、商品授权一致。test188 当前 A39 启用授权商品是 `73300102`、`73300110`；代码内置默认 `product-id=1011` 仍保留，但 test188 本地 `config/a39-simulator.env` 已按当前数据覆盖为 `A39_PRODUCT_ID=73300102`。如果重新解包或换环境后又用 `1011`，会因为 MySQL 未授权或 Redis product config 不存在而再次失败。
+
+### notify_url 设置
+
+`notify_url` 是下单接口 `/v1/cardapi/order/createRechargeOrder` 请求体里的回调地址，模拟器命令行参数名是 `--notify-url`，环境变量名是 `A39_NOTIFY_URL`。被测平台在订单状态变化后会按这个地址回调模拟器，所以它必须是“被测平台能访问到”的地址，而不是只对当前终端可见的地址。
+
+模拟器启动时会同时启动一个回调接收器，默认监听：
+
+```text
+0.0.0.0:19039
+```
+
+回调路径固定为：
+
+```text
+/callback/order
+```
+
+`--callback-bind-host` 和 `--callback-port` 只决定模拟器本机监听在哪个网卡和端口；`--notify-url` 才是发送给平台、让平台回调的完整 URL。两者通常端口一致，但含义不同。
+
+常见设置方式：
+
+| 场景 | 推荐 `notify_url` | 说明 |
+| --- | --- | --- |
+| 模拟器和被测平台在同一台机器 | `http://127.0.0.1:19039/callback/order` | 只有平台进程和模拟器进程同机时才可以用 `127.0.0.1`。 |
+| 模拟器部署在 test188 或同网段机器 | `http://<模拟器内网IP>:19039/callback/order` | 确保被测平台机器能访问该 IP 和端口，防火墙需放行。 |
+| 通过 nginx 代理回调 | `http://<nginx域名或IP>/a39/callback/order` | nginx 需要把该路径转发到 `http://<模拟器IP>:19039/callback/order`。 |
+| 模拟器在开发电脑，被测平台在远端 | 公网隧道或可达代理地址 | 远端平台无法访问开发电脑上的 `127.0.0.1`，需使用内网穿透、VPN、nginx 或部署到平台可达机器。 |
+
+示例 nginx 转发：
+
+```nginx
+location /a39/callback/order {
+    proxy_pass http://127.0.0.1:19039/callback/order;
+}
+```
+
+对应启动命令：
+
+```bash
+./bin/run-a39-simulator.sh \
+  --callback-bind-host 0.0.0.0 \
+  --callback-port 19039 \
+  --notify-url http://<nginx域名或IP>/a39/callback/order
+```
+
+注意：`notify_url` 里的 `127.0.0.1` 是从被测平台机器视角解析的。如果平台部署在远端服务器，`http://127.0.0.1:19039/callback/order` 指向的是远端服务器自己，不是开发者电脑。
+
+### 日志和结果观察
+
+模拟器会在标准输出打印三类联调日志：
+
+- `[A39][HTTP][request]`：发送请求的 curl，`app_secret` 和 `Authorization` 会脱敏。
+- `[A39][HTTP][response]`：对应 HTTP 响应状态码和响应体原文。
+- `[A39][ORDER][status-change]`：查单得到的 `order_status` 发生变化时记录商户订单号、状态码和来源。
+
+回调请求会由模拟器校验签名并输出接收结果；如果等待时间内没有收到回调，优先检查 `notify_url` 是否能从被测平台机器访问、端口是否放行、代理路径是否正确，以及下单响应是否进入需要回调的业务状态。
 
 ## 部署打包
 

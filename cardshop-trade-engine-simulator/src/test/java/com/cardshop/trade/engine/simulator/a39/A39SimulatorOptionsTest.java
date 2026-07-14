@@ -44,6 +44,23 @@ class A39SimulatorOptionsTest {
         assertThat(options.account()).isEqualTo("18186222336");
     }
 
+    @Test
+    void requestSm4DefaultsToRealV1ProtocolAndCanBeDisabledExplicitly() {
+        A39SimulatorOptions defaultOptions = A39SimulatorOptions.parse(
+                new String[]{},
+                secretEnv(),
+                FIXED_CLOCK);
+        A39SimulatorOptions plainOptions = A39SimulatorOptions.parse(
+                new String[]{"--request-sm4", "false"},
+                secretEnv(),
+                FIXED_CLOCK);
+
+        assertThat(defaultOptions.requestSm4Enabled()).isTrue();
+        assertThat(defaultOptions.sanitizedSummary()).contains("requestSm4=true");
+        assertThat(plainOptions.requestSm4Enabled()).isFalse();
+        assertThat(plainOptions.sanitizedSummary()).contains("requestSm4=false");
+    }
+
     private static Map<String, String> requiredEnv() {
         return Map.of(
                 "A39_APP_ID", "app-id",

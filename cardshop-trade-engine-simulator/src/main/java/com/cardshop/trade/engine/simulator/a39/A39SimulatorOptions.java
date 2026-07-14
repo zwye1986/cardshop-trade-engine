@@ -42,6 +42,7 @@ public record A39SimulatorOptions(
     public static final String DEFAULT_APP_ID = "A35cecjXS7lZ1W30NMN";
     public static final String DEFAULT_PRODUCT_ID = "1011";
     public static final String DEFAULT_ACCOUNT = "18186222336";
+    private static final boolean DEFAULT_REQUEST_SM4_ENABLED = true;
     private static final int DEFAULT_CALLBACK_PORT = 19039;
     private static final int DEFAULT_QUERY_ATTEMPTS = 3;
     private static final Duration DEFAULT_QUERY_INTERVAL = Duration.ofSeconds(30);
@@ -103,7 +104,7 @@ public record A39SimulatorOptions(
                 notifyUrl,
                 integer(option(options, env, "query-attempts", "A39_QUERY_ATTEMPTS", String.valueOf(DEFAULT_QUERY_ATTEMPTS)), "query-attempts"),
                 duration(option(options, env, "query-interval", "A39_QUERY_INTERVAL", DEFAULT_QUERY_INTERVAL.toString()), "query-interval"),
-                bool(option(options, env, "request-sm4", "A39_REQUEST_SM4", "false")),
+                bool(option(options, env, "request-sm4", "A39_REQUEST_SM4", String.valueOf(DEFAULT_REQUEST_SM4_ENABLED))),
                 option(options, env, "callback-bind-host", "A39_CALLBACK_BIND_HOST", "0.0.0.0"),
                 callbackPort,
                 duration(option(options, env, "callback-wait", "A39_CALLBACK_WAIT", DEFAULT_CALLBACK_WAIT.toString()), "callback-wait")
@@ -115,10 +116,10 @@ public record A39SimulatorOptions(
                 A39 business simulator
 
                 Required: --app-secret, --aes-key
-                Defaults: --base-url http://apitest.kalaiwang.com, --app-id A35cecjXS7lZ1W30NMN, --product-id 1011, --account 18186222336, --num 1, --product-type 1
+                Defaults: --base-url http://apitest.kalaiwang.com, --app-id A35cecjXS7lZ1W30NMN, --product-id 1011, --account 18186222336, --num 1, --product-type 1, --request-sm4 true
 
                 Environment fallbacks:
-                  A39_APP_ID A39_APP_SECRET A39_AES_KEY A39_PRODUCT_ID A39_ACCOUNT
+                  A39_APP_ID A39_APP_SECRET A39_AES_KEY A39_PRODUCT_ID A39_ACCOUNT A39_REQUEST_SM4
 
                 Example:
                   mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \\
@@ -127,8 +128,8 @@ public record A39SimulatorOptions(
     }
 
     public String sanitizedSummary() {
-        return "baseUrl=%s, appId=%s, productId=%s, account=%s, outOrderSn=%s, notifyUrl=%s, queryAttempts=%d"
-                .formatted(baseUrl, appId, productId, mask(account), outOrderSn, notifyUrl, queryAttempts);
+        return "baseUrl=%s, appId=%s, productId=%s, account=%s, outOrderSn=%s, notifyUrl=%s, queryAttempts=%d, requestSm4=%s"
+                .formatted(baseUrl, appId, productId, mask(account), outOrderSn, notifyUrl, queryAttempts, requestSm4Enabled);
     }
 
     private static Map<String, String> parseArgs(String[] args) {
