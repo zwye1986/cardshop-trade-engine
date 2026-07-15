@@ -64,6 +64,39 @@ class AcceptRechargeOrderCommandTest {
                 .hasMessageContaining("orgCode");
     }
 
+    @Test
+    void allowsBlankNotifyUrlSoOrderCanDisableMerchantCallback() {
+        var command = new AcceptRechargeOrderCommand(
+                "A36",
+                "app-1",
+                "OUT-1001",
+                "202607051337458961474292",
+                "73301280",
+                "73301280",
+                "18186222336",
+                "",
+                "nonce-12345678901234567890123456",
+                1,
+                5200L,
+                "话费50元",
+                5000L,
+                1,
+                "codekey",
+                "TF_KA",
+                "hash-v1",
+                "v1",
+                "SHA-256",
+                ValidationStatus.PASSED,
+                "",
+                "",
+                7L,
+                11L,
+                1783224958000L,
+                1783225258000L);
+
+        assertThat(command.notifyUrl()).isEmpty();
+    }
+
     private static AcceptRechargeOrderCommand sampleCommand(
             ValidationStatus validationStatus, String failCode, String failReason) {
         return new AcceptRechargeOrderCommand(

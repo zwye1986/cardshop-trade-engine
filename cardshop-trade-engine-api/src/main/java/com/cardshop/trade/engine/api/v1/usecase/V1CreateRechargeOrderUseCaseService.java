@@ -444,6 +444,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         if (syntaxError != null) {
             return Preparation.error(V1CardApiResultStatus.PARAM_ERROR.result(syntaxError));
         }
+        String notifyUrl = normalizeNotifyUrl(request.notifyUrl());
 
         V1ProductSelection productSelection = productCandidateSelector.select(
                 merchant.orgCode(),
@@ -470,7 +471,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                         request.productId(),
                         request.outOrderSn(),
                         request.account(),
-                        request.notifyUrl(),
+                        notifyUrl,
                         request.num()));
         long now = clock.instant().toEpochMilli();
         AcceptRechargeOrderCommand acceptCommand = new AcceptRechargeOrderCommand(
@@ -481,7 +482,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 request.productId(),
                 productSelection.selectedProductId(),
                 request.account(),
-                request.notifyUrl(),
+                notifyUrl,
                 request.nonceStr(),
                 request.num(),
                 productSelection.salePriceCent(),
@@ -539,10 +540,14 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         if (request.nonceStr().length() != NONCE_STR_LENGTH) {
             return "nonce_str长度不正确";
         }
-        if (!StringUtils.hasText(request.notifyUrl()) || !isHttpUrl(request.notifyUrl())) {
+        if (StringUtils.hasText(request.notifyUrl()) && !isHttpUrl(request.notifyUrl())) {
             return "notify_url格式不正确";
         }
         return null;
+    }
+
+    private static String normalizeNotifyUrl(String value) {
+        return StringUtils.hasText(value) ? value : "";
     }
 
     private static boolean isHttpUrl(String value) {

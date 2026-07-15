@@ -168,6 +168,32 @@ class V1CreateRechargeOrderUseCaseServiceTest {
     }
 
     @Test
+    void acceptsBlankNotifyUrlAndKeepsCallbackDisabledInAcceptCommand() {
+        acceptPort.nextResult = new AcceptRechargeOrderResult(
+                AcceptRechargeOrderStatus.ACCEPTED,
+                "202607051337458961474292",
+                "PASSED",
+                "",
+                "",
+                true,
+                true,
+                1L);
+
+        V1CardApiResult result = service.createRechargeOrder(
+                        new V1MerchantCommand(
+                                "app-gray",
+                                "A36",
+                                rawBody("OUT-NO-NOTIFY", "nonce-12345678901234567890123448", 1, "")))
+                .toCompletableFuture()
+                .join();
+
+        assertThat(result.code()).isEqualTo("200");
+        assertThat(result.msg()).isEqualTo("操作成功");
+        assertThat(acceptPort.lastCommand).isNotNull();
+        assertThat(acceptPort.lastCommand.notifyUrl()).isEmpty();
+    }
+
+    @Test
     void mapsDuplicateRedisResultToLegacyOrderWarnResponse() {
         acceptPort.nextResult = new AcceptRechargeOrderResult(
                 AcceptRechargeOrderStatus.DUPLICATE,

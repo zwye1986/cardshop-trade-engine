@@ -207,6 +207,25 @@ class PersistRechargeOrderConsumerServiceTest {
     }
 
     @Test
+    void persistsSnapshotWithBlankNotifyUrlSoCallbackCanStayDisabled() {
+        PersistOrderSnapshot redisSnapshot = snapshot(2L, "Redis更新商品名", true, "");
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.of(redisSnapshot));
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                reliabilityPort,
+                CLOCK);
+
+        PersistRechargeOrderResult result = service.persist(message(1L));
+
+        assertThat(result.status()).isEqualTo(PersistRechargeOrderStatus.PERSISTED);
+        assertThat(persistencePort.lastAggregate.snapshot().notifyUrl()).isEmpty();
+        assertThat(reliabilityPort.markDbPersistedCalls).isEqualTo(1);
+    }
+
+    @Test
     void truncatesMysqlExceptionReasonBeforeWritingPersistFailedState() {
         RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
         RecordingPersistencePort persistencePort = new RecordingPersistencePort();
@@ -306,6 +325,14 @@ class PersistRechargeOrderConsumerServiceTest {
     }
 
     private static PersistOrderSnapshot snapshot(long orderVersion, String productName, boolean dispatchAllowed) {
+        return snapshot(orderVersion, productName, dispatchAllowed, "https://merchant.example/callback");
+    }
+
+    private static PersistOrderSnapshot snapshot(
+            long orderVersion,
+            String productName,
+            boolean dispatchAllowed,
+            String notifyUrl) {
         return new PersistOrderSnapshot(
                 "A36",
                 "app-gray",
@@ -314,7 +341,7 @@ class PersistRechargeOrderConsumerServiceTest {
                 "PARENT-100",
                 "SKU-100",
                 "13800138000",
-                "https://merchant.example/callback",
+                notifyUrl,
                 1,
                 5200L,
                 productName,

@@ -331,7 +331,9 @@ cardshop:trade:recharge:{A39}:product:<selected_product_id>:config
 
 ### notify_url 设置
 
-`notify_url` 是下单接口 `/v1/cardapi/order/createRechargeOrder` 请求体里的回调地址，模拟器命令行参数名是 `--notify-url`，环境变量名是 `A39_NOTIFY_URL`。被测平台在订单状态变化后会按这个地址回调模拟器，所以它必须是“被测平台能访问到”的地址，而不是只对当前终端可见的地址。
+`notify_url` 是下单接口 `/v1/cardapi/order/createRechargeOrder` 请求体里的回调地址，模拟器命令行参数名是 `--notify-url`，环境变量名是 `A39_NOTIFY_URL`。被测平台在订单状态变化后会按这个地址回调模拟器，所以非空时必须是 `http` 或 `https` URL，并且必须是“被测平台能访问到”的地址，而不是只对当前终端可见的地址。
+
+V1 下单接口允许 `notify_url` 为空字符串；为空时订单仍会正常受理、持久化和履约，但平台不会生成商户回调任务，也不会写入 `recharge_notify_task`。这适合验证“无需回调”的商户请求。当前 A39 业务模拟器默认用于回调链路联调，启动参数仍要求提供非空 `notify_url`，如需验证空回调场景，请直接使用请求工作台或 curl 调用下单接口，并在签名原文中保留 `notify_url=` 这个空字段。
 
 模拟器启动时会同时启动一个回调接收器，默认监听：
 

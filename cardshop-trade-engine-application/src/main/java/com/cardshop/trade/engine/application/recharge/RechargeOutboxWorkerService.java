@@ -536,6 +536,9 @@ public class RechargeOutboxWorkerService {
     }
 
     private void createOrderStatusNotifyTask(RechargeFulfillmentOrder order, LegacyOrderStatusCode orderStatus) {
+        if (!hasNotifyUrl(order)) {
+            return;
+        }
         String orderStatusCode = Integer.toString(orderStatus.code());
         Map<String, String> payload = notifyPayloadSigner.signOrderStatus(order, orderStatusCode, clock.instant());
         notifyTaskPort.insertIfAbsent(new RechargeNotifyTaskDraft(
@@ -552,6 +555,9 @@ public class RechargeOutboxWorkerService {
     }
 
     private void createWriteOffNotifyTask(RechargeFulfillmentOrder order) {
+        if (!hasNotifyUrl(order)) {
+            return;
+        }
         Map<String, String> payload = notifyPayloadSigner.signWriteOff(order, clock.instant());
         notifyTaskPort.insertIfAbsent(new RechargeNotifyTaskDraft(
                 "notify-writeoff-" + order.orderId() + "-cancelled",
@@ -564,6 +570,10 @@ public class RechargeOutboxWorkerService {
                 payload,
                 DEFAULT_NOTIFY_MAX_RETRY_COUNT,
                 LocalDateTime.now(clock)));
+    }
+
+    private static boolean hasNotifyUrl(RechargeFulfillmentOrder order) {
+        return order.notifyUrl() != null && !order.notifyUrl().isBlank();
     }
 
     private static SupplierDispatchGatewayRequest dispatchRequest(RechargeOutboxEvent event, RechargeFulfillmentOrder order) {

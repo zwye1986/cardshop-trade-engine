@@ -19,7 +19,7 @@ import java.util.Objects;
  * @param productId 外部请求父产品号，对应接口 {@code product_id} 和旧表 {@code mc_order.parent_id}
  * @param selectedProductId 实际落库/派单子商品号，对应旧表 {@code mc_order.produt_code}
  * @param account 直充账号，对应旧表 {@code mc_order.account}
- * @param notifyUrl 商户回调地址，对应旧表 {@code mc_order.callback_url}
+ * @param notifyUrl 商户回调地址，对应旧表 {@code mc_order.callback_url}；可为空，表示不触发商户回调
  * @param num 下单数量，对应旧表 {@code mc_order.num}
  * @param orderPrice 订单金额，单位分，对应旧表 {@code mc_order.order_price}
  * @param productName 商品名称，对应旧表 {@code mc_order.product_name}
@@ -82,7 +82,7 @@ public record PersistOrderSnapshot(
         productId = requireText(productId, "productId");
         selectedProductId = requireText(selectedProductId, "selectedProductId");
         account = requireText(account, "account");
-        notifyUrl = requireText(notifyUrl, "notifyUrl");
+        notifyUrl = defaultText(notifyUrl);
         if (num <= 0) {
             throw new IllegalArgumentException("num must be positive");
         }

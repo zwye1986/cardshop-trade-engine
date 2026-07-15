@@ -70,6 +70,34 @@ class RechargeOutboxWorkerServiceTest {
     }
 
     @Test
+    void dispatchSuccessSkipsNotifyTaskWhenOrderNotifyUrlIsBlank() {
+        FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(orderWithNotifyUrl(""));
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("SUP-1001", "0", "success", "{\"status\":\"SUCCESS\"}"));
+        FakeNotifyTaskPort notifyTaskPort = new FakeNotifyTaskPort();
+
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGateway,
+                new FakeFrequencyPort(true),
+                BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(),
+                notifyTaskPort,
+                new FixedNotifyPayloadSigner(),
+                CLOCK,
+                settings());
+
+        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+
+        assertThat(result.succeeded()).isEqualTo(1);
+        assertThat(outboxPort.successes).containsExactly("dispatch-ORDER-1");
+        assertThat(orderPort.statusUpdates.getLast().dispatchStatus()).isEqualTo(FulfillmentDispatchStatus.SUCCESS);
+        assertThat(notifyTaskPort.createdTasks).isEmpty();
+    }
+
+    @Test
     void dispatchIsDelayedWhenSameAccountFrequencyLockAlreadyExists() {
         FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
         FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(dispatchableOrder());
@@ -355,6 +383,38 @@ class RechargeOutboxWorkerServiceTest {
     }
 
     @Test
+    void invalidOrderSuccessSkipsWriteOffNotifyWhenOrderNotifyUrlIsBlank() {
+        FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.INVALID_ORDER));
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(orderWithNotifyUrl(""));
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("SUP-INVALID-1", "0", "invalid success", "{\"status\":\"SUCCESS\"}"));
+        FakeNotifyTaskPort notifyTaskPort = new FakeNotifyTaskPort();
+        FakeBalanceDeltaOutboxPort balanceDeltaOutboxPort = new FakeBalanceDeltaOutboxPort();
+        FakeBalanceReleasePort balanceReleasePort = new FakeBalanceReleasePort(BalanceReservationReleaseResult.releasedSuccess());
+
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGateway,
+                new FakeFrequencyPort(true),
+                balanceDeltaOutboxPort,
+                balanceReleasePort,
+                notifyTaskPort,
+                new FixedNotifyPayloadSigner(),
+                CLOCK,
+                settings());
+
+        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+
+        assertThat(result.succeeded()).isEqualTo(1);
+        assertThat(outboxPort.successes).containsExactly("dispatch-ORDER-1");
+        assertThat(orderPort.statusUpdates.getLast().dispatchStatus()).isEqualTo(FulfillmentDispatchStatus.CANCELLED);
+        assertThat(balanceReleasePort.commands).hasSize(1);
+        assertThat(balanceDeltaOutboxPort.commands).hasSize(1);
+        assertThat(notifyTaskPort.createdTasks).isEmpty();
+    }
+
+    @Test
     void dispatchFailureGeneratesReleaseBalanceDeltaFlushOutboxBeforeCompletingDispatchEvent() {
         FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
         FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(dispatchableOrder());
@@ -632,6 +692,10 @@ class RechargeOutboxWorkerServiceTest {
     }
 
     private static RechargeFulfillmentOrder dispatchableOrder() {
+        return orderWithNotifyUrl("https://merchant.example/notify");
+    }
+
+    private static RechargeFulfillmentOrder orderWithNotifyUrl(String notifyUrl) {
         return new RechargeFulfillmentOrder(
                 "ORDER-1",
                 "OUT-1",
@@ -641,7 +705,7 @@ class RechargeOutboxWorkerServiceTest {
                 "SKU-1",
                 "FNK_CGS_BX",
                 5200L,
-                "https://merchant.example/notify",
+                notifyUrl,
                 2,
                 "DB_PERSISTED",
                 "PASSED",

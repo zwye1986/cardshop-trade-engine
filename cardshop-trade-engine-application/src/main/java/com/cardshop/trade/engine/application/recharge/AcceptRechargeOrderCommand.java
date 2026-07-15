@@ -18,7 +18,7 @@ import java.util.Objects;
  * @param productId 调用方传入的父产品号，对应接口 {@code product_id}
  * @param selectedProductId Java 从父产品候选中选出的实际派单子商品号
  * @param account 充值账号
- * @param notifyUrl 商户回调地址
+ * @param notifyUrl 商户回调地址，可为空；为空表示本订单不触发商户回调
  * @param nonceStr V1 请求防重放随机串
  * @param num 购买数量，首期直充只允许 1
  * @param orderAmountCent 订单扣款金额，单位分
@@ -74,7 +74,7 @@ public record AcceptRechargeOrderCommand(
         productId = requireText(productId, "productId");
         selectedProductId = requireText(selectedProductId, "selectedProductId");
         account = requireText(account, "account");
-        notifyUrl = requireText(notifyUrl, "notifyUrl");
+        notifyUrl = defaultString(notifyUrl);
         nonceStr = requireText(nonceStr, "nonceStr");
         requestHash = requireText(requestHash, "requestHash");
         requestHashVersion = requireText(requestHashVersion, "requestHashVersion");
