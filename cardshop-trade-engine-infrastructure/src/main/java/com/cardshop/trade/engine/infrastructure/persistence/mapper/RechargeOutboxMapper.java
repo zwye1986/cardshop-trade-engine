@@ -1,10 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.persistence.mapper;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
-import com.cardshop.trade.engine.domain.order.TaskStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
 import java.time.LocalDateTime;
 import java.util.List;
@@ -13,12 +10,13 @@ import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 
 /**
  * 可靠事件表 Mapper。
  *
  * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md} 的「6.6 新增表」。
- * 扫描和抢占均使用单表 LambdaWrapper，分片条件使用 MySQL 函数表达式。
+ * 新旧系统共享旧订单表期间，扫描和抢占都必须通过 `recharge_order_ext` 确认订单归属。
  */
 @Mapper
 public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
@@ -82,11 +80,19 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
      * 投影，否则正在重试的刷账事件会被误报为资金差异。
      */
     @Select("""
-            select coalesce(sum(cast(json_unquote(json_extract(payload, '$.delta_amount')) as signed)), 0)
-            from recharge_outbox
-            where org_code = #{orgCode}
-              and event_type = 'BALANCE_DELTA_FLUSH'
-              and status <> 'SUCCESS'
+            select coalesce(sum(cast(json_unquote(json_extract(o.payload, '$.delta_amount')) as signed)), 0)
+            from recharge_outbox o
+            where o.org_code = #{orgCode}
+              and o.event_type = 'BALANCE_DELTA_FLUSH'
+              and o.status <> 'SUCCESS'
+              and exists (
+                select 1
+                from recharge_order_ext ext
+                where ext.order_id = o.order_id
+                  and ext.org_code = o.org_code
+                  and ext.out_order_sn = o.out_order_sn
+                  and ext.persist_status = 'DB_PERSISTED'
+              )
             """)
     Long sumUnfinishedBalanceDelta(@Param("orgCode") String orgCode);
 
@@ -98,13 +104,21 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
      */
     @Select("""
             select
-              event_type,
-              status,
+              o.event_type,
+              o.status,
               count(*) as count,
-              coalesce(timestampdiff(second, min(coalesce(created_at, updated_at, #{now})), #{now}), 0) as max_age_seconds
-            from recharge_outbox
-            where status in ('INIT', 'PROCESSING', 'FAILED', 'MANUAL_REQUIRED')
-            group by event_type, status
+              coalesce(timestampdiff(second, min(coalesce(o.created_at, o.updated_at, #{now})), #{now}), 0) as max_age_seconds
+            from recharge_outbox o
+            where o.status in ('INIT', 'PROCESSING', 'FAILED', 'MANUAL_REQUIRED')
+              and exists (
+                select 1
+                from recharge_order_ext ext
+                where ext.order_id = o.order_id
+                  and ext.org_code = o.org_code
+                  and ext.out_order_sn = o.out_order_sn
+                  and ext.persist_status = 'DB_PERSISTED'
+              )
+            group by o.event_type, o.status
             """)
     List<Map<String, Object>> selectObservabilityOutboxMetrics(@Param("now") LocalDateTime now);
 
@@ -146,23 +160,65 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
             List<String> eventTypes,
             LocalDateTime now) {
         int safeLimit = Math.max(1, Math.min(limit, 1000));
-        return selectList(new LambdaQueryWrapper<RechargeOutboxDO>()
-                .in(RechargeOutboxDO::getEventType, eventTypes)
-                .and(wrapper -> wrapper
-                        .and(due -> due
-                                .in(RechargeOutboxDO::getStatus, TaskStatus.INIT.name(), TaskStatus.FAILED.name())
-                                .le(RechargeOutboxDO::getNextRetryTime, now))
-                        .or(zombie -> zombie
-                                .eq(RechargeOutboxDO::getStatus, TaskStatus.PROCESSING.name())
-                                .and(lock -> lock
-                                        .lt(RechargeOutboxDO::getLockedUntil, now)
-                                        .or()
-                                        .isNull(RechargeOutboxDO::getLockedUntil))))
-                .apply("mod(crc32(shard_key), {0}) = {1}", shardTotal, shardIndex)
-                .orderByAsc(RechargeOutboxDO::getNextRetryTime)
-                .orderByAsc(RechargeOutboxDO::getId)
-                .last("limit " + safeLimit));
+        return selectDueForShardByEventTypesSql(shardTotal, shardIndex, safeLimit, eventTypes, now);
     }
+
+    /**
+     * 扫描新交易引擎拥有的到期事件和租约失效事件。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。新旧系统共享
+     * {@code mc_order} 期间，只有能在 {@code recharge_order_ext} 中确认 `DB_PERSISTED` 的订单事件
+     * 才允许进入 outbox 自动任务；可执行集合按 {@code created_at, id} 排序，保证先生成的事件优先处理。
+     */
+    @Select("""
+            <script>
+            select
+              o.id,
+              o.event_id,
+              o.event_type,
+              o.org_code,
+              o.order_id,
+              o.out_order_sn,
+              o.payload,
+              o.status,
+              o.retry_count,
+              o.max_retry_count,
+              o.next_retry_time,
+              o.locked_by,
+              o.locked_until,
+              o.version,
+              o.last_error,
+              o.shard_key,
+              o.created_at,
+              o.updated_at
+            from recharge_outbox o
+            where o.event_type in
+              <foreach collection="eventTypes" item="eventType" open="(" separator="," close=")">
+                #{eventType}
+              </foreach>
+              and (
+                (o.status in ('INIT', 'FAILED') and o.next_retry_time &lt;= #{now})
+                or (o.status = 'PROCESSING' and (o.locked_until &lt; #{now} or o.locked_until is null))
+              )
+              and exists (
+                select 1
+                from recharge_order_ext ext
+                where ext.order_id = o.order_id
+                  and ext.org_code = o.org_code
+                  and ext.out_order_sn = o.out_order_sn
+                  and ext.persist_status = 'DB_PERSISTED'
+              )
+              and mod(crc32(o.shard_key), #{shardTotal}) = #{shardIndex}
+            order by o.created_at asc, o.id asc
+            limit #{limit}
+            </script>
+            """)
+    List<RechargeOutboxDO> selectDueForShardByEventTypesSql(
+            @Param("shardTotal") int shardTotal,
+            @Param("shardIndex") int shardIndex,
+            @Param("limit") int limit,
+            @Param("eventTypes") List<String> eventTypes,
+            @Param("now") LocalDateTime now);
 
     /**
      * 基于事件 ID 和版本号抢占事件。
@@ -180,21 +236,41 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
             String workerId,
             LocalDateTime lockedUntil,
             LocalDateTime now) {
-        return update(null, new LambdaUpdateWrapper<RechargeOutboxDO>()
-                .eq(RechargeOutboxDO::getEventId, eventId)
-                .eq(RechargeOutboxDO::getVersion, currentVersion)
-                .and(wrapper -> wrapper
-                        .in(RechargeOutboxDO::getStatus, TaskStatus.INIT.name(), TaskStatus.FAILED.name())
-                        .apply("retry_count < max_retry_count")
-                        .or(zombie -> zombie
-                                .eq(RechargeOutboxDO::getStatus, TaskStatus.PROCESSING.name())
-                                .and(lock -> lock
-                                        .lt(RechargeOutboxDO::getLockedUntil, now)
-                                        .or()
-                                        .isNull(RechargeOutboxDO::getLockedUntil))))
-                .set(RechargeOutboxDO::getStatus, TaskStatus.PROCESSING.name())
-                .set(RechargeOutboxDO::getLockedBy, workerId)
-                .set(RechargeOutboxDO::getLockedUntil, lockedUntil)
-                .setSql("version = version + 1"));
+        return claimProcessingSql(eventId, currentVersion, workerId, lockedUntil, now);
     }
+
+    /**
+     * 基于事件 ID、版本号和订单归属哨兵抢占事件。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。抢占阶段重复校验
+     * {@code recharge_order_ext}，避免扫描后扩展状态变化或绕过扫描的调用方处理旧系统订单。
+     */
+    @Update("""
+            update recharge_outbox o
+            set status = 'PROCESSING',
+                locked_by = #{workerId},
+                locked_until = #{lockedUntil},
+                updated_at = #{now},
+                version = version + 1
+            where o.event_id = #{eventId}
+              and o.version = #{currentVersion}
+              and (
+                (o.status in ('INIT', 'FAILED') and retry_count < max_retry_count)
+                or (o.status = 'PROCESSING' and (o.locked_until < #{now} or o.locked_until is null))
+              )
+              and exists (
+                select 1
+                from recharge_order_ext ext
+                where ext.order_id = o.order_id
+                  and ext.org_code = o.org_code
+                  and ext.out_order_sn = o.out_order_sn
+                  and ext.persist_status = 'DB_PERSISTED'
+              )
+            """)
+    int claimProcessingSql(
+            @Param("eventId") String eventId,
+            @Param("currentVersion") long currentVersion,
+            @Param("workerId") String workerId,
+            @Param("lockedUntil") LocalDateTime lockedUntil,
+            @Param("now") LocalDateTime now);
 }

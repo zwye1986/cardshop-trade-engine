@@ -120,20 +120,48 @@ class MapperContractTest {
     }
 
     @Test
-    void outboxMapperScansDueAndZombieEventsWithShardPredicate() throws IOException {
+    void outboxMapperScopesDueScanAndClaimToTradeEngineOwnedOrders() throws IOException {
         String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeOutboxMapper.java"));
 
         assertThat(mapper)
-                .contains("LambdaQueryWrapper")
                 .contains("OutboxEventType.SUPPLIER_QUERY.name()")
-                .contains("RechargeOutboxDO::getStatus")
-                .contains("TaskStatus.INIT.name()")
-                .contains("TaskStatus.FAILED.name()")
-                .contains("TaskStatus.PROCESSING.name()")
+                .contains("from recharge_outbox o")
+                .contains("from recharge_order_ext ext")
+                .contains("ext.order_id = o.order_id")
+                .contains("ext.org_code = o.org_code")
+                .contains("ext.out_order_sn = o.out_order_sn")
+                .contains("ext.persist_status = 'DB_PERSISTED'")
+                .contains("'INIT'")
+                .contains("'FAILED'")
+                .contains("'PROCESSING'")
                 .contains("retry_count < max_retry_count")
-                .contains("mod(crc32(shard_key), {0}) = {1}")
-                .contains("LambdaUpdateWrapper")
-                .contains("version = version + 1");
+                .contains("mod(crc32(o.shard_key), #{shardTotal}) = #{shardIndex}")
+                .contains("version = version + 1")
+                .doesNotContainIgnoringCase(" join ");
+    }
+
+    @Test
+    void outboxMapperScansEligibleEventsByCreationTime() throws IOException {
+        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeOutboxMapper.java"));
+
+        assertThat(mapper)
+                .contains("List<RechargeOutboxDO> selectDueForShardByEventTypesSql")
+                .contains("o.next_retry_time &lt;= #{now}")
+                .contains("order by o.created_at asc, o.id asc")
+                .doesNotContain("orderByAsc(RechargeOutboxDO::getNextRetryTime)")
+                .doesNotContain("order by o.next_retry_time asc");
+    }
+
+    @Test
+    void outboxMapperScopesBalanceAndObservabilityAggregatesToOwnedOrders() throws IOException {
+        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeOutboxMapper.java"));
+
+        assertThat(mapper)
+                .contains("Long sumUnfinishedBalanceDelta")
+                .contains("List<Map<String, Object>> selectObservabilityOutboxMetrics")
+                .contains("from recharge_outbox o")
+                .contains("from recharge_order_ext ext")
+                .contains("ext.persist_status = 'DB_PERSISTED'");
     }
 
     @Test
