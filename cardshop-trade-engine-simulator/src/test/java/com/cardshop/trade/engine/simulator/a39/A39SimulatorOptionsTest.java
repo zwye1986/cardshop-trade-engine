@@ -60,6 +60,8 @@ class A39SimulatorOptionsTest {
 
         assertThat(defaultOptions.requestSm4Enabled()).isTrue();
         assertThat(defaultOptions.sanitizedSummary()).contains("requestSm4=true");
+        assertThat(defaultOptions.sanitizedSummary())
+                .contains("mode=", "concurrency=", "totalOrders=", "requestTimeout=");
         assertThat(plainOptions.requestSm4Enabled()).isFalse();
         assertThat(plainOptions.sanitizedSummary()).contains("requestSm4=false");
     }
@@ -127,6 +129,31 @@ class A39SimulatorOptionsTest {
     }
 
     @Test
+    void scenarioModeIgnoresBlankCommandLineNotifyUrlAndUsesCallbackDefault() {
+        A39SimulatorOptions options = A39SimulatorOptions.parse(
+                new String[]{"--notify-url="},
+                secretEnv(),
+                FIXED_CLOCK);
+
+        assertThat(options.mode()).isEqualTo(A39SimulatorMode.SCENARIO);
+        assertThat(options.notifyUrl()).isEqualTo("http://127.0.0.1:19039/callback/order");
+    }
+
+    @Test
+    void scenarioModeIgnoresBlankEnvironmentNotifyUrlAndUsesCallbackDefault() {
+        Map<String, String> env = new LinkedHashMap<>(secretEnv());
+        env.put("A39_NOTIFY_URL", "");
+
+        A39SimulatorOptions options = A39SimulatorOptions.parse(
+                new String[]{},
+                env,
+                FIXED_CLOCK);
+
+        assertThat(options.mode()).isEqualTo(A39SimulatorMode.SCENARIO);
+        assertThat(options.notifyUrl()).isEqualTo("http://127.0.0.1:19039/callback/order");
+    }
+
+    @Test
     void loadOptionsUseEnvironmentAndCommandLineOverridesEnvironment() {
         Map<String, String> env = new LinkedHashMap<>(secretEnv());
         env.put("A39_MODE", "load");
@@ -164,6 +191,13 @@ class A39SimulatorOptionsTest {
     @Test
     void invalidLoadParametersAreRejected() {
         assertThatThrownBy(() -> A39SimulatorOptions.parse(
+                new String[]{"--mode", "weird"},
+                secretEnv(),
+                FIXED_CLOCK))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("mode must be scenario or load");
+
+        assertThatThrownBy(() -> A39SimulatorOptions.parse(
                 new String[]{"--mode", "load", "--concurrency", "0"},
                 secretEnv(),
                 FIXED_CLOCK))
@@ -183,6 +217,13 @@ class A39SimulatorOptionsTest {
                 FIXED_CLOCK))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("expectedCreateCodes must not be empty");
+
+        assertThatThrownBy(() -> A39SimulatorOptions.parse(
+                new String[]{"--mode", "load", "--error-sample-limit", "-1"},
+                secretEnv(),
+                FIXED_CLOCK))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("errorSampleLimit must not be negative");
     }
 
     private static Map<String, String> requiredEnv() {
