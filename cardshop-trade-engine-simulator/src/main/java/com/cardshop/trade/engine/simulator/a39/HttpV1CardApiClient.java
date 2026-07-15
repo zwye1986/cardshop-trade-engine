@@ -22,7 +22,7 @@ import java.util.function.Consumer;
  */
 public final class HttpV1CardApiClient implements V1CardApiClient {
 
-    private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(10);
+    private static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(10);
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
 
@@ -31,14 +31,22 @@ public final class HttpV1CardApiClient implements V1CardApiClient {
     private final ObjectMapper objectMapper;
     private final LegacySm4BodyEncoder sm4BodyEncoder;
     private final Consumer<String> logSink;
+    private final Duration requestTimeout;
+    private final boolean logHttpTraffic;
 
     public HttpV1CardApiClient(String baseUrl) {
-        this(URI.create(baseUrl), HttpClient.newHttpClient(), new ObjectMapper(), new LegacySm4BodyEncoder(), System.out::println);
+        this(URI.create(baseUrl), HttpClient.newHttpClient(), new ObjectMapper(), new LegacySm4BodyEncoder(), System.out::println,
+                DEFAULT_REQUEST_TIMEOUT, true);
+    }
+
+    public HttpV1CardApiClient(String baseUrl, Duration requestTimeout, boolean logHttpTraffic) {
+        this(URI.create(baseUrl), HttpClient.newHttpClient(), new ObjectMapper(), new LegacySm4BodyEncoder(), System.out::println,
+                requestTimeout, logHttpTraffic);
     }
 
     HttpV1CardApiClient(URI baseUri, HttpClient httpClient, ObjectMapper objectMapper, LegacySm4BodyEncoder sm4BodyEncoder) {
         this(baseUri, httpClient, objectMapper, sm4BodyEncoder, ignored -> {
-        });
+        }, DEFAULT_REQUEST_TIMEOUT, true);
     }
 
     HttpV1CardApiClient(
@@ -47,11 +55,26 @@ public final class HttpV1CardApiClient implements V1CardApiClient {
             ObjectMapper objectMapper,
             LegacySm4BodyEncoder sm4BodyEncoder,
             Consumer<String> logSink) {
+        this(baseUri, httpClient, objectMapper, sm4BodyEncoder, logSink, DEFAULT_REQUEST_TIMEOUT, true);
+    }
+
+    HttpV1CardApiClient(
+            URI baseUri,
+            HttpClient httpClient,
+            ObjectMapper objectMapper,
+            LegacySm4BodyEncoder sm4BodyEncoder,
+            Consumer<String> logSink,
+            Duration requestTimeout,
+            boolean logHttpTraffic) {
         this.baseUri = Objects.requireNonNull(baseUri, "baseUri must not be null");
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
         this.sm4BodyEncoder = Objects.requireNonNull(sm4BodyEncoder, "sm4BodyEncoder must not be null");
         this.logSink = Objects.requireNonNull(logSink, "logSink must not be null");
+        this.requestTimeout = requestTimeout == null || requestTimeout.isZero() || requestTimeout.isNegative()
+                ? DEFAULT_REQUEST_TIMEOUT
+                : requestTimeout;
+        this.logHttpTraffic = logHttpTraffic;
     }
 
     @Override
@@ -83,15 +106,19 @@ public final class HttpV1CardApiClient implements V1CardApiClient {
         URI requestUri = uri(path);
         String contentType = sm4Enabled ? "text/plain; charset=UTF-8" : "application/json";
         HttpRequest.Builder builder = HttpRequest.newBuilder(requestUri)
-                .timeout(REQUEST_TIMEOUT)
+                .timeout(requestTimeout)
                 .header("Content-Type", contentType)
                 .POST(HttpRequest.BodyPublishers.ofString(body));
         if (token != null && !token.isBlank()) {
             builder.header("Authorization", token);
         }
-        logRequestCurl(path, requestUri, token, contentType, sm4Enabled ? body : objectMapper.writeValueAsString(sanitizedPayload(payload)));
+        if (logHttpTraffic) {
+            logRequestCurl(path, requestUri, token, contentType, sm4Enabled ? body : objectMapper.writeValueAsString(sanitizedPayload(payload)));
+        }
         HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
-        logSink.accept("[A39][HTTP][response] path=%s status=%d body=%s".formatted(path, response.statusCode(), response.body()));
+        if (logHttpTraffic) {
+            logSink.accept("[A39][HTTP][response] path=%s status=%d body=%s".formatted(path, response.statusCode(), response.body()));
+        }
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IllegalStateException("HTTP request failed: path=%s, status=%d".formatted(path, response.statusCode()));
         }
