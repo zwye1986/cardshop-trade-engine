@@ -35,11 +35,29 @@ class A39BusinessSimulatorApplicationTest {
         int exitCode = A39BusinessSimulatorApplication.run(loadOptions(), client, logs::add);
 
         assertThat(exitCode).isEqualTo(1);
+        assertThat(client.createCount).isEqualTo(1);
         assertThat(client.queryCount).isZero();
         assertThat(String.join("\n", logs))
                 .contains("failed=1")
                 .contains("exitCode=1")
                 .doesNotContain("Callback server listening");
+    }
+
+    @Test
+    void loadModeReturnsNonZeroAndSkipsCreateWhenTokenFails() throws Exception {
+        List<String> logs = new ArrayList<>();
+        TokenFailureClient client = new TokenFailureClient();
+
+        int exitCode = A39BusinessSimulatorApplication.run(loadOptions(), client, logs::add);
+
+        assertThat(exitCode).isEqualTo(1);
+        assertThat(client.createCount).isZero();
+        assertThat(client.queryCount).isZero();
+        assertThat(String.join("\n", logs))
+                .contains("completed=0")
+                .contains("failed=1")
+                .contains("error.IllegalStateException=1")
+                .contains("exitCode=1");
     }
 
     private static A39SimulatorOptions loadOptions() {
@@ -76,6 +94,7 @@ class A39BusinessSimulatorApplicationTest {
     private static final class SingleCreateClient implements V1CardApiClient {
 
         private final ApiResponse response;
+        private int createCount;
         private int queryCount;
 
         private SingleCreateClient(ApiResponse response) {
@@ -89,8 +108,32 @@ class A39BusinessSimulatorApplicationTest {
 
         @Override
         public ApiResponse createRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            createCount++;
             assertThat(payload.get("notify_url")).isEqualTo("");
             return response;
+        }
+
+        @Override
+        public ApiResponse getRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            queryCount++;
+            throw new AssertionError("load mode must not query order");
+        }
+    }
+
+    private static final class TokenFailureClient implements V1CardApiClient {
+
+        private int createCount;
+        private int queryCount;
+
+        @Override
+        public String getToken(String appId, String appSecret) {
+            throw new IllegalStateException("token service unavailable");
+        }
+
+        @Override
+        public ApiResponse createRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            createCount++;
+            throw new AssertionError("load mode must not create orders when token acquisition fails");
         }
 
         @Override
