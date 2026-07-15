@@ -148,6 +148,20 @@ class A39SimulatorOptionsTest {
     }
 
     @Test
+    void blankCommandLineModeOverridesEnvironmentAsScenario() {
+        Map<String, String> env = new LinkedHashMap<>(secretEnv());
+        env.put("A39_MODE", "load");
+
+        A39SimulatorOptions options = A39SimulatorOptions.parse(
+                new String[]{"--mode="},
+                env,
+                FIXED_CLOCK);
+
+        assertThat(options.mode()).isEqualTo(A39SimulatorMode.SCENARIO);
+        assertThat(options.notifyUrl()).isEqualTo("http://127.0.0.1:19039/callback/order");
+    }
+
+    @Test
     void invalidLoadParametersAreRejected() {
         assertThatThrownBy(() -> A39SimulatorOptions.parse(
                 new String[]{"--mode", "load", "--concurrency", "0"},

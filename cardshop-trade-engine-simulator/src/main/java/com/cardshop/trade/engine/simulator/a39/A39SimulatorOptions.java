@@ -119,7 +119,7 @@ public record A39SimulatorOptions(
 
     static A39SimulatorOptions parse(String[] args, Map<String, String> env, Clock clock) {
         Map<String, String> options = parseArgs(args);
-        A39SimulatorMode mode = A39SimulatorMode.parse(option(options, env, "mode", "A39_MODE", "scenario"));
+        A39SimulatorMode mode = A39SimulatorMode.parse(optionPreservingBlank(options, env, "mode", "A39_MODE", "scenario"));
         int callbackPort = integer(option(options, env, "callback-port", "A39_CALLBACK_PORT", String.valueOf(DEFAULT_CALLBACK_PORT)), "callback-port");
         String notifyFallback = mode == A39SimulatorMode.LOAD ? "" : "http://127.0.0.1:" + callbackPort + "/callback/order";
         String notifyUrl = optionPreservingBlank(options, env, "notify-url", "A39_NOTIFY_URL", notifyFallback);
