@@ -5,7 +5,9 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -36,7 +38,15 @@ public record A39SimulatorOptions(
         boolean requestSm4Enabled,
         String callbackBindHost,
         int callbackPort,
-        Duration callbackWait) {
+        Duration callbackWait,
+        A39SimulatorMode mode,
+        int concurrency,
+        int totalOrders,
+        Duration requestTimeout,
+        String outOrderPrefix,
+        List<String> expectedCreateCodes,
+        int errorSampleLimit,
+        Duration progressInterval) {
 
     public static final String DEFAULT_BASE_URL = "http://apitest.kalaiwang.com";
     public static final String DEFAULT_APP_ID = "A35cecjXS7lZ1W30NMN";
@@ -47,6 +57,11 @@ public record A39SimulatorOptions(
     private static final int DEFAULT_QUERY_ATTEMPTS = 3;
     private static final Duration DEFAULT_QUERY_INTERVAL = Duration.ofSeconds(30);
     private static final Duration DEFAULT_CALLBACK_WAIT = Duration.ofMinutes(10);
+    private static final int DEFAULT_LOAD_CONCURRENCY = 10;
+    private static final int DEFAULT_LOAD_TOTAL_ORDERS = 200;
+    private static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(10);
+    private static final int DEFAULT_ERROR_SAMPLE_LIMIT = 20;
+    private static final Duration DEFAULT_PROGRESS_INTERVAL = Duration.ofSeconds(10);
     private static final DateTimeFormatter ORDER_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
     private static final char[] NONCE_CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".toCharArray();
     private static final SecureRandom RANDOM = new SecureRandom();
@@ -61,10 +76,17 @@ public record A39SimulatorOptions(
         outOrderSn = requireText(outOrderSn, "outOrderSn");
         nonceStr = requireText(nonceStr, "nonceStr");
         timestamp = requireText(timestamp, "timestamp");
-        notifyUrl = requireText(notifyUrl, "notifyUrl");
+        notifyUrl = Objects.toString(notifyUrl, "").trim();
         callbackBindHost = requireText(callbackBindHost, "callbackBindHost");
         queryInterval = queryInterval == null || queryInterval.isNegative() ? DEFAULT_QUERY_INTERVAL : queryInterval;
         callbackWait = callbackWait == null || callbackWait.isNegative() ? DEFAULT_CALLBACK_WAIT : callbackWait;
+        mode = mode == null ? A39SimulatorMode.SCENARIO : mode;
+        requestTimeout = requestTimeout == null || requestTimeout.isZero() || requestTimeout.isNegative()
+                ? DEFAULT_REQUEST_TIMEOUT
+                : requestTimeout;
+        outOrderPrefix = hasText(outOrderPrefix) ? outOrderPrefix.trim() : nextOutOrderSn(Clock.systemDefaultZone());
+        expectedCreateCodes = normalizeCodes(expectedCreateCodes);
+        progressInterval = progressInterval == null || progressInterval.isNegative() ? DEFAULT_PROGRESS_INTERVAL : progressInterval;
         if (num < 1) {
             throw new IllegalArgumentException("num must be greater than 0");
         }
@@ -77,6 +99,18 @@ public record A39SimulatorOptions(
         if (callbackPort < 0 || callbackPort > 65_535) {
             throw new IllegalArgumentException("callbackPort is invalid");
         }
+        if (concurrency <= 0) {
+            throw new IllegalArgumentException("concurrency must be greater than 0");
+        }
+        if (totalOrders <= 0) {
+            throw new IllegalArgumentException("totalOrders must be greater than 0");
+        }
+        if (errorSampleLimit < 0) {
+            throw new IllegalArgumentException("errorSampleLimit must not be negative");
+        }
+        if (mode == A39SimulatorMode.LOAD && hasText(notifyUrl)) {
+            throw new IllegalArgumentException("notifyUrl must be blank in load mode");
+        }
     }
 
     public static A39SimulatorOptions parse(String[] args) {
@@ -85,9 +119,10 @@ public record A39SimulatorOptions(
 
     static A39SimulatorOptions parse(String[] args, Map<String, String> env, Clock clock) {
         Map<String, String> options = parseArgs(args);
+        A39SimulatorMode mode = A39SimulatorMode.parse(option(options, env, "mode", "A39_MODE", "scenario"));
         int callbackPort = integer(option(options, env, "callback-port", "A39_CALLBACK_PORT", String.valueOf(DEFAULT_CALLBACK_PORT)), "callback-port");
-        String notifyUrl = option(options, env, "notify-url", "A39_NOTIFY_URL",
-                "http://127.0.0.1:" + callbackPort + "/callback/order");
+        String notifyFallback = mode == A39SimulatorMode.LOAD ? "" : "http://127.0.0.1:" + callbackPort + "/callback/order";
+        String notifyUrl = optionPreservingBlank(options, env, "notify-url", "A39_NOTIFY_URL", notifyFallback);
         return new A39SimulatorOptions(
                 option(options, env, "base-url", "A39_BASE_URL", DEFAULT_BASE_URL),
                 option(options, env, "app-id", "A39_APP_ID", DEFAULT_APP_ID),
@@ -107,7 +142,15 @@ public record A39SimulatorOptions(
                 bool(option(options, env, "request-sm4", "A39_REQUEST_SM4", String.valueOf(DEFAULT_REQUEST_SM4_ENABLED))),
                 option(options, env, "callback-bind-host", "A39_CALLBACK_BIND_HOST", "0.0.0.0"),
                 callbackPort,
-                duration(option(options, env, "callback-wait", "A39_CALLBACK_WAIT", DEFAULT_CALLBACK_WAIT.toString()), "callback-wait")
+                duration(option(options, env, "callback-wait", "A39_CALLBACK_WAIT", DEFAULT_CALLBACK_WAIT.toString()), "callback-wait"),
+                mode,
+                integer(option(options, env, "concurrency", "A39_LOAD_CONCURRENCY", String.valueOf(DEFAULT_LOAD_CONCURRENCY)), "concurrency"),
+                integer(option(options, env, "total-orders", "A39_LOAD_TOTAL_ORDERS", String.valueOf(DEFAULT_LOAD_TOTAL_ORDERS)), "total-orders"),
+                duration(option(options, env, "request-timeout", "A39_REQUEST_TIMEOUT", DEFAULT_REQUEST_TIMEOUT.toString()), "request-timeout"),
+                option(options, env, "out-order-prefix", "A39_OUT_ORDER_PREFIX", nextOutOrderSn(clock)),
+                codes(optionPreservingBlank(options, env, "expected-create-codes", "A39_EXPECTED_CREATE_CODES", "200,510")),
+                integer(option(options, env, "error-sample-limit", "A39_ERROR_SAMPLE_LIMIT", String.valueOf(DEFAULT_ERROR_SAMPLE_LIMIT)), "error-sample-limit"),
+                duration(option(options, env, "progress-interval", "A39_LOAD_PROGRESS_INTERVAL", DEFAULT_PROGRESS_INTERVAL.toString()), "progress-interval")
         );
     }
 
@@ -128,8 +171,9 @@ public record A39SimulatorOptions(
     }
 
     public String sanitizedSummary() {
-        return "baseUrl=%s, appId=%s, productId=%s, account=%s, outOrderSn=%s, notifyUrl=%s, queryAttempts=%d, requestSm4=%s"
-                .formatted(baseUrl, appId, productId, mask(account), outOrderSn, notifyUrl, queryAttempts, requestSm4Enabled);
+        return "mode=%s, baseUrl=%s, appId=%s, productId=%s, account=%s, outOrderSn=%s, notifyUrl=%s, queryAttempts=%d, requestSm4=%s, concurrency=%d, totalOrders=%d, requestTimeout=%s"
+                .formatted(mode, baseUrl, appId, productId, mask(account), outOrderSn, notifyUrl, queryAttempts,
+                        requestSm4Enabled, concurrency, totalOrders, requestTimeout);
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -173,6 +217,40 @@ public record A39SimulatorOptions(
         return fallback;
     }
 
+    private static String optionPreservingBlank(Map<String, String> options, Map<String, String> env, String key, String envKey, String fallback) {
+        if (options.containsKey(key)) {
+            return options.get(key) == null ? "" : options.get(key).trim();
+        }
+        if (env.containsKey(envKey)) {
+            return env.get(envKey) == null ? "" : env.get(envKey).trim();
+        }
+        return fallback;
+    }
+
+    private static List<String> codes(String value) {
+        List<String> values = new ArrayList<>();
+        if (value != null) {
+            for (String part : value.split(",")) {
+                if (hasText(part)) {
+                    values.add(part.trim());
+                }
+            }
+        }
+        return values;
+    }
+
+    private static List<String> normalizeCodes(List<String> values) {
+        List<String> normalized = values == null ? List.of() : values.stream()
+                .filter(A39SimulatorOptions::hasText)
+                .map(String::trim)
+                .distinct()
+                .toList();
+        if (normalized.isEmpty()) {
+            throw new IllegalArgumentException("expectedCreateCodes must not be empty");
+        }
+        return List.copyOf(normalized);
+    }
+
     private static String nextOutOrderSn(Clock clock) {
         LocalDateTime now = LocalDateTime.now(clock);
         return "A39" + ORDER_TIME_FORMATTER.format(now) + String.format(Locale.ROOT, "%04d", RANDOM.nextInt(10_000));
@@ -188,6 +266,9 @@ public record A39SimulatorOptions(
 
     private static Duration duration(String value, String name) {
         try {
+            if ("0".equals(value)) {
+                return Duration.ZERO;
+            }
             if (value.endsWith("ms")) {
                 return Duration.ofMillis(Long.parseLong(value.substring(0, value.length() - 2)));
             }
