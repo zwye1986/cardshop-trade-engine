@@ -165,7 +165,7 @@ public record A39SimulatorOptions(
         return """
                 A39 business simulator
 
-                Required: --app-secret, --aes-key
+                Secret sources: prefer A39_APP_SECRET/A39_AES_KEY in config/a39-simulator.env; --app-secret/--aes-key are accepted for temporary local runs only.
                 Defaults: --base-url http://apitest.kalaiwang.com, --app-id A35cecjXS7lZ1W30NMN, --product-id 1011, --account 18186222336, --num 1, --product-type 1, --request-sm4 true
 
                 Common options:
@@ -201,9 +201,11 @@ public record A39SimulatorOptions(
                   load mode uses blank notify_url and skips query/callback waiting.
 
                 Environment fallbacks:
-                  A39_MODE A39_APP_ID A39_APP_SECRET A39_AES_KEY A39_PRODUCT_ID A39_ACCOUNT A39_REQUEST_SM4
-                  A39_NOTIFY_URL A39_CALLBACK_BIND_HOST A39_CALLBACK_PORT A39_QUERY_ATTEMPTS A39_QUERY_INTERVAL A39_CALLBACK_WAIT
-                  A39_LOAD_CONCURRENCY A39_LOAD_TOTAL_ORDERS A39_REQUEST_TIMEOUT A39_OUT_ORDER_PREFIX A39_EXPECTED_CREATE_CODES A39_ERROR_SAMPLE_LIMIT A39_LOAD_PROGRESS_INTERVAL
+                  A39_MODE A39_BASE_URL A39_APP_ID A39_APP_SECRET A39_AES_KEY A39_PRODUCT_ID A39_ACCOUNT
+                  A39_NUM A39_ORDER_PRICE A39_PRODUCT_TYPE A39_REQUEST_SM4 A39_REQUEST_TIMEOUT
+                  A39_NOTIFY_URL A39_OUT_ORDER_SN A39_NONCE_STR A39_TIMESTAMP
+                  A39_CALLBACK_BIND_HOST A39_CALLBACK_PORT A39_QUERY_ATTEMPTS A39_QUERY_INTERVAL A39_CALLBACK_WAIT
+                  A39_LOAD_CONCURRENCY A39_LOAD_TOTAL_ORDERS A39_OUT_ORDER_PREFIX A39_EXPECTED_CREATE_CODES A39_ERROR_SAMPLE_LIMIT A39_LOAD_PROGRESS_INTERVAL
 
                 Scenario example:
                   mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \\
