@@ -168,12 +168,50 @@ public record A39SimulatorOptions(
                 Required: --app-secret, --aes-key
                 Defaults: --base-url http://apitest.kalaiwang.com, --app-id A35cecjXS7lZ1W30NMN, --product-id 1011, --account 18186222336, --num 1, --product-type 1, --request-sm4 true
 
-                Environment fallbacks:
-                  A39_APP_ID A39_APP_SECRET A39_AES_KEY A39_PRODUCT_ID A39_ACCOUNT A39_REQUEST_SM4
+                Common options:
+                  --mode scenario|load
+                  --base-url URL
+                  --app-id APP_ID
+                  --app-secret SECRET
+                  --aes-key AES_KEY
+                  --product-id PRODUCT_ID
+                  --account ACCOUNT
+                  --num NUM
+                  --order-price CENTS
+                  --product-type TYPE
+                  --request-sm4 true|false
+                  --request-timeout 10s
 
-                Example:
+                Scenario mode:
+                  --notify-url URL
+                  --out-order-sn OUT_ORDER_SN
+                  --query-attempts 3
+                  --query-interval 30s
+                  --callback-bind-host 0.0.0.0
+                  --callback-port 19039
+                  --callback-wait 10m
+
+                Load mode:
+                  --concurrency 10
+                  --total-orders 200
+                  --out-order-prefix PERF-A39
+                  --expected-create-codes 200,510
+                  --error-sample-limit 20
+                  --progress-interval 10s
+                  load mode uses blank notify_url and skips query/callback waiting.
+
+                Environment fallbacks:
+                  A39_MODE A39_APP_ID A39_APP_SECRET A39_AES_KEY A39_PRODUCT_ID A39_ACCOUNT A39_REQUEST_SM4
+                  A39_NOTIFY_URL A39_CALLBACK_BIND_HOST A39_CALLBACK_PORT A39_QUERY_ATTEMPTS A39_QUERY_INTERVAL A39_CALLBACK_WAIT
+                  A39_LOAD_CONCURRENCY A39_LOAD_TOTAL_ORDERS A39_REQUEST_TIMEOUT A39_OUT_ORDER_PREFIX A39_EXPECTED_CREATE_CODES A39_ERROR_SAMPLE_LIMIT A39_LOAD_PROGRESS_INTERVAL
+
+                Scenario example:
                   mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \\
-                    -Dexec.args="--account 18186222336"
+                    -Dexec.args="--mode scenario --notify-url http://127.0.0.1:19039/callback/order"
+
+                Load example:
+                  mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \\
+                    -Dexec.args="--mode load --concurrency 10 --total-orders 200 --request-timeout 10s"
                 """;
     }
 

@@ -262,6 +262,20 @@ class A39SimulatorOptionsTest {
                 .hasMessageContaining("errorSampleLimit must not be negative");
     }
 
+    @Test
+    void usageDocumentsScenarioAndLoadOptions() {
+        String usage = A39SimulatorOptions.usage();
+
+        assertThat(usage)
+                .contains("--mode scenario|load")
+                .contains("--notify-url")
+                .contains("--concurrency")
+                .contains("--total-orders")
+                .contains("--request-timeout")
+                .contains("--expected-create-codes")
+                .contains("load mode uses blank notify_url");
+    }
+
     private static Map<String, String> requiredEnv() {
         return Map.of(
                 "A39_APP_ID", "app-id",
