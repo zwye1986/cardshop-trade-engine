@@ -14,12 +14,14 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletionService;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * A39 下单压测编排器。
@@ -42,12 +44,23 @@ public final class A39LoadTestRunner {
     private final V1Sm3Signer signer;
     private final Clock clock;
     private final Consumer<String> logSink;
+    private final Supplier<String> nonceSupplier;
 
     public A39LoadTestRunner(V1CardApiClient client, V1Sm3Signer signer, Clock clock, Consumer<String> logSink) {
+        this(client, signer, clock, logSink, A39SimulatorOptions::randomNonce);
+    }
+
+    A39LoadTestRunner(
+            V1CardApiClient client,
+            V1Sm3Signer signer,
+            Clock clock,
+            Consumer<String> logSink,
+            Supplier<String> nonceSupplier) {
         this.client = Objects.requireNonNull(client, "client must not be null");
         this.signer = Objects.requireNonNull(signer, "signer must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.logSink = Objects.requireNonNull(logSink, "logSink must not be null");
+        this.nonceSupplier = Objects.requireNonNull(nonceSupplier, "nonceSupplier must not be null");
     }
 
     /**
@@ -71,7 +84,8 @@ public final class A39LoadTestRunner {
         }
         long tokenElapsedNanos = elapsedSince(tokenStartNanos);
 
-        List<CreateRequestResult> requestResults = runCreateWindow(options, token);
+        Set<String> usedNonces = ConcurrentHashMap.newKeySet();
+        List<CreateRequestResult> requestResults = runCreateWindow(options, token, usedNonces);
         long createElapsedNanos = requestResults.stream()
                 .mapToLong(CreateRequestResult::completedAtNanos)
                 .max()
@@ -86,7 +100,8 @@ public final class A39LoadTestRunner {
         return summarize(options, startedAt, tokenElapsedNanos, createElapsedNanos, totalElapsedNanos, requestResults);
     }
 
-    private List<CreateRequestResult> runCreateWindow(A39SimulatorOptions options, String token) throws Exception {
+    private List<CreateRequestResult> runCreateWindow(A39SimulatorOptions options, String token, Set<String> usedNonces)
+            throws Exception {
         int totalOrders = options.totalOrders();
         int maxInFlight = Math.min(options.concurrency(), totalOrders);
         List<CreateRequestResult> results = new ArrayList<>(totalOrders);
@@ -99,7 +114,7 @@ public final class A39LoadTestRunner {
             CompletionService<CreateRequestResult> completionService = new ExecutorCompletionService<>(executor);
             int submitted = 0;
             for (; submitted < maxInFlight; submitted++) {
-                submitCreate(completionService, options, token, submitted + 1);
+                submitCreate(completionService, options, token, submitted + 1, usedNonces);
             }
 
             while (results.size() < totalOrders) {
@@ -108,7 +123,7 @@ public final class A39LoadTestRunner {
                 results.add(result);
                 if (submitted < totalOrders) {
                     submitted++;
-                    submitCreate(completionService, options, token, submitted);
+                    submitCreate(completionService, options, token, submitted, usedNonces);
                 }
                 if (progressIntervalNanos > 0L && System.nanoTime() >= nextProgressNanos) {
                     logProgress(options, results, windowStartNanos);
@@ -123,13 +138,14 @@ public final class A39LoadTestRunner {
             CompletionService<CreateRequestResult> completionService,
             A39SimulatorOptions options,
             String token,
-            int sequence) {
-        completionService.submit(() -> createOne(options, token, sequence));
+            int sequence,
+            Set<String> usedNonces) {
+        completionService.submit(() -> createOne(options, token, sequence, usedNonces));
     }
 
-    private CreateRequestResult createOne(A39SimulatorOptions options, String token, int sequence) {
+    private CreateRequestResult createOne(A39SimulatorOptions options, String token, int sequence, Set<String> usedNonces) {
         String outOrderSn = outOrderSn(options, sequence);
-        Map<String, Object> payload = createPayload(options, outOrderSn);
+        Map<String, Object> payload = createPayload(options, outOrderSn, nextUniqueNonce(usedNonces));
         long startedAtNanos = System.nanoTime();
         try {
             V1CardApiClient.ApiResponse response = client.createRechargeOrder(
@@ -167,19 +183,27 @@ public final class A39LoadTestRunner {
         }
     }
 
-    Map<String, Object> createPayload(A39SimulatorOptions options, String outOrderSn) {
+    Map<String, Object> createPayload(A39SimulatorOptions options, String outOrderSn, String nonceStr) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("product_id", options.productId());
         payload.put("out_order_sn", outOrderSn);
         payload.put("account", options.account());
         payload.put("timestamp", String.valueOf(clock.millis()));
-        payload.put("nonce_str", A39SimulatorOptions.randomNonce());
+        payload.put("nonce_str", nonceStr);
         payload.put("notify_url", EMPTY_NOTIFY_URL);
         payload.put("num", options.num());
         payload.put("order_price", options.orderPrice());
         payload.put("product_type", options.productType());
         payload.put("sign", signer.signCreateOrder(payload, options.aesKey()).sign());
         return payload;
+    }
+
+    private String nextUniqueNonce(Set<String> usedNonces) {
+        String nonce;
+        do {
+            nonce = nonceSupplier.get();
+        } while (!usedNonces.add(nonce));
+        return nonce;
     }
 
     private CreateRequestResult completedResult(Future<CreateRequestResult> future, int errorSampleLimit)

@@ -13,6 +13,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -101,6 +102,28 @@ class A39LoadTestRunnerTest {
         new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), logs::add).run(options);
 
         assertThat(logs).isEmpty();
+    }
+
+    @Test
+    void retriesNonceGenerationUntilUniqueWithinRun() throws Exception {
+        CapturingLoadClient client = new CapturingLoadClient(List.of(response("200"), response("200"), response("200")), 0);
+        A39SimulatorOptions options = options(1, 3, List.of("200", "510"), 20);
+        Supplier<String> nonceSupplier = new Supplier<>() {
+            private final List<String> candidates = List.of("NONCE-1", "NONCE-1", "NONCE-2", "NONCE-2", "NONCE-3");
+            private final AtomicInteger index = new AtomicInteger();
+
+            @Override
+            public String get() {
+                return candidates.get(index.getAndIncrement());
+            }
+        };
+
+        new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), ignored -> {
+        }, nonceSupplier).run(options);
+
+        assertThat(client.createPayloads)
+                .extracting(payload -> String.valueOf(payload.get("nonce_str")))
+                .containsExactly("NONCE-1", "NONCE-2", "NONCE-3");
     }
 
     private static A39SimulatorOptions options(int concurrency, int totalOrders, List<String> expectedCodes, int errorSampleLimit) {
