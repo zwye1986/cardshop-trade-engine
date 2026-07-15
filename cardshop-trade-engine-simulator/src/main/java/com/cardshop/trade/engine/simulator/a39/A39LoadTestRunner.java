@@ -85,23 +85,24 @@ public final class A39LoadTestRunner {
         long tokenElapsedNanos = elapsedSince(tokenStartNanos);
 
         Set<String> usedNonces = ConcurrentHashMap.newKeySet();
-        List<CreateRequestResult> requestResults = runCreateWindow(options, token, usedNonces);
-        long createElapsedNanos = requestResults.stream()
-                .mapToLong(CreateRequestResult::completedAtNanos)
-                .max()
-                .orElse(System.nanoTime()) - requestResults.stream()
-                .mapToLong(CreateRequestResult::startedAtNanos)
-                .min()
-                .orElse(System.nanoTime());
-        if (createElapsedNanos < 0) {
-            createElapsedNanos = 0L;
-        }
+        String runId = String.valueOf(clock.millis());
+        CreateWindowResult createWindowResult = runCreateWindow(options, token, usedNonces, runId);
         long totalElapsedNanos = elapsedSince(totalStartNanos);
-        return summarize(options, startedAt, tokenElapsedNanos, createElapsedNanos, totalElapsedNanos, requestResults);
+        return summarize(
+                options,
+                startedAt,
+                runId,
+                tokenElapsedNanos,
+                createWindowResult.elapsedNanos(),
+                totalElapsedNanos,
+                createWindowResult.requestResults());
     }
 
-    private List<CreateRequestResult> runCreateWindow(A39SimulatorOptions options, String token, Set<String> usedNonces)
-            throws Exception {
+    private CreateWindowResult runCreateWindow(
+            A39SimulatorOptions options,
+            String token,
+            Set<String> usedNonces,
+            String runId) throws Exception {
         int totalOrders = options.totalOrders();
         int maxInFlight = Math.min(options.concurrency(), totalOrders);
         List<CreateRequestResult> results = new ArrayList<>(totalOrders);
@@ -114,7 +115,7 @@ public final class A39LoadTestRunner {
             CompletionService<CreateRequestResult> completionService = new ExecutorCompletionService<>(executor);
             int submitted = 0;
             for (; submitted < maxInFlight; submitted++) {
-                submitCreate(completionService, options, token, submitted + 1, usedNonces);
+                submitCreate(completionService, options, token, submitted + 1, usedNonces, runId);
             }
 
             while (results.size() < totalOrders) {
@@ -123,7 +124,7 @@ public final class A39LoadTestRunner {
                 results.add(result);
                 if (submitted < totalOrders) {
                     submitted++;
-                    submitCreate(completionService, options, token, submitted, usedNonces);
+                    submitCreate(completionService, options, token, submitted, usedNonces, runId);
                 }
                 if (progressIntervalNanos > 0L && System.nanoTime() >= nextProgressNanos) {
                     logProgress(options, results, windowStartNanos);
@@ -131,7 +132,7 @@ public final class A39LoadTestRunner {
                 }
             }
         }
-        return results;
+        return new CreateWindowResult(results, elapsedSince(windowStartNanos));
     }
 
     private void submitCreate(
@@ -139,15 +140,21 @@ public final class A39LoadTestRunner {
             A39SimulatorOptions options,
             String token,
             int sequence,
-            Set<String> usedNonces) {
-        completionService.submit(() -> createOne(options, token, sequence, usedNonces));
+            Set<String> usedNonces,
+            String runId) {
+        completionService.submit(() -> createOne(options, token, sequence, usedNonces, runId));
     }
 
-    private CreateRequestResult createOne(A39SimulatorOptions options, String token, int sequence, Set<String> usedNonces) {
-        String outOrderSn = outOrderSn(options, sequence);
-        Map<String, Object> payload = createPayload(options, outOrderSn, nextUniqueNonce(usedNonces));
+    private CreateRequestResult createOne(
+            A39SimulatorOptions options,
+            String token,
+            int sequence,
+            Set<String> usedNonces,
+            String runId) {
         long startedAtNanos = System.nanoTime();
+        String outOrderSn = outOrderSn(options, sequence, runId);
         try {
+            Map<String, Object> payload = createPayload(options, outOrderSn, nextUniqueNonce(usedNonces));
             V1CardApiClient.ApiResponse response = client.createRechargeOrder(
                     token,
                     payload,
@@ -229,6 +236,7 @@ public final class A39LoadTestRunner {
     private LoadTestResult summarize(
             A39SimulatorOptions options,
             Instant startedAt,
+            String runId,
             long tokenElapsedNanos,
             long createElapsedNanos,
             long totalElapsedNanos,
@@ -256,8 +264,12 @@ public final class A39LoadTestRunner {
         int failed = completed - successful;
         return new LoadTestResult(
                 MODE_LOAD,
+                options.baseUrl(),
+                runId,
+                options.outOrderPrefix(),
                 options.concurrency(),
                 options.totalOrders(),
+                options.requestTimeout(),
                 completed,
                 successful,
                 failed,
@@ -285,8 +297,12 @@ public final class A39LoadTestRunner {
                 : List.of();
         return new LoadTestResult(
                 MODE_LOAD,
+                options.baseUrl(),
+                String.valueOf(startedAt.toEpochMilli()),
+                options.outOrderPrefix(),
                 options.concurrency(),
                 options.totalOrders(),
+                options.requestTimeout(),
                 0,
                 0,
                 options.totalOrders(),
@@ -309,8 +325,8 @@ public final class A39LoadTestRunner {
                 .formatted(completed, successful, completed - successful, toMillis(elapsedNanos), qps(completed, elapsedNanos)));
     }
 
-    private static String outOrderSn(A39SimulatorOptions options, int sequence) {
-        return "%s-%d-%05d".formatted(options.outOrderPrefix(), System.currentTimeMillis(), sequence);
+    private static String outOrderSn(A39SimulatorOptions options, int sequence, String runId) {
+        return "%s-%s-%05d".formatted(options.outOrderPrefix(), runId, sequence);
     }
 
     private static Set<String> expectedCodes(A39SimulatorOptions options) {
@@ -364,10 +380,17 @@ public final class A39LoadTestRunner {
         }
     }
 
+    private record CreateWindowResult(List<CreateRequestResult> requestResults, long elapsedNanos) {
+    }
+
     public record LoadTestResult(
             String mode,
+            String baseUrl,
+            String runId,
+            String outOrderPrefix,
             int concurrency,
             int totalOrders,
+            Duration requestTimeout,
             int completed,
             int successful,
             int failed,
@@ -382,6 +405,10 @@ public final class A39LoadTestRunner {
             Instant startedAt) {
 
         public LoadTestResult {
+            baseUrl = Objects.requireNonNull(baseUrl, "baseUrl must not be null");
+            runId = Objects.requireNonNull(runId, "runId must not be null");
+            outOrderPrefix = Objects.requireNonNull(outOrderPrefix, "outOrderPrefix must not be null");
+            requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout must not be null");
             businessCodeCounts = Map.copyOf(businessCodeCounts);
             errorCounts = Map.copyOf(errorCounts);
             errorSamples = List.copyOf(errorSamples);
@@ -402,8 +429,12 @@ public final class A39LoadTestRunner {
             Map<String, String> fields = new LinkedHashMap<>();
             fields.put("mode", mode);
             fields.put("startedAt", startedAt.toString());
+            fields.put("baseUrl", baseUrl);
+            fields.put("runId", runId);
+            fields.put("outOrderPrefix", outOrderPrefix);
             fields.put("concurrency", String.valueOf(concurrency));
             fields.put("totalOrders", String.valueOf(totalOrders));
+            fields.put("requestTimeout", requestTimeout.toString());
             fields.put("completed", String.valueOf(completed));
             fields.put("successful", String.valueOf(successful));
             fields.put("failed", String.valueOf(failed));

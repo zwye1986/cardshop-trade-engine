@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -78,18 +79,20 @@ class A39LoadTestRunnerTest {
                 .run(options);
 
         String report = result.toReport();
+        Map<String, String> fields = reportFields(report);
 
-        assertThat(report)
-                .contains("mode=LOAD")
-                .contains("concurrency=1")
-                .contains("totalOrders=2")
-                .contains("successful=2")
-                .contains("failed=0")
-                .contains("code.200=1")
-                .contains("code.510=1")
-                .contains("p50Ms=")
-                .contains("p95Ms=")
-                .contains("p99Ms=");
+        assertThat(fields)
+                .containsEntry("mode", "LOAD")
+                .containsEntry("baseUrl", "http://apitest.kalaiwang.com")
+                .containsEntry("outOrderPrefix", "PERF-A39")
+                .containsEntry("concurrency", "1")
+                .containsEntry("totalOrders", "2")
+                .containsEntry("requestTimeout", "PT10S")
+                .containsEntry("successful", "2")
+                .containsEntry("failed", "0")
+                .containsEntry("code.200", "1")
+                .containsEntry("code.510", "1");
+        assertThat(fields).containsKeys("p50Ms", "p95Ms", "p99Ms");
         assertThat(logs).isEmpty();
     }
 
@@ -124,6 +127,20 @@ class A39LoadTestRunnerTest {
         assertThat(client.createPayloads)
                 .extracting(payload -> String.valueOf(payload.get("nonce_str")))
                 .containsExactly("NONCE-1", "NONCE-2", "NONCE-3");
+    }
+
+    @Test
+    void orderNumbersUseInjectedClockAndSequence() throws Exception {
+        CapturingLoadClient client = new CapturingLoadClient(List.of(response("200"), response("200")), 0);
+        Clock fixedClock = Clock.fixed(Instant.parse("2026-07-15T01:00:00Z"), ZoneId.of("UTC"));
+        A39SimulatorOptions options = options(1, 2, List.of("200", "510"), 20);
+
+        new A39LoadTestRunner(client, new V1Sm3Signer(), fixedClock, ignored -> {
+        }).run(options);
+
+        assertThat(client.createPayloads)
+                .extracting(payload -> String.valueOf(payload.get("out_order_sn")))
+                .containsExactly("PERF-A39-1784077200000-00001", "PERF-A39-1784077200000-00002");
     }
 
     private static A39SimulatorOptions options(int concurrency, int totalOrders, List<String> expectedCodes, int errorSampleLimit) {
@@ -163,6 +180,18 @@ class A39LoadTestRunnerTest {
 
     private static RuntimeException failure(RuntimeException ex) {
         return ex;
+    }
+
+    private static Map<String, String> reportFields(String report) {
+        Map<String, String> fields = new LinkedHashMap<>();
+        report.lines()
+                .filter(line -> !line.isBlank())
+                .forEach(line -> {
+                    int delimiter = line.indexOf('=');
+                    assertThat(delimiter).isPositive();
+                    fields.put(line.substring(0, delimiter), line.substring(delimiter + 1));
+                });
+        return fields;
     }
 
     private static final class CapturingLoadClient implements V1CardApiClient {
