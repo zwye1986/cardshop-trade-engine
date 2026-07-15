@@ -111,6 +111,26 @@ class HttpV1CardApiClientTest {
         assertThat(logs).isEmpty();
     }
 
+    @Test
+    void suppressesRequestAndResponseLogsAfterSuccessfulResponseWhenDisabled() throws Exception {
+        List<String> logs = new ArrayList<>();
+        try (TestHttpServer server = TestHttpServer.start()) {
+            HttpV1CardApiClient client = new HttpV1CardApiClient(
+                    URI.create(server.baseUrl()),
+                    HttpClient.newHttpClient(),
+                    new ObjectMapper(),
+                    new LegacySm4BodyEncoder(),
+                    logs::add,
+                    Duration.ofSeconds(3),
+                    false);
+
+            String token = client.getToken("app-id", "secret-value");
+
+            assertThat(token).isEqualTo("token-value");
+            assertThat(logs).isEmpty();
+        }
+    }
+
     private static final class CapturingTimeoutHttpClient extends HttpClient {
 
         private HttpRequest lastRequest;
