@@ -76,11 +76,19 @@ public record A39SimulatorOptions(
         outOrderSn = requireText(outOrderSn, "outOrderSn");
         nonceStr = requireText(nonceStr, "nonceStr");
         timestamp = requireText(timestamp, "timestamp");
+        mode = mode == null ? A39SimulatorMode.SCENARIO : mode;
         notifyUrl = Objects.toString(notifyUrl, "").trim();
+        if (mode == A39SimulatorMode.LOAD) {
+            if (hasText(notifyUrl)) {
+                throw new IllegalArgumentException("notifyUrl must be blank in load mode");
+            }
+            notifyUrl = "";
+        } else if (!hasText(notifyUrl)) {
+            throw new IllegalArgumentException("notifyUrl must not be blank in scenario mode");
+        }
         callbackBindHost = requireText(callbackBindHost, "callbackBindHost");
         queryInterval = queryInterval == null || queryInterval.isNegative() ? DEFAULT_QUERY_INTERVAL : queryInterval;
         callbackWait = callbackWait == null || callbackWait.isNegative() ? DEFAULT_CALLBACK_WAIT : callbackWait;
-        mode = mode == null ? A39SimulatorMode.SCENARIO : mode;
         requestTimeout = requestTimeout == null || requestTimeout.isZero() || requestTimeout.isNegative()
                 ? DEFAULT_REQUEST_TIMEOUT
                 : requestTimeout;
@@ -107,9 +115,6 @@ public record A39SimulatorOptions(
         }
         if (errorSampleLimit < 0) {
             throw new IllegalArgumentException("errorSampleLimit must not be negative");
-        }
-        if (mode == A39SimulatorMode.LOAD && hasText(notifyUrl)) {
-            throw new IllegalArgumentException("notifyUrl must be blank in load mode");
         }
     }
 

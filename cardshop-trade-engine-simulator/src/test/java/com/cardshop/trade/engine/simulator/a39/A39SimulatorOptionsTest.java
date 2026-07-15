@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -151,6 +152,41 @@ class A39SimulatorOptionsTest {
 
         assertThat(options.mode()).isEqualTo(A39SimulatorMode.SCENARIO);
         assertThat(options.notifyUrl()).isEqualTo("http://127.0.0.1:19039/callback/order");
+    }
+
+    @Test
+    void directConstructionRejectsBlankNotifyUrlInScenarioMode() {
+        assertThatThrownBy(() -> new A39SimulatorOptions(
+                "http://apitest.kalaiwang.com",
+                "app-id",
+                "app-secret",
+                "AES-KEY",
+                "73301280",
+                "18186222336",
+                "OUT-1",
+                "JANwG4jwiHGMaNc4EtPdbmkKxBhY7daR",
+                "1783224958",
+                1,
+                5200L,
+                1,
+                "",
+                3,
+                Duration.ZERO,
+                false,
+                "127.0.0.1",
+                19039,
+                Duration.ZERO,
+                A39SimulatorMode.SCENARIO,
+                10,
+                200,
+                Duration.ofSeconds(10),
+                "A39TEST",
+                List.of("200", "510"),
+                20,
+                Duration.ZERO
+        ))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("notifyUrl must not be blank in scenario mode");
     }
 
     @Test
