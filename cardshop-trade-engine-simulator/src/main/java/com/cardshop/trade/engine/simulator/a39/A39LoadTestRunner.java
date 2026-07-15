@@ -6,7 +6,6 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -86,7 +85,8 @@ public final class A39LoadTestRunner {
 
         Set<String> usedNonces = ConcurrentHashMap.newKeySet();
         String runId = String.valueOf(clock.millis());
-        CreateWindowResult createWindowResult = runCreateWindow(options, token, usedNonces, runId);
+        Set<String> expectedCodes = Set.copyOf(options.expectedCreateCodes());
+        CreateWindowResult createWindowResult = runCreateWindow(options, token, usedNonces, runId, expectedCodes);
         long totalElapsedNanos = elapsedSince(totalStartNanos);
         return summarize(
                 options,
@@ -102,7 +102,8 @@ public final class A39LoadTestRunner {
             A39SimulatorOptions options,
             String token,
             Set<String> usedNonces,
-            String runId) throws Exception {
+            String runId,
+            Set<String> expectedCodes) throws Exception {
         int totalOrders = options.totalOrders();
         int maxInFlight = Math.min(options.concurrency(), totalOrders);
         List<CreateRequestResult> results = new ArrayList<>(totalOrders);
@@ -115,7 +116,7 @@ public final class A39LoadTestRunner {
             CompletionService<CreateRequestResult> completionService = new ExecutorCompletionService<>(executor);
             int submitted = 0;
             for (; submitted < maxInFlight; submitted++) {
-                submitCreate(completionService, options, token, submitted + 1, usedNonces, runId);
+                submitCreate(completionService, options, token, submitted + 1, usedNonces, runId, expectedCodes);
             }
 
             while (results.size() < totalOrders) {
@@ -124,10 +125,10 @@ public final class A39LoadTestRunner {
                 results.add(result);
                 if (submitted < totalOrders) {
                     submitted++;
-                    submitCreate(completionService, options, token, submitted, usedNonces, runId);
+                    submitCreate(completionService, options, token, submitted, usedNonces, runId, expectedCodes);
                 }
                 if (progressIntervalNanos > 0L && System.nanoTime() >= nextProgressNanos) {
-                    logProgress(options, results, windowStartNanos);
+                    logProgress(results, windowStartNanos);
                     nextProgressNanos += progressIntervalNanos;
                 }
             }
@@ -141,8 +142,9 @@ public final class A39LoadTestRunner {
             String token,
             int sequence,
             Set<String> usedNonces,
-            String runId) {
-        completionService.submit(() -> createOne(options, token, sequence, usedNonces, runId));
+            String runId,
+            Set<String> expectedCodes) {
+        completionService.submit(() -> createOne(options, token, sequence, usedNonces, runId, expectedCodes));
     }
 
     private CreateRequestResult createOne(
@@ -150,7 +152,8 @@ public final class A39LoadTestRunner {
             String token,
             int sequence,
             Set<String> usedNonces,
-            String runId) {
+            String runId,
+            Set<String> expectedCodes) {
         long startedAtNanos = System.nanoTime();
         String outOrderSn = outOrderSn(options, sequence, runId);
         try {
@@ -161,7 +164,7 @@ public final class A39LoadTestRunner {
                     options.requestSm4Enabled(),
                     options.aesKey());
             long completedAtNanos = System.nanoTime();
-            boolean success = expectedCodes(options).contains(response.code());
+            boolean success = expectedCodes.contains(response.code());
             String sample = success ? null : "out_order_sn=%s code=%s msg=%s"
                     .formatted(outOrderSn, response.code(), response.msg());
             return new CreateRequestResult(
@@ -317,7 +320,7 @@ public final class A39LoadTestRunner {
                 startedAt);
     }
 
-    private void logProgress(A39SimulatorOptions options, List<CreateRequestResult> results, long windowStartNanos) {
+    private void logProgress(List<CreateRequestResult> results, long windowStartNanos) {
         long elapsedNanos = elapsedSince(windowStartNanos);
         long successful = results.stream().filter(CreateRequestResult::successful).count();
         int completed = results.size();
@@ -329,10 +332,6 @@ public final class A39LoadTestRunner {
         return "%s-%s-%05d".formatted(options.outOrderPrefix(), runId, sequence);
     }
 
-    private static Set<String> expectedCodes(A39SimulatorOptions options) {
-        return new HashSet<>(options.expectedCreateCodes());
-    }
-
     private static void increment(Map<String, Integer> counts, String key) {
         counts.merge(key, 1, Integer::sum);
     }
@@ -342,7 +341,7 @@ public final class A39LoadTestRunner {
         values.entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
                 .forEach(entry -> sorted.put(entry.getKey(), entry.getValue()));
-        return Map.copyOf(sorted);
+        return Collections.unmodifiableMap(sorted);
     }
 
     private static List<Long> sortedLatencies(List<Long> latencyMs) {
@@ -409,8 +408,8 @@ public final class A39LoadTestRunner {
             runId = Objects.requireNonNull(runId, "runId must not be null");
             outOrderPrefix = Objects.requireNonNull(outOrderPrefix, "outOrderPrefix must not be null");
             requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout must not be null");
-            businessCodeCounts = Map.copyOf(businessCodeCounts);
-            errorCounts = Map.copyOf(errorCounts);
+            businessCodeCounts = Collections.unmodifiableMap(new LinkedHashMap<>(businessCodeCounts));
+            errorCounts = Collections.unmodifiableMap(new LinkedHashMap<>(errorCounts));
             errorSamples = List.copyOf(errorSamples);
             latencyMs = List.copyOf(latencyMs);
         }
