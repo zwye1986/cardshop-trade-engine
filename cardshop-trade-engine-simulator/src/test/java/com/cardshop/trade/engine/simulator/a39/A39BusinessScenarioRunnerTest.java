@@ -78,6 +78,14 @@ class A39BusinessScenarioRunnerTest {
                 false,
                 "127.0.0.1",
                 19039,
+                Duration.ZERO,
+                A39SimulatorMode.SCENARIO,
+                10,
+                200,
+                Duration.ofSeconds(10),
+                "A39TEST",
+                List.of("200", "510"),
+                20,
                 Duration.ZERO
         );
     }
