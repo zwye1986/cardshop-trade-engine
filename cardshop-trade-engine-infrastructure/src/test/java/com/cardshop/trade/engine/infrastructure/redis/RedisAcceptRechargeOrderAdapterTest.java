@@ -78,8 +78,8 @@ class RedisAcceptRechargeOrderAdapterTest {
         assertThat(result.dispatchAllowed()).isTrue();
         assertThat(result.balanceReserved()).isTrue();
         assertThat(executor.calls).isEqualTo(1);
-        assertThat(executor.keys).hasSize(12);
-        assertThat(executor.args).hasSize(28);
+        assertThat(executor.keys).hasSize(13);
+        assertThat(executor.args).hasSize(30);
     }
 
     private static TradeEngineProperties properties(boolean writeEnabled) {
@@ -127,6 +127,8 @@ class RedisAcceptRechargeOrderAdapterTest {
                 "",
                 7L,
                 11L,
+                "selection-fingerprint",
+                true,
                 1783224958000L,
                 1783225258000L);
     }

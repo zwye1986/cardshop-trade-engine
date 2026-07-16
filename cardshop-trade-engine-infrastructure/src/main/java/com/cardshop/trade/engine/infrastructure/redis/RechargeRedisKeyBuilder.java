@@ -47,7 +47,8 @@ public final class RechargeRedisKeyBuilder {
                 key("recharge:" + orgTag + ":merchant:config"),
                 productConfigKey(command.orgCode(), command.selectedProductId()),
                 key("recharge:" + orgTag + ":balance:repairing_lock"),
-                key("recharge:persist:pending:org_index:" + bucket));
+                key("recharge:persist:pending:org_index:" + bucket),
+                productSelectionKey(command.orgCode(), command.productId()));
     }
 
     /**
@@ -177,6 +178,26 @@ public final class RechargeRedisKeyBuilder {
      */
     public String productConfigKey(String orgCode, String selectedProductId) {
         return key("recharge:" + orgTag(orgCode) + ":product:" + selectedProductId + ":config");
+    }
+
+    /**
+     * 构造调用方父商品的完整选品快照 key。
+     *
+     * <p>参见详细设计「6. Redis 受理与缓存层」。该 key 与实际子商品配置共享 {@code {orgCode}}
+     * hash tag，使刷新 Lua 可以原子切换父商品快照和实际派单子商品配置。
+     */
+    public String productSelectionKey(String orgCode, String productId) {
+        return key("recharge:" + orgTag(orgCode) + ":product-selection:" + productId);
+    }
+
+    /**
+     * 构造父商品级请求刷新锁 key。
+     *
+     * <p>参见详细设计「6. Redis 受理与缓存层」。锁与父商品快照、子商品配置必须处于同一 Redis slot，
+     * 刷新完成 Lua 才能校验锁 token 后原子写入并释放锁。
+     */
+    public String productSelectionRefreshLockKey(String orgCode, String productId) {
+        return productSelectionKey(orgCode, productId) + ":refresh-lock";
     }
 
     /**

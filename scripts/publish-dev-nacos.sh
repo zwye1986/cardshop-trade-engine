@@ -183,6 +183,14 @@ trade:
       publish-confirm-timeout-ms: 1000
     fault-injection:
       enabled: false
+    v1:
+      product-cache:
+        refresh-after: 25m
+        max-stale-age: 30m
+        physical-ttl: 60m
+        refresh-lock-ttl: 5s
+        refresh-wait-timeout: 1s
+        negative-cache-ttl: 1m
     integration:
       manual-job-enabled: false
     xxl-job:

@@ -138,6 +138,59 @@ class TradeEngineObservabilityMetricsTest {
     }
 
     @Test
+    void recordsProductCacheEventsWithOnlyResultAndEnvironmentTags() {
+        var registry = new SimpleMeterRegistry();
+        var metrics = new TradeEngineObservabilityMetrics(
+                TradeEngineObservabilitySnapshotProvider.empty(),
+                "test",
+                Duration.ofMillis(30));
+        metrics.bindTo(registry);
+
+        metrics.recordCacheResult("fresh", Duration.ofMinutes(2));
+        metrics.recordRefresh("success", Duration.ofMillis(12));
+        metrics.recordMysqlLoad();
+
+        assertThat(registry.get("trade.engine.product.cache.hit.total")
+                        .tag("environment", "test")
+                        .tag("result", "fresh")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("trade.engine.product.cache.refresh.total")
+                        .tag("environment", "test")
+                        .tag("result", "success")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("trade.engine.product.cache.refresh.duration")
+                        .tag("environment", "test")
+                        .tag("result", "success")
+                        .timer()
+                        .count())
+                .isEqualTo(1L);
+        assertThat(registry.get("trade.engine.product.cache.age.seconds")
+                        .tag("environment", "test")
+                        .tag("result", "fresh")
+                        .summary()
+                        .count())
+                .isEqualTo(1L);
+        assertThat(registry.get("trade.engine.product.cache.mysql.load.total")
+                        .tag("environment", "test")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+
+        List<String> productCacheTagKeys = registry.getMeters().stream()
+                .map(Meter::getId)
+                .filter(id -> id.getName().contains("product.cache"))
+                .flatMap(id -> id.getTags().stream())
+                .map(tag -> tag.getKey())
+                .distinct()
+                .toList();
+        assertThat(productCacheTagKeys).containsOnly("environment", "result");
+    }
+
+    @Test
     void logsAndReturnsEmptyGaugeValuesWhenSnapshotProviderFails(CapturedOutput output) {
         var registry = new SimpleMeterRegistry();
         var metrics = new TradeEngineObservabilityMetrics(

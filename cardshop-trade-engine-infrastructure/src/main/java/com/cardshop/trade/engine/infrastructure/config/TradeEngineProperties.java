@@ -1,5 +1,6 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -793,6 +794,11 @@ public class TradeEngineProperties {
         private String tokenClaimKey = "order_token_key:";
 
         /**
+         * 父商品选品快照逻辑过期、物理 TTL 和单飞刷新参数。
+         */
+        private final ProductCache productCache = new ProductCache();
+
+        /**
          * 加解密和验签密钥来源配置。
          */
         private final Crypto crypto = new Crypto();
@@ -871,6 +877,74 @@ public class TradeEngineProperties {
 
         public Crypto getCrypto() {
             return crypto;
+        }
+
+        public ProductCache getProductCache() {
+            return productCache;
+        }
+
+        /**
+         * V1 商品选品缓存参数。
+         *
+         * <p>参见详细设计「6. Redis 受理与缓存层」。默认 25 分钟软过期、30 分钟硬过期，
+         * 满足运营确认的改价最长 30 分钟生效窗口。
+         */
+        public static class ProductCache {
+
+            private Duration refreshAfter = Duration.ofMinutes(25);
+            private Duration maxStaleAge = Duration.ofMinutes(30);
+            private Duration physicalTtl = Duration.ofMinutes(60);
+            private Duration refreshLockTtl = Duration.ofSeconds(5);
+            private Duration refreshWaitTimeout = Duration.ofSeconds(1);
+            private Duration negativeCacheTtl = Duration.ofMinutes(1);
+
+            public Duration getRefreshAfter() {
+                return refreshAfter;
+            }
+
+            public void setRefreshAfter(Duration refreshAfter) {
+                this.refreshAfter = refreshAfter;
+            }
+
+            public Duration getMaxStaleAge() {
+                return maxStaleAge;
+            }
+
+            public void setMaxStaleAge(Duration maxStaleAge) {
+                this.maxStaleAge = maxStaleAge;
+            }
+
+            public Duration getPhysicalTtl() {
+                return physicalTtl;
+            }
+
+            public void setPhysicalTtl(Duration physicalTtl) {
+                this.physicalTtl = physicalTtl;
+            }
+
+            public Duration getRefreshLockTtl() {
+                return refreshLockTtl;
+            }
+
+            public void setRefreshLockTtl(Duration refreshLockTtl) {
+                this.refreshLockTtl = refreshLockTtl;
+            }
+
+            public Duration getRefreshWaitTimeout() {
+                return refreshWaitTimeout;
+            }
+
+            public void setRefreshWaitTimeout(Duration refreshWaitTimeout) {
+                this.refreshWaitTimeout = refreshWaitTimeout;
+            }
+
+            public Duration getNegativeCacheTtl() {
+                return negativeCacheTtl;
+            }
+
+            public void setNegativeCacheTtl(Duration negativeCacheTtl) {
+                this.negativeCacheTtl = negativeCacheTtl;
+            }
         }
 
         /**

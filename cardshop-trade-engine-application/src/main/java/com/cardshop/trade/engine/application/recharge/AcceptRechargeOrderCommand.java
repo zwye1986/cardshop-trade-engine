@@ -35,6 +35,8 @@ import java.util.Objects;
  * @param candidateFailReason Java 候选校验失败原因
  * @param merchantConfigVersion Java 读取到的商户配置版本
  * @param productConfigVersion Java 读取到的商品配置版本
+ * @param productSelectionFingerprint Java 完整选品快照稳定指纹
+ * @param productSnapshotAvailable 是否已选出可供 Redis 父子快照校验的真实子商品
  * @param nowEpochMillis 接单请求当前时间戳，毫秒
  * @param nextRetryEpochMillis pending 首次补偿扫描时间，毫秒
  */
@@ -63,6 +65,8 @@ public record AcceptRechargeOrderCommand(
         String candidateFailReason,
         Long merchantConfigVersion,
         Long productConfigVersion,
+        String productSelectionFingerprint,
+        boolean productSnapshotAvailable,
         Long nowEpochMillis,
         Long nextRetryEpochMillis) {
 
@@ -91,6 +95,7 @@ public record AcceptRechargeOrderCommand(
         candidateFailReason = defaultString(candidateFailReason);
         merchantConfigVersion = requirePositive(merchantConfigVersion, "merchantConfigVersion");
         productConfigVersion = requirePositive(productConfigVersion, "productConfigVersion");
+        productSelectionFingerprint = requireText(productSelectionFingerprint, "productSelectionFingerprint");
         nowEpochMillis = requirePositive(nowEpochMillis, "nowEpochMillis");
         nextRetryEpochMillis = requirePositive(nextRetryEpochMillis, "nextRetryEpochMillis");
     }

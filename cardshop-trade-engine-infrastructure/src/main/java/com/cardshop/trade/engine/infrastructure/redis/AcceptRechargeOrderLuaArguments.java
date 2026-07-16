@@ -44,6 +44,8 @@ record AcceptRechargeOrderLuaArguments(List<String> keys, List<String> args) {
                         command.candidateFailReason(),
                         String.valueOf(command.merchantConfigVersion()),
                         String.valueOf(command.productConfigVersion()),
+                        command.productSelectionFingerprint(),
+                        String.valueOf(command.productSnapshotAvailable()),
                         String.valueOf(command.nowEpochMillis()),
                         String.valueOf(command.nextRetryEpochMillis()),
                         String.valueOf(pendingTtl.toMillis()),

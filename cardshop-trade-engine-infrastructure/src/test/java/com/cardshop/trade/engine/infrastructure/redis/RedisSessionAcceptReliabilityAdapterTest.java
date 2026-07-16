@@ -444,6 +444,8 @@ class RedisSessionAcceptReliabilityAdapterTest {
                 "",
                 7L,
                 11L,
+                "selection-fingerprint",
+                true,
                 1783224958000L,
                 1783225258000L);
     }

@@ -6,15 +6,15 @@ import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderCommand
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderStatus;
 import com.cardshop.trade.engine.application.v1.V1ProductSelection;
+import com.cardshop.trade.engine.application.v1.V1ProductCacheSettings;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -36,16 +36,15 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 /**
- * V1 商品配置 Redis 补热与接单 Lua 的 Testcontainers 集成测试。
+ * V1 商品配置 Redis 比较修复与接单 Lua 的 Testcontainers 集成测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」第 169 行的原子
- * {@code put-if-absent} 合同，以及 {@code docs/交行直充业务系统高可用方案设计.md}「16.1 accept.lua」
- * 第 1668、1680 行：Java 在 Lua 前用 MySQL 子商品快照原子补写缺失的商品配置；候选校验失败仍写失败订单。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」：父商品可信快照存在时，
+ * Java 在 accept Lua 前修复缺失或漂移的实际子商品配置；父快照已变化时旧请求不得反向覆盖。
  *
  * <p>该测试启动真实 Redis（{@code redis:7-alpine}），用真实 {@link ReactiveStringRedisTemplate} 驱动
- * {@link RedisV1ProductConfigPreheatAdapter} 内嵌的 {@code PUT_IF_ABSENT_SCRIPT} Lua 与
+ * {@link RedisV1ProductConfigPreheatAdapter} 内嵌的 compare-and-repair Lua 与
  * {@code accept_recharge_order.lua}，补足 {@link RedisV1ProductConfigPreheatAdapterTest} 用 Fake 替身
- * 无法证明的原子性、不覆盖与并发冷启动证据。
+ * 无法证明的父快照校验、整体修复与并发证据。
  *
  * <p>默认不随 {@code mvn test} 运行，避免在没有 Docker 的环境破坏构建；需通过
  * {@code -DredisTestcontainers.enabled=true} 显式开启，并要求本机可用 Docker。该门控与
@@ -58,6 +57,9 @@ class RedisV1ProductConfigPreheatIntegrationTest {
     private static final String KEY_PREFIX = "cardshop:trade";
     private static final int PENDING_ORG_BUCKET_COUNT = 128;
     private static final Duration REDIS_TIMEOUT = Duration.ofSeconds(3);
+    private static final V1ProductCacheSettings CACHE_SETTINGS = new V1ProductCacheSettings(
+            Duration.ofMinutes(25), Duration.ofMinutes(30), Duration.ofMinutes(60),
+            Duration.ofSeconds(5), Duration.ofSeconds(1), Duration.ofMinutes(1));
     private static final String ORG_CODE = "A39";
 
     @Container
@@ -68,6 +70,7 @@ class RedisV1ProductConfigPreheatIntegrationTest {
     private static ReactiveStringRedisTemplate redisTemplate;
     private static RechargeRedisKeyBuilder keyBuilder;
     private static RedisV1ProductConfigPreheatAdapter preheatAdapter;
+    private static RedisV1ProductSelectionCacheAdapter selectionCacheAdapter;
     private static RedisAcceptRechargeOrderAdapter acceptAdapter;
 
     @BeforeAll
@@ -88,7 +91,10 @@ class RedisV1ProductConfigPreheatIntegrationTest {
         // ReactiveStringRedisTemplate 不是 InitializingBean，连接工厂已初始化即可直接使用。
         redisTemplate = new ReactiveStringRedisTemplate(connectionFactory);
         keyBuilder = new RechargeRedisKeyBuilder(KEY_PREFIX, PENDING_ORG_BUCKET_COUNT);
-        preheatAdapter = new RedisV1ProductConfigPreheatAdapter(redisTemplate, keyBuilder, REDIS_TIMEOUT);
+        preheatAdapter = new RedisV1ProductConfigPreheatAdapter(
+                redisTemplate, keyBuilder, CACHE_SETTINGS.physicalTtl(), REDIS_TIMEOUT);
+        selectionCacheAdapter = new RedisV1ProductSelectionCacheAdapter(
+                redisTemplate, keyBuilder, CACHE_SETTINGS, REDIS_TIMEOUT);
         acceptAdapter = new RedisAcceptRechargeOrderAdapter(
                 new SpringDataRechargeRedisScriptExecutor(redisTemplate),
                 keyBuilder,
@@ -116,11 +122,12 @@ class RedisV1ProductConfigPreheatIntegrationTest {
     }
 
     @Test
-    void preheatsMissingConfigKeyWithFourFields() {
+    void repairsMissingConfigKeyWithFourFieldsWhenParentSnapshotMatches() {
         String selectedProductId = "NEW-80100099";
         V1ProductSelection selection = passedSelection("80100099", selectedProductId, 1, 10000L, 7L);
+        seedParentSnapshotThenDeleteChild(selection);
 
-        preheatAdapter.preheatIfMissing(ORG_CODE, selection);
+        preheatAdapter.refreshIfMissingOrStale(ORG_CODE, selection);
 
         Map<String, String> stored = readHash(keyBuilder.productConfigKey(ORG_CODE, selectedProductId));
         assertThat(stored).containsExactlyInAnyOrderEntriesOf(Map.of(
@@ -131,13 +138,11 @@ class RedisV1ProductConfigPreheatIntegrationTest {
     }
 
     @Test
-    void doesNotOverwriteExistingProductConfigAndPreservesOriginalValues() {
+    void repairsExistingDriftedProductConfigFromMatchingParentSnapshot() {
         String selectedProductId = "OVW-80100088";
         String productConfigKey = keyBuilder.productConfigKey(ORG_CODE, selectedProductId);
-        /*
-         * 预置一份与补热快照完全不同的商品配置（版本 999、价格 88888、状态 DISABLED、类型 1）。
-         * 详细设计「6」要求 key 已存在时完全不覆盖；这里直接读回真实值，证明 Lua 没有写入任何字段。
-         */
+        V1ProductSelection selection = passedSelection("80100088", selectedProductId, 1, 10000L, 7L);
+        seedSnapshot(selection);
         Map<String, String> preseeded = new LinkedHashMap<>();
         preseeded.put("status", "DISABLED");
         preseeded.put("version", "999");
@@ -145,13 +150,11 @@ class RedisV1ProductConfigPreheatIntegrationTest {
         preseeded.put("product_type", "1");
         putHash(productConfigKey, preseeded);
 
-        preheatAdapter.preheatIfMissing(ORG_CODE, passedSelection("80100088", selectedProductId, 1, 10000L, 7L));
+        preheatAdapter.refreshIfMissingOrStale(ORG_CODE, selection);
 
         Map<String, String> stored = readHash(productConfigKey);
-        assertThat(stored).containsExactlyInAnyOrderEntriesOf(preseeded);
-        assertThat(stored.get("version")).isEqualTo("999");
-        assertThat(stored.get("price")).isEqualTo("88888");
-        assertThat(stored.get("status")).isEqualTo("DISABLED");
+        assertThat(stored).containsExactlyInAnyOrderEntriesOf(Map.of(
+                "status", "ENABLED", "version", "7", "price", "10000", "product_type", "1"));
     }
 
     @Test
@@ -164,7 +167,7 @@ class RedisV1ProductConfigPreheatIntegrationTest {
         String productId = "NOPERM-80100100";
         String productConfigKey = keyBuilder.productConfigKey(ORG_CODE, productId);
 
-        preheatAdapter.preheatIfMissing(
+        preheatAdapter.refreshIfMissingOrStale(
                 ORG_CODE, V1ProductSelection.failed(productId, "PRODUCT_NO_PERMISSION", "商品无权限", 1L));
 
         assertThat(redisTemplate.hasKey(productConfigKey).block(REDIS_TIMEOUT)).isFalse();
@@ -182,8 +185,9 @@ class RedisV1ProductConfigPreheatIntegrationTest {
                 "80100101", selectedProductId, "MINISO", "名创直充100", "codekey",
                 0, 1L, 10000L, 1L, 1L,
                 true, ValidationStatus.FAILED, "NOT_RECHARGE_PRODUCT", "该商品不是直充产品");
+        seedParentSnapshotThenDeleteChild(selection);
 
-        preheatAdapter.preheatIfMissing(ORG_CODE, selection);
+        preheatAdapter.refreshIfMissingOrStale(ORG_CODE, selection);
 
         Map<String, String> stored = readHash(keyBuilder.productConfigKey(ORG_CODE, selectedProductId));
         assertThat(stored).containsEntry("status", "ENABLED");
@@ -192,30 +196,17 @@ class RedisV1ProductConfigPreheatIntegrationTest {
     }
 
     @Test
-    void concurrentPreheatOnSameMissingKeyWritesExactlyOneConsistentSnapshot() throws Exception {
-        /*
-         * 并发冷启动：N 个线程同时对同一个缺失的商品配置 key 执行 put-if-absent，每个线程用不同的
-         * version/price/product_type。Lua 在 Redis 单线程内原子执行 EXISTS-then-HSET，因此最终存储的
-         * 四个字段必须来自同一个线程（ mutually consistent），不应出现 version 来自线程 A、price 来自
-         * 线程 B 的撕裂写。竞争结束后再补一次新版本，必须仍不覆盖，证明 put-if-absent 在并发后依然成立。
-         */
+    void concurrentRepairOnSameMissingKeyKeepsOneConsistentSnapshot() throws Exception {
         int threads = 16;
         String selectedProductId = "CONC-80100077";
-        Set<V1ProductSelection> selections = ConcurrentHashMap.newKeySet();
+        V1ProductSelection selection = passedSelection("80100077", selectedProductId, 1, 10000L, 7L);
+        seedParentSnapshotThenDeleteChild(selection);
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         CountDownLatch ready = new CountDownLatch(threads);
         CountDownLatch start = new CountDownLatch(1);
         List<Future<?>> futures = new ArrayList<>();
         try {
             for (int i = 0; i < threads; i++) {
-                long version = 100L + i;
-                long price = 10000L + i;
-                int type = i % 2;
-                V1ProductSelection selection = new V1ProductSelection(
-                        "80100077", selectedProductId, "MINISO", "名创直充" + i, "codekey",
-                        type, price, 10000L, 1000L, version,
-                        true, ValidationStatus.PASSED, "", "");
-                selections.add(selection);
                 futures.add(pool.submit(() -> {
                     ready.countDown();
                     try {
@@ -224,7 +215,7 @@ class RedisV1ProductConfigPreheatIntegrationTest {
                         Thread.currentThread().interrupt();
                         return null;
                     }
-                    preheatAdapter.preheatIfMissing(ORG_CODE, selection);
+                    preheatAdapter.refreshIfMissingOrStale(ORG_CODE, selection);
                     return null;
                 }));
             }
@@ -240,20 +231,14 @@ class RedisV1ProductConfigPreheatIntegrationTest {
         Map<String, String> stored = readHash(keyBuilder.productConfigKey(ORG_CODE, selectedProductId));
         assertThat(stored).hasSize(4);
         assertThat(stored).containsOnlyKeys("status", "version", "price", "product_type");
-        assertThat(stored.get("status")).isEqualTo("ENABLED");
-        boolean consistent = selections.stream().anyMatch(selection ->
-                selection.productConfigVersion().toString().equals(stored.get("version"))
-                        && selection.salePriceCent().toString().equals(stored.get("price"))
-                        && String.valueOf(selection.productType()).equals(stored.get("product_type")));
-        assertThat(consistent)
-                .as("存储字段必须是某个线程的完整快照，不能是跨线程的撕裂写")
-                .isTrue();
+        assertThat(stored).containsExactlyInAnyOrderEntriesOf(Map.of(
+                "status", "ENABLED", "version", "7", "price", "10000", "product_type", "1"));
 
         V1ProductSelection latecomer = new V1ProductSelection(
                 "80100077", selectedProductId, "MINISO", "late", "codekey",
                 9, 99999L, 10000L, 1000L, 999L,
                 true, ValidationStatus.PASSED, "", "");
-        preheatAdapter.preheatIfMissing(ORG_CODE, latecomer);
+        preheatAdapter.refreshIfMissingOrStale(ORG_CODE, latecomer);
         assertThat(readHash(keyBuilder.productConfigKey(ORG_CODE, selectedProductId))).isEqualTo(stored);
     }
 
@@ -269,6 +254,10 @@ class RedisV1ProductConfigPreheatIntegrationTest {
         long productConfigVersion = 11L;
         long amount = 10000L;
         String orderId = "ORDER-NOTRECHARGE-1";
+        V1ProductSelection selection = new V1ProductSelection(
+                "80100102", selectedProductId, "MINISO", "名创直充100", "codekey",
+                0, amount, 10000L, 1000L, productConfigVersion,
+                true, ValidationStatus.FAILED, "NOT_RECHARGE_PRODUCT", "该商品不是直充产品");
         AcceptRechargeOrderCommand command = new AcceptRechargeOrderCommand(
                 ORG_CODE, "app-1", "OUT-NOTRECHARGE-1", orderId,
                 "80100102", selectedProductId, "18186222336", "http://merchant.example/callback",
@@ -276,6 +265,8 @@ class RedisV1ProductConfigPreheatIntegrationTest {
                 "hash-notrecharge", "v1", "SHA-256",
                 ValidationStatus.FAILED, "NOT_RECHARGE_PRODUCT", "该商品不是直充产品",
                 merchantConfigVersion, productConfigVersion,
+                selection.cacheFingerprint(),
+                true,
                 1783224958000L, 1783225258000L);
         List<String> acceptKeys = keyBuilder.acceptKeys(command);
 
@@ -287,11 +278,8 @@ class RedisV1ProductConfigPreheatIntegrationTest {
                 "status", "ENABLED",
                 "version", String.valueOf(merchantConfigVersion)));
 
-        V1ProductSelection selection = new V1ProductSelection(
-                "80100102", selectedProductId, "MINISO", "名创直充100", "codekey",
-                0, amount, 10000L, 1000L, productConfigVersion,
-                true, ValidationStatus.FAILED, "NOT_RECHARGE_PRODUCT", "该商品不是直充产品");
-        preheatAdapter.preheatIfMissing(ORG_CODE, selection);
+        seedParentSnapshotThenDeleteChild(selection);
+        preheatAdapter.refreshIfMissingOrStale(ORG_CODE, selection);
 
         Map<String, String> productConfig = readHash(acceptKeys.get(9));
         assertThat(productConfig).containsEntry("version", String.valueOf(productConfigVersion));
@@ -323,6 +311,120 @@ class RedisV1ProductConfigPreheatIntegrationTest {
         assertThat(pendingScore).isNotNull();
     }
 
+    @Test
+    void parentSwitchAfterRepairRejectsOldRequestBeforeOrderWrite() {
+        String productId = "80100103";
+        V1ProductSelection oldSelection = passedSelection(productId, "OLD-80100103", 1, 10000L, 7L);
+        V1ProductSelection newSelection = passedSelection(productId, "NEW-80100103", 1, 12000L, 8L);
+        seedParentSnapshotThenDeleteChild(oldSelection);
+        preheatAdapter.refreshIfMissingOrStale(ORG_CODE, oldSelection);
+
+        AcceptRechargeOrderCommand oldCommand = acceptCommand(
+                "OUT-PARENT-SWITCH-1",
+                "ORDER-PARENT-SWITCH-1",
+                oldSelection,
+                ValidationStatus.PASSED,
+                "",
+                "");
+        List<String> acceptKeys = keyBuilder.acceptKeys(oldCommand);
+        seedMerchantConfig(acceptKeys, oldCommand.merchantConfigVersion());
+
+        // compare-and-repair 已完成后父快照切换，旧请求仍持有旧 sibling 的命令快照。
+        seedSnapshot(newSelection);
+
+        AcceptRechargeOrderResult result = acceptAdapter.accept(oldCommand).toCompletableFuture().join();
+
+        assertThat(result.status()).isEqualTo(AcceptRechargeOrderStatus.CONFIG_CHANGED);
+        assertThat(result.failCode()).isEqualTo("PRODUCT_SELECTION_STALE");
+        assertThat(result.orderWritten()).isFalse();
+        assertThat(readHash(acceptKeys.get(2))).isEmpty();
+    }
+
+    @Test
+    void parentFingerprintChangeRejectsOldRequestWhenPriceVersionAndTypeStaySame() {
+        String productId = "80100105";
+        String selectedProductId = "SAME-80100105";
+        V1ProductSelection oldSelection = new V1ProductSelection(
+                productId, selectedProductId, "MINISO", "名创直充100", "codekey",
+                1, 10000L, 10000L, 9000L, 7L,
+                true, ValidationStatus.PASSED, "", "");
+        V1ProductSelection newSelection = new V1ProductSelection(
+                productId, selectedProductId, "MINISO", "名创直充100", "codekey",
+                1, 10000L, 10000L, 10001L, 7L,
+                true, ValidationStatus.FAILED, "PRICE_INVALID", "卡劵价格异常！");
+        seedParentSnapshotThenDeleteChild(oldSelection);
+        preheatAdapter.refreshIfMissingOrStale(ORG_CODE, oldSelection);
+
+        AcceptRechargeOrderCommand oldCommand = acceptCommand(
+                "OUT-PARENT-FINGERPRINT-1",
+                "ORDER-PARENT-FINGERPRINT-1",
+                oldSelection,
+                ValidationStatus.PASSED,
+                "",
+                "");
+        List<String> acceptKeys = keyBuilder.acceptKeys(oldCommand);
+        seedMerchantConfig(acceptKeys, oldCommand.merchantConfigVersion());
+
+        seedSnapshot(newSelection);
+
+        AcceptRechargeOrderResult result = acceptAdapter.accept(oldCommand).toCompletableFuture().join();
+
+        assertThat(result.status()).isEqualTo(AcceptRechargeOrderStatus.CONFIG_CHANGED);
+        assertThat(result.failCode()).isEqualTo("PRODUCT_SELECTION_STALE");
+        assertThat(result.orderWritten()).isFalse();
+    }
+
+    @Test
+    void expiredParentSnapshotIsRejectedInsideAcceptLua() {
+        V1ProductSelection selection = passedSelection("80100106", "EXP-80100106", 1, 10000L, 7L);
+        seedSnapshot(selection, Instant.parse("2026-07-05T03:45:00Z"));
+        AcceptRechargeOrderCommand command = acceptCommand(
+                "OUT-PARENT-EXPIRED-1",
+                "ORDER-PARENT-EXPIRED-1",
+                selection,
+                ValidationStatus.PASSED,
+                "",
+                "");
+        List<String> acceptKeys = keyBuilder.acceptKeys(command);
+        seedMerchantConfig(acceptKeys, command.merchantConfigVersion());
+
+        AcceptRechargeOrderResult result = acceptAdapter.accept(command).toCompletableFuture().join();
+
+        assertThat(result.status()).isEqualTo(AcceptRechargeOrderStatus.CONFIG_CHANGED);
+        assertThat(result.failCode()).isEqualTo("PRODUCT_SELECTION_STALE");
+        assertThat(result.orderWritten()).isFalse();
+        assertThat(readHash(acceptKeys.get(2))).isEmpty();
+    }
+
+    @Test
+    void mysqlConfirmedNoPermissionWritesFailedOrderWithoutParentOrChildCache() {
+        V1ProductSelection denied = V1ProductSelection.failed(
+                "80100104", "PRODUCT_NO_PERMISSION", "商品无权限", 1L);
+        AcceptRechargeOrderCommand command = acceptCommand(
+                "OUT-NO-PERMISSION-1",
+                "ORDER-NO-PERMISSION-1",
+                denied,
+                ValidationStatus.FAILED,
+                denied.failCode(),
+                denied.failReason());
+        List<String> acceptKeys = keyBuilder.acceptKeys(command);
+        seedMerchantConfig(acceptKeys, command.merchantConfigVersion());
+
+        AcceptRechargeOrderResult result = acceptAdapter.accept(command).toCompletableFuture().join();
+
+        assertThat(result.status()).isEqualTo(AcceptRechargeOrderStatus.ACCEPTED_FAILED);
+        assertThat(result.failCode()).isEqualTo("PRODUCT_NO_PERMISSION");
+        assertThat(result.orderWritten()).isTrue();
+        assertThat(result.dispatchAllowed()).isFalse();
+        assertThat(result.balanceReserved()).isFalse();
+        assertThat(readHash(acceptKeys.get(2)))
+                .containsEntry("validation_status", "FAILED")
+                .containsEntry("fail_code", "PRODUCT_NO_PERMISSION")
+                .containsEntry("balance_reserved", "0");
+        assertThat(readHash(acceptKeys.get(9))).isEmpty();
+        assertThat(readHash(acceptKeys.get(12))).isEmpty();
+    }
+
     private static V1ProductSelection passedSelection(
             String productId, String selectedProductId, int productType, long salePriceCent, long version) {
         return new V1ProductSelection(
@@ -337,6 +439,73 @@ class RedisV1ProductConfigPreheatIntegrationTest {
         properties.getOrder().setPendingTtlDays(3);
         properties.getV1().setNonceReplayTtlSeconds(300);
         return properties;
+    }
+
+    private static AcceptRechargeOrderCommand acceptCommand(
+            String outOrderSn,
+            String orderId,
+            V1ProductSelection selection,
+            ValidationStatus validationStatus,
+            String failCode,
+            String failReason) {
+        return new AcceptRechargeOrderCommand(
+                ORG_CODE,
+                "app-1",
+                outOrderSn,
+                orderId,
+                selection.productId(),
+                selection.selectedProductId(),
+                "18186222336",
+                "http://merchant.example/callback",
+                "nonce-" + orderId + "-123456789012345",
+                1,
+                selection.salePriceCent(),
+                selection.productName(),
+                selection.faceValueCent(),
+                selection.productType(),
+                selection.couponType(),
+                selection.supplierChannel(),
+                "hash-" + orderId,
+                "v1",
+                "SHA-256",
+                validationStatus,
+                failCode,
+                failReason,
+                7L,
+                selection.productConfigVersion(),
+                selection.cacheFingerprint(),
+                selection.productSnapshotAvailable(),
+                1783224958000L,
+                1783225258000L);
+    }
+
+    private void seedMerchantConfig(List<String> acceptKeys, long version) {
+        putHash(acceptKeys.get(8), Map.of(
+                "status", "ENABLED",
+                "version", String.valueOf(version)));
+    }
+
+    private void seedParentSnapshotThenDeleteChild(V1ProductSelection selection) {
+        seedSnapshot(selection);
+        redisTemplate.delete(keyBuilder.productConfigKey(ORG_CODE, selection.selectedProductId()))
+                .block(REDIS_TIMEOUT);
+    }
+
+    private void seedSnapshot(V1ProductSelection selection) {
+        seedSnapshot(selection, Instant.parse("2026-07-15T03:00:00Z"));
+    }
+
+    private void seedSnapshot(V1ProductSelection selection, Instant loadedAt) {
+        String token = selectionCacheAdapter
+                .tryAcquireRefreshLock(ORG_CODE, selection.productId())
+                .orElseThrow();
+        boolean written = selectionCacheAdapter.writeSnapshotIfLockOwned(
+                ORG_CODE,
+                selection.productId(),
+                token,
+                selection,
+                loadedAt);
+        assertThat(written).isTrue();
     }
 
     private Map<String, String> readHash(String key) {

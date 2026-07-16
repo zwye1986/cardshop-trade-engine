@@ -20,6 +20,7 @@ import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
@@ -28,6 +29,7 @@ import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1ProductCacheUnavailableException;
 import com.cardshop.trade.engine.application.v1.V1ProductConfigPreheatPort;
 import com.cardshop.trade.engine.application.v1.V1ProductSelection;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
@@ -41,6 +43,7 @@ import org.springframework.util.StringUtils;
 
 import java.net.URI;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -72,6 +75,10 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     private static final String ORDER_STATUS_ACCEPTED = "ACCEPTED";
     private static final String ORDER_STATUS_VALIDATION_FAILED = "VALIDATION_FAILED";
     private static final String REDIS_ORDER_WRITTEN_FIELD = "redis_order_written";
+    private static final Duration PRODUCT_CACHE_ERROR_LOG_INTERVAL = Duration.ofSeconds(10);
+    private static final String LOG_EVENT_PRODUCT_CACHE_UNAVAILABLE = "v1-create-order.product-cache.unavailable";
+    private static final LogStormGuard PRODUCT_CACHE_ERROR_LOG_GUARD =
+            LogStormGuard.atMostOncePer(PRODUCT_CACHE_ERROR_LOG_INTERVAL);
 
     private final V1ProtocolPrecheckService precheckService;
     private final RequestHashCanonicalizer requestHashCanonicalizer;
@@ -446,25 +453,28 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         }
         String notifyUrl = normalizeNotifyUrl(request.notifyUrl());
 
-        V1ProductSelection productSelection = productCandidateSelector.select(
-                merchant.orgCode(),
-                request.productId(),
-                request.account());
+        V1ProductSelection productSelection;
+        try {
+            productSelection = productCandidateSelector.select(
+                    merchant.orgCode(),
+                    request.productId(),
+                    request.account());
+            /*
+             * 参见详细设计「6. Redis 受理与缓存层」：父商品选品快照已经由缓存选择器完成逻辑过期
+             * 和单飞刷新。接单 Lua 前再执行 compare-and-repair，仅当 Redis 父快照仍匹配当前请求时
+             * 修复实际子商品配置，避免旧请求把新价格覆盖回旧值。
+             */
+            if (productSelection.productSnapshotAvailable()) {
+                productConfigPreheatPort.refreshIfMissingOrStale(merchant.orgCode(), productSelection);
+            }
+        } catch (V1ProductCacheUnavailableException ex) {
+            logProductCacheUnavailable(merchant.orgCode(), request.productId(), ex);
+            return Preparation.error(V1CardApiResultStatus.SYSTEM_BUSY.result("系统繁忙"));
+        }
         BusinessFailure businessFailure = firstBusinessFailure(merchant, request, productSelection);
         ValidationStatus validationStatus = businessFailure == null ? productSelection.validationStatus() : ValidationStatus.FAILED;
         String candidateFailCode = businessFailure == null ? productSelection.failCode() : businessFailure.failCode();
         String candidateFailReason = businessFailure == null ? productSelection.failReason() : businessFailure.failReason();
-        /*
-         * 参见详细设计「6. Redis 受理与缓存层」：候选选择已从 MySQL 形成实际子商品快照，
-         * 在执行接单 Lua 前只补写缺失的子商品配置；已有配置不覆盖，最终版本、价格和类型仍由 Lua 裁决。
-         * 补热触发条件是 productSnapshotAvailable（已选出子商品快照），与候选校验是否通过无关：
-         * NOT_RECHARGE_PRODUCT/PRICE_INVALID 等带快照的候选失败必须照常补热，再由 Lua 落 ACCEPTED_FAILED
-         * 失败订单；仅 PRODUCT_NO_PERMISSION 等未选出子商品的失败不补热，由 Lua fail closed 返回 CONFIG_CHANGED。
-         */
-        if (productSelection.productSnapshotAvailable()) {
-            productConfigPreheatPort.preheatIfMissing(merchant.orgCode(), productSelection);
-        }
-
         var requestHash = requestHashCanonicalizer.canonicalizeRechargeCreate(
                 new RequestHashCanonicalizer.RechargeCreateFields(
                         merchant.orgCode(),
@@ -499,9 +509,29 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 candidateFailReason,
                 merchant.configVersion(),
                 productSelection.productConfigVersion(),
+                productSelection.cacheFingerprint(),
+                productSelection.productSnapshotAvailable(),
                 now,
                 now + settings.firstPersistRetryDelay().toMillis());
         return Preparation.ready(acceptCommand, request.outOrderSn());
+    }
+
+    private static void logProductCacheUnavailable(
+            String orgCode,
+            String productId,
+            V1ProductCacheUnavailableException ex) {
+        /*
+         * 商品缓存故障位于下单热路径，硬过期期间并发请求可能同时失败。这里按 10 秒采样 error，
+         * 保留首个异常栈和非敏感业务定位字段，同时避免 Redis/MySQL 故障放大成日志 I/O 风暴。
+         * 参见详细设计「12. 可观测性」。
+         */
+        if (PRODUCT_CACHE_ERROR_LOG_GUARD.shouldLog(LOG_EVENT_PRODUCT_CACHE_UNAVAILABLE).shouldLog()) {
+            log.error("V1商品缓存刷新或配置修复不可用，Redis接单前拒绝 orgCode={}, productId={}, sampleIntervalSeconds={}",
+                    orgCode,
+                    productId,
+                    PRODUCT_CACHE_ERROR_LOG_INTERVAL.toSeconds(),
+                    ex);
+        }
     }
 
     private record Preparation(V1CardApiResult errorResult, AcceptRechargeOrderCommand acceptCommand, String outOrderSn) {

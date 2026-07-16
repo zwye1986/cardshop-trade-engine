@@ -1,6 +1,10 @@
 package com.cardshop.trade.engine.application.v1;
 
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
 
 /**
  * V1 直充商品选择结果。
@@ -38,6 +42,39 @@ public record V1ProductSelection(
         ValidationStatus validationStatus,
         String failCode,
         String failReason) {
+
+    private static final String FINGERPRINT_ALGORITHM = "SHA-256";
+
+    /**
+     * 计算完整父商品选品快照的稳定指纹。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。指纹覆盖所有
+     * 选品字段，使底价、渠道、名称或候选校验结果变化也能在接单 Lua 中阻止旧请求继续受理。
+     */
+    public String cacheFingerprint() {
+        StringBuilder canonical = new StringBuilder(256);
+        appendFingerprintField(canonical, productId);
+        appendFingerprintField(canonical, selectedProductId);
+        appendFingerprintField(canonical, supplierChannel);
+        appendFingerprintField(canonical, productName);
+        appendFingerprintField(canonical, couponType);
+        appendFingerprintField(canonical, productType);
+        appendFingerprintField(canonical, salePriceCent);
+        appendFingerprintField(canonical, faceValueCent);
+        appendFingerprintField(canonical, basePriceCent);
+        appendFingerprintField(canonical, productConfigVersion);
+        appendFingerprintField(canonical, productSnapshotAvailable);
+        appendFingerprintField(canonical, validationStatus == null ? null : validationStatus.name());
+        appendFingerprintField(canonical, failCode);
+        appendFingerprintField(canonical, failReason);
+        try {
+            byte[] digest = MessageDigest.getInstance(FINGERPRINT_ALGORITHM)
+                    .digest(canonical.toString().getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(digest);
+        } catch (NoSuchAlgorithmException ex) {
+            throw new IllegalStateException("SHA-256 algorithm is unavailable", ex);
+        }
+    }
 
     public static V1ProductSelection passed(
             String productId,
@@ -87,5 +124,14 @@ public record V1ProductSelection(
                 ValidationStatus.FAILED,
                 failCode,
                 failReason);
+    }
+
+    private static void appendFingerprintField(StringBuilder canonical, Object value) {
+        if (value == null) {
+            canonical.append("-1:|");
+            return;
+        }
+        String text = String.valueOf(value);
+        canonical.append(text.length()).append(':').append(text).append('|');
     }
 }

@@ -73,6 +73,11 @@ public record PersistOrderSnapshot(
 
     private static final String REDIS_TRUE = "1";
     private static final String TEXT_TRUE = "true";
+    private static final String PERSIST_CONSUMER_APP_ID = "persist-consumer";
+    private static final String PERSIST_CONSUMER_NONCE = "persist-consumer-nonce-00000000";
+    private static final String PERSIST_CONSUMER_SELECTION_FINGERPRINT =
+            "persist-consumer-selection-fingerprint";
+    private static final long PERSIST_CONSUMER_PLACEHOLDER_CONFIG_VERSION = 1L;
 
     public PersistOrderSnapshot {
         orgCode = requireText(orgCode, "orgCode");
@@ -169,14 +174,14 @@ public record PersistOrderSnapshot(
          */
         return new AcceptRechargeOrderCommand(
                 orgCode,
-                defaultText(appId, "persist-consumer"),
+                defaultText(appId, PERSIST_CONSUMER_APP_ID),
                 outOrderSn,
                 orderId,
                 productId,
                 selectedProductId,
                 account,
                 notifyUrl,
-                "persist-consumer-nonce-00000000",
+                PERSIST_CONSUMER_NONCE,
                 num,
                 orderPrice,
                 productName,
@@ -190,8 +195,10 @@ public record PersistOrderSnapshot(
                 validationStatusEnum(),
                 failCode,
                 failReason,
-                1L,
-                1L,
+                PERSIST_CONSUMER_PLACEHOLDER_CONFIG_VERSION,
+                PERSIST_CONSUMER_PLACEHOLDER_CONFIG_VERSION,
+                PERSIST_CONSUMER_SELECTION_FINGERPRINT,
+                true,
                 nowEpochMillis,
                 nextRetryEpochMillis);
     }

@@ -26,6 +26,7 @@ import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1ProductCacheUnavailableException;
 import com.cardshop.trade.engine.application.v1.V1ProductConfigPreheatPort;
 import com.cardshop.trade.engine.application.v1.V1ProductSelection;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
@@ -247,12 +248,13 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         assertThat(localAcceptPort.lastCommand).isNotNull();
         assertThat(localAcceptPort.lastCommand.candidateValidationStatus()).isEqualTo(ValidationStatus.FAILED);
         assertThat(localAcceptPort.lastCommand.candidateFailCode()).isEqualTo("PRODUCT_NO_PERMISSION");
+        assertThat(localAcceptPort.lastCommand.productSnapshotAvailable()).isFalse();
         assertThat(result.code()).isEqualTo("503");
         assertThat(result.msg()).isEqualTo("商品无权限");
     }
 
     @Test
-    void preheatsResolvedChildSnapshotBeforeLuaEvenWhenCandidateValidationFails() {
+    void repairsResolvedChildSnapshotBeforeLuaEvenWhenCandidateValidationFails() {
         CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
         RecordingProductConfigPreheatPort localPreheatPort = new RecordingProductConfigPreheatPort();
         localAcceptPort.nextResult = new AcceptRechargeOrderResult(
@@ -301,6 +303,69 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         assertThat(localPreheatPort.selection).isNotNull();
         assertThat(localPreheatPort.selection.productSnapshotAvailable()).isTrue();
         assertThat(localPreheatPort.selection.selectedProductId()).isEqualTo("80100023");
+    }
+
+    @Test
+    void rejectsBeforeRedisAcceptWhenProductCacheHardRefreshIsUnavailable() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        V1CreateRechargeOrderUseCaseService localService = new V1CreateRechargeOrderUseCaseService(
+                precheckService(),
+                new RequestHashCanonicalizer(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (orgCode, productId, account) -> {
+                    throw new V1ProductCacheUnavailableException("hard stale refresh failed");
+                },
+                localAcceptPort,
+                new RecordingProductConfigPreheatPort(),
+                () -> "202607051337458961474292",
+                CLOCK,
+                new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
+                SYNC_EXECUTOR);
+
+        V1CardApiResult result = localService.createRechargeOrder(
+                        new V1MerchantCommand("app-gray", "A36", validRawBody(
+                                "OUT-CACHE-HARD-STALE",
+                                "nonce-12345678901234567890123461",
+                                1)))
+                .toCompletableFuture()
+                .join();
+
+        assertThat(result.code()).isEqualTo("500");
+        assertThat(result.msg()).isEqualTo("系统繁忙");
+        assertThat(localAcceptPort.lastCommand).isNull();
+    }
+
+    @Test
+    void rejectsBeforeRedisAcceptWhenChildConfigRepairFails() {
+        CapturingAcceptPort localAcceptPort = new CapturingAcceptPort();
+        V1ProductConfigPreheatPort failingRepair = (orgCode, selection) -> {
+            throw new V1ProductCacheUnavailableException("child repair failed");
+        };
+        V1CreateRechargeOrderUseCaseService localService = new V1CreateRechargeOrderUseCaseService(
+                precheckService(),
+                new RequestHashCanonicalizer(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (orgCode, productId, account) -> V1ProductSelection.passed(
+                        productId, "80100023", "MINISO", "名创直充100", "codekey",
+                        1, 10000L, 10000L, 9000L, 1L),
+                localAcceptPort,
+                failingRepair,
+                () -> "202607051337458961474292",
+                CLOCK,
+                new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
+                SYNC_EXECUTOR);
+
+        V1CardApiResult result = localService.createRechargeOrder(
+                        new V1MerchantCommand("app-gray", "A36", validRawBody(
+                                "OUT-CACHE-REPAIR-FAIL",
+                                "nonce-12345678901234567890123462",
+                                1)))
+                .toCompletableFuture()
+                .join();
+
+        assertThat(result.code()).isEqualTo("500");
+        assertThat(result.msg()).isEqualTo("系统繁忙");
+        assertThat(localAcceptPort.lastCommand).isNull();
     }
 
     @Test
@@ -792,7 +857,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         private V1ProductSelection selection;
 
         @Override
-        public void preheatIfMissing(String orgCode, V1ProductSelection selection) {
+        public void refreshIfMissingOrStale(String orgCode, V1ProductSelection selection) {
             this.orgCode = orgCode;
             this.selection = selection;
         }

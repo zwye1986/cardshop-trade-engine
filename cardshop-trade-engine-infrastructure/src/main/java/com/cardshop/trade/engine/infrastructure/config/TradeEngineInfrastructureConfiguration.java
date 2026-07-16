@@ -35,11 +35,15 @@ import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePo
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.recharge.V1MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.application.v1.CachedV1ProductCandidateSelector;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.v1.V1ProductCacheObserver;
+import com.cardshop.trade.engine.application.v1.V1ProductCacheSettings;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
 import com.cardshop.trade.engine.application.v1.V1ProductConfigPreheatPort;
 import com.cardshop.trade.engine.application.v1.V1ProductSelection;
+import com.cardshop.trade.engine.application.v1.V1ProductSelectionCachePort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
@@ -75,6 +79,7 @@ import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAda
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1ProductConfigPreheatAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisV1ProductSelectionCacheAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisDirectRechargeFrequencyAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptLoader;
@@ -137,6 +142,25 @@ public class TradeEngineInfrastructureConfiguration {
     @ConditionalOnMissingBean(Clock.class)
     public Clock clock() {
         return Clock.systemUTC();
+    }
+
+    /**
+     * 校验并暴露 V1 商品选品缓存时间窗口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。构造器会校验
+     * {@code refreshAfter < maxStaleAge < physicalTtl}，非法 Nacos 配置必须阻止应用启动。
+     */
+    @Bean
+    @ConditionalOnMissingBean(V1ProductCacheSettings.class)
+    public V1ProductCacheSettings v1ProductCacheSettings(TradeEngineProperties properties) {
+        TradeEngineProperties.V1.ProductCache cache = properties.getV1().getProductCache();
+        return new V1ProductCacheSettings(
+                cache.getRefreshAfter(),
+                cache.getMaxStaleAge(),
+                cache.getPhysicalTtl(),
+                cache.getRefreshLockTtl(),
+                cache.getRefreshWaitTimeout(),
+                cache.getNegativeCacheTtl());
     }
 
     /**
@@ -383,17 +407,69 @@ public class TradeEngineInfrastructureConfiguration {
     @ConditionalOnMissingBean(V1ProductCandidateSelector.class)
     public V1ProductCandidateSelector v1ProductCandidateSelector(
             ObjectProvider<V1DepartProductReader> departProductReaderProvider,
-            ObjectProvider<V1ProductReader> productReaderProvider) {
+            ObjectProvider<V1ProductReader> productReaderProvider,
+            ObjectProvider<V1ProductSelectionCachePort> cachePortProvider,
+            V1ProductCacheSettings cacheSettings,
+            TradeEngineProperties properties,
+            Clock clock,
+            ObjectProvider<V1ProductCacheObserver> observerProvider) {
         V1DepartProductReader departProductReader = departProductReaderProvider.getIfAvailable();
         V1ProductReader productReader = productReaderProvider.getIfAvailable();
+        V1ProductCandidateSelector sourceSelector;
         if (departProductReader == null || productReader == null) {
-            return (orgCode, productId, account) -> V1ProductSelection.failed(
+            sourceSelector = (orgCode, productId, account) -> V1ProductSelection.failed(
                     productId,
                     "PRODUCT_READER_UNAVAILABLE",
                     "商品资料读取端口未装配",
                     1L);
+        } else {
+            sourceSelector = new MybatisV1ProductCandidateSelector(departProductReader, productReader);
         }
-        return new MybatisV1ProductCandidateSelector(departProductReader, productReader);
+        V1ProductSelectionCachePort cachePort = cachePortProvider.getIfAvailable();
+        if (cachePort == null || !cachePort.isAvailable()) {
+            /*
+             * 参见详细设计「6. Redis 受理与缓存层」：只有 local 且 Redis 写关闭的轻量自测允许无 Redis
+             * 时直读 MySQL。local 开启 Redis 写，或 dev/test/prod 因配置错误缺少 Redis 时，仍保留缓存
+             * 包装器并在请求时 fail closed，防止父快照缺失或秒杀流量静默退化为每单访问共享旧卡管数据库。
+             */
+            if ("local".equalsIgnoreCase(properties.getEnvironment())
+                    && !properties.getRedis().isWriteEnabled()) {
+                return sourceSelector;
+            }
+            cachePort = V1ProductSelectionCachePort.unavailable();
+        }
+        return new CachedV1ProductCandidateSelector(
+                cachePort,
+                sourceSelector,
+                cacheSettings,
+                clock,
+                observerProvider.getIfAvailable(V1ProductCacheObserver::noop));
+    }
+
+    /**
+     * 装配 V1 父商品选品快照 Redis 端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
+     * TODO 后续接入旧卡管商品保存 outbox、CDC 或增量扫描主动同步；请求级单飞刷新长期保留为漏事件兜底，
+     * 参见 {@code docs/交行直充业务系统高可用方案设计.md}「24.2 高风险点」。
+     */
+    @Bean
+    @ConditionalOnMissingBean(V1ProductSelectionCachePort.class)
+    public V1ProductSelectionCachePort v1ProductSelectionCachePort(
+            ObjectProvider<ReactiveStringRedisTemplate> redisTemplateProvider,
+            RechargeRedisKeyBuilder keyBuilder,
+            V1ProductCacheSettings cacheSettings,
+            TradeEngineProperties properties) {
+        ReactiveStringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+        if (redisTemplate == null) {
+            return V1ProductSelectionCachePort.unavailable();
+        }
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
+        return new RedisV1ProductSelectionCacheAdapter(
+                redisTemplate,
+                keyBuilder,
+                cacheSettings,
+                Duration.ofMillis(timeoutMs));
     }
 
     /**
@@ -416,6 +492,7 @@ public class TradeEngineInfrastructureConfiguration {
         return new RedisV1ProductConfigPreheatAdapter(
                 redisTemplate,
                 keyBuilder,
+                properties.getV1().getProductCache().getPhysicalTtl(),
                 Duration.ofMillis(timeoutMs));
     }
 

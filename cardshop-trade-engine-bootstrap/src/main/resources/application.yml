@@ -121,6 +121,13 @@ trade:
       jwt-secret: ${V1_CARDAPI_JWT_SECRET:}
       token-redis-key-prefix: "token:app_id:"
       token-claim-key: "order_token_key:"
+      product-cache:
+        refresh-after: ${TRADE_ENGINE_V1_PRODUCT_CACHE_REFRESH_AFTER:25m}
+        max-stale-age: ${TRADE_ENGINE_V1_PRODUCT_CACHE_MAX_STALE_AGE:30m}
+        physical-ttl: ${TRADE_ENGINE_V1_PRODUCT_CACHE_PHYSICAL_TTL:60m}
+        refresh-lock-ttl: ${TRADE_ENGINE_V1_PRODUCT_CACHE_REFRESH_LOCK_TTL:5s}
+        refresh-wait-timeout: ${TRADE_ENGINE_V1_PRODUCT_CACHE_REFRESH_WAIT_TIMEOUT:1s}
+        negative-cache-ttl: ${TRADE_ENGINE_V1_PRODUCT_CACHE_NEGATIVE_CACHE_TTL:1m}
       crypto:
         sm4-key-source: MERCHANT_SECRET
         sign-key-source: MERCHANT_SECRET

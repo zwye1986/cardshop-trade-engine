@@ -1,139 +1,126 @@
 package com.cardshop.trade.engine.infrastructure.redis;
 
-import com.cardshop.trade.engine.application.v1.V1ProductSelection;
-import com.cardshop.trade.engine.domain.order.ValidationStatus;
-import org.junit.jupiter.api.Test;
-
-import java.util.LinkedHashMap;
-import java.util.Map;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.cardshop.trade.engine.application.v1.V1ProductSelection;
+import com.cardshop.trade.engine.domain.order.ValidationStatus;
+import java.time.Duration;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import org.junit.jupiter.api.Test;
+
 /**
- * V1 商品配置 Redis 补热测试。
+ * V1 商品配置 Redis 比较修复测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
- * Java 已经从 MySQL 形成商品快照，Redis 缺少商品配置时只能按该快照补写实际子商品 key，
- * 之后仍由接单 Lua 做版本、价格和类型的最终 fail closed 校验。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。修复 Lua 必须先确认
+ * 父商品快照仍与当前请求一致，避免旧请求把刚完成刷新的价格覆盖回旧值。
  */
 class RedisV1ProductConfigPreheatAdapterTest {
 
     @Test
-    void writesSelectedChildProductConfigWhenMissing() {
-        FakeOperations operations = new FakeOperations(true);
-        RedisV1ProductConfigPreheatAdapter adapter = new RedisV1ProductConfigPreheatAdapter(
-                operations,
-                new RechargeRedisKeyBuilder("cardshop:trade", 128));
+    void repairsMissingOrDriftedChildWhenParentSnapshotStillMatches() {
+        FakeOperations operations = new FakeOperations(RedisV1ProductConfigPreheatAdapter.RepairOutcome.REPAIRED);
+        RedisV1ProductConfigPreheatAdapter adapter = adapter(operations);
 
-        adapter.preheatIfMissing("A39", minisoSelection());
+        adapter.refreshIfMissingOrStale("A39", minisoSelection());
 
-        assertThat(operations.writtenKey).isEqualTo("cardshop:trade:recharge:{A39}:product:80100023:config");
-        assertThat(operations.writtenFields).containsExactlyInAnyOrderEntriesOf(Map.of(
+        assertThat(operations.parentKey)
+                .isEqualTo("cardshop:trade:recharge:{A39}:product-selection:80100022");
+        assertThat(operations.childKey)
+                .isEqualTo("cardshop:trade:recharge:{A39}:product:80100023:config");
+        assertThat(operations.expectedParent).containsExactlyInAnyOrderEntriesOf(Map.ofEntries(
+                Map.entry("selected_product_id", "80100023"),
+                Map.entry("sale_price", "10000"),
+                Map.entry("product_version", "1"),
+                Map.entry("product_type", "1"),
+                Map.entry("selection_fingerprint", minisoSelection().cacheFingerprint())));
+        assertThat(operations.desiredChild).containsExactlyInAnyOrderEntriesOf(Map.of(
                 "status", "ENABLED",
                 "version", "1",
-                "price", "1",
+                "price", "10000",
                 "product_type", "1"));
-        assertThat(operations.putIfAbsentCalls).isEqualTo(1);
+        assertThat(operations.physicalTtl).isEqualTo(Duration.ofMinutes(60));
     }
 
     @Test
-    void doesNotOverwriteExistingProductConfig() {
-        FakeOperations operations = new FakeOperations(false);
-        RedisV1ProductConfigPreheatAdapter adapter = new RedisV1ProductConfigPreheatAdapter(
-                operations,
-                new RechargeRedisKeyBuilder("cardshop:trade", 128));
+    void doesNotOverwriteChildWhenParentSnapshotHasMovedToNewPrice() {
+        FakeOperations operations = new FakeOperations(RedisV1ProductConfigPreheatAdapter.RepairOutcome.PARENT_CHANGED);
+        RedisV1ProductConfigPreheatAdapter adapter = adapter(operations);
 
-        adapter.preheatIfMissing("A39", minisoSelection());
+        adapter.refreshIfMissingOrStale("A39", minisoSelection());
 
-        assertThat(operations.writtenFields).isEmpty();
-        assertThat(operations.putIfAbsentCalls).isEqualTo(1);
+        assertThat(operations.calls).isEqualTo(1);
     }
 
     @Test
-    void skipsPreheatForFailedProductSelection() {
-        FakeOperations operations = new FakeOperations(true);
-        RedisV1ProductConfigPreheatAdapter adapter = new RedisV1ProductConfigPreheatAdapter(
-                operations,
-                new RechargeRedisKeyBuilder("cardshop:trade", 128));
+    void skipsSelectionWithoutResolvedProductSnapshot() {
+        FakeOperations operations = new FakeOperations(RedisV1ProductConfigPreheatAdapter.RepairOutcome.REPAIRED);
+        RedisV1ProductConfigPreheatAdapter adapter = adapter(operations);
 
-        adapter.preheatIfMissing("A39", V1ProductSelection.failed(
-                "80100022",
-                "PRODUCT_NO_PERMISSION",
-                "商品无权限",
-                1L));
+        adapter.refreshIfMissingOrStale("A39", V1ProductSelection.failed(
+                "80100022", "PRODUCT_NO_PERMISSION", "商品无权限", 1L));
 
-        assertThat(operations.putIfAbsentCalls).isZero();
-        assertThat(operations.writtenFields).isEmpty();
+        assertThat(operations.calls).isZero();
     }
 
     @Test
-    void writesResolvedChildSnapshotEvenWhenCandidateValidationFailed() {
-        FakeOperations operations = new FakeOperations(true);
-        RedisV1ProductConfigPreheatAdapter adapter = new RedisV1ProductConfigPreheatAdapter(
+    void repairsResolvedChildSnapshotEvenWhenCandidateValidationFailed() {
+        FakeOperations operations = new FakeOperations(RedisV1ProductConfigPreheatAdapter.RepairOutcome.REPAIRED);
+        RedisV1ProductConfigPreheatAdapter adapter = adapter(operations);
+
+        adapter.refreshIfMissingOrStale("A39", failedButResolvedMinisoSelection());
+
+        assertThat(operations.desiredChild).containsEntry("product_type", "0");
+    }
+
+    private static RedisV1ProductConfigPreheatAdapter adapter(FakeOperations operations) {
+        return new RedisV1ProductConfigPreheatAdapter(
                 operations,
-                new RechargeRedisKeyBuilder("cardshop:trade", 128));
-
-        adapter.preheatIfMissing("A39", failedButResolvedMinisoSelection());
-
-        assertThat(operations.writtenKey).isEqualTo("cardshop:trade:recharge:{A39}:product:80100023:config");
-        assertThat(operations.writtenFields).containsEntry("product_type", "0");
+                new RechargeRedisKeyBuilder("cardshop:trade", 128),
+                Duration.ofMinutes(60));
     }
 
     private static V1ProductSelection minisoSelection() {
-        return new V1ProductSelection(
-                "80100022",
-                "80100023",
-                "MINISO",
-                "名创直充100",
-                "codekey",
-                1,
-                1L,
-                10000L,
-                1L,
-                1L,
-                true,
-                ValidationStatus.PASSED,
-                "",
-                "");
+        return V1ProductSelection.passed(
+                "80100022", "80100023", "MINISO", "名创直充100", "codekey",
+                1, 10000L, 10000L, 9000L, 1L);
     }
 
     private static V1ProductSelection failedButResolvedMinisoSelection() {
         return new V1ProductSelection(
-                "80100022",
-                "80100023",
-                "MINISO",
-                "名创直充100",
-                "codekey",
-                0,
-                1L,
-                1L,
-                1L,
-                1L,
-                true,
-                ValidationStatus.FAILED,
-                "NOT_RECHARGE_PRODUCT",
-                "该商品不是直充产品");
+                "80100022", "80100023", "MINISO", "名创直充100", "codekey",
+                0, 10000L, 10000L, 9000L, 1L,
+                true, ValidationStatus.FAILED, "NOT_RECHARGE_PRODUCT", "该商品不是直充产品");
     }
 
     private static final class FakeOperations implements RedisV1ProductConfigPreheatAdapter.RedisProductConfigOperations {
 
-        private final boolean inserted;
-        private int putIfAbsentCalls;
-        private String writtenKey;
-        private final Map<String, String> writtenFields = new LinkedHashMap<>();
+        private final RedisV1ProductConfigPreheatAdapter.RepairOutcome outcome;
+        private int calls;
+        private String parentKey;
+        private String childKey;
+        private final Map<String, String> expectedParent = new LinkedHashMap<>();
+        private final Map<String, String> desiredChild = new LinkedHashMap<>();
+        private Duration physicalTtl;
 
-        private FakeOperations(boolean inserted) {
-            this.inserted = inserted;
+        private FakeOperations(RedisV1ProductConfigPreheatAdapter.RepairOutcome outcome) {
+            this.outcome = outcome;
         }
 
         @Override
-        public boolean putIfAbsent(String key, Map<String, String> fields) {
-            putIfAbsentCalls++;
-            if (inserted) {
-                writtenKey = key;
-                writtenFields.putAll(fields);
-            }
-            return inserted;
+        public RedisV1ProductConfigPreheatAdapter.RepairOutcome repairIfParentMatches(
+                String parentKey,
+                String childKey,
+                Map<String, String> expectedParent,
+                Map<String, String> desiredChild,
+                Duration physicalTtl) {
+            calls++;
+            this.parentKey = parentKey;
+            this.childKey = childKey;
+            this.expectedParent.putAll(expectedParent);
+            this.desiredChild.putAll(desiredChild);
+            this.physicalTtl = physicalTtl;
+            return outcome;
         }
     }
 }

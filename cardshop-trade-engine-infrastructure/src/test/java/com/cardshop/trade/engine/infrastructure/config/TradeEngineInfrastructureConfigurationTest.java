@@ -24,8 +24,11 @@ import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPor
 import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.v1.CachedV1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1ProductCacheSettings;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
 import com.cardshop.trade.engine.application.v1.V1ProductConfigPreheatPort;
+import com.cardshop.trade.engine.application.v1.V1ProductSelectionCachePort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
@@ -54,6 +57,7 @@ import com.cardshop.trade.engine.infrastructure.redis.RedisDirectRechargeFrequen
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1ProductConfigPreheatAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisV1ProductSelectionCacheAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.SpringDataRechargeRedisScriptExecutor;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -245,8 +249,9 @@ class TradeEngineInfrastructureConfigurationTest {
     }
 
     @Test
-    void createsV1ProductCandidateSelectorWhenReadersExist() {
+    void localEnvironmentAllowsDirectMysqlProductSelectorWithoutRedis() {
         contextRunner
+                .withPropertyValues("trade.engine.environment=local")
                 .withBean(V1DepartProductReader.class, () -> (orgCode, productId) -> List.of())
                 .withBean(V1ProductReader.class, () -> productIds -> List.of())
                 .run(context -> {
@@ -254,6 +259,59 @@ class TradeEngineInfrastructureConfigurationTest {
                     assertThat(context.getBean(V1ProductCandidateSelector.class))
                             .isInstanceOf(MybatisV1ProductCandidateSelector.class);
                 });
+    }
+
+    @Test
+    void localEnvironmentFailsClosedWhenRedisWritesAreEnabledButProductCacheIsUnavailable() {
+        contextRunner
+                .withPropertyValues(
+                        "trade.engine.environment=local",
+                        "trade.engine.redis.write-enabled=true")
+                .withBean(V1DepartProductReader.class, () -> (orgCode, productId) -> List.of())
+                .withBean(V1ProductReader.class, () -> productIds -> List.of())
+                .withBean(V1ProductSelectionCachePort.class, V1ProductSelectionCachePort::unavailable)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(V1ProductCandidateSelector.class);
+                    assertThat(context.getBean(V1ProductCandidateSelector.class))
+                            .isInstanceOf(CachedV1ProductCandidateSelector.class);
+                });
+    }
+
+    @Test
+    void nonLocalEnvironmentKeepsFailClosedCacheSelectorWithoutRedis() {
+        contextRunner
+                .withPropertyValues("trade.engine.environment=test")
+                .withBean(V1DepartProductReader.class, () -> (orgCode, productId) -> List.of())
+                .withBean(V1ProductReader.class, () -> productIds -> List.of())
+                .run(context -> {
+                    assertThat(context).hasSingleBean(V1ProductCandidateSelector.class);
+                    assertThat(context.getBean(V1ProductCandidateSelector.class))
+                            .isInstanceOf(CachedV1ProductCandidateSelector.class);
+                });
+    }
+
+    @Test
+    void wrapsMysqlProductSelectorWithRedisCacheWhenRedisExists() {
+        contextRunner
+                .withBean(V1DepartProductReader.class, () -> (orgCode, productId) -> List.of())
+                .withBean(V1ProductReader.class, () -> productIds -> List.of())
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(V1ProductCacheSettings.class);
+                    assertThat(context.getBean(V1ProductSelectionCachePort.class))
+                            .isInstanceOf(RedisV1ProductSelectionCacheAdapter.class);
+                    assertThat(context.getBean(V1ProductCandidateSelector.class))
+                            .isInstanceOf(CachedV1ProductCandidateSelector.class);
+                });
+    }
+
+    @Test
+    void rejectsInvalidProductCacheWindowOrderingAtStartup() {
+        contextRunner
+                .withPropertyValues(
+                        "trade.engine.v1.product-cache.refresh-after=30m",
+                        "trade.engine.v1.product-cache.max-stale-age=30m")
+                .run(context -> assertThat(context).hasFailed());
     }
 
     @Test
@@ -269,7 +327,9 @@ class TradeEngineInfrastructureConfigurationTest {
                     assertThat(context.getBean(V1MerchantProfilePort.class))
                             .isInstanceOf(MybatisV1MerchantProfileAdapter.class);
                     assertThat(context.getBean(V1ProductCandidateSelector.class))
-                            .isInstanceOf(MybatisV1ProductCandidateSelector.class);
+                            .isInstanceOf(CachedV1ProductCandidateSelector.class);
+                    assertThat(context.getBean(V1ProductSelectionCachePort.class))
+                            .isInstanceOf(RedisV1ProductSelectionCacheAdapter.class);
                     assertThat(context.getBean(V1ProductConfigPreheatPort.class))
                             .isInstanceOf(RedisV1ProductConfigPreheatAdapter.class);
                     assertThat(context.getBean(AcceptRechargeOrderPort.class))

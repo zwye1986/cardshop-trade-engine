@@ -19,7 +19,7 @@ import org.springframework.util.StringUtils;
  * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.4 缓存修复任务」。当前阶段先覆盖
  * dev/test 联调必须的余额基线预热：在持有商户级 {@code balance:repairing_lock} 时，用
  * {@code mc_ext_depart.balance} 重建 Redis {@code available/frozen/version} 字段。批量商品配置扫描和全量重建
- * 仍按文档作为后续任务；V1 请求级缺失补热由 {@code V1ProductConfigPreheatPort} 单独承担。
+ * 仍按文档作为后续任务；V1 请求级缺失/漂移比较修复由 {@code V1ProductConfigPreheatPort} 单独承担。
  */
 public class RedisRechargeCacheRepairAdapter implements RechargeCacheRepairPort {
 

@@ -15,6 +15,7 @@
 -- 10 productConfigKey       recharge:{orgCode}:product:{selectedProductId}:config
 -- 11 repairingLockKey       recharge:{orgCode}:balance:repairing_lock
 -- 12 orgIndexBucketKey      recharge:persist:pending:org_index:{bucket}
+-- 13 productSelectionKey    recharge:{orgCode}:product-selection:{productId}
 
 local orgCode = ARGV[1]
 local appId = ARGV[2]
@@ -40,10 +41,26 @@ local candidateFailCode = ARGV[21]
 local candidateFailReason = ARGV[22]
 local merchantConfigVersion = ARGV[23]
 local productConfigVersion = ARGV[24]
-local now = ARGV[25]
-local nextRetryTime = ARGV[26]
-local pendingTtlMs = tonumber(ARGV[27])
-local nonceTtlMs = tonumber(ARGV[28])
+local productSelectionFingerprint = ARGV[25]
+local productSnapshotAvailable = ARGV[26]
+local now = ARGV[27]
+local nextRetryTime = ARGV[28]
+local pendingTtlMs = tonumber(ARGV[29])
+local nonceTtlMs = tonumber(ARGV[30])
+
+-- 父商品选品快照与子商品配置字段属于 Java/Redis/Lua 跨语言合同；参见详细设计「6. Redis 受理与缓存层」。
+local FIELD_PRODUCT_ID = 'product_id'
+local FIELD_SELECTED_PRODUCT_ID = 'selected_product_id'
+local FIELD_SALE_PRICE = 'sale_price'
+local FIELD_PRODUCT_VERSION = 'product_version'
+local FIELD_PRODUCT_TYPE = 'product_type'
+local FIELD_PRODUCT_SNAPSHOT_AVAILABLE = 'product_snapshot_available'
+local FIELD_CACHE_KIND = 'cache_kind'
+local FIELD_SELECTION_FINGERPRINT = 'selection_fingerprint'
+local FIELD_EXPIRE_AT = 'expire_at'
+local CHILD_FIELD_STATUS = 'status'
+local CHILD_FIELD_VERSION = 'version'
+local CHILD_FIELD_PRICE = 'price'
 
 local function bool_text(value)
   if value then
@@ -104,21 +121,52 @@ if merchantStatus ~= 'ENABLED' then
   fail_once('MERCHANT_DISABLED', '商户已停用')
 end
 
-local productStatus = redis.call('HGET', KEYS[10], 'status')
-local redisProductVersion = redis.call('HGET', KEYS[10], 'version')
-local redisProductPrice = redis.call('HGET', KEYS[10], 'price')
-local redisProductType = redis.call('HGET', KEYS[10], 'product_type')
-if productStatus == false or redisProductVersion ~= productConfigVersion then
-  return result('CONFIG_CHANGED', '', 'PRODUCT_CONFIG_STALE', '商品配置缺失或版本不一致', false, false, 0)
+local parentProductId = redis.call('HGET', KEYS[13], FIELD_PRODUCT_ID)
+local parentSelectedProductId = redis.call('HGET', KEYS[13], FIELD_SELECTED_PRODUCT_ID)
+local parentSalePrice = redis.call('HGET', KEYS[13], FIELD_SALE_PRICE)
+local parentProductVersion = redis.call('HGET', KEYS[13], FIELD_PRODUCT_VERSION)
+local parentProductType = redis.call('HGET', KEYS[13], FIELD_PRODUCT_TYPE)
+local parentSnapshotAvailable = redis.call('HGET', KEYS[13], FIELD_PRODUCT_SNAPSHOT_AVAILABLE)
+local parentCacheKind = redis.call('HGET', KEYS[13], FIELD_CACHE_KIND)
+local parentSelectionFingerprint = redis.call('HGET', KEYS[13], FIELD_SELECTION_FINGERPRINT)
+local parentExpireAt = redis.call('HGET', KEYS[13], FIELD_EXPIRE_AT)
+local parentExists = parentProductId ~= false
+local expectedCacheKind = productSnapshotAvailable == 'true' and 'SNAPSHOT' or 'NEGATIVE'
+
+if parentExists then
+  if parentProductId ~= productId
+      or parentSelectedProductId ~= selectedProductId
+      or tostring(parentSalePrice or '') ~= tostring(amount)
+      or parentProductVersion ~= productConfigVersion
+      or tostring(parentProductType or '') ~= tostring(productType)
+      or tostring(parentSnapshotAvailable or '') ~= productSnapshotAvailable
+      or parentCacheKind ~= expectedCacheKind
+      or parentSelectionFingerprint ~= productSelectionFingerprint
+      or tonumber(parentExpireAt or '') == nil
+      or tonumber(parentExpireAt) <= tonumber(now) then
+    return result('CONFIG_CHANGED', '', 'PRODUCT_SELECTION_STALE', '父商品选品快照缺失、已过期或已切换', false, false, 0)
+  end
+elseif productSnapshotAvailable == 'true' or candidateValidationStatus ~= 'FAILED' then
+  return result('CONFIG_CHANGED', '', 'PRODUCT_SELECTION_STALE', '父商品选品快照缺失、已过期或已切换', false, false, 0)
 end
-if productStatus ~= 'ENABLED' then
-  fail_once('PRODUCT_NO_PERMISSION', '商品无权限或已停用')
-end
-if tostring(redisProductType or '') ~= tostring(productType) or tostring(productType) ~= '1' then
-  fail_once('NOT_RECHARGE_PRODUCT', '非直充商品')
-end
-if tostring(redisProductPrice or '') ~= tostring(amount) then
-  fail_once('PRICE_INVALID', '商品价格已变化')
+
+if productSnapshotAvailable == 'true' then
+  local productStatus = redis.call('HGET', KEYS[10], CHILD_FIELD_STATUS)
+  local redisProductVersion = redis.call('HGET', KEYS[10], CHILD_FIELD_VERSION)
+  local redisProductPrice = redis.call('HGET', KEYS[10], CHILD_FIELD_PRICE)
+  local redisProductType = redis.call('HGET', KEYS[10], FIELD_PRODUCT_TYPE)
+  if productStatus == false or redisProductVersion ~= productConfigVersion then
+    return result('CONFIG_CHANGED', '', 'PRODUCT_CONFIG_STALE', '商品配置缺失或版本不一致', false, false, 0)
+  end
+  if productStatus ~= 'ENABLED' then
+    fail_once('PRODUCT_NO_PERMISSION', '商品无权限或已停用')
+  end
+  if tostring(redisProductType or '') ~= tostring(productType) or tostring(productType) ~= '1' then
+    fail_once('NOT_RECHARGE_PRODUCT', '非直充商品')
+  end
+  if tostring(redisProductPrice or '') ~= tostring(amount) then
+    fail_once('PRICE_INVALID', '商品价格已变化')
+  end
 end
 if num ~= 1 then
   fail_once('INVALID_NUM', '首期直充只支持购买数量为1')

@@ -29,6 +29,8 @@ class AcceptRechargeOrderCommandTest {
         assertThat(command.candidateValidationStatus()).isEqualTo(ValidationStatus.PASSED);
         assertThat(command.merchantConfigVersion()).isEqualTo(7);
         assertThat(command.productConfigVersion()).isEqualTo(11);
+        assertThat(command.productSelectionFingerprint()).isEqualTo("selection-fingerprint");
+        assertThat(command.productSnapshotAvailable()).isTrue();
     }
 
     @Test
@@ -58,6 +60,8 @@ class AcceptRechargeOrderCommandTest {
                         "",
                         7L,
                         11L,
+                        "selection-fingerprint",
+                        true,
                         1783224958000L,
                         1783225258000L))
                 .isInstanceOf(IllegalArgumentException.class)
@@ -91,6 +95,8 @@ class AcceptRechargeOrderCommandTest {
                 "",
                 7L,
                 11L,
+                "selection-fingerprint",
+                true,
                 1783224958000L,
                 1783225258000L);
 
@@ -124,6 +130,8 @@ class AcceptRechargeOrderCommandTest {
                 failReason,
                 7L,
                 11L,
+                "selection-fingerprint",
+                true,
                 1783224958000L,
                 1783225258000L);
     }
