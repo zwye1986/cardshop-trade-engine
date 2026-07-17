@@ -79,6 +79,22 @@ class RechargeNotifyWorkerServiceTest {
         assertThat(taskPort.failures).isEmpty();
     }
 
+    @Test
+    void closesBlankNotifyUrlTasksBeforeScanningDueTasks() {
+        FakeNotifyWorkerTaskPort taskPort = new FakeNotifyWorkerTaskPort(task());
+        taskPort.blankClosedCount = 3;
+        RechargeNotifyWorkerService service = new RechargeNotifyWorkerService(
+                taskPort,
+                request -> MerchantNotifySendResult.success(200, "{\"code\":200}"),
+                CLOCK,
+                new RechargeNotifyWorkerSettings(Duration.ofMinutes(1), Duration.ofSeconds(10)));
+
+        RechargeNotifyBatchResult result = service.processDue(10, "notify-worker");
+
+        assertThat(taskPort.closeBlankInvocations).isEqualTo(1);
+        assertThat(result.succeeded()).isEqualTo(1);
+    }
+
     private static RechargeNotifyTask task() {
         return taskWithNotifyUrl("https://merchant.example/notify");
     }
@@ -104,6 +120,8 @@ class RechargeNotifyWorkerServiceTest {
         private final RechargeNotifyTask task;
         private final List<String> successes = new ArrayList<>();
         private final List<NotifyFailure> failures = new ArrayList<>();
+        private int blankClosedCount;
+        private int closeBlankInvocations;
 
         private FakeNotifyWorkerTaskPort(RechargeNotifyTask task) {
             this.task = task;
@@ -112,6 +130,12 @@ class RechargeNotifyWorkerServiceTest {
         @Override
         public List<RechargeNotifyTask> selectDueTasks(int limit) {
             return List.of(task);
+        }
+
+        @Override
+        public int closeBlankNotifyUrlTasks() {
+            closeBlankInvocations++;
+            return blankClosedCount;
         }
 
         @Override

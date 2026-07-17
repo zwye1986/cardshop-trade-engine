@@ -32,6 +32,14 @@ public class RechargeNotifyWorkerService {
     }
 
     public RechargeNotifyBatchResult processDue(int limit, String workerId) {
+        /*
+         * 先批量终态历史空 notify_url 任务，再扫描到期任务。
+         * 参见 docs/交行直充业务系统详细设计.md「9.3 回调设计」与 scripts/cleanup-blank-notify-tasks.sql。
+         */
+        int closedBlank = taskPort.closeBlankNotifyUrlTasks();
+        if (closedBlank > 0) {
+            log.warn("已批量清理空notify_url历史回调任务 closedCount={}", closedBlank);
+        }
         var tasks = taskPort.selectDueTasks(limit);
         RechargeNotifyBatchResult result = RechargeNotifyBatchResult.empty().scanned(tasks.size());
         for (RechargeNotifyTask task : tasks) {

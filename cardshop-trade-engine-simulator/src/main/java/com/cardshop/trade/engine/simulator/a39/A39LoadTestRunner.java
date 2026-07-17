@@ -174,7 +174,8 @@ public final class A39LoadTestRunner {
                     null,
                     sample,
                     startedAtNanos,
-                    completedAtNanos);
+                    completedAtNanos,
+                    response.timing());
         } catch (Exception ex) {
             if (ex instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
@@ -189,7 +190,8 @@ public final class A39LoadTestRunner {
                     ex,
                     "out_order_sn=%s error=%s message=%s".formatted(outOrderSn, ex.getClass().getSimpleName(), ex.getMessage()),
                     startedAtNanos,
-                    completedAtNanos);
+                    completedAtNanos,
+                    V1CardApiClient.ClientTiming.ZERO);
         }
     }
 
@@ -245,7 +247,8 @@ public final class A39LoadTestRunner {
                     errorSampleLimit > 0 ? "out_order_sn=unknown error=%s message=%s"
                             .formatted(normalized.getClass().getSimpleName(), normalized.getMessage()) : null,
                     now,
-                    now);
+                    now,
+                    V1CardApiClient.ClientTiming.ZERO);
         }
     }
 
@@ -261,6 +264,11 @@ public final class A39LoadTestRunner {
         Map<String, Integer> errorCounts = new LinkedHashMap<>();
         List<String> errorSamples = new ArrayList<>();
         List<Long> latencyMs = new ArrayList<>(requestResults.size());
+        List<Long> prepareMs = new ArrayList<>(requestResults.size());
+        List<Long> untilHeadersMs = new ArrayList<>(requestResults.size());
+        List<Long> bodyReadMs = new ArrayList<>(requestResults.size());
+        List<Long> parseMs = new ArrayList<>(requestResults.size());
+        List<Long> clientTotalMs = new ArrayList<>(requestResults.size());
         int successful = 0;
         for (CreateRequestResult result : requestResults) {
             if (result.businessCode() != null) {
@@ -275,6 +283,12 @@ public final class A39LoadTestRunner {
                 errorSamples.add(result.errorSample());
             }
             latencyMs.add(toMillis(result.latencyNanos()));
+            V1CardApiClient.ClientTiming timing = result.timing();
+            prepareMs.add(toMillis(timing.prepareNanos()));
+            untilHeadersMs.add(toMillis(timing.untilHeadersNanos()));
+            bodyReadMs.add(toMillis(timing.bodyReadNanos()));
+            parseMs.add(toMillis(timing.parseNanos()));
+            clientTotalMs.add(toMillis(timing.totalNanos()));
         }
         int completed = requestResults.size();
         int failed = completed - successful;
@@ -293,6 +307,11 @@ public final class A39LoadTestRunner {
                 sortedCopy(errorCounts),
                 List.copyOf(errorSamples),
                 sortedLatencies(latencyMs),
+                sortedLatencies(prepareMs),
+                sortedLatencies(untilHeadersMs),
+                sortedLatencies(bodyReadMs),
+                sortedLatencies(parseMs),
+                sortedLatencies(clientTotalMs),
                 toMillis(tokenElapsedNanos),
                 toMillis(createElapsedNanos),
                 toMillis(totalElapsedNanos),
@@ -325,6 +344,11 @@ public final class A39LoadTestRunner {
                 Map.of(),
                 Map.copyOf(errorCounts),
                 samples,
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
+                List.of(),
                 List.of(),
                 toMillis(tokenElapsedNanos),
                 0,
@@ -385,7 +409,12 @@ public final class A39LoadTestRunner {
             Exception error,
             String errorSample,
             long startedAtNanos,
-            long completedAtNanos) {
+            long completedAtNanos,
+            V1CardApiClient.ClientTiming timing) {
+
+        private CreateRequestResult {
+            timing = timing == null ? V1CardApiClient.ClientTiming.ZERO : timing;
+        }
 
         private long latencyNanos() {
             return Math.max(0L, completedAtNanos - startedAtNanos);
@@ -410,6 +439,11 @@ public final class A39LoadTestRunner {
             Map<String, Integer> errorCounts,
             List<String> errorSamples,
             List<Long> latencyMs,
+            List<Long> prepareMs,
+            List<Long> untilHeadersMs,
+            List<Long> bodyReadMs,
+            List<Long> parseMs,
+            List<Long> clientTotalMs,
             long tokenElapsedMs,
             long createElapsedMs,
             long totalElapsedMs,
@@ -425,6 +459,11 @@ public final class A39LoadTestRunner {
             errorCounts = Collections.unmodifiableMap(new LinkedHashMap<>(errorCounts));
             errorSamples = List.copyOf(errorSamples);
             latencyMs = List.copyOf(latencyMs);
+            prepareMs = List.copyOf(prepareMs);
+            untilHeadersMs = List.copyOf(untilHeadersMs);
+            bodyReadMs = List.copyOf(bodyReadMs);
+            parseMs = List.copyOf(parseMs);
+            clientTotalMs = List.copyOf(clientTotalMs);
         }
 
         public int exitCode() {
@@ -466,9 +505,14 @@ public final class A39LoadTestRunner {
                     .forEach(entry -> fields.put("error." + entry.getKey(), String.valueOf(entry.getValue())));
             fields.put("minMs", String.valueOf(minMs()));
             fields.put("maxMs", String.valueOf(maxMs()));
-            fields.put("p50Ms", String.valueOf(percentile(50)));
-            fields.put("p95Ms", String.valueOf(percentile(95)));
-            fields.put("p99Ms", String.valueOf(percentile(99)));
+            fields.put("p50Ms", String.valueOf(percentile(latencyMs, 50)));
+            fields.put("p95Ms", String.valueOf(percentile(latencyMs, 95)));
+            fields.put("p99Ms", String.valueOf(percentile(latencyMs, 99)));
+            putTimingFields(fields, "timing.prepare", prepareMs);
+            putTimingFields(fields, "timing.untilHeaders", untilHeadersMs);
+            putTimingFields(fields, "timing.bodyRead", bodyReadMs);
+            putTimingFields(fields, "timing.parse", parseMs);
+            putTimingFields(fields, "timing.clientTotal", clientTotalMs);
             fields.put("exitCode", String.valueOf(exitCode()));
             for (int index = 0; index < errorSamples.size(); index++) {
                 fields.put("errorSample." + (index + 1), errorSamples.get(index));
@@ -478,24 +522,40 @@ public final class A39LoadTestRunner {
             return report.toString();
         }
 
+        private void putTimingFields(Map<String, String> fields, String prefix, List<Long> values) {
+            fields.put(prefix + ".minMs", String.valueOf(minOf(values)));
+            fields.put(prefix + ".maxMs", String.valueOf(maxOf(values)));
+            fields.put(prefix + ".p50Ms", String.valueOf(percentile(values, 50)));
+            fields.put(prefix + ".p95Ms", String.valueOf(percentile(values, 95)));
+            fields.put(prefix + ".p99Ms", String.valueOf(percentile(values, 99)));
+        }
+
         private double successRate() {
             return completed == 0 ? 0.0d : (double) successful / completed;
         }
 
         private long minMs() {
-            return latencyMs.isEmpty() ? 0L : Collections.min(latencyMs);
+            return minOf(latencyMs);
         }
 
         private long maxMs() {
-            return latencyMs.isEmpty() ? 0L : Collections.max(latencyMs);
+            return maxOf(latencyMs);
         }
 
-        private long percentile(int percentile) {
-            if (latencyMs.isEmpty()) {
+        private static long minOf(List<Long> values) {
+            return values.isEmpty() ? 0L : Collections.min(values);
+        }
+
+        private static long maxOf(List<Long> values) {
+            return values.isEmpty() ? 0L : Collections.max(values);
+        }
+
+        private static long percentile(List<Long> sortedValues, int percentile) {
+            if (sortedValues.isEmpty()) {
                 return 0L;
             }
-            int index = (int) Math.ceil((double) percentile * latencyMs.size() / PERCENTILE_SCALE) - 1;
-            return latencyMs.get(Math.max(0, Math.min(index, latencyMs.size() - 1)));
+            int index = (int) Math.ceil((double) percentile * sortedValues.size() / PERCENTILE_SCALE) - 1;
+            return sortedValues.get(Math.max(0, Math.min(index, sortedValues.size() - 1)));
         }
     }
 }

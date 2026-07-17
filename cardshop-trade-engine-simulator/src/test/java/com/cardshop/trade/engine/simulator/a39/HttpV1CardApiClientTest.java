@@ -18,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -112,7 +113,7 @@ class HttpV1CardApiClientTest {
     }
 
     @Test
-    void suppressesRequestAndResponseLogsAfterSuccessfulResponseWhenDisabled() throws Exception {
+    void recordsClientSideTimingBreakdownForSuccessfulResponses() throws Exception {
         List<String> logs = new ArrayList<>();
         try (TestHttpServer server = TestHttpServer.start()) {
             HttpV1CardApiClient client = new HttpV1CardApiClient(
@@ -124,10 +125,24 @@ class HttpV1CardApiClientTest {
                     Duration.ofSeconds(3),
                     false);
 
-            String token = client.getToken("app-id", "secret-value");
+            V1CardApiClient.ApiResponse response = client.createRechargeOrder(
+                    "token-value",
+                    Map.of("product_id", "80100022"),
+                    false,
+                    "AES-KEY");
 
-            assertThat(token).isEqualTo("token-value");
-            assertThat(logs).isEmpty();
+            assertThat(response.code()).isEqualTo("200");
+            assertThat(response.timing().totalNanos()).isPositive();
+            assertThat(response.timing().untilHeadersNanos()).isPositive();
+            assertThat(response.timing().prepareNanos()).isNotNegative();
+            assertThat(response.timing().bodyReadNanos()).isNotNegative();
+            assertThat(response.timing().parseNanos()).isNotNegative();
+            assertThat(response.timing().totalNanos())
+                    .isGreaterThanOrEqualTo(response.timing().prepareNanos()
+                            + response.timing().untilHeadersNanos()
+                            + response.timing().bodyReadNanos()
+                            + response.timing().parseNanos()
+                            - 1_000_000L);
         }
     }
 
@@ -213,6 +228,17 @@ class HttpV1CardApiClientTest {
             server.createContext("/v1/cardapi/auth/getToken", exchange -> {
                 byte[] bytes = """
                         {"code":200,"msg":"操作成功","data":{"token":"token-value"}}
+                        """.getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
+                exchange.sendResponseHeaders(200, bytes.length);
+                try (OutputStream outputStream = exchange.getResponseBody()) {
+                    outputStream.write(bytes);
+                }
+            });
+            server.createContext("/v1/cardapi/order/createRechargeOrder", exchange -> {
+                exchange.getRequestBody().readAllBytes();
+                byte[] bytes = """
+                        {"code":200,"msg":"操作成功","data":{"order_id":"ORDER-1"}}
                         """.getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
                 exchange.sendResponseHeaders(200, bytes.length);

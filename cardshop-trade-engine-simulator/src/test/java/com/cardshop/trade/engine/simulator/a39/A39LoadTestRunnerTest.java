@@ -92,7 +92,15 @@ class A39LoadTestRunnerTest {
                 .containsEntry("failed", "0")
                 .containsEntry("code.200", "1")
                 .containsEntry("code.510", "1");
-        assertThat(fields).containsKeys("p50Ms", "p95Ms", "p99Ms");
+        assertThat(fields).containsKeys(
+                "p50Ms",
+                "p95Ms",
+                "p99Ms",
+                "timing.prepare.p95Ms",
+                "timing.untilHeaders.p95Ms",
+                "timing.bodyRead.p95Ms",
+                "timing.parse.p95Ms",
+                "timing.clientTotal.p95Ms");
         assertThat(logs).isEmpty();
     }
 
@@ -199,7 +207,11 @@ class A39LoadTestRunnerTest {
     }
 
     private static V1CardApiClient.ApiResponse response(String code) {
-        return new V1CardApiClient.ApiResponse(code, "msg-" + code, Map.of());
+        return new V1CardApiClient.ApiResponse(
+                code,
+                "msg-" + code,
+                Map.of(),
+                new V1CardApiClient.ClientTiming(1_000_000L, 2_000_000L, 3_000_000L, 4_000_000L, 10_000_000L));
     }
 
     private static RuntimeException failure(RuntimeException ex) {

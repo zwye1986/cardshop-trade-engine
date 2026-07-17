@@ -79,6 +79,26 @@ public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort,
     }
 
     @Override
+    public int closeBlankNotifyUrlTasks() {
+        LocalDateTime now = now();
+        return mapper.update(null, new LambdaUpdateWrapper<RechargeNotifyTaskDO>()
+                .and(blank -> blank
+                        .isNull(RechargeNotifyTaskDO::getNotifyUrl)
+                        .or()
+                        .eq(RechargeNotifyTaskDO::getNotifyUrl, ""))
+                .in(RechargeNotifyTaskDO::getStatus,
+                        TaskStatus.INIT.name(),
+                        TaskStatus.FAILED.name(),
+                        TaskStatus.PROCESSING.name(),
+                        TaskStatus.MANUAL_REQUIRED.name())
+                .set(RechargeNotifyTaskDO::getStatus, TaskStatus.SUCCESS.name())
+                .set(RechargeNotifyTaskDO::getLockedBy, null)
+                .set(RechargeNotifyTaskDO::getLockedUntil, null)
+                .set(RechargeNotifyTaskDO::getLastError, "")
+                .set(RechargeNotifyTaskDO::getUpdatedAt, now));
+    }
+
+    @Override
     public Optional<RechargeNotifyTask> claim(RechargeNotifyTask task, String workerId, Duration lease) {
         LocalDateTime now = now();
         int updated = mapper.update(null, new LambdaUpdateWrapper<RechargeNotifyTaskDO>()

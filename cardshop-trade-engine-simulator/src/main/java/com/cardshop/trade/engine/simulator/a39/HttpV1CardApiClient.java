@@ -4,10 +4,12 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import java.io.InputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -101,6 +103,7 @@ public final class HttpV1CardApiClient implements V1CardApiClient {
     }
 
     private ApiResponse post(String path, String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) throws Exception {
+        long totalStartNanos = System.nanoTime();
         String json = objectMapper.writeValueAsString(payload);
         String body = sm4Enabled ? sm4BodyEncoder.encode(json, aesKey) : json;
         URI requestUri = uri(path);
@@ -115,14 +118,36 @@ public final class HttpV1CardApiClient implements V1CardApiClient {
         if (logHttpTraffic) {
             logRequestCurl(path, requestUri, token, contentType, sm4Enabled ? body : objectMapper.writeValueAsString(sanitizedPayload(payload)));
         }
-        HttpResponse<String> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+        long prepareNanos = System.nanoTime() - totalStartNanos;
+        /*
+         * ofInputStream：send 返回时响应头已就绪，随后再读 body，便于拆分 untilHeaders / bodyRead。
+         * untilHeaders 仍聚合 DNS/建连/TLS/写请求/等首包，JDK HttpClient 无法再细分。
+         * 参见 docs/superpowers/specs/2026-07-15-a39-simulator-load-test-design.md「客户端侧耗时拆分」。
+         */
+        long untilHeadersStartNanos = System.nanoTime();
+        HttpResponse<InputStream> response = httpClient.send(builder.build(), HttpResponse.BodyHandlers.ofInputStream());
+        long untilHeadersNanos = System.nanoTime() - untilHeadersStartNanos;
+        long bodyReadStartNanos = System.nanoTime();
+        String responseBody;
+        try (InputStream inputStream = response.body()) {
+            responseBody = new String(inputStream.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        long bodyReadNanos = System.nanoTime() - bodyReadStartNanos;
         if (logHttpTraffic) {
-            logSink.accept("[A39][HTTP][response] path=%s status=%d body=%s".formatted(path, response.statusCode(), response.body()));
+            logSink.accept("[A39][HTTP][response] path=%s status=%d body=%s".formatted(path, response.statusCode(), responseBody));
         }
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IllegalStateException("HTTP request failed: path=%s, status=%d".formatted(path, response.statusCode()));
         }
-        return parseResponse(response.body());
+        long parseStartNanos = System.nanoTime();
+        ApiResponse parsed = parseResponse(responseBody);
+        long parseNanos = System.nanoTime() - parseStartNanos;
+        long totalNanos = System.nanoTime() - totalStartNanos;
+        return new ApiResponse(
+                parsed.code(),
+                parsed.msg(),
+                parsed.data(),
+                new ClientTiming(prepareNanos, untilHeadersNanos, bodyReadNanos, parseNanos, totalNanos));
     }
 
     private void logRequestCurl(String path, URI requestUri, String token, String contentType, String body) {

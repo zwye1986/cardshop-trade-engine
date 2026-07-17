@@ -64,9 +64,24 @@
 - 完成数、成功数、失败数、成功率。
 - HTTP/网络异常分布、业务码分布，特别单列 `200` 和 `510`。
 - 总压测窗口、实际 QPS、P50/P95/P99、最小/最大延迟。延迟从单笔下单请求提交前到收到完整 HTTP 响应或异常为止计时。
+- 客户端侧耗时拆分（`timing.prepare` / `timing.untilHeaders` / `timing.bodyRead` / `timing.parse` / `timing.clientTotal`）的 min/max/p50/p95/p99。其中 `untilHeaders` 在 JDK HttpClient 下聚合 DNS、建连、TLS、写请求与等响应头，无法再细拆；用于与 nginx upstream timing 对照，区分客户端等待与服务端处理。
 - 有限错误样本和最终退出结论。
 
 只有所有请求均返回 `expected-create-codes` 中的业务码且没有 HTTP/网络异常时返回退出码 `0`；任一失败返回非零退出码，但仍等待已提交请求结束并打印完整报告。性能阈值判定、自动阶梯加压、HTML/JSON 报告和长时间稳定性测试不进入第一期。
+
+## 客户端侧耗时拆分
+
+`HttpV1CardApiClient` 使用 `BodyHandlers.ofInputStream()`：`send` 返回时响应头已就绪，随后再读 body。报告字段：
+
+| 前缀 | 含义 |
+| --- | --- |
+| `timing.prepare` | JSON/SM4/组请求 |
+| `timing.untilHeaders` | DNS+建连+TLS+写请求+等响应头（聚合） |
+| `timing.bodyRead` | 读响应体 |
+| `timing.parse` | 解析业务 JSON |
+| `timing.clientTotal` | 上述 HTTP 客户端路径合计（不含本地 SM3 签名） |
+
+端到端 `minMs/p50Ms/...` 仍包含 payload 签名到完整响应的墙钟时间，与 `timing.clientTotal` 可能略有差异。
 
 ## 类职责与测试
 

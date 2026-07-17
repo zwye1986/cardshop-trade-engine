@@ -282,7 +282,7 @@ V1 下单接口允许 `notify_url` 为空字符串；为空时订单仍会正常
 - `[A39][HTTP][response]`：对应 HTTP 响应状态码和响应体原文。
 - `[A39][ORDER][status-change]`：查单得到的 `order_status` 发生变化时记录商户订单号、状态码和来源。
 
-`load` 模式默认关闭逐笔 HTTP 请求/响应日志，只输出启动摘要、周期性进度和最终 `key=value` 报告。报告包含 `mode/baseUrl/runId/outOrderPrefix/concurrency/totalOrders/requestTimeout/completed/successful/failed/code.200/code.510/minMs/maxMs/p50Ms/p95Ms/p99Ms/qps/exitCode` 等字段，便于复制到集成测试记录或脚本解析。
+`load` 模式默认关闭逐笔 HTTP 请求/响应日志，只输出启动摘要、周期性进度和最终 `key=value` 报告。报告包含 `mode/baseUrl/runId/outOrderPrefix/concurrency/totalOrders/requestTimeout/completed/successful/failed/code.200/code.510/minMs/maxMs/p50Ms/p95Ms/p99Ms/qps/exitCode`，以及客户端耗时拆分字段 `timing.prepare|untilHeaders|bodyRead|parse|clientTotal` 的 min/max/p50/p95/p99，便于复制到集成测试记录或脚本解析。
 
 如果启动时报：
 

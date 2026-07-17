@@ -170,13 +170,18 @@ class MapperContractTest {
         String selectDueTasks = mapper.substring(mapper.indexOf("default List<RechargeNotifyTaskDO> selectDueTasks"));
         assertThat(selectDueTasks)
                 .contains("TaskStatus.PROCESSING.name()")
-                .contains("RechargeNotifyTaskDO::getLockedUntil");
+                .contains("RechargeNotifyTaskDO::getLockedUntil")
+                .contains("isNotNull(RechargeNotifyTaskDO::getNotifyUrl)")
+                .contains("ne(RechargeNotifyTaskDO::getNotifyUrl, \"\")");
 
         String adapter = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/MybatisRechargeNotifyTaskAdapter.java"));
         String claim = adapter.substring(adapter.indexOf("public Optional<RechargeNotifyTask> claim"));
         assertThat(claim)
                 .contains("TaskStatus.PROCESSING.name()")
                 .contains("RechargeNotifyTaskDO::getLockedUntil");
+        assertThat(adapter)
+                .contains("public int closeBlankNotifyUrlTasks()")
+                .contains("TaskStatus.MANUAL_REQUIRED.name()");
     }
 
     @Test
