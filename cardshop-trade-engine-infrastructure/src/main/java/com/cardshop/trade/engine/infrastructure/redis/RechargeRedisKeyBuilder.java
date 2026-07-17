@@ -44,10 +44,11 @@ public final class RechargeRedisKeyBuilder {
                 key("recharge:" + orgTag + ":order:event_index:" + command.orderId()),
                 key("recharge:" + orgTag + ":order:event:" + command.orderId() + ":1"),
                 key("recharge:" + orgTag + ":nonce:" + command.nonceStr()),
-                key("recharge:" + orgTag + ":merchant:config"),
-                key("recharge:" + orgTag + ":product:" + command.productId() + ":config"),
+                merchantConfigKey(command.orgCode()),
+                productConfigKey(command.orgCode(), command.selectedProductId()),
                 key("recharge:" + orgTag + ":balance:repairing_lock"),
-                key("recharge:persist:pending:org_index:" + bucket));
+                key("recharge:persist:pending:org_index:" + bucket),
+                productSelectionKey(command.orgCode(), command.productId()));
     }
 
     /**
@@ -167,6 +168,46 @@ public final class RechargeRedisKeyBuilder {
      */
     public String balanceRepairingLockKey(String orgCode) {
         return key("recharge:" + orgTag(orgCode) + ":balance:repairing_lock");
+    }
+
+    /**
+     * 构造商户动态配置 hash key。
+     *
+     * <p>参见详细设计「6. Redis 受理与缓存层」。启动白名单预热、缓存修复和接单 Lua 必须共享该方法，
+     * 保证 {@code merchant:config} 与余额、订单、商品配置处于同一个 {@code {orgCode}} hash tag。
+     */
+    public String merchantConfigKey(String orgCode) {
+        return key("recharge:" + orgTag(orgCode) + ":merchant:config");
+    }
+
+    /**
+     * 构造实际派单子商品的动态配置 key。
+     *
+     * <p>参见详细设计「6.1 Redis Lua 入参与 Key 构造」。V1 请求 {@code product_id} 是父产品号，
+     * 商品价格、类型和版本校验必须落到实际派单子商品 {@code selectedProductId} 上。
+     */
+    public String productConfigKey(String orgCode, String selectedProductId) {
+        return key("recharge:" + orgTag(orgCode) + ":product:" + selectedProductId + ":config");
+    }
+
+    /**
+     * 构造调用方父商品的完整选品快照 key。
+     *
+     * <p>参见详细设计「6. Redis 受理与缓存层」。该 key 与实际子商品配置共享 {@code {orgCode}}
+     * hash tag，使刷新 Lua 可以原子切换父商品快照和实际派单子商品配置。
+     */
+    public String productSelectionKey(String orgCode, String productId) {
+        return key("recharge:" + orgTag(orgCode) + ":product-selection:" + productId);
+    }
+
+    /**
+     * 构造父商品级请求刷新锁 key。
+     *
+     * <p>参见详细设计「6. Redis 受理与缓存层」。锁与父商品快照、子商品配置必须处于同一 Redis slot，
+     * 刷新完成 Lua 才能校验锁 token 后原子写入并释放锁。
+     */
+    public String productSelectionRefreshLockKey(String orgCode, String productId) {
+        return productSelectionKey(orgCode, productId) + ":refresh-lock";
     }
 
     /**

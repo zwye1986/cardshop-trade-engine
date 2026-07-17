@@ -3,6 +3,8 @@ package com.cardshop.trade.engine.infrastructure.config;
 import com.cardshop.trade.engine.infrastructure.observability.RedisMysqlTradeEngineObservabilitySnapshotProvider;
 import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
 import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilitySnapshotProvider;
+import com.cardshop.trade.engine.application.v1.V1CreateOrderStageObserver;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfileCacheObserver;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
@@ -74,6 +76,29 @@ public class TradeEngineObservabilityAutoConfiguration {
                 properties.getEnvironment(),
                 Duration.ofMillis(Math.max(1, properties.getRedis().getLuaWarnThresholdMs())));
         metrics.bindTo(meterRegistry);
+        return metrics;
+    }
+
+    /**
+     * 将业务指标 Bean 显式暴露为商户资料缓存观测端口，供
+     * {@code V1MerchantProfilePort} 装配时注入 hit/miss 计数。
+     */
+    @Bean
+    @ConditionalOnBean(TradeEngineObservabilityMetrics.class)
+    @ConditionalOnMissingBean(V1MerchantProfileCacheObserver.class)
+    public V1MerchantProfileCacheObserver v1MerchantProfileCacheObserver(
+            TradeEngineObservabilityMetrics metrics) {
+        return metrics;
+    }
+
+    /**
+     * 将业务指标 Bean 显式暴露为下单同步子阶段观测端口。
+     */
+    @Bean
+    @ConditionalOnBean(TradeEngineObservabilityMetrics.class)
+    @ConditionalOnMissingBean(V1CreateOrderStageObserver.class)
+    public V1CreateOrderStageObserver v1CreateOrderStageObserver(
+            TradeEngineObservabilityMetrics metrics) {
         return metrics;
     }
 }

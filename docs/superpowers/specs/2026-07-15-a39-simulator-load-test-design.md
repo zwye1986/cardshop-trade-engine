@@ -1,0 +1,115 @@
+# A39 模拟器下单性能测试设计
+
+## 目标与边界
+
+在现有 `cardshop-trade-engine-simulator` 中增加可重复执行的下单压测模式，用于 test188 的 A39 专用测试商户、测试商品和安全供应商 mock 场景。第一期只衡量 `/v1/cardapi/order/createRechargeOrder` 的入口吞吐和响应延迟，不等待订单履约、查单结果或商户回调。
+
+首轮推荐基线为并发 `10`、总订单 `200`、单请求超时 `10s`。所有性能参数必须可通过命令行和 `A39_*` 环境变量配置；命令行优先级高于环境变量。
+
+本期不支持生产环境压测，不调用真实供应商，也不把压测结果替代异步履约、回调成功率或余额一致性验证。压测前必须确认 test188 使用专用商户/商品，且供应商地址指向安全的本地 mock 或测试桩。
+
+## 运行模式
+
+新增 `--mode` / `A39_MODE`：
+
+- `scenario`：默认值，保留当前单笔商户联调行为，包括 token、下单、按条件查单和回调接收。
+- `load`：新增下单压测行为。启动时只获取一次 token；随后只创建订单；不启动 `A39CallbackServer`，不查单，不等待回调。
+
+`load` 模式默认并强制使用空 `notify_url`。它将签名原文中的 `notify_url` 按空字符串参与签名，服务端会正常受理订单但不生成 `recharge_notify_task`。若调用者在 `load` 模式显式提供非空 `notify_url`，参数校验应拒绝执行，避免压测制造不必要的回调和重试噪声。
+
+`scenario` 模式继续沿用非空 `notify_url` 和本地回调接收器的既有语义，确保已有联调脚本不变。
+
+## 压测请求模型
+
+压测运行先完成一次 token 获取；token 获取失败时不发送任何下单请求，并以非零退出码结束。token 获取耗时单独打印，不纳入下单吞吐和延迟统计。
+
+压测器以固定并发模型发送总数固定的请求：任意时刻最多保留 `concurrency` 个下单请求在途，已完成请求立即补充下一笔，直到达到 `total-orders`。实现可使用 JDK 21 虚拟线程和有界提交；不得为每笔请求创建不受限制的平台线程。
+
+每笔请求必须生成独立的：
+
+- `out_order_sn`：由固定运行标识、递增序号和必要的随机后缀组成，保证同一轮与跨轮压测均不会落入幂等重复订单。
+- `nonce_str`：32 位随机串。
+- `timestamp`：创建请求时的毫秒时间戳。
+- `sign`：使用本笔完整请求字段和 `aesKey` 重算 SM3。
+
+`product_id`、`account`、`num`、`order_price`、`product_type`、请求 SM4 开关仍复用当前 A39 配置。压测模式必须复用当前 HTTP 协议实现和签名实现，不能另写一套 V1 请求协议。
+
+## 配置契约
+
+新增参数如下：
+
+| 命令行 | 环境变量 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `--mode` | `A39_MODE` | `scenario` | `scenario` 为单笔联调；`load` 为固定并发下单压测。 |
+| `--concurrency` | `A39_LOAD_CONCURRENCY` | `10` | `load` 模式最大在途下单数，必须大于 0。 |
+| `--total-orders` | `A39_LOAD_TOTAL_ORDERS` | `200` | `load` 模式总下单数，必须大于 0。 |
+| `--request-timeout` | `A39_REQUEST_TIMEOUT` | `10s` | token、下单、查单的单个 HTTP 请求超时。 |
+| `--out-order-prefix` | `A39_OUT_ORDER_PREFIX` | 自动生成 | 压测订单号前缀；工具还会附加运行标识和序号。 |
+| `--expected-create-codes` | `A39_EXPECTED_CREATE_CODES` | `200,510` | 逗号分隔的可接受下单业务码。`510` 表示已异步受理，按本期定义计为成功。 |
+| `--error-sample-limit` | `A39_ERROR_SAMPLE_LIMIT` | `20` | 报告中保留的失败样本上限，必须为非负整数。 |
+| `--progress-interval` | `A39_LOAD_PROGRESS_INTERVAL` | `10s` | 进度摘要输出间隔；设为 `0` 时不输出中间进度。 |
+
+现有 `--notify-url` / `A39_NOTIFY_URL` 需支持显式空值。解析规则应区分“未提供”和“明确提供空字符串”：`scenario` 未提供时继续使用本地回调默认值，`load` 未提供时使用空字符串；`load` 明确提供的非空值报参数错误。
+
+现有 `--query-attempts`、`--query-interval`、`--callback-bind-host`、`--callback-port` 和 `--callback-wait` 在 `load` 模式不生效。程序应在启动摘要中明确标记它们被跳过，不能启动回调端口或执行等待。
+
+## 结果与退出语义
+
+压测期间不逐笔打印 curl、请求体或完整响应，因为这些日志会明显扭曲吞吐和延迟。仅按 `progress-interval` 输出累计完成数、成功数、失败数、当前吞吐和已用时；失败样本最多输出 `error-sample-limit` 条，包含脱敏订单标识、HTTP 状态或异常类型、业务码和消息摘要。
+
+结束时输出结构稳定的文本摘要，至少包含：
+
+- 运行模式、目标地址、运行标识、并发、总订单数和请求超时。
+- token 获取耗时（仅观察项）。
+- 完成数、成功数、失败数、成功率。
+- HTTP/网络异常分布、业务码分布，特别单列 `200` 和 `510`。
+- 总压测窗口、实际 QPS、P50/P95/P99、最小/最大延迟。延迟从单笔下单请求提交前到收到完整 HTTP 响应或异常为止计时。
+- 客户端侧耗时拆分（`timing.prepare` / `timing.untilHeaders` / `timing.bodyRead` / `timing.parse` / `timing.clientTotal`）的 min/max/p50/p95/p99。其中 `untilHeaders` 在 JDK HttpClient 下聚合 DNS、建连、TLS、写请求与等响应头，无法再细拆；用于与 nginx upstream timing 对照，区分客户端等待与服务端处理。
+- 有限错误样本和最终退出结论。
+
+只有所有请求均返回 `expected-create-codes` 中的业务码且没有 HTTP/网络异常时返回退出码 `0`；任一失败返回非零退出码，但仍等待已提交请求结束并打印完整报告。性能阈值判定、自动阶梯加压、HTML/JSON 报告和长时间稳定性测试不进入第一期。
+
+## 客户端侧耗时拆分
+
+`HttpV1CardApiClient` 使用 `BodyHandlers.ofInputStream()`：`send` 返回时响应头已就绪，随后再读 body。报告字段：
+
+| 前缀 | 含义 |
+| --- | --- |
+| `timing.prepare` | JSON/SM4/组请求 |
+| `timing.untilHeaders` | DNS+建连+TLS+写请求+等响应头（聚合） |
+| `timing.bodyRead` | 读响应体 |
+| `timing.parse` | 解析业务 JSON |
+| `timing.clientTotal` | 上述 HTTP 客户端路径合计（不含本地 SM3 签名） |
+
+端到端 `minMs/p50Ms/...` 仍包含 payload 签名到完整响应的墙钟时间，与 `timing.clientTotal` 可能略有差异。
+
+## 类职责与测试
+
+保持当前单笔 `A39BusinessScenarioRunner` 的职责不变，新增独立 `A39LoadTestRunner` 或等价的专用编排器，避免将查单/回调逻辑塞入压测流程。配置对象可扩展为显式运行模式和压测配置值；HTTP 客户端需支持可配置的请求超时与可关闭的逐笔日志。
+
+测试至少覆盖：
+
+- `scenario` 默认兼容性、`load` 默认空 `notify_url`、`load` 非空 `notify_url` 拒绝。
+- 压测参数的命令行/环境变量优先级、非法值拒绝和显式空值解析。
+- 固定总订单数、最大并发不超过配置、每笔订单号/nonce 唯一。
+- `200` 和 `510` 计为成功，其他业务码、HTTP 非 2xx、超时和网络异常计为失败。
+- 报告的成功率、业务码分布、吞吐、百分位延迟和错误样本上限。
+- `load` 模式不启动回调服务、不查询订单、不等待回调，也不输出逐笔 curl/响应日志。
+
+## README 整合
+
+根目录 `README.md` 将把现有散落的 A39 文字整合为一个独立顶级章节 `A39 业务模拟器`，放在主服务本地启动说明之后、主服务部署打包章节之前。该章节内部按以下顺序组织：
+
+1. 工具定位与 dev/test 安全边界。
+2. 安装、单独打包和 test188 配置文件准备。
+3. `scenario` 单笔联调模式：回调地址、查单、回调接收和常见排障。
+4. `load` 下单压测模式：安全前置条件、首轮基线命令、全部压测参数、指标解释和退出码。
+5. 通用参数、凭证安全与 JDK 21 运行说明。
+
+README 中现有 `notify_url` 说明会移入该独立章节：单笔模式需要可达的非空回调地址；压测模式固定使用空地址，表示不触发商户回调。文档命令不得出现真实 `app_secret`、`aesKey`、JWT 或 cookie。
+
+## 非目标
+
+- 不对生产环境或真实供应商发压。
+- 不把供应商派单、MQ 消费、订单终态或回调接收纳入本期吞吐统计。
+- 不实现固定 QPS、阶梯加压、持续时长压测、分布式压测或自动资源指标采集；这些在固定并发基线稳定后单独设计。

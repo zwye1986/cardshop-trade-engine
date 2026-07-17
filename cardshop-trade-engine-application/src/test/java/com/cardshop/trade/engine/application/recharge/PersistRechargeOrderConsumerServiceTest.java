@@ -117,6 +117,50 @@ class PersistRechargeOrderConsumerServiceTest {
     }
 
     @Test
+    void persistsMysqlOnlyConfigChangedSnapshotWithoutRedisMark() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                reliabilityPort,
+                CLOCK);
+
+        PersistRechargeOrderResult result = service.persist(mysqlOnlyConfigChangedMessage());
+
+        assertThat(result.status()).isEqualTo(PersistRechargeOrderStatus.PERSISTED);
+        assertThat(result.shouldAck()).isTrue();
+        assertThat(persistencePort.lastAggregate.snapshot().validationStatus()).isEqualTo("FAILED");
+        assertThat(persistencePort.lastAggregate.snapshot().failCode()).isEqualTo("MERCHANT_CONFIG_STALE");
+        assertThat(persistencePort.lastAggregate.snapshot().failReason()).isEqualTo("商户配置缺失或版本不一致");
+        assertThat(reliabilityPort.markDbPersistedCalls).isZero();
+        assertThat(reliabilityPort.markPersistFailedCalls).isZero();
+        assertThat(persistencePort.events).containsExactly("persist");
+        assertThat(reliabilityPort.events).isEmpty();
+    }
+
+    @Test
+    void skipsPersistFailedRedisMarkForMysqlOnlyConfigChangedSnapshotWhenMysqlWriteFails() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        persistencePort.failure = new IllegalStateException("db unavailable");
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                reliabilityPort,
+                CLOCK);
+
+        PersistRechargeOrderResult result = service.persist(mysqlOnlyConfigChangedMessage());
+
+        assertThat(result.status()).isEqualTo(PersistRechargeOrderStatus.PERSIST_FAILED);
+        assertThat(result.shouldAck()).isFalse();
+        assertThat(reliabilityPort.markDbPersistedCalls).isZero();
+        assertThat(reliabilityPort.markPersistFailedCalls).isZero();
+    }
+
+    @Test
     void returnsAckedRedisMarkFailureWhenMarkDbPersistedTimesOutAfterMysqlCommit() {
         RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
         RecordingPersistencePort persistencePort = new RecordingPersistencePort();
@@ -160,6 +204,25 @@ class PersistRechargeOrderConsumerServiceTest {
         assertThat(result.shouldAck()).isFalse();
         assertThat(reliabilityPort.markPersistFailedCalls).isEqualTo(1);
         assertThat(reliabilityPort.markPersistFailedFuture.toCompletableFuture()).isCancelled();
+    }
+
+    @Test
+    void persistsSnapshotWithBlankNotifyUrlSoCallbackCanStayDisabled() {
+        PersistOrderSnapshot redisSnapshot = snapshot(2L, "Redis更新商品名", true, "");
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.of(redisSnapshot));
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                reliabilityPort,
+                CLOCK);
+
+        PersistRechargeOrderResult result = service.persist(message(1L));
+
+        assertThat(result.status()).isEqualTo(PersistRechargeOrderStatus.PERSISTED);
+        assertThat(persistencePort.lastAggregate.snapshot().notifyUrl()).isEmpty();
+        assertThat(reliabilityPort.markDbPersistedCalls).isEqualTo(1);
     }
 
     @Test
@@ -221,7 +284,55 @@ class PersistRechargeOrderConsumerServiceTest {
                         Map.entry("mq_publish_count", 1)));
     }
 
+    private static PersistTradeOrderMessage mysqlOnlyConfigChangedMessage() {
+        return new PersistTradeOrderMessage(
+                "persist-ORDER-1001-01",
+                "A36",
+                "ORDER-1001",
+                "OUT-1001",
+                "request-hash-1001",
+                1L,
+                Map.ofEntries(
+                        Map.entry("order_id", "ORDER-1001"),
+                        Map.entry("org_code", "A36"),
+                        Map.entry("app_id", "app-gray"),
+                        Map.entry("out_order_sn", "OUT-1001"),
+                        Map.entry("product_id", "PARENT-100"),
+                        Map.entry("selected_product_id", "SKU-100"),
+                        Map.entry("account", "13800138000"),
+                        Map.entry("notify_url", "https://merchant.example/callback"),
+                        Map.entry("num", 1),
+                        Map.entry("order_price", 5200L),
+                        Map.entry("product_name", "交行话费100元"),
+                        Map.entry("product_value", 10000L),
+                        Map.entry("product_type", 1),
+                        Map.entry("coupon_type", "1"),
+                        Map.entry("supplier_channel", "BOCOM"),
+                        Map.entry("request_hash", "request-hash-1001"),
+                        Map.entry("request_hash_version", "v1"),
+                        Map.entry("request_hash_alg", "SHA-256"),
+                        Map.entry("order_status", "VALIDATION_FAILED"),
+                        Map.entry("validation_status", "FAILED"),
+                        Map.entry("fail_code", "MERCHANT_CONFIG_STALE"),
+                        Map.entry("fail_reason", "商户配置缺失或版本不一致"),
+                        Map.entry("dispatch_allowed", false),
+                        Map.entry("balance_reserved", false),
+                        Map.entry("persist_status", "PENDING_MQ"),
+                        Map.entry("order_version", 1L),
+                        Map.entry("persisted_version", 0L),
+                        Map.entry("mq_publish_count", 1),
+                        Map.entry("redis_order_written", false)));
+    }
+
     private static PersistOrderSnapshot snapshot(long orderVersion, String productName, boolean dispatchAllowed) {
+        return snapshot(orderVersion, productName, dispatchAllowed, "https://merchant.example/callback");
+    }
+
+    private static PersistOrderSnapshot snapshot(
+            long orderVersion,
+            String productName,
+            boolean dispatchAllowed,
+            String notifyUrl) {
         return new PersistOrderSnapshot(
                 "A36",
                 "app-gray",
@@ -230,7 +341,7 @@ class PersistRechargeOrderConsumerServiceTest {
                 "PARENT-100",
                 "SKU-100",
                 "13800138000",
-                "https://merchant.example/callback",
+                notifyUrl,
                 1,
                 5200L,
                 productName,

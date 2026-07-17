@@ -58,14 +58,55 @@ class RechargeNotifyWorkerServiceTest {
         });
     }
 
+    @Test
+    void marksBlankNotifyUrlTaskSuccessWithoutSendingHttp() {
+        FakeNotifyWorkerTaskPort taskPort = new FakeNotifyWorkerTaskPort(taskWithNotifyUrl(""));
+        List<MerchantNotifyRequest> sent = new ArrayList<>();
+        RechargeNotifyWorkerService service = new RechargeNotifyWorkerService(
+                taskPort,
+                request -> {
+                    sent.add(request);
+                    return MerchantNotifySendResult.success(200, "{\"code\":200}");
+                },
+                CLOCK,
+                new RechargeNotifyWorkerSettings(Duration.ofMinutes(1), Duration.ofSeconds(10)));
+
+        RechargeNotifyBatchResult result = service.processDue(10, "notify-worker");
+
+        assertThat(result.succeeded()).isEqualTo(1);
+        assertThat(sent).isEmpty();
+        assertThat(taskPort.successes).containsExactly("notify-order-ORDER-1-12");
+        assertThat(taskPort.failures).isEmpty();
+    }
+
+    @Test
+    void closesBlankNotifyUrlTasksBeforeScanningDueTasks() {
+        FakeNotifyWorkerTaskPort taskPort = new FakeNotifyWorkerTaskPort(task());
+        taskPort.blankClosedCount = 3;
+        RechargeNotifyWorkerService service = new RechargeNotifyWorkerService(
+                taskPort,
+                request -> MerchantNotifySendResult.success(200, "{\"code\":200}"),
+                CLOCK,
+                new RechargeNotifyWorkerSettings(Duration.ofMinutes(1), Duration.ofSeconds(10)));
+
+        RechargeNotifyBatchResult result = service.processDue(10, "notify-worker");
+
+        assertThat(taskPort.closeBlankInvocations).isEqualTo(1);
+        assertThat(result.succeeded()).isEqualTo(1);
+    }
+
     private static RechargeNotifyTask task() {
+        return taskWithNotifyUrl("https://merchant.example/notify");
+    }
+
+    private static RechargeNotifyTask taskWithNotifyUrl(String notifyUrl) {
         return new RechargeNotifyTask(
                 "notify-order-ORDER-1-12",
                 "ORDER_STATUS",
                 "A36",
                 "ORDER-1",
                 "OUT-1",
-                "https://merchant.example/notify",
+                notifyUrl,
                 "12",
                 "{\"orderId\":\"ORDER-1\",\"sign\":\"abc\"}",
                 0,
@@ -79,6 +120,8 @@ class RechargeNotifyWorkerServiceTest {
         private final RechargeNotifyTask task;
         private final List<String> successes = new ArrayList<>();
         private final List<NotifyFailure> failures = new ArrayList<>();
+        private int blankClosedCount;
+        private int closeBlankInvocations;
 
         private FakeNotifyWorkerTaskPort(RechargeNotifyTask task) {
             this.task = task;
@@ -87,6 +130,12 @@ class RechargeNotifyWorkerServiceTest {
         @Override
         public List<RechargeNotifyTask> selectDueTasks(int limit) {
             return List.of(task);
+        }
+
+        @Override
+        public int closeBlankNotifyUrlTasks() {
+            closeBlankInvocations++;
+            return blankClosedCount;
         }
 
         @Override

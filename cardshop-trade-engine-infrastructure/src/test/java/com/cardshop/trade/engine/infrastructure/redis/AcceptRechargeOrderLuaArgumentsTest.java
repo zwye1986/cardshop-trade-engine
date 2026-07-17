@@ -50,6 +50,8 @@ class AcceptRechargeOrderLuaArgumentsTest {
                         "",
                         "7",
                         "11",
+                        "selection-fingerprint",
+                        "true",
                         "1783224958000",
                         "1783225258000",
                         "604800000",
@@ -94,6 +96,8 @@ class AcceptRechargeOrderLuaArgumentsTest {
                 failReason,
                 7L,
                 11L,
+                "selection-fingerprint",
+                true,
                 1783224958000L,
                 1783225258000L);
     }

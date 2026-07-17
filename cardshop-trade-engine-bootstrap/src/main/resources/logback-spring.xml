@@ -11,8 +11,9 @@
         不设 totalSizeCap，仅用 maxHistory=90（天）控制保留窗口；高流量日
         当天可能产生多个 200MB 归档（序号 %i 递增），盘量由 90 天窗口收敛。
       - local/dev 同时输出到控制台与文件，便于本地/联调观察；test/prod 仅写
-        文件，避免 stdout 重复落盘，.out 仅作为 JVM 原生输出兜底（由 start.sh
-        做 copytruncate 风格的等价轮转）。
+        文件，避免 stdout 重复落盘。start.sh 默认仅为非 prod profile 保留
+        .out 兜底文件；prod 如需临时诊断 JVM 早期输出，可显式开启
+        STDOUT_LOG_ENABLED=true。
 -->
 <configuration>
     <!-- 复用 Spring Boot 默认控制台/文件 appender 约定与 conversionRule -->
@@ -56,7 +57,7 @@
     </appender>
 
     <!-- 默认 root：仅写文件。保证任意 profile（含未预期的）都不会静默丢日志，
-         且 test/prod 不会向 stdout 重复输出，.out 仅作 JVM 原生输出兜底。 -->
+         且 test/prod 不会向 stdout 重复输出；prod stdout 文件由启动脚本默认禁用。 -->
     <root level="INFO">
         <appender-ref ref="FILE"/>
     </root>

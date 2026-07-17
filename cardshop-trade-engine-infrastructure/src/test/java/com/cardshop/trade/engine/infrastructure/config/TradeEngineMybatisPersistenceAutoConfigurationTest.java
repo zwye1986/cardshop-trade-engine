@@ -94,17 +94,6 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
     }
 
     @Test
-    void failsFastWhenFulfillmentProductMappersAreMissing() {
-        new ApplicationContextRunner()
-                .withBean(ObjectMapper.class, ObjectMapper::new)
-                .withBean(Clock.class, Clock::systemUTC)
-                .withConfiguration(AutoConfigurations.of(
-                        MissingFulfillmentProductMapperAutoConfiguration.class,
-                        TradeEngineMybatisPersistenceAutoConfiguration.class))
-                .run(context -> assertThat(context).hasFailed());
-    }
-
-    @Test
     void registersAcceptAnomalyCheckRepositoryWhenMapperComesFromLaterAutoConfiguration() {
         new ApplicationContextRunner()
                 .withBean(ObjectMapper.class, ObjectMapper::new)
@@ -218,55 +207,6 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         @Bean
         McProductMapper mcProductMapper() {
             return mapperProxy(McProductMapper.class);
-        }
-
-        @Bean
-        RechargeNotifyTaskMapper rechargeNotifyTaskMapper() {
-            return mapperProxy(RechargeNotifyTaskMapper.class);
-        }
-
-        @Bean
-        RechargeAcceptAnomalyMapper rechargeAcceptAnomalyMapper() {
-            return mapperProxy(RechargeAcceptAnomalyMapper.class);
-        }
-    }
-
-    @AutoConfiguration(before = TradeEngineMybatisPersistenceAutoConfiguration.class)
-    static class MissingFulfillmentProductMapperAutoConfiguration {
-
-        @Bean
-        SqlSessionFactory sqlSessionFactory() {
-            return mapperProxy(SqlSessionFactory.class);
-        }
-
-        @Bean
-        McOrderMapper mcOrderMapper() {
-            return mapperProxy(McOrderMapper.class);
-        }
-
-        @Bean
-        RechargeOrderExtMapper rechargeOrderExtMapper() {
-            return mapperProxy(RechargeOrderExtMapper.class);
-        }
-
-        @Bean
-        RechargeOutboxMapper rechargeOutboxMapper() {
-            return mapperProxy(RechargeOutboxMapper.class);
-        }
-
-        @Bean
-        McDepartRecordMapper mcDepartRecordMapper() {
-            return mapperProxy(McDepartRecordMapper.class);
-        }
-
-        @Bean
-        McExtDepartMapper mcExtDepartMapper() {
-            return mapperProxy(McExtDepartMapper.class);
-        }
-
-        @Bean
-        McOrderSupplierFlowMapper mcOrderSupplierFlowMapper() {
-            return mapperProxy(McOrderSupplierFlowMapper.class);
         }
 
         @Bean

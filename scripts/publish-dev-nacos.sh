@@ -183,6 +183,18 @@ trade:
       publish-confirm-timeout-ms: 1000
     fault-injection:
       enabled: false
+    v1:
+      product-cache:
+        refresh-after: 25m
+        max-stale-age: 30m
+        physical-ttl: 60m
+        refresh-lock-ttl: 5s
+        refresh-wait-timeout: 1s
+        negative-cache-ttl: 1m
+      merchant-config-preheat:
+        enabled: \${TRADE_ENGINE_V1_MERCHANT_CONFIG_PREHEAT_ENABLED:false}
+        org-codes: \${TRADE_ENGINE_V1_MERCHANT_CONFIG_PREHEAT_ORG_CODES:}
+        fail-on-error: \${TRADE_ENGINE_V1_MERCHANT_CONFIG_PREHEAT_FAIL_ON_ERROR:true}
     integration:
       manual-job-enabled: false
     xxl-job:

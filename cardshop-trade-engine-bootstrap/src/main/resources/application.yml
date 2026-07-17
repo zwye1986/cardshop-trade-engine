@@ -121,6 +121,22 @@ trade:
       jwt-secret: ${V1_CARDAPI_JWT_SECRET:}
       token-redis-key-prefix: "token:app_id:"
       token-claim-key: "order_token_key:"
+      product-cache:
+        refresh-after: ${TRADE_ENGINE_V1_PRODUCT_CACHE_REFRESH_AFTER:25m}
+        max-stale-age: ${TRADE_ENGINE_V1_PRODUCT_CACHE_MAX_STALE_AGE:30m}
+        physical-ttl: ${TRADE_ENGINE_V1_PRODUCT_CACHE_PHYSICAL_TTL:60m}
+        refresh-lock-ttl: ${TRADE_ENGINE_V1_PRODUCT_CACHE_REFRESH_LOCK_TTL:5s}
+        refresh-wait-timeout: ${TRADE_ENGINE_V1_PRODUCT_CACHE_REFRESH_WAIT_TIMEOUT:1s}
+        negative-cache-ttl: ${TRADE_ENGINE_V1_PRODUCT_CACHE_NEGATIVE_CACHE_TTL:1m}
+      merchant-profile-cache:
+        enabled: ${TRADE_ENGINE_V1_MERCHANT_PROFILE_CACHE_ENABLED:true}
+        ttl: ${TRADE_ENGINE_V1_MERCHANT_PROFILE_CACHE_TTL:60s}
+        negative-ttl: ${TRADE_ENGINE_V1_MERCHANT_PROFILE_CACHE_NEGATIVE_TTL:10s}
+        maximum-size: ${TRADE_ENGINE_V1_MERCHANT_PROFILE_CACHE_MAXIMUM_SIZE:1024}
+      merchant-config-preheat:
+        enabled: ${TRADE_ENGINE_V1_MERCHANT_CONFIG_PREHEAT_ENABLED:false}
+        org-codes: ${TRADE_ENGINE_V1_MERCHANT_CONFIG_PREHEAT_ORG_CODES:}
+        fail-on-error: ${TRADE_ENGINE_V1_MERCHANT_CONFIG_PREHEAT_FAIL_ON_ERROR:true}
       crypto:
         sm4-key-source: MERCHANT_SECRET
         sign-key-source: MERCHANT_SECRET

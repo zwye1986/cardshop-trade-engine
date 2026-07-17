@@ -16,10 +16,10 @@ import java.util.Objects;
  * @param appId 商户 appId，用于追踪 V1 请求来源
  * @param orderId 平台订单号，对应旧表 {@code mc_order.order_Id}
  * @param outOrderSn 商户外部订单号，对应旧表 {@code mc_order.out_orderId}
- * @param productId 外部请求中的父商品编码，对应旧表 {@code mc_order.parent_id}
- * @param selectedProductId 实际落库子商品编码，对应旧表 {@code mc_order.produt_code}
+ * @param productId 外部请求父产品号，对应接口 {@code product_id} 和旧表 {@code mc_order.parent_id}
+ * @param selectedProductId 实际落库/派单子商品号，对应旧表 {@code mc_order.produt_code}
  * @param account 直充账号，对应旧表 {@code mc_order.account}
- * @param notifyUrl 商户回调地址，对应旧表 {@code mc_order.callback_url}
+ * @param notifyUrl 商户回调地址，对应旧表 {@code mc_order.callback_url}；可为空，表示不触发商户回调
  * @param num 下单数量，对应旧表 {@code mc_order.num}
  * @param orderPrice 订单金额，单位分，对应旧表 {@code mc_order.order_price}
  * @param productName 商品名称，对应旧表 {@code mc_order.product_name}
@@ -73,6 +73,11 @@ public record PersistOrderSnapshot(
 
     private static final String REDIS_TRUE = "1";
     private static final String TEXT_TRUE = "true";
+    private static final String PERSIST_CONSUMER_APP_ID = "persist-consumer";
+    private static final String PERSIST_CONSUMER_NONCE = "persist-consumer-nonce-00000000";
+    private static final String PERSIST_CONSUMER_SELECTION_FINGERPRINT =
+            "persist-consumer-selection-fingerprint";
+    private static final long PERSIST_CONSUMER_PLACEHOLDER_CONFIG_VERSION = 1L;
 
     public PersistOrderSnapshot {
         orgCode = requireText(orgCode, "orgCode");
@@ -82,7 +87,7 @@ public record PersistOrderSnapshot(
         productId = requireText(productId, "productId");
         selectedProductId = requireText(selectedProductId, "selectedProductId");
         account = requireText(account, "account");
-        notifyUrl = requireText(notifyUrl, "notifyUrl");
+        notifyUrl = defaultText(notifyUrl);
         if (num <= 0) {
             throw new IllegalArgumentException("num must be positive");
         }
@@ -169,14 +174,14 @@ public record PersistOrderSnapshot(
          */
         return new AcceptRechargeOrderCommand(
                 orgCode,
-                defaultText(appId, "persist-consumer"),
+                defaultText(appId, PERSIST_CONSUMER_APP_ID),
                 outOrderSn,
                 orderId,
                 productId,
                 selectedProductId,
                 account,
                 notifyUrl,
-                "persist-consumer-nonce-00000000",
+                PERSIST_CONSUMER_NONCE,
                 num,
                 orderPrice,
                 productName,
@@ -190,8 +195,10 @@ public record PersistOrderSnapshot(
                 validationStatusEnum(),
                 failCode,
                 failReason,
-                1L,
-                1L,
+                PERSIST_CONSUMER_PLACEHOLDER_CONFIG_VERSION,
+                PERSIST_CONSUMER_PLACEHOLDER_CONFIG_VERSION,
+                PERSIST_CONSUMER_SELECTION_FINGERPRINT,
+                true,
                 nowEpochMillis,
                 nextRetryEpochMillis);
     }

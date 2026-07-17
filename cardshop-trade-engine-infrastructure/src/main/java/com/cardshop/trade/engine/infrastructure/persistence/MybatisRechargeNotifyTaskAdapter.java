@@ -17,6 +17,8 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * 基于 MyBatis 的商户回调任务适配器。
@@ -26,6 +28,7 @@ import java.util.Optional;
  */
 public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort, RechargeNotifyWorkerTaskPort {
 
+    private static final Logger log = LoggerFactory.getLogger(MybatisRechargeNotifyTaskAdapter.class);
     private static final ZoneId LEGACY_CARDSHOP_DB_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final RechargeNotifyTaskMapper mapper;
@@ -40,6 +43,15 @@ public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort,
 
     @Override
     public void insertIfAbsent(RechargeNotifyTaskDraft task) {
+        /*
+         * 订单 notify_url 为空时不落 recharge_notify_task，与详细设计「9.3 回调设计」一致。
+         * Outbox Worker 已有前置跳过；此处再拦截一层，避免防御缺口写入空 URL 任务。
+         */
+        if (task.notifyUrl() == null || task.notifyUrl().isBlank()) {
+            log.warn("跳过空notify_url回调任务写入 taskId={}, orderId={}, notifyType={}",
+                    task.taskId(), task.orderId(), task.notifyType());
+            return;
+        }
         RechargeNotifyTaskDO entity = new RechargeNotifyTaskDO();
         entity.setTaskId(task.taskId());
         entity.setNotifyType(task.notifyType());
@@ -64,6 +76,26 @@ public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort,
     @Override
     public List<RechargeNotifyTask> selectDueTasks(int limit) {
         return mapper.selectDueTasks(limit).stream().map(this::toTask).toList();
+    }
+
+    @Override
+    public int closeBlankNotifyUrlTasks() {
+        LocalDateTime now = now();
+        return mapper.update(null, new LambdaUpdateWrapper<RechargeNotifyTaskDO>()
+                .and(blank -> blank
+                        .isNull(RechargeNotifyTaskDO::getNotifyUrl)
+                        .or()
+                        .eq(RechargeNotifyTaskDO::getNotifyUrl, ""))
+                .in(RechargeNotifyTaskDO::getStatus,
+                        TaskStatus.INIT.name(),
+                        TaskStatus.FAILED.name(),
+                        TaskStatus.PROCESSING.name(),
+                        TaskStatus.MANUAL_REQUIRED.name())
+                .set(RechargeNotifyTaskDO::getStatus, TaskStatus.SUCCESS.name())
+                .set(RechargeNotifyTaskDO::getLockedBy, null)
+                .set(RechargeNotifyTaskDO::getLockedUntil, null)
+                .set(RechargeNotifyTaskDO::getLastError, "")
+                .set(RechargeNotifyTaskDO::getUpdatedAt, now));
     }
 
     @Override

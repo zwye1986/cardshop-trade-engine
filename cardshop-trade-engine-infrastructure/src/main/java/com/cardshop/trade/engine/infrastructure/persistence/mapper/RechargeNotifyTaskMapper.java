@@ -66,11 +66,17 @@ public interface RechargeNotifyTaskMapper extends BaseMapper<RechargeNotifyTaskD
 
     /**
      * 单表扫描到期通知任务。
+     *
+     * <p>空 {@code notify_url} 任务不进入扫描；应由
+     * {@link com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort#closeBlankNotifyUrlTasks()}
+     * 或运维 SQL 终态清理。参见 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。
      */
     default List<RechargeNotifyTaskDO> selectDueTasks(int limit) {
         int safeLimit = Math.max(1, Math.min(limit, 1000));
         LocalDateTime now = LocalDateTime.now();
         return selectList(new LambdaQueryWrapper<RechargeNotifyTaskDO>()
+                .isNotNull(RechargeNotifyTaskDO::getNotifyUrl)
+                .ne(RechargeNotifyTaskDO::getNotifyUrl, "")
                 .and(wrapper -> wrapper
                         .and(due -> due
                                 .in(RechargeNotifyTaskDO::getStatus, TaskStatus.INIT.name(), TaskStatus.FAILED.name())

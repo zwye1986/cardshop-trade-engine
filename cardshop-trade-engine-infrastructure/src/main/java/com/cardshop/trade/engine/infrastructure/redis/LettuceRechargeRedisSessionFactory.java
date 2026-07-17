@@ -1,5 +1,6 @@
 package com.cardshop.trade.engine.infrastructure.redis;
 
+import com.cardshop.trade.engine.application.v1.V1CreateOrderStageObserver;
 import io.lettuce.core.AbstractRedisClient;
 import io.lettuce.core.RedisClient;
 import io.lettuce.core.ScriptOutputType;
@@ -10,6 +11,8 @@ import io.lettuce.core.cluster.RedisClusterClient;
 import io.lettuce.core.codec.StringCodec;
 import java.time.Duration;
 import java.util.List;
+import java.util.Objects;
+import java.util.function.Supplier;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.data.redis.core.script.RedisScript;
 import reactor.core.publisher.Mono;
@@ -24,23 +27,50 @@ import reactor.core.publisher.Mono;
 public class LettuceRechargeRedisSessionFactory implements RechargeRedisSessionFactory {
 
     private final LettuceConnectionFactory connectionFactory;
+    private final Supplier<V1CreateOrderStageObserver> stageObserverSupplier;
 
     public LettuceRechargeRedisSessionFactory(LettuceConnectionFactory connectionFactory) {
-        this.connectionFactory = connectionFactory;
+        this(connectionFactory, V1CreateOrderStageObserver.noop());
+    }
+
+    public LettuceRechargeRedisSessionFactory(
+            LettuceConnectionFactory connectionFactory,
+            V1CreateOrderStageObserver stageObserver) {
+        this(connectionFactory, () -> stageObserver == null
+                ? V1CreateOrderStageObserver.noop()
+                : stageObserver);
+    }
+
+    public LettuceRechargeRedisSessionFactory(
+            LettuceConnectionFactory connectionFactory,
+            Supplier<V1CreateOrderStageObserver> stageObserverSupplier) {
+        this.connectionFactory = Objects.requireNonNull(connectionFactory, "connectionFactory must not be null");
+        Objects.requireNonNull(stageObserverSupplier, "stageObserverSupplier must not be null");
+        this.stageObserverSupplier = () -> {
+            V1CreateOrderStageObserver observer = stageObserverSupplier.get();
+            return observer == null ? V1CreateOrderStageObserver.noop() : observer;
+        };
     }
 
     @Override
     public RechargeRedisSession openSession() {
-        AbstractRedisClient nativeClient = connectionFactory.getRequiredNativeClient();
-        if (nativeClient instanceof RedisClusterClient clusterClient) {
-            var connection = clusterClient.connect(StringCodec.UTF8);
-            return new LettuceRechargeRedisSession(connection, connection.reactive(), connection.reactive());
+        long startedNanos = System.nanoTime();
+        try {
+            AbstractRedisClient nativeClient = connectionFactory.getRequiredNativeClient();
+            if (nativeClient instanceof RedisClusterClient clusterClient) {
+                var connection = clusterClient.connect(StringCodec.UTF8);
+                return new LettuceRechargeRedisSession(connection, connection.reactive(), connection.reactive());
+            }
+            if (nativeClient instanceof RedisClient redisClient) {
+                var connection = redisClient.connect(StringCodec.UTF8);
+                return new LettuceRechargeRedisSession(connection, connection.reactive(), connection.reactive());
+            }
+            throw new IllegalStateException("Unsupported Lettuce native client: " + nativeClient.getClass().getName());
+        } finally {
+            stageObserverSupplier.get().recordStage(
+                    V1CreateOrderStageObserver.STAGE_REDIS_SESSION_CONNECT,
+                    Duration.ofNanos(Math.max(0L, System.nanoTime() - startedNanos)));
         }
-        if (nativeClient instanceof RedisClient redisClient) {
-            var connection = redisClient.connect(StringCodec.UTF8);
-            return new LettuceRechargeRedisSession(connection, connection.reactive(), connection.reactive());
-        }
-        throw new IllegalStateException("Unsupported Lettuce native client: " + nativeClient.getClass().getName());
     }
 
     private static final class LettuceRechargeRedisSession implements RechargeRedisSession {

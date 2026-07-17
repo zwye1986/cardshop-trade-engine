@@ -23,12 +23,14 @@ class AcceptRechargeOrderCommandTest {
         assertThat(command.outOrderSn()).isEqualTo("OUT-1001");
         assertThat(command.orderId()).isEqualTo("202607051337458961474292");
         assertThat(command.productId()).isEqualTo("73301280");
-        assertThat(command.selectedProductId()).isEqualTo("73301289");
+        assertThat(command.selectedProductId()).isEqualTo("73301280");
         assertThat(command.requestHash()).isEqualTo("hash-v1");
         assertThat(command.requestHashVersion()).isEqualTo("v1");
         assertThat(command.candidateValidationStatus()).isEqualTo(ValidationStatus.PASSED);
         assertThat(command.merchantConfigVersion()).isEqualTo(7);
         assertThat(command.productConfigVersion()).isEqualTo(11);
+        assertThat(command.productSelectionFingerprint()).isEqualTo("selection-fingerprint");
+        assertThat(command.productSnapshotAvailable()).isTrue();
     }
 
     @Test
@@ -39,7 +41,7 @@ class AcceptRechargeOrderCommandTest {
                         "OUT-1001",
                         "202607051337458961474292",
                         "73301280",
-                        "73301289",
+                        "73301280",
                         "18186222336",
                         "http://merchant.example/callback",
                         "nonce-12345678901234567890123456",
@@ -58,10 +60,47 @@ class AcceptRechargeOrderCommandTest {
                         "",
                         7L,
                         11L,
+                        "selection-fingerprint",
+                        true,
                         1783224958000L,
                         1783225258000L))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("orgCode");
+    }
+
+    @Test
+    void allowsBlankNotifyUrlSoOrderCanDisableMerchantCallback() {
+        var command = new AcceptRechargeOrderCommand(
+                "A36",
+                "app-1",
+                "OUT-1001",
+                "202607051337458961474292",
+                "73301280",
+                "73301280",
+                "18186222336",
+                "",
+                "nonce-12345678901234567890123456",
+                1,
+                5200L,
+                "话费50元",
+                5000L,
+                1,
+                "codekey",
+                "TF_KA",
+                "hash-v1",
+                "v1",
+                "SHA-256",
+                ValidationStatus.PASSED,
+                "",
+                "",
+                7L,
+                11L,
+                "selection-fingerprint",
+                true,
+                1783224958000L,
+                1783225258000L);
+
+        assertThat(command.notifyUrl()).isEmpty();
     }
 
     private static AcceptRechargeOrderCommand sampleCommand(
@@ -72,7 +111,7 @@ class AcceptRechargeOrderCommandTest {
                 "OUT-1001",
                 "202607051337458961474292",
                 "73301280",
-                "73301289",
+                "73301280",
                 "18186222336",
                 "http://merchant.example/callback",
                 "nonce-12345678901234567890123456",
@@ -91,6 +130,8 @@ class AcceptRechargeOrderCommandTest {
                 failReason,
                 7L,
                 11L,
+                "selection-fingerprint",
+                true,
                 1783224958000L,
                 1783225258000L);
     }

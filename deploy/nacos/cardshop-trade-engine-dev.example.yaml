@@ -41,6 +41,11 @@ trade:
       publish-confirm-timeout-ms: 1000
     fault-injection:
       enabled: false
+    v1:
+      merchant-config-preheat:
+        enabled: false
+        org-codes: []
+        fail-on-error: true
     integration:
       manual-job-enabled: false
       manual-job-timeout-ms: 30000

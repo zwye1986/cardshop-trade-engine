@@ -8,6 +8,7 @@ import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcilePort;
 import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.application.v1.V1MerchantConfigPreheatPort;
 import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceReconcileAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderQueryAdapter;
@@ -21,6 +22,7 @@ import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeCacheRepairAd
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPendingPersistOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisV1MerchantConfigPreheatAdapter;
 import java.time.Clock;
 import java.time.Duration;
 import org.springframework.beans.factory.ObjectProvider;
@@ -116,7 +118,7 @@ public class TradeEngineRedisPendingAutoConfiguration {
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」和「9.2 作废设计」。
      * test188 dev 曾出现普通 {@link TradeEngineInfrastructureConfiguration} 早于 RedisTemplate 条件判断执行，
      * 导致 {@link RechargeOrderQueryPort} 没有注册，V1 查询/作废 use case 只能拿到 bootstrap fallback，
-     * `/v1/cardapi/order/invalid` 即使已灰度且验签通过也返回“新交易引擎作废暂未启用”。这里放到 Redis reactive
+     * `/v1/cardapi/order/invalid` 即使已接管且验签通过也返回“新交易引擎作废暂未启用”。这里放到 Redis reactive
      * 后置自动配置中兜底创建真实端口：Redis 始终作为受理期短期事实来源；MySQL Mapper 已存在时再叠加最终事实兜底。
      */
     @Bean
@@ -141,6 +143,27 @@ public class TradeEngineRedisPendingAutoConfiguration {
         return new FallbackRechargeOrderQueryAdapter(
                 redisQueryPort,
                 new MybatisRechargeOrderQueryAdapter(orderMapper, extMapper));
+    }
+
+    /**
+     * 创建 V1 商户配置启动预热 Redis 端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。该端口只在真实
+     * {@link ReactiveStringRedisTemplate} 存在时注册；没有 Redis 的环境不提供 noop，让启动 runner 可以按
+     * {@code fail-on-error} 明确暴露“预热依赖缺失”，避免误以为 {@code merchant:config} 已经写入。
+     */
+    @Bean
+    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
+    @ConditionalOnMissingBean(V1MerchantConfigPreheatPort.class)
+    public V1MerchantConfigPreheatPort v1MerchantConfigPreheatPort(
+            ReactiveStringRedisTemplate redisTemplate,
+            RechargeRedisKeyBuilder keyBuilder,
+            TradeEngineProperties properties) {
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
+        return new RedisV1MerchantConfigPreheatAdapter(
+                redisTemplate,
+                keyBuilder,
+                Duration.ofMillis(timeoutMs));
     }
 
     /**
@@ -231,7 +254,8 @@ public class TradeEngineRedisPendingAutoConfiguration {
      * 创建 Redis 缓存修复端口。
      *
      * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.4 缓存修复任务」。当前首版只修复商户余额
-     * 基线，且必须持有 repairing lock 后写 Redis；商品配置修复需要完整商品源字段，保留为后续独立任务。
+     * 基线，且必须持有 repairing lock 后写 Redis；批量商品配置扫描和全量重建保留为后续独立任务，
+     * V1 请求级缺失/漂移比较修复已由 {@code V1ProductConfigPreheatPort} 在接单 Lua 前承担。
      * 与对账端口一样，这里避免用 Mapper 做启动期条件，防止 Redis 自动配置早到时把 CACHE-001 入口永久降级。
      */
     @Bean

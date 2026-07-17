@@ -2,6 +2,7 @@ package com.cardshop.trade.engine.infrastructure.observability;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.cardshop.trade.engine.application.v1.V1CreateOrderStageObserver;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyStatus;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
@@ -11,6 +12,7 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.springframework.boot.test.system.CapturedOutput;
@@ -135,6 +137,152 @@ class TradeEngineObservabilityMetricsTest {
                         .gauge()
                         .value())
                 .isEqualTo(1.0);
+    }
+
+    @Test
+    void recordsProductCacheEventsWithOnlyResultAndEnvironmentTags() {
+        var registry = new SimpleMeterRegistry();
+        var metrics = new TradeEngineObservabilityMetrics(
+                TradeEngineObservabilitySnapshotProvider.empty(),
+                "test",
+                Duration.ofMillis(30));
+        metrics.bindTo(registry);
+
+        metrics.recordCacheResult("fresh", Duration.ofMinutes(2));
+        metrics.recordRefresh("success", Duration.ofMillis(12));
+        metrics.recordMysqlLoad();
+
+        assertThat(registry.get("trade.engine.product.cache.hit.total")
+                        .tag("environment", "test")
+                        .tag("result", "fresh")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("trade.engine.product.cache.refresh.total")
+                        .tag("environment", "test")
+                        .tag("result", "success")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("trade.engine.product.cache.refresh.duration")
+                        .tag("environment", "test")
+                        .tag("result", "success")
+                        .timer()
+                        .count())
+                .isEqualTo(1L);
+        assertThat(registry.get("trade.engine.product.cache.age.seconds")
+                        .tag("environment", "test")
+                        .tag("result", "fresh")
+                        .summary()
+                        .count())
+                .isEqualTo(1L);
+        assertThat(registry.get("trade.engine.product.cache.mysql.load.total")
+                        .tag("environment", "test")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+
+        List<String> productCacheTagKeys = registry.getMeters().stream()
+                .map(Meter::getId)
+                .filter(id -> id.getName().contains("product.cache"))
+                .flatMap(id -> id.getTags().stream())
+                .map(tag -> tag.getKey())
+                .distinct()
+                .toList();
+        assertThat(productCacheTagKeys).containsOnly("environment", "result");
+    }
+
+    @Test
+    void recordsMerchantProfileCacheLookupsWithOnlyResultLookupTypeAndEnvironmentTags() {
+        var registry = new SimpleMeterRegistry();
+        var metrics = new TradeEngineObservabilityMetrics(
+                TradeEngineObservabilitySnapshotProvider.empty(),
+                "test",
+                Duration.ofMillis(30));
+        metrics.bindTo(registry);
+
+        metrics.recordLookup("miss", "app_org");
+        metrics.recordLookup("hit", "app_org");
+        metrics.recordLookup("negative", "org");
+
+        assertThat(registry.get("trade.engine.merchant.profile.cache.hit.total")
+                        .tag("environment", "test")
+                        .tag("result", "miss")
+                        .tag("lookup_type", "app_org")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("trade.engine.merchant.profile.cache.hit.total")
+                        .tag("environment", "test")
+                        .tag("result", "hit")
+                        .tag("lookup_type", "app_org")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        assertThat(registry.get("trade.engine.merchant.profile.cache.hit.total")
+                        .tag("environment", "test")
+                        .tag("result", "negative")
+                        .tag("lookup_type", "org")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
+        List<String> merchantCacheTagKeys = registry.getMeters().stream()
+                .map(Meter::getId)
+                .filter(id -> "trade.engine.merchant.profile.cache.hit.total".equals(id.getName()))
+                .flatMap(id -> id.getTags().stream())
+                .map(tag -> tag.getKey())
+                .distinct()
+                .toList();
+        assertThat(merchantCacheTagKeys).containsOnly("environment", "result", "lookup_type");
+    }
+
+    @Test
+    void recordsCreateOrderStageDurationsWithOnlyStageAndEnvironmentTags() {
+        var registry = new SimpleMeterRegistry();
+        var metrics = new TradeEngineObservabilityMetrics(
+                TradeEngineObservabilitySnapshotProvider.empty(),
+                "test",
+                Duration.ofMillis(30));
+        metrics.bindTo(registry);
+
+        metrics.recordStage(V1CreateOrderStageObserver.STAGE_PREPARE, Duration.ofMillis(12));
+        metrics.recordStage(V1CreateOrderStageObserver.STAGE_MQ_CONFIRM, Duration.ofMillis(35));
+        metrics.recordStage(V1CreateOrderStageObserver.STAGE_REDIS_SESSION_CONNECT, Duration.ofMillis(8));
+        metrics.recordStage(V1CreateOrderStageObserver.STAGE_SYNC_TOTAL, Duration.ofMillis(90));
+
+        assertThat(registry.get("trade.engine.v1.create.stage.duration")
+                        .tag("environment", "test")
+                        .tag("stage", "prepare")
+                        .timer()
+                        .count())
+                .isEqualTo(1L);
+        assertThat(registry.get("trade.engine.v1.create.stage.duration")
+                        .tag("environment", "test")
+                        .tag("stage", "mq_confirm")
+                        .timer()
+                        .totalTime(TimeUnit.MILLISECONDS))
+                .isEqualTo(35.0);
+        assertThat(registry.get("trade.engine.v1.create.stage.duration")
+                        .tag("environment", "test")
+                        .tag("stage", "redis_session_connect")
+                        .timer()
+                        .count())
+                .isEqualTo(1L);
+        assertThat(registry.get("trade.engine.v1.create.stage.duration")
+                        .tag("environment", "test")
+                        .tag("stage", "sync_total")
+                        .timer()
+                        .count())
+                .isEqualTo(1L);
+
+        List<String> stageTagKeys = registry.getMeters().stream()
+                .map(Meter::getId)
+                .filter(id -> "trade.engine.v1.create.stage.duration".equals(id.getName()))
+                .flatMap(id -> id.getTags().stream())
+                .map(tag -> tag.getKey())
+                .distinct()
+                .toList();
+        assertThat(stageTagKeys).containsOnly("environment", "stage");
     }
 
     @Test

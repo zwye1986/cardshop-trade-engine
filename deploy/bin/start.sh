@@ -57,6 +57,14 @@ fi
 if [[ -z "${LOG_DIR:-}" ]]; then
   LOG_DIR="$APP_HOME/logs"
 fi
+if [[ -z "${STDOUT_LOG_ENABLED:-}" ]]; then
+  if [[ "$APP_PROFILE" == "prod" ]]; then
+    STDOUT_LOG_ENABLED="false"
+  else
+    STDOUT_LOG_ENABLED="true"
+  fi
+fi
+[[ "$STDOUT_LOG_ENABLED" =~ ^(true|false)$ ]] || fail "STDOUT_LOG_ENABLED must be true or false."
 PID_FILE="$PID_DIR/$APP_NAME-$APP_PROFILE.pid"
 STDOUT_LOG="$LOG_DIR/$APP_NAME-$APP_PROFILE.out"
 # stdout 兜底文件轮转守护的 PID 文件
@@ -255,19 +263,33 @@ start_app() {
   # 能取到部署脚本约定的日志目录，并注入为 logback 的 LOG_PATH 系统属性
   export LOG_DIR
 
-  nohup "$JAVA_HOME/bin/java" ${JAVA_OPTS:-} -jar "$jar" >>"$STDOUT_LOG" 2>&1 &
+  if [[ "$STDOUT_LOG_ENABLED" == "true" ]]; then
+    nohup "$JAVA_HOME/bin/java" ${JAVA_OPTS:-} -jar "$jar" >>"$STDOUT_LOG" 2>&1 &
+  else
+    # 生产默认禁用 stdout 兜底文件，避免 nohup 创建 cardshop-trade-engine-prod.out。
+    # 业务日志仍由 logback 写入 $LOG_DIR/cardshop-trade-engine.log；早期 JVM 诊断请临时打开 STDOUT_LOG_ENABLED。
+    nohup "$JAVA_HOME/bin/java" ${JAVA_OPTS:-} -jar "$jar" >/dev/null 2>&1 &
+  fi
   local app_pid=$!
   echo "$app_pid" > "$PID_FILE"
   sleep 2
-  is_running || fail "Startup failed. Check log: $STDOUT_LOG"
+  if [[ "$STDOUT_LOG_ENABLED" == "true" ]]; then
+    is_running || fail "Startup failed. Check log: $STDOUT_LOG"
+  else
+    is_running || fail "Startup failed. Check primary log: $LOG_DIR/$APP_NAME.log"
+  fi
 
-  # 启动 stdout 兜底文件轮转守护：按天 + 200MB copytruncate 轮转，归档保留 90 天。
-  # 后台子 shell 继承本脚本的函数与变量；函数内 trap '' HUP 忽略终端挂断，
-  # 等价 nohup，start.sh 退出后由 init 接管继续运行，随应用进程退出而自退。
-  stdout_rotate_loop "$app_pid" "$STDOUT_LOG" "$LOG_DIR" "$STDOUT_MAX_BYTES" "$STDOUT_RETENTION_DAYS" &
-  echo $! > "$ROTATE_PID_FILE"
-
-  printf 'Started %s profile=%s pid=%s log=%s\n' "$APP_NAME" "$APP_PROFILE" "$app_pid" "$STDOUT_LOG"
+  if [[ "$STDOUT_LOG_ENABLED" == "true" ]]; then
+    # 启动 stdout 兜底文件轮转守护：按天 + 200MB copytruncate 轮转，归档保留 90 天。
+    # 后台子 shell 继承本脚本的函数与变量；函数内 trap '' HUP 忽略终端挂断，
+    # 等价 nohup，start.sh 退出后由 init 接管继续运行，随应用进程退出而自退。
+    stdout_rotate_loop "$app_pid" "$STDOUT_LOG" "$LOG_DIR" "$STDOUT_MAX_BYTES" "$STDOUT_RETENTION_DAYS" &
+    echo $! > "$ROTATE_PID_FILE"
+    printf 'Started %s profile=%s pid=%s log=%s\n' "$APP_NAME" "$APP_PROFILE" "$app_pid" "$STDOUT_LOG"
+  else
+    rm -f "$ROTATE_PID_FILE"
+    printf 'Started %s profile=%s pid=%s stdout=disabled log=%s\n' "$APP_NAME" "$APP_PROFILE" "$app_pid" "$LOG_DIR/$APP_NAME.log"
+  fi
 }
 
 stop_app() {

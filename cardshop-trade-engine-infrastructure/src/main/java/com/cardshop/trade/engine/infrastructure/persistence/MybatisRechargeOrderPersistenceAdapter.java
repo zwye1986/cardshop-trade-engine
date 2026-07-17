@@ -136,6 +136,12 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
         order.setOrderType(0);
         order.setFailCode(snapshot.failCode());
         order.setFailReason(snapshot.failReason());
+        /*
+         * 旧卡管列表主要读取 `mc_order.remark` 展示运营侧可读失败原因。
+         * 详细设计「6.2 `mc_order` 字段说明」约定：校验失败订单要保留失败说明，
+         * 因此这里仅在校验失败时把 `fail_reason` 同步到 `remark`，避免覆盖后续履约链路写入的备注。
+         */
+        order.setRemark(validationFailed(snapshot) ? snapshot.failReason() : null);
         return order;
     }
 
@@ -244,6 +250,10 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
     private static boolean preDeductRecordRequired(OrderPersistAggregate aggregate) {
         PersistOrderSnapshot snapshot = aggregate.snapshot();
         return aggregate.dispatchOutboxRequired() && snapshot.balanceReserved();
+    }
+
+    private static boolean validationFailed(PersistOrderSnapshot snapshot) {
+        return ValidationStatus.FAILED.name().equals(snapshot.validationStatus());
     }
 
     private String dispatchPayload(OrderPersistAggregate aggregate) {

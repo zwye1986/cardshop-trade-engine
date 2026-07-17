@@ -1,5 +1,6 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -37,7 +38,7 @@ public class TradeEngineProperties {
     private final Order order = new Order();
 
     /**
-     * `/v1/cardapi` 灰度路由和旧系统代理配置；参见详细设计「3.1 `/v1/cardapi` 无侵入路由切流」。
+     * `/v1/cardapi` 新链路接管和旧系统代理配置；参见详细设计「3. API/V1 接入层」。
      */
     private final Routing routing = new Routing();
 
@@ -649,10 +650,10 @@ public class TradeEngineProperties {
     }
 
     /**
-     * `/v1/cardapi` 路由与灰度配置。
+     * `/v1/cardapi` 路由与旧链路代理配置。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「3.1 `/v1/cardapi` 无侵入路由切流」和
-     * 「3. API/V1 接入层」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「3. API/V1 接入层」。
+     * 当前 dev/test 只接入 A39 交行机构，暂时不按灰度名单切流；灰度字段保留用于后续恢复灰度或生产切流。
      */
     public static class Routing {
 
@@ -672,12 +673,12 @@ public class TradeEngineProperties {
         private int proxyTimeoutMs = 3000;
 
         /**
-         * 按机构编码灰度切流的白名单。
+         * 按机构编码灰度切流的白名单；当前临时接入口径不参与路由判定，仅保留配置兼容。
          */
         private List<String> grayOrgCodes = new ArrayList<>();
 
         /**
-         * 按应用 ID 灰度切流的白名单。
+         * 按应用 ID 灰度切流的白名单；当前临时接入口径不参与路由判定，仅保留配置兼容。
          */
         private List<String> grayAppIds = new ArrayList<>();
 
@@ -793,6 +794,21 @@ public class TradeEngineProperties {
         private String tokenClaimKey = "order_token_key:";
 
         /**
+         * 父商品选品快照逻辑过期、物理 TTL 和单飞刷新参数。
+         */
+        private final ProductCache productCache = new ProductCache();
+
+        /**
+         * 商户安全资料进程内短 TTL 本地缓存参数。
+         */
+        private final MerchantProfileCache merchantProfileCache = new MerchantProfileCache();
+
+        /**
+         * 商户配置启动白名单预热参数。
+         */
+        private final MerchantConfigPreheat merchantConfigPreheat = new MerchantConfigPreheat();
+
+        /**
          * 加解密和验签密钥来源配置。
          */
         private final Crypto crypto = new Crypto();
@@ -871,6 +887,176 @@ public class TradeEngineProperties {
 
         public Crypto getCrypto() {
             return crypto;
+        }
+
+        public ProductCache getProductCache() {
+            return productCache;
+        }
+
+        public MerchantProfileCache getMerchantProfileCache() {
+            return merchantProfileCache;
+        }
+
+        public MerchantConfigPreheat getMerchantConfigPreheat() {
+            return merchantConfigPreheat;
+        }
+
+        /**
+         * V1 商品选品缓存参数。
+         *
+         * <p>参见详细设计「6. Redis 受理与缓存层」。默认 25 分钟软过期、30 分钟硬过期，
+         * 满足运营确认的改价最长 30 分钟生效窗口。
+         */
+        public static class ProductCache {
+
+            private Duration refreshAfter = Duration.ofMinutes(25);
+            private Duration maxStaleAge = Duration.ofMinutes(30);
+            private Duration physicalTtl = Duration.ofMinutes(60);
+            private Duration refreshLockTtl = Duration.ofSeconds(5);
+            private Duration refreshWaitTimeout = Duration.ofSeconds(1);
+            private Duration negativeCacheTtl = Duration.ofMinutes(1);
+
+            public Duration getRefreshAfter() {
+                return refreshAfter;
+            }
+
+            public void setRefreshAfter(Duration refreshAfter) {
+                this.refreshAfter = refreshAfter;
+            }
+
+            public Duration getMaxStaleAge() {
+                return maxStaleAge;
+            }
+
+            public void setMaxStaleAge(Duration maxStaleAge) {
+                this.maxStaleAge = maxStaleAge;
+            }
+
+            public Duration getPhysicalTtl() {
+                return physicalTtl;
+            }
+
+            public void setPhysicalTtl(Duration physicalTtl) {
+                this.physicalTtl = physicalTtl;
+            }
+
+            public Duration getRefreshLockTtl() {
+                return refreshLockTtl;
+            }
+
+            public void setRefreshLockTtl(Duration refreshLockTtl) {
+                this.refreshLockTtl = refreshLockTtl;
+            }
+
+            public Duration getRefreshWaitTimeout() {
+                return refreshWaitTimeout;
+            }
+
+            public void setRefreshWaitTimeout(Duration refreshWaitTimeout) {
+                this.refreshWaitTimeout = refreshWaitTimeout;
+            }
+
+            public Duration getNegativeCacheTtl() {
+                return negativeCacheTtl;
+            }
+
+            public void setNegativeCacheTtl(Duration negativeCacheTtl) {
+                this.negativeCacheTtl = negativeCacheTtl;
+            }
+        }
+
+        /**
+         * V1 商户安全资料进程内短 TTL 缓存参数。
+         *
+         * <p>参见详细设计「3. API/V1 接入层」。默认开启，用于降低下单 prepare 对
+         * {@code mc_ext_depart} 的每单直读；不把 aesKey 写入 Redis。
+         */
+        public static class MerchantProfileCache {
+
+            private boolean enabled = true;
+            private Duration ttl = Duration.ofSeconds(60);
+            private Duration negativeTtl = Duration.ofSeconds(10);
+            private int maximumSize = 1024;
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public Duration getTtl() {
+                return ttl;
+            }
+
+            public void setTtl(Duration ttl) {
+                this.ttl = ttl;
+            }
+
+            public Duration getNegativeTtl() {
+                return negativeTtl;
+            }
+
+            public void setNegativeTtl(Duration negativeTtl) {
+                this.negativeTtl = negativeTtl;
+            }
+
+            public int getMaximumSize() {
+                return maximumSize;
+            }
+
+            public void setMaximumSize(int maximumSize) {
+                this.maximumSize = maximumSize;
+            }
+        }
+
+        /**
+         * V1 商户配置启动预热参数。
+         *
+         * <p>参见详细设计「6. Redis 受理与缓存层」。默认关闭，只允许按显式白名单写入
+         * {@code merchant:config}，避免应用启动时意外扫描全量旧库或写入未灰度商户。
+         */
+        public static class MerchantConfigPreheat {
+
+            /**
+             * 是否在应用启动时执行商户配置预热。
+             */
+            private boolean enabled = false;
+
+            /**
+             * 需要预热的商户机构编码白名单。
+             */
+            private List<String> orgCodes = new ArrayList<>();
+
+            /**
+             * 预热失败是否阻止应用启动。
+             */
+            private boolean failOnError = true;
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public List<String> getOrgCodes() {
+                return orgCodes;
+            }
+
+            public void setOrgCodes(List<String> orgCodes) {
+                this.orgCodes = orgCodes == null ? new ArrayList<>() : new ArrayList<>(orgCodes);
+            }
+
+            public boolean isFailOnError() {
+                return failOnError;
+            }
+
+            public void setFailOnError(boolean failOnError) {
+                this.failOnError = failOnError;
+            }
         }
 
         /**

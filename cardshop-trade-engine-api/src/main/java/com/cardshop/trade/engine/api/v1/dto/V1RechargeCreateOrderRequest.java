@@ -14,8 +14,8 @@ import jakarta.validation.constraints.NotNull;
  *
  * @param orgCode 商户编码，兼容旧协议字段
  * @param outOrderSn 商户订单号，对应旧表 `mc_order.out_orderId`
- * @param productId 父产品编码，对应旧表 `mc_order.parent_id`
- * @param parentId 旧协议兼容字段，新链路不信任调用方传入的父子关系
+ * @param productId 平台提供的父产品号，匹配 `mc_depart_product.parent_id`，并落旧表 `mc_order.parent_id`
+ * @param parentId 旧协议兼容字段；它不同于数据库候选关系列，不参与新链路商品选择
  * @param account 充值账号
  * @param num 购买数量，首期直充只允许 1
  * @param orderPrice 订单金额，单位分

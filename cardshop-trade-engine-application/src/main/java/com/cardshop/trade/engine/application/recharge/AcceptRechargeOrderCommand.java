@@ -15,10 +15,10 @@ import java.util.Objects;
  * @param appId 商户应用 ID，来自 token claim 或商户资料
  * @param outOrderSn 商户订单号，对应 V1 请求 `out_order_sn`
  * @param orderId 新交易引擎生成的平台订单号
- * @param productId 调用方传入的父产品号
- * @param selectedProductId Java 候选商品选择出的实际子产品号
+ * @param productId 调用方传入的父产品号，对应接口 {@code product_id}
+ * @param selectedProductId Java 从父产品候选中选出的实际派单子商品号
  * @param account 充值账号
- * @param notifyUrl 商户回调地址
+ * @param notifyUrl 商户回调地址，可为空；为空表示本订单不触发商户回调
  * @param nonceStr V1 请求防重放随机串
  * @param num 购买数量，首期直充只允许 1
  * @param orderAmountCent 订单扣款金额，单位分
@@ -35,6 +35,8 @@ import java.util.Objects;
  * @param candidateFailReason Java 候选校验失败原因
  * @param merchantConfigVersion Java 读取到的商户配置版本
  * @param productConfigVersion Java 读取到的商品配置版本
+ * @param productSelectionFingerprint Java 完整选品快照稳定指纹
+ * @param productSnapshotAvailable 是否已选出可供 Redis 父子快照校验的真实子商品
  * @param nowEpochMillis 接单请求当前时间戳，毫秒
  * @param nextRetryEpochMillis pending 首次补偿扫描时间，毫秒
  */
@@ -63,6 +65,8 @@ public record AcceptRechargeOrderCommand(
         String candidateFailReason,
         Long merchantConfigVersion,
         Long productConfigVersion,
+        String productSelectionFingerprint,
+        boolean productSnapshotAvailable,
         Long nowEpochMillis,
         Long nextRetryEpochMillis) {
 
@@ -74,7 +78,7 @@ public record AcceptRechargeOrderCommand(
         productId = requireText(productId, "productId");
         selectedProductId = requireText(selectedProductId, "selectedProductId");
         account = requireText(account, "account");
-        notifyUrl = requireText(notifyUrl, "notifyUrl");
+        notifyUrl = defaultString(notifyUrl);
         nonceStr = requireText(nonceStr, "nonceStr");
         requestHash = requireText(requestHash, "requestHash");
         requestHashVersion = requireText(requestHashVersion, "requestHashVersion");
@@ -91,6 +95,7 @@ public record AcceptRechargeOrderCommand(
         candidateFailReason = defaultString(candidateFailReason);
         merchantConfigVersion = requirePositive(merchantConfigVersion, "merchantConfigVersion");
         productConfigVersion = requirePositive(productConfigVersion, "productConfigVersion");
+        productSelectionFingerprint = requireText(productSelectionFingerprint, "productSelectionFingerprint");
         nowEpochMillis = requirePositive(nowEpochMillis, "nowEpochMillis");
         nextRetryEpochMillis = requirePositive(nextRetryEpochMillis, "nextRetryEpochMillis");
     }

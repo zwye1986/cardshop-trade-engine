@@ -49,6 +49,13 @@ public class HttpMerchantNotifyClientAdapter implements MerchantNotifyClientPort
 
     @Override
     public MerchantNotifySendResult send(MerchantNotifyRequest request) {
+        if (request.notifyUrl() == null || request.notifyUrl().isBlank()) {
+            /*
+             * Worker 与写库侧应已拦截空 URL；此处再 fail closed，避免 URI.create("") 打出异常噪声。
+             * 参见 docs/交行直充业务系统详细设计.md「9.3 回调设计」。
+             */
+            return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "blank notify_url");
+        }
         try {
             HttpRequest httpRequest = HttpRequest.newBuilder(URI.create(request.notifyUrl()))
                     .timeout(timeout)

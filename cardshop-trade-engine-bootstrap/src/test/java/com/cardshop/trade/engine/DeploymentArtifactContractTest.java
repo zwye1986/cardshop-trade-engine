@@ -231,6 +231,66 @@ class DeploymentArtifactContractTest {
         }
     }
 
+    @Test
+    void prodProfileDisablesStdoutFallbackFileByDefault(@TempDir Path tempDir) throws Exception {
+        Path root = repositoryRoot();
+        Path appHome = tempDir.resolve("app-home");
+        Path fakeJdk = tempDir.resolve("fake-jdk");
+        Path javaStartedFile = tempDir.resolve("java-started.txt");
+        Files.createDirectories(appHome.resolve("bin"));
+        Files.createDirectories(appHome.resolve("config"));
+        Files.createDirectories(appHome.resolve("app"));
+        Files.createDirectories(fakeJdk.resolve("bin"));
+        Files.copy(root.resolve("deploy/bin/start.sh"), appHome.resolve("bin/start.sh"), StandardCopyOption.REPLACE_EXISTING);
+        appHome.resolve("bin/start.sh").toFile().setExecutable(true);
+        Files.writeString(appHome.resolve("app/cardshop-trade-engine-bootstrap-test.jar"), "fake jar");
+        Files.writeString(fakeJdk.resolve("bin/java"), """
+                #!/usr/bin/env bash
+                set -euo pipefail
+                if [[ "${1:-}" == "-version" ]]; then
+                  printf 'java version "21.0.1"\\n' >&2
+                  exit 0
+                fi
+                printf 'started\\n' > "$JAVA_STARTED_FILE"
+                while true; do sleep 1; done
+                """);
+        fakeJdk.resolve("bin/java").toFile().setExecutable(true);
+
+        Files.writeString(appHome.resolve("config/.prod.env"), """
+                APP_PROFILE=prod
+                SERVER_PORT=19082
+                CARD_SHOP_TRADE_JAVA_HOME='%s'
+                NACOS_SERVER_ADDR=http://nacos.example:8848/nacos
+                NACOS_NAMESPACE=cardshop-trade-engine-prod
+                NACOS_GROUP=TRADE_ENGINE_PROD
+                NACOS_USERNAME=nacos
+                NACOS_PASSWORD=secret-for-test
+                SPRING_RABBITMQ_HOST=rabbit.example
+                SPRING_RABBITMQ_PORT=5672
+                SPRING_RABBITMQ_USERNAME=rabbit-user
+                SPRING_RABBITMQ_PASSWORD=rabbit-secret
+                SPRING_RABBITMQ_VIRTUAL_HOST=cardshop-trade-prod
+                LEGACY_CARD_SHOP_BASE_URL=http://legacy.example
+                V1_CARDAPI_JWT_SECRET=jwt-secret-for-test
+                JAVA_STARTED_FILE='%s'
+                """.formatted(fakeJdk, javaStartedFile));
+
+        try {
+            String startOutput = runScript(appHome, "start", "prod");
+            assertThat(startOutput)
+                    .contains("Started cardshop-trade-engine profile=prod")
+                    .contains("stdout=disabled")
+                    .doesNotContain("cardshop-trade-engine-prod.out");
+            assertThat(javaStartedFile).exists();
+            assertThat(appHome.resolve("logs/cardshop-trade-engine-prod.out")).doesNotExist();
+            assertThat(appHome.resolve("run/cardshop-trade-engine-prod.rotate.pid")).doesNotExist();
+        } finally {
+            if (Files.exists(appHome.resolve("run/cardshop-trade-engine-prod.pid"))) {
+                runScript(appHome, "stop", "prod");
+            }
+        }
+    }
+
     private String runScript(Path appHome, String... args) throws IOException, InterruptedException {
         Path script = appHome.resolve("bin/start.sh");
         var command = new String[args.length + 1];

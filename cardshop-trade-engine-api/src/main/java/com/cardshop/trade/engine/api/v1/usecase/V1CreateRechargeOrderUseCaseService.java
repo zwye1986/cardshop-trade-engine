@@ -20,14 +20,18 @@ import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
 import com.cardshop.trade.engine.application.v1.V1CardApiResultStatus;
+import com.cardshop.trade.engine.application.v1.V1CreateOrderStageObserver;
 import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1ProductCacheUnavailableException;
+import com.cardshop.trade.engine.application.v1.V1ProductConfigPreheatPort;
 import com.cardshop.trade.engine.application.v1.V1ProductSelection;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
 import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
@@ -40,13 +44,16 @@ import org.springframework.util.StringUtils;
 
 import java.net.URI;
 import java.time.Clock;
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
+import java.util.function.Supplier;
 
 /**
  * V1 创建直充订单新链路用例。
@@ -68,11 +75,19 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     private static final int DIRECT_RECHARGE_ORDER_NUM = 1;
     private static final int NONCE_STR_LENGTH = 32;
     private static final int MAX_ACCEPT_ANOMALY_ID_LENGTH = 100;
+    private static final String ORDER_STATUS_ACCEPTED = "ACCEPTED";
+    private static final String ORDER_STATUS_VALIDATION_FAILED = "VALIDATION_FAILED";
+    private static final String REDIS_ORDER_WRITTEN_FIELD = "redis_order_written";
+    private static final Duration PRODUCT_CACHE_ERROR_LOG_INTERVAL = Duration.ofSeconds(10);
+    private static final String LOG_EVENT_PRODUCT_CACHE_UNAVAILABLE = "v1-create-order.product-cache.unavailable";
+    private static final LogStormGuard PRODUCT_CACHE_ERROR_LOG_GUARD =
+            LogStormGuard.atMostOncePer(PRODUCT_CACHE_ERROR_LOG_INTERVAL);
 
     private final V1ProtocolPrecheckService precheckService;
     private final RequestHashCanonicalizer requestHashCanonicalizer;
     private final V1MerchantProfilePort merchantProfilePort;
     private final V1ProductCandidateSelector productCandidateSelector;
+    private final V1ProductConfigPreheatPort productConfigPreheatPort;
     private final AcceptRechargeOrderPort acceptRechargeOrderPort;
     private final RechargeAcceptReliabilityPort reliabilityPort;
     private final PersistRechargeOrderMessagePublisher persistMessagePublisher;
@@ -82,6 +97,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     private final Clock clock;
     private final V1RechargeAcceptSettings settings;
     private final Executor tradeDbTaskExecutor;
+    private final Supplier<V1CreateOrderStageObserver> stageObserverSupplier;
 
     public V1CreateRechargeOrderUseCaseService(
             V1ProtocolPrecheckService precheckService,
@@ -103,10 +119,41 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 new NoopPersistRechargeOrderMessagePublisher(),
                 AcceptAnomalyRecordPort.noop(),
                 RedisHaGuardPort.noop(),
+                V1ProductConfigPreheatPort.noop(),
                 orderIdGenerator,
                 clock,
                 settings,
-                tradeDbTaskExecutor);
+                tradeDbTaskExecutor,
+                V1CreateOrderStageObserver.noop());
+    }
+
+    public V1CreateRechargeOrderUseCaseService(
+            V1ProtocolPrecheckService precheckService,
+            RequestHashCanonicalizer requestHashCanonicalizer,
+            V1MerchantProfilePort merchantProfilePort,
+            V1ProductCandidateSelector productCandidateSelector,
+            AcceptRechargeOrderPort acceptRechargeOrderPort,
+            V1ProductConfigPreheatPort productConfigPreheatPort,
+            RechargeOrderIdGenerator orderIdGenerator,
+            Clock clock,
+            V1RechargeAcceptSettings settings,
+            Executor tradeDbTaskExecutor) {
+        this(
+                precheckService,
+                requestHashCanonicalizer,
+                merchantProfilePort,
+                productCandidateSelector,
+                acceptRechargeOrderPort,
+                new NoopRechargeAcceptReliabilityPort(),
+                new NoopPersistRechargeOrderMessagePublisher(),
+                AcceptAnomalyRecordPort.noop(),
+                RedisHaGuardPort.noop(),
+                productConfigPreheatPort,
+                orderIdGenerator,
+                clock,
+                settings,
+                tradeDbTaskExecutor,
+                V1CreateOrderStageObserver.noop());
     }
 
     public V1CreateRechargeOrderUseCaseService(
@@ -131,10 +178,12 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 persistMessagePublisher,
                 AcceptAnomalyRecordPort.noop(),
                 RedisHaGuardPort.noop(),
+                V1ProductConfigPreheatPort.noop(),
                 orderIdGenerator,
                 clock,
                 settings,
-                tradeDbTaskExecutor);
+                tradeDbTaskExecutor,
+                V1CreateOrderStageObserver.noop());
     }
 
     public V1CreateRechargeOrderUseCaseService(
@@ -160,10 +209,12 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 persistMessagePublisher,
                 acceptAnomalyRecordPort,
                 RedisHaGuardPort.noop(),
+                V1ProductConfigPreheatPort.noop(),
                 orderIdGenerator,
                 clock,
                 settings,
-                tradeDbTaskExecutor);
+                tradeDbTaskExecutor,
+                V1CreateOrderStageObserver.noop());
     }
 
     public V1CreateRechargeOrderUseCaseService(
@@ -180,10 +231,114 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             Clock clock,
             V1RechargeAcceptSettings settings,
             Executor tradeDbTaskExecutor) {
+        this(
+                precheckService,
+                requestHashCanonicalizer,
+                merchantProfilePort,
+                productCandidateSelector,
+                acceptRechargeOrderPort,
+                reliabilityPort,
+                persistMessagePublisher,
+                acceptAnomalyRecordPort,
+                redisHaGuardPort,
+                V1ProductConfigPreheatPort.noop(),
+                orderIdGenerator,
+                clock,
+                settings,
+                tradeDbTaskExecutor,
+                V1CreateOrderStageObserver.noop());
+    }
+
+    public V1CreateRechargeOrderUseCaseService(
+            V1ProtocolPrecheckService precheckService,
+            RequestHashCanonicalizer requestHashCanonicalizer,
+            V1MerchantProfilePort merchantProfilePort,
+            V1ProductCandidateSelector productCandidateSelector,
+            AcceptRechargeOrderPort acceptRechargeOrderPort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            PersistRechargeOrderMessagePublisher persistMessagePublisher,
+            AcceptAnomalyRecordPort acceptAnomalyRecordPort,
+            RedisHaGuardPort redisHaGuardPort,
+            V1ProductConfigPreheatPort productConfigPreheatPort,
+            RechargeOrderIdGenerator orderIdGenerator,
+            Clock clock,
+            V1RechargeAcceptSettings settings,
+            Executor tradeDbTaskExecutor) {
+        this(
+                precheckService,
+                requestHashCanonicalizer,
+                merchantProfilePort,
+                productCandidateSelector,
+                acceptRechargeOrderPort,
+                reliabilityPort,
+                persistMessagePublisher,
+                acceptAnomalyRecordPort,
+                redisHaGuardPort,
+                productConfigPreheatPort,
+                orderIdGenerator,
+                clock,
+                settings,
+                tradeDbTaskExecutor,
+                V1CreateOrderStageObserver.noop());
+    }
+
+    public V1CreateRechargeOrderUseCaseService(
+            V1ProtocolPrecheckService precheckService,
+            RequestHashCanonicalizer requestHashCanonicalizer,
+            V1MerchantProfilePort merchantProfilePort,
+            V1ProductCandidateSelector productCandidateSelector,
+            AcceptRechargeOrderPort acceptRechargeOrderPort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            PersistRechargeOrderMessagePublisher persistMessagePublisher,
+            AcceptAnomalyRecordPort acceptAnomalyRecordPort,
+            RedisHaGuardPort redisHaGuardPort,
+            V1ProductConfigPreheatPort productConfigPreheatPort,
+            RechargeOrderIdGenerator orderIdGenerator,
+            Clock clock,
+            V1RechargeAcceptSettings settings,
+            Executor tradeDbTaskExecutor,
+            V1CreateOrderStageObserver stageObserver) {
+        this(
+                precheckService,
+                requestHashCanonicalizer,
+                merchantProfilePort,
+                productCandidateSelector,
+                acceptRechargeOrderPort,
+                reliabilityPort,
+                persistMessagePublisher,
+                acceptAnomalyRecordPort,
+                redisHaGuardPort,
+                productConfigPreheatPort,
+                orderIdGenerator,
+                clock,
+                settings,
+                tradeDbTaskExecutor,
+                () -> stageObserver == null ? V1CreateOrderStageObserver.noop() : stageObserver);
+    }
+
+    public V1CreateRechargeOrderUseCaseService(
+            V1ProtocolPrecheckService precheckService,
+            RequestHashCanonicalizer requestHashCanonicalizer,
+            V1MerchantProfilePort merchantProfilePort,
+            V1ProductCandidateSelector productCandidateSelector,
+            AcceptRechargeOrderPort acceptRechargeOrderPort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            PersistRechargeOrderMessagePublisher persistMessagePublisher,
+            AcceptAnomalyRecordPort acceptAnomalyRecordPort,
+            RedisHaGuardPort redisHaGuardPort,
+            V1ProductConfigPreheatPort productConfigPreheatPort,
+            RechargeOrderIdGenerator orderIdGenerator,
+            Clock clock,
+            V1RechargeAcceptSettings settings,
+            Executor tradeDbTaskExecutor,
+            Supplier<V1CreateOrderStageObserver> stageObserverSupplier) {
         this.precheckService = precheckService;
         this.requestHashCanonicalizer = requestHashCanonicalizer;
         this.merchantProfilePort = merchantProfilePort;
         this.productCandidateSelector = productCandidateSelector;
+        this.productConfigPreheatPort = productConfigPreheatPort == null
+                ? V1ProductConfigPreheatPort.noop()
+                : productConfigPreheatPort;
         this.acceptRechargeOrderPort = acceptRechargeOrderPort;
         this.reliabilityPort = reliabilityPort;
         this.persistMessagePublisher = persistMessagePublisher;
@@ -197,15 +352,45 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         this.clock = clock;
         this.settings = settings;
         this.tradeDbTaskExecutor = tradeDbTaskExecutor;
+        Objects.requireNonNull(stageObserverSupplier, "stageObserverSupplier must not be null");
+        this.stageObserverSupplier = () -> {
+            V1CreateOrderStageObserver observer = stageObserverSupplier.get();
+            return observer == null ? V1CreateOrderStageObserver.noop() : observer;
+        };
     }
 
     @Override
     public CompletionStage<V1CardApiResult> createRechargeOrder(V1MerchantCommand command) {
+        long syncStartedNanos = System.nanoTime();
         return CompletableFuture
-                .supplyAsync(() -> prepare(command), tradeDbTaskExecutor)
+                .supplyAsync(() -> timedPrepare(command), tradeDbTaskExecutor)
                 .thenCompose(preparation -> preparation.errorResult != null
                         ? CompletableFuture.completedFuture(preparation.errorResult)
-                        : acceptAfterDependencyGate(preparation));
+                        : acceptAfterDependencyGate(preparation))
+                .whenComplete((ignored, error) -> recordStage(
+                        V1CreateOrderStageObserver.STAGE_SYNC_TOTAL,
+                        Duration.ofNanos(Math.max(0L, System.nanoTime() - syncStartedNanos))));
+    }
+
+    private Preparation timedPrepare(V1MerchantCommand command) {
+        long startedNanos = System.nanoTime();
+        try {
+            return prepare(command);
+        } finally {
+            recordStage(
+                    V1CreateOrderStageObserver.STAGE_PREPARE,
+                    Duration.ofNanos(Math.max(0L, System.nanoTime() - startedNanos)));
+        }
+    }
+
+    private void recordStage(String stage, Duration duration) {
+        stageObserverSupplier.get().recordStage(stage, duration);
+    }
+
+    private <T> CompletionStage<T> recordStageAsync(String stage, long startedNanos, CompletionStage<T> stageFuture) {
+        return stageFuture.whenComplete((ignored, error) -> recordStage(
+                stage,
+                Duration.ofNanos(Math.max(0L, System.nanoTime() - startedNanos))));
     }
 
     /**
@@ -231,7 +416,11 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                     preparation.acceptCommand.requestHash());
             return CompletableFuture.completedFuture(V1CardApiResultStatus.SYSTEM_BUSY.result("系统繁忙"));
         }
-        return acceptRechargeOrderPort.accept(preparation.acceptCommand)
+        long acceptStartedNanos = System.nanoTime();
+        return recordStageAsync(
+                V1CreateOrderStageObserver.STAGE_ACCEPT,
+                acceptStartedNanos,
+                acceptRechargeOrderPort.accept(preparation.acceptCommand))
                 .thenCompose(acceptResult -> afterRedisAccept(preparation, acceptResult));
     }
 
@@ -239,9 +428,16 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             Preparation preparation,
             AcceptRechargeOrderResult acceptResult) {
         if (!acceptResult.orderWritten()) {
+            if (acceptResult.status() == AcceptRechargeOrderStatus.CONFIG_CHANGED) {
+                return publishMysqlOnlyFailedOrder(preparation, acceptResult);
+            }
             return CompletableFuture.completedFuture(toV1Result(preparation.outOrderSn, acceptResult));
         }
-        return reliabilityPort.waitForReplication(preparation.acceptCommand, acceptResult)
+        long waitStartedNanos = System.nanoTime();
+        return recordStageAsync(
+                V1CreateOrderStageObserver.STAGE_WAIT,
+                waitStartedNanos,
+                reliabilityPort.waitForReplication(preparation.acceptCommand, acceptResult))
                 .thenCompose(waitResult -> waitResult.confirmed()
                         ? publishPersistMessage(preparation, acceptResult)
                         : cancelUnconfirmedAccept(preparation, acceptResult, waitResult));
@@ -260,22 +456,47 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             Preparation preparation,
             AcceptRechargeOrderResult acceptResult) {
         PersistTradeOrderMessage message = buildPersistMessage(preparation.acceptCommand, acceptResult);
-        return persistMessagePublisher.publish(message)
+        long publishStartedNanos = System.nanoTime();
+        return recordStageAsync(
+                V1CreateOrderStageObserver.STAGE_MQ_CONFIRM,
+                publishStartedNanos,
+                persistMessagePublisher.publish(message))
                 .thenCompose(publishResult -> publishResult.confirmed()
                         ? markPersistQueued(preparation, acceptResult, publishResult)
                         : CompletableFuture.completedFuture(processingResult(preparation.outOrderSn, acceptResult)));
+    }
+
+    private CompletionStage<V1CardApiResult> publishMysqlOnlyFailedOrder(
+            Preparation preparation,
+            AcceptRechargeOrderResult acceptResult) {
+        /*
+         * CONFIG_CHANGED 是 Lua 在写 Redis 订单前的 fail closed 结果，但旧卡管仍要求能在 mc_order 查到失败单。
+         * 参见详细设计「6. Redis 受理与缓存层」和「8.3 异步落库 Consumer」：这里只发布携带完整
+         * initial snapshot 的 MySQL 落库消息，并显式标记 redis_order_written=false；Consumer 落库后不能再
+         * 调 markDbPersisted，因为 Redis 中没有对应订单、pending 或幂等快照。
+         */
+        PersistTradeOrderMessage message = buildPersistMessage(preparation.acceptCommand, acceptResult);
+        long publishStartedNanos = System.nanoTime();
+        return recordStageAsync(
+                V1CreateOrderStageObserver.STAGE_MQ_CONFIRM,
+                publishStartedNanos,
+                persistMessagePublisher.publish(message))
+                .thenApply(publishResult -> toV1Result(preparation.outOrderSn, acceptResult));
     }
 
     private CompletionStage<V1CardApiResult> markPersistQueued(
             Preparation preparation,
             AcceptRechargeOrderResult acceptResult,
             PersistMessagePublishResult publishResult) {
-        return reliabilityPort
-                .markPersistQueued(
+        long markStartedNanos = System.nanoTime();
+        return recordStageAsync(
+                V1CreateOrderStageObserver.STAGE_MARK_PERSIST_QUEUED,
+                markStartedNanos,
+                reliabilityPort.markPersistQueued(
                         preparation.acceptCommand,
                         acceptResult,
                         publishResult.messageId(),
-                        publishResult.attemptCount())
+                        publishResult.attemptCount()))
                 .thenApply(markResult -> toMarkQueuedResult(preparation.outOrderSn, acceptResult, markResult));
     }
 
@@ -283,6 +504,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             AcceptRechargeOrderCommand command,
             AcceptRechargeOrderResult acceptResult) {
         String messageId = "persist-" + command.orderId() + "-" + UUID.randomUUID();
+        String validationStatus = validationStatus(acceptResult);
+        long orderVersion = Math.max(1L, acceptResult.orderVersion());
         Map<String, Object> snapshot = Map.ofEntries(
                 Map.entry("order_id", acceptResult.orderId()),
                 Map.entry("org_code", command.orgCode()),
@@ -299,13 +522,15 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 Map.entry("product_type", command.productType()),
                 Map.entry("coupon_type", command.couponType()),
                 Map.entry("supplier_channel", command.supplierChannel()),
-                Map.entry("validation_status", acceptResult.validationStatus()),
+                Map.entry("order_status", orderStatus(validationStatus)),
+                Map.entry("validation_status", validationStatus),
                 Map.entry("fail_code", acceptResult.failCode()),
                 Map.entry("fail_reason", acceptResult.failReason()),
                 Map.entry("dispatch_allowed", acceptResult.dispatchAllowed()),
                 Map.entry("balance_reserved", acceptResult.balanceReserved()),
                 Map.entry("persist_status", PERSIST_STATUS_PENDING_MQ),
-                Map.entry("order_version", acceptResult.orderVersion()),
+                Map.entry("order_version", orderVersion),
+                Map.entry(REDIS_ORDER_WRITTEN_FIELD, acceptResult.orderWritten()),
                 Map.entry("request_hash", command.requestHash()),
                 Map.entry("request_hash_version", command.requestHashVersion()),
                 Map.entry("request_hash_alg", command.requestHashAlg()));
@@ -315,8 +540,21 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 acceptResult.orderId(),
                 command.outOrderSn(),
                 command.requestHash(),
-                Math.max(1L, acceptResult.orderVersion()),
+                orderVersion,
                 snapshot);
+    }
+
+    private static String validationStatus(AcceptRechargeOrderResult acceptResult) {
+        if (StringUtils.hasText(acceptResult.validationStatus())) {
+            return acceptResult.validationStatus();
+        }
+        return acceptResult.dispatchAllowed() ? ValidationStatus.PASSED.name() : ValidationStatus.FAILED.name();
+    }
+
+    private static String orderStatus(String validationStatus) {
+        return ValidationStatus.PASSED.name().equals(validationStatus)
+                ? ORDER_STATUS_ACCEPTED
+                : ORDER_STATUS_VALIDATION_FAILED;
     }
 
     private Preparation prepare(V1MerchantCommand command) {
@@ -339,23 +577,37 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         if (syntaxError != null) {
             return Preparation.error(V1CardApiResultStatus.PARAM_ERROR.result(syntaxError));
         }
+        String notifyUrl = normalizeNotifyUrl(request.notifyUrl());
 
-        V1ProductSelection productSelection = productCandidateSelector.select(
-                merchant.orgCode(),
-                request.productId(),
-                request.account());
+        V1ProductSelection productSelection;
+        try {
+            productSelection = productCandidateSelector.select(
+                    merchant.orgCode(),
+                    request.productId(),
+                    request.account());
+            /*
+             * 参见详细设计「6. Redis 受理与缓存层」：父商品选品快照已经由缓存选择器完成逻辑过期
+             * 和单飞刷新。接单 Lua 前再执行 compare-and-repair，仅当 Redis 父快照仍匹配当前请求时
+             * 修复实际子商品配置，避免旧请求把新价格覆盖回旧值。
+             */
+            if (productSelection.productSnapshotAvailable()) {
+                productConfigPreheatPort.refreshIfMissingOrStale(merchant.orgCode(), productSelection);
+            }
+        } catch (V1ProductCacheUnavailableException ex) {
+            logProductCacheUnavailable(merchant.orgCode(), request.productId(), ex);
+            return Preparation.error(V1CardApiResultStatus.SYSTEM_BUSY.result("系统繁忙"));
+        }
         BusinessFailure businessFailure = firstBusinessFailure(merchant, request, productSelection);
         ValidationStatus validationStatus = businessFailure == null ? productSelection.validationStatus() : ValidationStatus.FAILED;
         String candidateFailCode = businessFailure == null ? productSelection.failCode() : businessFailure.failCode();
         String candidateFailReason = businessFailure == null ? productSelection.failReason() : businessFailure.failReason();
-
         var requestHash = requestHashCanonicalizer.canonicalizeRechargeCreate(
                 new RequestHashCanonicalizer.RechargeCreateFields(
                         merchant.orgCode(),
                         request.productId(),
                         request.outOrderSn(),
                         request.account(),
-                        request.notifyUrl(),
+                        notifyUrl,
                         request.num()));
         long now = clock.instant().toEpochMilli();
         AcceptRechargeOrderCommand acceptCommand = new AcceptRechargeOrderCommand(
@@ -366,7 +618,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 request.productId(),
                 productSelection.selectedProductId(),
                 request.account(),
-                request.notifyUrl(),
+                notifyUrl,
                 request.nonceStr(),
                 request.num(),
                 productSelection.salePriceCent(),
@@ -383,9 +635,29 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 candidateFailReason,
                 merchant.configVersion(),
                 productSelection.productConfigVersion(),
+                productSelection.cacheFingerprint(),
+                productSelection.productSnapshotAvailable(),
                 now,
                 now + settings.firstPersistRetryDelay().toMillis());
         return Preparation.ready(acceptCommand, request.outOrderSn());
+    }
+
+    private static void logProductCacheUnavailable(
+            String orgCode,
+            String productId,
+            V1ProductCacheUnavailableException ex) {
+        /*
+         * 商品缓存故障位于下单热路径，硬过期期间并发请求可能同时失败。这里按 10 秒采样 error，
+         * 保留首个异常栈和非敏感业务定位字段，同时避免 Redis/MySQL 故障放大成日志 I/O 风暴。
+         * 参见详细设计「12. 可观测性」。
+         */
+        if (PRODUCT_CACHE_ERROR_LOG_GUARD.shouldLog(LOG_EVENT_PRODUCT_CACHE_UNAVAILABLE).shouldLog()) {
+            log.error("V1商品缓存刷新或配置修复不可用，Redis接单前拒绝 orgCode={}, productId={}, sampleIntervalSeconds={}",
+                    orgCode,
+                    productId,
+                    PRODUCT_CACHE_ERROR_LOG_INTERVAL.toSeconds(),
+                    ex);
+        }
     }
 
     private record Preparation(V1CardApiResult errorResult, AcceptRechargeOrderCommand acceptCommand, String outOrderSn) {
@@ -424,10 +696,14 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         if (request.nonceStr().length() != NONCE_STR_LENGTH) {
             return "nonce_str长度不正确";
         }
-        if (!StringUtils.hasText(request.notifyUrl()) || !isHttpUrl(request.notifyUrl())) {
+        if (StringUtils.hasText(request.notifyUrl()) && !isHttpUrl(request.notifyUrl())) {
             return "notify_url格式不正确";
         }
         return null;
+    }
+
+    private static String normalizeNotifyUrl(String value) {
+        return StringUtils.hasText(value) ? value : "";
     }
 
     private static boolean isHttpUrl(String value) {

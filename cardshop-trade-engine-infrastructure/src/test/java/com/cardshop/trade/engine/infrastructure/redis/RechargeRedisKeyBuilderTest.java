@@ -36,9 +36,10 @@ class RechargeRedisKeyBuilderTest {
                         "cardshop:trade:recharge:{A36}:order:event:202607051337458961474292:1",
                         "cardshop:trade:recharge:{A36}:nonce:nonce-12345678901234567890123456",
                         "cardshop:trade:recharge:{A36}:merchant:config",
-                        "cardshop:trade:recharge:{A36}:product:73301280:config",
+                        "cardshop:trade:recharge:{A36}:product:73301289:config",
                         "cardshop:trade:recharge:{A36}:balance:repairing_lock",
-                        "cardshop:trade:recharge:persist:pending:org_index:" + bucket);
+                        "cardshop:trade:recharge:persist:pending:org_index:" + bucket,
+                        "cardshop:trade:recharge:{A36}:product-selection:73301280");
     }
 
     @Test
@@ -127,6 +128,30 @@ class RechargeRedisKeyBuilderTest {
     }
 
     @Test
+    void productSelectionKeysShareOrgHashTagWithSelectedChildConfig() {
+        var builder = new RechargeRedisKeyBuilder("cardshop:trade", 128);
+
+        assertThat(builder.merchantConfigKey("A39"))
+                .isEqualTo("cardshop:trade:recharge:{A39}:merchant:config");
+        assertThat(builder.productSelectionKey("A39", "80100022"))
+                .isEqualTo("cardshop:trade:recharge:{A39}:product-selection:80100022");
+        assertThat(builder.productSelectionRefreshLockKey("A39", "80100022"))
+                .isEqualTo("cardshop:trade:recharge:{A39}:product-selection:80100022:refresh-lock");
+        assertThat(builder.productConfigKey("A39", "80100023"))
+                .isEqualTo("cardshop:trade:recharge:{A39}:product:80100023:config");
+    }
+
+    @Test
+    void acceptLuaIncludesParentSelectionKeyForAtomicFencing() {
+        var builder = new RechargeRedisKeyBuilder("cardshop:trade", 128);
+        AcceptRechargeOrderCommand command = sampleCommand();
+
+        assertThat(builder.acceptKeys(command)).hasSize(13);
+        assertThat(builder.acceptKeys(command).get(12))
+                .isEqualTo("cardshop:trade:recharge:{A36}:product-selection:73301280");
+    }
+
+    @Test
     void pendingOrgBucketUsesCrc32FloorMod() {
         var builder = new RechargeRedisKeyBuilder("cardshop:trade", 128);
 
@@ -176,6 +201,8 @@ class RechargeRedisKeyBuilderTest {
                 "",
                 7L,
                 11L,
+                "selection-fingerprint",
+                true,
                 1783224958000L,
                 1783225258000L);
     }

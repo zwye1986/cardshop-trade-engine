@@ -27,6 +27,7 @@ class AcceptRechargeOrderLuaContractTest {
                 .contains("-- 2 idemKey")
                 .contains("-- 8 nonceKey")
                 .contains("-- 12 orgIndexBucketKey")
+                .contains("-- 13 productSelectionKey")
                 .contains("DUPLICATE")
                 .contains("NONCE_REPLAY")
                 .contains("BALANCE_REPAIRING");
@@ -34,6 +35,32 @@ class AcceptRechargeOrderLuaContractTest {
                 .isLessThan(script.indexOf("redis.call('SET', KEYS[8]"));
         assertThat(script.indexOf("redis.call('EXISTS', KEYS[2])"))
                 .isLessThan(script.indexOf("redis.call('EXISTS', KEYS[11])"));
+    }
+
+    @Test
+    void fencesParentSelectionAndHardExpiryInsideAtomicAccept() throws IOException {
+        String script = Files.readString(SCRIPT);
+
+        assertThat(script)
+                .contains("local FIELD_PRODUCT_ID = 'product_id'")
+                .contains("local FIELD_SELECTED_PRODUCT_ID = 'selected_product_id'")
+                .contains("local FIELD_SALE_PRICE = 'sale_price'")
+                .contains("local FIELD_PRODUCT_VERSION = 'product_version'")
+                .contains("local FIELD_PRODUCT_TYPE = 'product_type'")
+                .contains("local FIELD_PRODUCT_SNAPSHOT_AVAILABLE = 'product_snapshot_available'")
+                .contains("local FIELD_CACHE_KIND = 'cache_kind'")
+                .contains("local FIELD_SELECTION_FINGERPRINT = 'selection_fingerprint'")
+                .contains("local FIELD_EXPIRE_AT = 'expire_at'")
+                .contains("local CHILD_FIELD_STATUS = 'status'")
+                .contains("local CHILD_FIELD_VERSION = 'version'")
+                .contains("local CHILD_FIELD_PRICE = 'price'")
+                .contains("redis.call('HGET', KEYS[13], FIELD_PRODUCT_ID)")
+                .contains("redis.call('HGET', KEYS[13], FIELD_SELECTION_FINGERPRINT)")
+                .contains("redis.call('HGET', KEYS[13], FIELD_EXPIRE_AT)")
+                .contains("redis.call('HGET', KEYS[10], CHILD_FIELD_STATUS)")
+                .contains("redis.call('HGET', KEYS[10], CHILD_FIELD_VERSION)")
+                .contains("redis.call('HGET', KEYS[10], CHILD_FIELD_PRICE)")
+                .contains("PRODUCT_SELECTION_STALE");
     }
 
     @Test

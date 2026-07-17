@@ -1,10 +1,15 @@
 package com.cardshop.trade.engine.infrastructure.observability;
 
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
+import com.cardshop.trade.engine.application.v1.V1CreateOrderStageObserver;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfileCacheObserver;
+import com.cardshop.trade.engine.application.v1.V1ProductCacheObserver;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyStatus;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.domain.order.TaskStatus;
 import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.DistributionSummary;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -13,7 +18,6 @@ import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -25,14 +29,17 @@ import org.slf4j.LoggerFactory;
  * environment、status、event_type、anomaly_type、operation、result、fail_code。订单号、商户订单号、
  * 商户号和账号都只能进入日志或集成测试证据，不能进入 Micrometer label。
  */
-public class TradeEngineObservabilityMetrics {
+public class TradeEngineObservabilityMetrics
+        implements V1ProductCacheObserver, V1MerchantProfileCacheObserver, V1CreateOrderStageObserver {
 
     private static final Logger log = LoggerFactory.getLogger(TradeEngineObservabilityMetrics.class);
     private static final String NONE = "none";
     private static final String RESULT_CONFIRMED = "confirmed";
     private static final int MAX_TAG_VALUE_LENGTH = 64;
-    private static final long SNAPSHOT_FALLBACK_LOG_INTERVAL_MILLIS = Duration.ofSeconds(60).toMillis();
-    private static final AtomicLong LAST_SNAPSHOT_FALLBACK_LOG_MILLIS = new AtomicLong();
+    private static final Duration SNAPSHOT_FALLBACK_LOG_INTERVAL = Duration.ofSeconds(60);
+    private static final String LOG_EVENT_SNAPSHOT_FALLBACK = "observability.snapshot.fallback";
+    private static final LogStormGuard SNAPSHOT_FALLBACK_LOG_GUARD =
+            LogStormGuard.atMostOncePer(SNAPSHOT_FALLBACK_LOG_INTERVAL);
 
     private final TradeEngineObservabilitySnapshotProvider snapshotProvider;
     private final String environment;
@@ -42,6 +49,13 @@ public class TradeEngineObservabilityMetrics {
     private final ConcurrentMap<String, Counter> redisLuaSlowCounters = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Timer> redisLuaTimers = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Counter> mqPublishConfirmCounters = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Counter> productCacheHitCounters = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, DistributionSummary> productCacheAgeSummaries = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Counter> productCacheRefreshCounters = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Timer> productCacheRefreshTimers = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Counter> merchantProfileCacheHitCounters = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Timer> createOrderStageTimers = new ConcurrentHashMap<>();
+    private volatile Counter productCacheMysqlLoadCounter;
     private volatile MeterRegistry registry;
 
     public TradeEngineObservabilityMetrics(
@@ -154,6 +168,143 @@ public class TradeEngineObservabilityMetrics {
         mqPublishBreakerOpen.set(open ? 1 : 0);
     }
 
+    /**
+     * 记录 V1 父商品选品缓存命中结果和快照年龄。
+     *
+     * <p>参见详细设计「12. 可观测性」。result 仅允许 fresh、soft_stale、hard_stale、miss、negative
+     * 等低基数枚举，不接收商品号或商户号。
+     */
+    @Override
+    public void recordCacheResult(String result, Duration age) {
+        MeterRegistry current = registry;
+        if (current == null) {
+            return;
+        }
+        String safeResult = tagValue(result == null || result.isBlank() ? "unknown" : result);
+        productCacheHitCounters.computeIfAbsent(safeResult, ignored -> Counter.builder(
+                                "trade.engine.product.cache.hit.total")
+                        .description("V1父商品选品缓存读取结果计数")
+                        .tag("environment", environment)
+                        .tag("result", safeResult)
+                        .register(current))
+                .increment();
+        Duration safeAge = age == null || age.isNegative() ? Duration.ZERO : age;
+        productCacheAgeSummaries.computeIfAbsent(safeResult, ignored -> DistributionSummary.builder(
+                                "trade.engine.product.cache.age.seconds")
+                        .description("V1父商品选品缓存快照年龄秒数")
+                        .baseUnit("seconds")
+                        .tag("environment", environment)
+                        .tag("result", safeResult)
+                        .register(current))
+                .record(safeAge.toMillis() / 1000.0);
+    }
+
+    /**
+     * 记录 V1 商品缓存单飞刷新结果和耗时。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「12. 观测、日志与告警」。result 使用固定
+     * 低基数枚举，刷新耗时用于识别 Redis/MySQL 抖动和硬过期等待风险。
+     */
+    @Override
+    public void recordRefresh(String result, Duration duration) {
+        MeterRegistry current = registry;
+        if (current == null) {
+            return;
+        }
+        String safeResult = tagValue(result == null || result.isBlank() ? "unknown" : result);
+        productCacheRefreshCounters.computeIfAbsent(safeResult, ignored -> Counter.builder(
+                                "trade.engine.product.cache.refresh.total")
+                        .description("V1父商品选品缓存刷新结果计数")
+                        .tag("environment", environment)
+                        .tag("result", safeResult)
+                        .register(current))
+                .increment();
+        Duration safeDuration = duration == null || duration.isNegative() ? Duration.ZERO : duration;
+        productCacheRefreshTimers.computeIfAbsent(safeResult, ignored -> Timer.builder(
+                                "trade.engine.product.cache.refresh.duration")
+                        .description("V1父商品选品缓存刷新耗时")
+                        .tag("environment", environment)
+                        .tag("result", safeResult)
+                        .register(current))
+                .record(safeDuration);
+    }
+
+    /**
+     * 记录实际访问旧卡管 MySQL 商品表的次数，用于验证秒杀流量没有退化成每单回源。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「12. 观测、日志与告警」。该指标不携带
+     * 商户号或商品号标签，避免高基数时序放大监控系统压力。
+     */
+    @Override
+    public void recordMysqlLoad() {
+        MeterRegistry current = registry;
+        if (current == null) {
+            return;
+        }
+        Counter counter = productCacheMysqlLoadCounter;
+        if (counter == null) {
+            synchronized (this) {
+                counter = productCacheMysqlLoadCounter;
+                if (counter == null) {
+                    counter = Counter.builder("trade.engine.product.cache.mysql.load.total")
+                            .description("V1父商品选品缓存实际MySQL回源次数")
+                            .tag("environment", environment)
+                            .register(current);
+                    productCacheMysqlLoadCounter = counter;
+                }
+            }
+        }
+        counter.increment();
+    }
+
+    /**
+     * 记录 V1 商户资料短 TTL 本地缓存查找结果。
+     *
+     * <p>参见详细设计「3. API/V1 接入层」和「12. 可观测性」。result 仅允许 hit/negative/miss，
+     * lookup_type 仅允许 app_org/org；禁止 appId、orgCode、aesKey 进入标签。
+     */
+    @Override
+    public void recordLookup(String result, String lookupType) {
+        MeterRegistry current = registry;
+        if (current == null) {
+            return;
+        }
+        String safeResult = tagValue(result == null || result.isBlank() ? "unknown" : result);
+        String safeLookupType = tagValue(lookupType == null || lookupType.isBlank() ? "unknown" : lookupType);
+        String key = safeResult + "|" + safeLookupType;
+        merchantProfileCacheHitCounters.computeIfAbsent(key, ignored -> Counter.builder(
+                                "trade.engine.merchant.profile.cache.hit.total")
+                        .description("V1商户资料短TTL本地缓存查找结果计数")
+                        .tag("environment", environment)
+                        .tag("result", safeResult)
+                        .tag("lookup_type", safeLookupType)
+                        .register(current))
+                .increment();
+    }
+
+    /**
+     * 记录 V1 下单同步子阶段耗时。
+     *
+     * <p>参见详细设计「12. 可观测性」。stage 仅允许 prepare/accept/wait/mq_confirm/
+     * mark_persist_queued/redis_session_connect/sync_total。
+     */
+    @Override
+    public void recordStage(String stage, Duration duration) {
+        MeterRegistry current = registry;
+        if (current == null) {
+            return;
+        }
+        String safeStage = tagValue(stage == null || stage.isBlank() ? "unknown" : stage);
+        Duration safeDuration = duration == null || duration.isNegative() ? Duration.ZERO : duration;
+        createOrderStageTimers.computeIfAbsent(safeStage, ignored -> Timer.builder(
+                                "trade.engine.v1.create.stage.duration")
+                        .description("V1下单同步路径子阶段耗时")
+                        .tag("environment", environment)
+                        .tag("stage", safeStage)
+                        .register(current))
+                .record(safeDuration);
+    }
+
     private void registerRedisPendingGauges(MeterRegistry registry) {
         Gauge.builder(
                         "trade.engine.redis.pending.total",
@@ -232,12 +383,9 @@ public class TradeEngineObservabilityMetrics {
              * Gauge 读取处于 Prometheus scrape 热路径，不能让异常打断 /actuator/prometheus。
              * 这里按 60 秒采样输出 warn：保留异常栈与故障证据，同时避免 provider 连续失败造成日志风暴。
              */
-            long nowMillis = System.currentTimeMillis();
-            long lastLoggedMillis = LAST_SNAPSHOT_FALLBACK_LOG_MILLIS.get();
-            if (nowMillis - lastLoggedMillis >= SNAPSHOT_FALLBACK_LOG_INTERVAL_MILLIS
-                    && LAST_SNAPSHOT_FALLBACK_LOG_MILLIS.compareAndSet(lastLoggedMillis, nowMillis)) {
+            if (SNAPSHOT_FALLBACK_LOG_GUARD.shouldLog(LOG_EVENT_SNAPSHOT_FALLBACK).shouldLog()) {
                 log.warn("交易引擎业务监控 Gauge 快照读取失败，返回空快照 fallbackLogIntervalSeconds={}",
-                        Duration.ofMillis(SNAPSHOT_FALLBACK_LOG_INTERVAL_MILLIS).toSeconds(),
+                        SNAPSHOT_FALLBACK_LOG_INTERVAL.toSeconds(),
                         ex);
             }
             return TradeEngineObservabilitySnapshot.empty();

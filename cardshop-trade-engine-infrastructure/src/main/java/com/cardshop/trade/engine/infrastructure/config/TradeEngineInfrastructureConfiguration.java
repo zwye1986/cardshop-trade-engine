@@ -35,10 +35,19 @@ import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePo
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.recharge.V1MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.application.v1.CachedV1MerchantProfilePort;
+import com.cardshop.trade.engine.application.v1.CachedV1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1CreateOrderStageObserver;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfileCacheObserver;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfileCacheSettings;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.v1.V1ProductCacheObserver;
+import com.cardshop.trade.engine.application.v1.V1ProductCacheSettings;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1ProductConfigPreheatPort;
 import com.cardshop.trade.engine.application.v1.V1ProductSelection;
+import com.cardshop.trade.engine.application.v1.V1ProductSelectionCachePort;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessagePublisher;
@@ -61,11 +70,9 @@ import com.cardshop.trade.engine.infrastructure.persistence.V1DepartProductReade
 import com.cardshop.trade.engine.infrastructure.persistence.V1MerchantProfileReader;
 import com.cardshop.trade.engine.infrastructure.persistence.V1ProductReader;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartProductMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.McProductMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
@@ -75,6 +82,8 @@ import com.cardshop.trade.engine.infrastructure.redis.InMemoryRedisHaGuard;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisSessionAcceptReliabilityAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisV1ProductConfigPreheatAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisV1ProductSelectionCacheAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisDirectRechargeFrequencyAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptLoader;
@@ -137,6 +146,25 @@ public class TradeEngineInfrastructureConfiguration {
     @ConditionalOnMissingBean(Clock.class)
     public Clock clock() {
         return Clock.systemUTC();
+    }
+
+    /**
+     * 校验并暴露 V1 商品选品缓存时间窗口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。构造器会校验
+     * {@code refreshAfter < maxStaleAge < physicalTtl}，非法 Nacos 配置必须阻止应用启动。
+     */
+    @Bean
+    @ConditionalOnMissingBean(V1ProductCacheSettings.class)
+    public V1ProductCacheSettings v1ProductCacheSettings(TradeEngineProperties properties) {
+        TradeEngineProperties.V1.ProductCache cache = properties.getV1().getProductCache();
+        return new V1ProductCacheSettings(
+                cache.getRefreshAfter(),
+                cache.getMaxStaleAge(),
+                cache.getPhysicalTtl(),
+                cache.getRefreshLockTtl(),
+                cache.getRefreshWaitTimeout(),
+                cache.getNegativeCacheTtl());
     }
 
     /**
@@ -227,14 +255,17 @@ public class TradeEngineInfrastructureConfiguration {
     @Bean
     @ConditionalOnMissingBean(RechargeRedisSessionFactory.class)
     public RechargeRedisSessionFactory rechargeRedisSessionFactory(
-            ObjectProvider<LettuceConnectionFactory> connectionFactoryProvider) {
+            ObjectProvider<LettuceConnectionFactory> connectionFactoryProvider,
+            ObjectProvider<V1CreateOrderStageObserver> createOrderStageObserverProvider) {
         LettuceConnectionFactory connectionFactory = connectionFactoryProvider.getIfAvailable();
         if (connectionFactory == null) {
             return () -> {
                 throw new IllegalStateException("LettuceConnectionFactory 未装配");
             };
         }
-        return new LettuceRechargeRedisSessionFactory(connectionFactory);
+        return new LettuceRechargeRedisSessionFactory(
+                connectionFactory,
+                () -> createOrderStageObserverProvider.getIfAvailable(V1CreateOrderStageObserver::noop));
     }
 
     @Bean
@@ -361,16 +392,37 @@ public class TradeEngineInfrastructureConfiguration {
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
      * 这里使用配置类显式装配，而不是在适配器类上做条件组件扫描，避免 MyBatis Mapper
-     * 注册顺序导致条件过早判定为不满足，使 `/auth/getToken` 和灰度下单回落到未启用实现。
+     * 注册顺序导致条件过早判定为不满足，使 `/auth/getToken` 和新链路下单回落到未启用实现。
      */
     @Bean
     @ConditionalOnMissingBean(V1MerchantProfilePort.class)
-    public V1MerchantProfilePort v1MerchantProfilePort(ObjectProvider<V1MerchantProfileReader> readerProvider) {
+    public V1MerchantProfilePort v1MerchantProfilePort(
+            ObjectProvider<V1MerchantProfileReader> readerProvider,
+            TradeEngineProperties properties,
+            Clock clock,
+            ObjectProvider<V1MerchantProfileCacheObserver> observerProvider) {
         V1MerchantProfileReader reader = readerProvider.getIfAvailable();
         if (reader == null) {
             return unavailableV1MerchantProfilePort();
         }
-        return new MybatisV1MerchantProfileAdapter(reader);
+        V1MerchantProfilePort mybatisPort = new MybatisV1MerchantProfileAdapter(reader);
+        TradeEngineProperties.V1.MerchantProfileCache cache = properties.getV1().getMerchantProfileCache();
+        if (!cache.isEnabled()) {
+            return mybatisPort;
+        }
+        /*
+         * 参见详细设计「3. API/V1 接入层」：短 TTL 本地缓存降低 prepare 每单打 mc_ext_depart，
+         * 避免与异步落库争抢 Hikari；aesKey 仅存本进程内存，不写入 Redis。
+         */
+        return new CachedV1MerchantProfilePort(
+                mybatisPort,
+                new V1MerchantProfileCacheSettings(
+                        cache.isEnabled(),
+                        cache.getTtl(),
+                        cache.getNegativeTtl(),
+                        cache.getMaximumSize()),
+                clock,
+                () -> observerProvider.getIfAvailable(V1MerchantProfileCacheObserver::noop));
     }
 
     /**
@@ -383,17 +435,93 @@ public class TradeEngineInfrastructureConfiguration {
     @ConditionalOnMissingBean(V1ProductCandidateSelector.class)
     public V1ProductCandidateSelector v1ProductCandidateSelector(
             ObjectProvider<V1DepartProductReader> departProductReaderProvider,
-            ObjectProvider<V1ProductReader> productReaderProvider) {
+            ObjectProvider<V1ProductReader> productReaderProvider,
+            ObjectProvider<V1ProductSelectionCachePort> cachePortProvider,
+            V1ProductCacheSettings cacheSettings,
+            TradeEngineProperties properties,
+            Clock clock,
+            ObjectProvider<V1ProductCacheObserver> observerProvider) {
         V1DepartProductReader departProductReader = departProductReaderProvider.getIfAvailable();
         V1ProductReader productReader = productReaderProvider.getIfAvailable();
+        V1ProductCandidateSelector sourceSelector;
         if (departProductReader == null || productReader == null) {
-            return (orgCode, parentProductId, account) -> V1ProductSelection.failed(
-                    parentProductId,
+            sourceSelector = (orgCode, productId, account) -> V1ProductSelection.failed(
+                    productId,
                     "PRODUCT_READER_UNAVAILABLE",
                     "商品资料读取端口未装配",
                     1L);
+        } else {
+            sourceSelector = new MybatisV1ProductCandidateSelector(departProductReader, productReader);
         }
-        return new MybatisV1ProductCandidateSelector(departProductReader, productReader);
+        V1ProductSelectionCachePort cachePort = cachePortProvider.getIfAvailable();
+        if (cachePort == null || !cachePort.isAvailable()) {
+            /*
+             * 参见详细设计「6. Redis 受理与缓存层」：只有 local 且 Redis 写关闭的轻量自测允许无 Redis
+             * 时直读 MySQL。local 开启 Redis 写，或 dev/test/prod 因配置错误缺少 Redis 时，仍保留缓存
+             * 包装器并在请求时 fail closed，防止父快照缺失或秒杀流量静默退化为每单访问共享旧卡管数据库。
+             */
+            if ("local".equalsIgnoreCase(properties.getEnvironment())
+                    && !properties.getRedis().isWriteEnabled()) {
+                return sourceSelector;
+            }
+            cachePort = V1ProductSelectionCachePort.unavailable();
+        }
+        return new CachedV1ProductCandidateSelector(
+                cachePort,
+                sourceSelector,
+                cacheSettings,
+                clock,
+                observerProvider.getIfAvailable(V1ProductCacheObserver::noop));
+    }
+
+    /**
+     * 装配 V1 父商品选品快照 Redis 端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
+     * TODO 后续接入旧卡管商品保存 outbox、CDC 或增量扫描主动同步；请求级单飞刷新长期保留为漏事件兜底，
+     * 参见 {@code docs/交行直充业务系统高可用方案设计.md}「24.2 高风险点」。
+     */
+    @Bean
+    @ConditionalOnMissingBean(V1ProductSelectionCachePort.class)
+    public V1ProductSelectionCachePort v1ProductSelectionCachePort(
+            ObjectProvider<ReactiveStringRedisTemplate> redisTemplateProvider,
+            RechargeRedisKeyBuilder keyBuilder,
+            V1ProductCacheSettings cacheSettings,
+            TradeEngineProperties properties) {
+        ReactiveStringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+        if (redisTemplate == null) {
+            return V1ProductSelectionCachePort.unavailable();
+        }
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
+        return new RedisV1ProductSelectionCacheAdapter(
+                redisTemplate,
+                keyBuilder,
+                cacheSettings,
+                Duration.ofMillis(timeoutMs));
+    }
+
+    /**
+     * 装配 V1 请求级商品配置补热端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。商品选择器已经从
+     * MySQL 形成实际子商品快照；该端口在接单 Lua 前原子补写缺失 key，已有 Redis 配置仍由 Lua 按版本裁决。
+     */
+    @Bean
+    @ConditionalOnMissingBean(V1ProductConfigPreheatPort.class)
+    public V1ProductConfigPreheatPort v1ProductConfigPreheatPort(
+            ObjectProvider<ReactiveStringRedisTemplate> redisTemplateProvider,
+            RechargeRedisKeyBuilder keyBuilder,
+            TradeEngineProperties properties) {
+        ReactiveStringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+        if (redisTemplate == null) {
+            return V1ProductConfigPreheatPort.noop();
+        }
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
+        return new RedisV1ProductConfigPreheatAdapter(
+                redisTemplate,
+                keyBuilder,
+                properties.getV1().getProductCache().getPhysicalTtl(),
+                Duration.ofMillis(timeoutMs));
     }
 
     @Bean
@@ -491,33 +619,22 @@ public class TradeEngineInfrastructureConfiguration {
     }
 
     @Bean
-    @ConditionalOnBean({
-            McOrderMapper.class,
-            RechargeOrderExtMapper.class,
-            McOrderSupplierFlowMapper.class,
-            McDepartProductMapper.class,
-            McProductMapper.class
-    })
+    @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class, McOrderSupplierFlowMapper.class})
     @ConditionalOnMissingBean(RechargeFulfillmentOrderPort.class)
     public RechargeFulfillmentOrderPort rechargeFulfillmentOrderPort(
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper,
-            McDepartProductMapper departProductMapper,
-            McProductMapper productMapper,
             ObjectMapper objectMapper,
             Clock clock) {
         /*
-         * 参见详细设计「9.1 派单 Outbox」。供应商 failover 必须读取 mc_depart_product/mc_product
-         * 才能复刻旧卡管候选排序并执行健康直充过滤；如果商品 Mapper 不在条件里，适配器会退化为只派当前渠道。
-         * 普通配置类用于 slice test 和显式 Mapper 局部上下文，因此也要把商品 Mapper 放进条件和构造参数。
+         * 参见详细设计「9.1 派单 Outbox」。派单阶段只使用订单受理时从请求父产品候选中冻结的
+         * `produt_code/url` 子商品快照，不再读取 mc_depart_product/mc_product 做候选切换。
          */
         return new MybatisRechargeFulfillmentOrderAdapter(
                 orderMapper,
                 extMapper,
                 flowMapper,
-                departProductMapper,
-                productMapper,
                 objectMapper,
                 clock);
     }
