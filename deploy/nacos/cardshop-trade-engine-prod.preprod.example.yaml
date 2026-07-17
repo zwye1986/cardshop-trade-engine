@@ -1,0 +1,93 @@
+spring:
+  datasource:
+    # 预生产首轮暂不调整 MySQL 数据源。
+    # 发布到 Nacos 时保留当前 cardshop-trade-engine-prod.yaml 中已有的 url、username、password 和 hikari 配置。
+    # 本模板不记录数据库密码，避免生产/预生产密钥进入 Git。
+    url: <keep-current-mysql-url>
+    username: <keep-current-mysql-user>
+    password: <keep-current-mysql-password>
+    hikari:
+      # 共享旧库时先保持较小连接池，避免预生产应用压垮旧库连接资源。
+      maximum-pool-size: 60
+      minimum-idle: 2
+      connection-timeout: 2000
+  data:
+    redis:
+      # trade-engine 专用 Redis 通过 Sentinel 发现 master，不再连接 test188 的 6379。
+      # 当前 Sentinel master 名为 trade-engine-master，端口选择 26380 以区分存量 Redis。
+      password: ${TRADE_ENGINE_REDIS_PASSWORD}
+      database: 0
+      timeout: 3s
+      sentinel:
+        master: trade-engine-master
+        nodes:
+          - 172.19.64.105:26380
+          - 172.19.64.46:26380
+          - 172.19.64.103:26380
+      lettuce:
+        pool:
+          # 预生产三实例启动时先控制连接数，后续压测再按指标扩容。
+          min-idle: 4
+          max-idle: 16
+          max-active: 64
+          max-wait: 3000ms
+  liquibase:
+    # prod profile 默认不自动执行数据库变更；需要迁移时走单独数据库发布窗口。
+    enabled: false
+  rabbitmq:
+    # 连接 trade-engine 专用 RabbitMQ 4.3.x 三节点集群，端口 5673 避开 pro120 旧 MQ。
+    addresses: 172.19.64.105:5673,172.19.64.46:5673,172.19.64.103:5673
+    username: ${SPRING_RABBITMQ_USERNAME}
+    password: ${SPRING_RABBITMQ_PASSWORD}
+    virtual-host: cardshop-trade-prod
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 50
+        concurrency: 4
+        max-concurrency: 16
+
+trade:
+  engine:
+    # 当前 Nacos DataId 是 prod profile，环境标识必须改为 prod，避免指标、Key 和告警混入 test 口径。
+    environment: prod
+    redis:
+      # 首次启动和只读验证阶段保持关闭；完成 Redis WAIT、MQ Confirm、落库和补偿验证后再灰度打开。
+      write-enabled: false
+      wait-replicas: 1
+      wait-timeout-ms: 100
+      key-prefix: cardshop:trade:prod
+      unavailable-fail-closed: true
+    routing:
+      # 预生产初始不接真实生产流量；联调前再按实际商户/appId 灰度添加。
+      gray-app-ids: []
+      gray-org-codes: []
+    balance:
+      owner-mode: NEW
+    mq:
+      # 生产 RabbitMQ 使用 publisher confirm；超时后依赖 Redis pending 和补投任务兜底。
+      publish-confirm-timeout-ms: 500
+      publish-retry-times: 3
+    fault-injection:
+      # 生产/预生产禁止打开故障注入。
+      enabled: false
+    xxl-job:
+      # 调度中心未完成生产配置前保持关闭，避免补偿任务误跑。
+      enabled: false
+      admin-addresses: ${XXL_JOB_ADMIN_ADDRESSES:}
+      access-token: ${XXL_JOB_ACCESS_TOKEN:}
+      executor:
+        appname: cardshop-trade-engine-prod
+        address:
+        ip:
+        port: 19999
+        logpath: /data/logs/cardshop-trade-engine/xxl-job
+        log-retention-days: 30
+    integration:
+      # 内部人工联调入口只允许 dev/test 使用；prod 默认关闭。
+      manual-job-enabled: false
+      manual-job-timeout-ms: 30000
