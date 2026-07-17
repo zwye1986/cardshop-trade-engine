@@ -143,7 +143,30 @@ class A39LoadTestRunnerTest {
                 .containsExactly("PERF-A39-1784077200000-00001", "PERF-A39-1784077200000-00002");
     }
 
+    @Test
+    void uniqueAccountsGenerateSequentialAccountsInLoadMode() throws Exception {
+        CapturingLoadClient client = new CapturingLoadClient(List.of(response("200"), response("200"), response("200")), 0);
+        A39SimulatorOptions options = options(1, 3, List.of("200", "510"), 20, true);
+
+        new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), ignored -> {
+        }).run(options);
+
+        assertThat(client.createPayloads)
+                .extracting(payload -> String.valueOf(payload.get("account")))
+                .containsExactly("18186222336", "18186222337", "18186222338")
+                .doesNotHaveDuplicates();
+    }
+
     private static A39SimulatorOptions options(int concurrency, int totalOrders, List<String> expectedCodes, int errorSampleLimit) {
+        return options(concurrency, totalOrders, expectedCodes, errorSampleLimit, false);
+    }
+
+    private static A39SimulatorOptions options(
+            int concurrency,
+            int totalOrders,
+            List<String> expectedCodes,
+            int errorSampleLimit,
+            boolean uniqueAccounts) {
         return new A39SimulatorOptions(
                 "http://apitest.kalaiwang.com",
                 "app-id",
@@ -169,6 +192,7 @@ class A39LoadTestRunnerTest {
                 totalOrders,
                 Duration.ofSeconds(10),
                 "PERF-A39",
+                uniqueAccounts,
                 expectedCodes,
                 errorSampleLimit,
                 Duration.ZERO);

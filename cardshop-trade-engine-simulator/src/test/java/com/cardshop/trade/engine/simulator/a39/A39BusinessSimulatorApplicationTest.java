@@ -86,6 +86,7 @@ class A39BusinessSimulatorApplicationTest {
                 1,
                 Duration.ofSeconds(10),
                 "PERF-A39",
+                false,
                 List.of("200", "510"),
                 20,
                 Duration.ZERO);

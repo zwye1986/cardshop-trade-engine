@@ -91,6 +91,7 @@ class A39SimulatorOptionsTest {
                         "--total-orders", "250",
                         "--request-timeout", "7s",
                         "--out-order-prefix", "PERF-A39",
+                        "--unique-accounts", "true",
                         "--expected-create-codes", "200,510,599",
                         "--error-sample-limit", "5",
                         "--progress-interval", "0"
@@ -104,6 +105,7 @@ class A39SimulatorOptionsTest {
         assertThat(options.totalOrders()).isEqualTo(250);
         assertThat(options.requestTimeout()).isEqualTo(Duration.ofSeconds(7));
         assertThat(options.outOrderPrefix()).isEqualTo("PERF-A39");
+        assertThat(options.uniqueAccounts()).isTrue();
         assertThat(options.expectedCreateCodes()).containsExactly("200", "510", "599");
         assertThat(options.errorSampleLimit()).isEqualTo(5);
         assertThat(options.progressInterval()).isEqualTo(Duration.ZERO);
@@ -117,6 +119,16 @@ class A39SimulatorOptionsTest {
                 FIXED_CLOCK))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("notifyUrl must be blank in load mode");
+    }
+
+    @Test
+    void uniqueAccountsRequireNumericAccount() {
+        assertThatThrownBy(() -> A39SimulatorOptions.parse(
+                new String[]{"--mode", "load", "--account", "phone-1", "--unique-accounts", "true"},
+                secretEnv(),
+                FIXED_CLOCK))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("account must be numeric when uniqueAccounts is enabled");
     }
 
     @Test
@@ -181,6 +193,7 @@ class A39SimulatorOptionsTest {
                 200,
                 Duration.ofSeconds(10),
                 "A39TEST",
+                false,
                 List.of("200", "510"),
                 20,
                 Duration.ZERO
@@ -272,6 +285,7 @@ class A39SimulatorOptionsTest {
                 .contains("--concurrency")
                 .contains("--total-orders")
                 .contains("--request-timeout")
+                .contains("--unique-accounts")
                 .contains("--expected-create-codes")
                 .contains("load mode uses blank notify_url")
                 .contains("Secret sources: prefer A39_APP_SECRET/A39_AES_KEY")
@@ -302,6 +316,7 @@ class A39SimulatorOptionsTest {
                         "A39_LOAD_TOTAL_ORDERS",
                         "A39_REQUEST_TIMEOUT",
                         "A39_OUT_ORDER_PREFIX",
+                        "A39_UNIQUE_ACCOUNTS",
                         "A39_EXPECTED_CREATE_CODES",
                         "A39_ERROR_SAMPLE_LIMIT",
                         "A39_LOAD_PROGRESS_INTERVAL");

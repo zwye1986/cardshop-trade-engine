@@ -58,14 +58,39 @@ class RechargeNotifyWorkerServiceTest {
         });
     }
 
+    @Test
+    void marksBlankNotifyUrlTaskSuccessWithoutSendingHttp() {
+        FakeNotifyWorkerTaskPort taskPort = new FakeNotifyWorkerTaskPort(taskWithNotifyUrl(""));
+        List<MerchantNotifyRequest> sent = new ArrayList<>();
+        RechargeNotifyWorkerService service = new RechargeNotifyWorkerService(
+                taskPort,
+                request -> {
+                    sent.add(request);
+                    return MerchantNotifySendResult.success(200, "{\"code\":200}");
+                },
+                CLOCK,
+                new RechargeNotifyWorkerSettings(Duration.ofMinutes(1), Duration.ofSeconds(10)));
+
+        RechargeNotifyBatchResult result = service.processDue(10, "notify-worker");
+
+        assertThat(result.succeeded()).isEqualTo(1);
+        assertThat(sent).isEmpty();
+        assertThat(taskPort.successes).containsExactly("notify-order-ORDER-1-12");
+        assertThat(taskPort.failures).isEmpty();
+    }
+
     private static RechargeNotifyTask task() {
+        return taskWithNotifyUrl("https://merchant.example/notify");
+    }
+
+    private static RechargeNotifyTask taskWithNotifyUrl(String notifyUrl) {
         return new RechargeNotifyTask(
                 "notify-order-ORDER-1-12",
                 "ORDER_STATUS",
                 "A36",
                 "ORDER-1",
                 "OUT-1",
-                "https://merchant.example/notify",
+                notifyUrl,
                 "12",
                 "{\"orderId\":\"ORDER-1\",\"sign\":\"abc\"}",
                 0,

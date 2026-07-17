@@ -44,6 +44,7 @@ public record A39SimulatorOptions(
         int totalOrders,
         Duration requestTimeout,
         String outOrderPrefix,
+        boolean uniqueAccounts,
         List<String> expectedCreateCodes,
         int errorSampleLimit,
         Duration progressInterval) {
@@ -113,6 +114,9 @@ public record A39SimulatorOptions(
         if (totalOrders <= 0) {
             throw new IllegalArgumentException("totalOrders must be greater than 0");
         }
+        if (uniqueAccounts) {
+            requireNumericAccount(account);
+        }
         if (errorSampleLimit < 0) {
             throw new IllegalArgumentException("errorSampleLimit must not be negative");
         }
@@ -155,6 +159,7 @@ public record A39SimulatorOptions(
                 integer(option(options, env, "total-orders", "A39_LOAD_TOTAL_ORDERS", String.valueOf(DEFAULT_LOAD_TOTAL_ORDERS)), "total-orders"),
                 duration(option(options, env, "request-timeout", "A39_REQUEST_TIMEOUT", DEFAULT_REQUEST_TIMEOUT.toString()), "request-timeout"),
                 option(options, env, "out-order-prefix", "A39_OUT_ORDER_PREFIX", nextOutOrderSn(clock)),
+                bool(option(options, env, "unique-accounts", "A39_UNIQUE_ACCOUNTS", "false")),
                 codes(optionPreservingBlank(options, env, "expected-create-codes", "A39_EXPECTED_CREATE_CODES", "200,510")),
                 integer(option(options, env, "error-sample-limit", "A39_ERROR_SAMPLE_LIMIT", String.valueOf(DEFAULT_ERROR_SAMPLE_LIMIT)), "error-sample-limit"),
                 duration(option(options, env, "progress-interval", "A39_LOAD_PROGRESS_INTERVAL", DEFAULT_PROGRESS_INTERVAL.toString()), "progress-interval")
@@ -195,6 +200,7 @@ public record A39SimulatorOptions(
                   --concurrency 10
                   --total-orders 200
                   --out-order-prefix PERF-A39
+                  --unique-accounts false
                   --expected-create-codes 200,510
                   --error-sample-limit 20
                   --progress-interval 10s
@@ -205,7 +211,7 @@ public record A39SimulatorOptions(
                   A39_NUM A39_ORDER_PRICE A39_PRODUCT_TYPE A39_REQUEST_SM4 A39_REQUEST_TIMEOUT
                   A39_NOTIFY_URL A39_OUT_ORDER_SN A39_NONCE_STR A39_TIMESTAMP
                   A39_CALLBACK_BIND_HOST A39_CALLBACK_PORT A39_QUERY_ATTEMPTS A39_QUERY_INTERVAL A39_CALLBACK_WAIT
-                  A39_LOAD_CONCURRENCY A39_LOAD_TOTAL_ORDERS A39_OUT_ORDER_PREFIX A39_EXPECTED_CREATE_CODES A39_ERROR_SAMPLE_LIMIT A39_LOAD_PROGRESS_INTERVAL
+                  A39_LOAD_CONCURRENCY A39_LOAD_TOTAL_ORDERS A39_OUT_ORDER_PREFIX A39_UNIQUE_ACCOUNTS A39_EXPECTED_CREATE_CODES A39_ERROR_SAMPLE_LIMIT A39_LOAD_PROGRESS_INTERVAL
 
                 Scenario example:
                   mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \\
@@ -218,9 +224,9 @@ public record A39SimulatorOptions(
     }
 
     public String sanitizedSummary() {
-        return "mode=%s, baseUrl=%s, appId=%s, productId=%s, account=%s, outOrderSn=%s, notifyUrl=%s, queryAttempts=%d, requestSm4=%s, concurrency=%d, totalOrders=%d, requestTimeout=%s"
+        return "mode=%s, baseUrl=%s, appId=%s, productId=%s, account=%s, outOrderSn=%s, notifyUrl=%s, queryAttempts=%d, requestSm4=%s, concurrency=%d, totalOrders=%d, requestTimeout=%s, uniqueAccounts=%s"
                 .formatted(mode, baseUrl, appId, productId, mask(account), outOrderSn, notifyUrl, queryAttempts,
-                        requestSm4Enabled, concurrency, totalOrders, requestTimeout);
+                        requestSm4Enabled, concurrency, totalOrders, requestTimeout, uniqueAccounts);
     }
 
     private static Map<String, String> parseArgs(String[] args) {
@@ -356,6 +362,13 @@ public record A39SimulatorOptions(
             throw new IllegalArgumentException(name + " must not be blank");
         }
         return value.trim();
+    }
+
+    private static void requireNumericAccount(String value) {
+        String account = requireText(value, "account");
+        if (!account.chars().allMatch(Character::isDigit)) {
+            throw new IllegalArgumentException("account must be numeric when uniqueAccounts is enabled");
+        }
     }
 
     private static boolean hasText(String value) {

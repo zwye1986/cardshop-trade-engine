@@ -157,7 +157,7 @@ public final class A39LoadTestRunner {
         long startedAtNanos = System.nanoTime();
         String outOrderSn = outOrderSn(options, sequence, runId);
         try {
-            Map<String, Object> payload = createPayload(options, outOrderSn, nextUniqueNonce(usedNonces));
+            Map<String, Object> payload = createPayload(options, outOrderSn, sequence, nextUniqueNonce(usedNonces));
             V1CardApiClient.ApiResponse response = client.createRechargeOrder(
                     token,
                     payload,
@@ -193,11 +193,11 @@ public final class A39LoadTestRunner {
         }
     }
 
-    Map<String, Object> createPayload(A39SimulatorOptions options, String outOrderSn, String nonceStr) {
+    Map<String, Object> createPayload(A39SimulatorOptions options, String outOrderSn, int sequence, String nonceStr) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("product_id", options.productId());
         payload.put("out_order_sn", outOrderSn);
-        payload.put("account", options.account());
+        payload.put("account", account(options, sequence));
         payload.put("timestamp", String.valueOf(clock.millis()));
         payload.put("nonce_str", nonceStr);
         payload.put("notify_url", EMPTY_NOTIFY_URL);
@@ -214,6 +214,19 @@ public final class A39LoadTestRunner {
             nonce = nonceSupplier.get();
         } while (!usedNonces.add(nonce));
         return nonce;
+    }
+
+    private static String account(A39SimulatorOptions options, int sequence) {
+        if (!options.uniqueAccounts()) {
+            return options.account();
+        }
+        long start = Long.parseLong(options.account());
+        long value = Math.addExact(start, sequence - 1L);
+        String account = String.format(Locale.ROOT, "%0" + options.account().length() + "d", value);
+        if (account.length() != options.account().length()) {
+            throw new IllegalArgumentException("unique account sequence exceeds account length");
+        }
+        return account;
     }
 
     private CreateRequestResult completedResult(Future<CreateRequestResult> future, int errorSampleLimit)

@@ -47,6 +47,17 @@ public class RechargeNotifyWorkerService {
     }
 
     private boolean handle(RechargeNotifyTask task) {
+        /*
+         * 订单 notify_url 为空时本不应创建回调任务；若历史脏数据或防御缺口写入了空 URL 任务，
+         * 直接终态成功并跳过 HTTP，避免 URI.create("") 异常和对空地址的无效重试。
+         * 参见 docs/交行直充业务系统详细设计.md「9.3 回调设计」。
+         */
+        if (!hasNotifyUrl(task)) {
+            log.warn("商户回调任务notify_url为空，跳过发送并标记成功 taskId={}, orderId={}, notifyType={}",
+                    task.taskId(), task.orderId(), task.notifyType());
+            taskPort.markSuccess(task);
+            return true;
+        }
         try {
             MerchantNotifySendResult sendResult = notifyClientPort.send(new MerchantNotifyRequest(
                     task.taskId(),
@@ -64,6 +75,10 @@ public class RechargeNotifyWorkerService {
             taskPort.markFailed(task, ex.getMessage(), settings.retryBackoff());
             return false;
         }
+    }
+
+    private static boolean hasNotifyUrl(RechargeNotifyTask task) {
+        return task.notifyUrl() != null && !task.notifyUrl().isBlank();
     }
 
     private static String failureMessage(MerchantNotifySendResult sendResult) {
