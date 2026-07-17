@@ -165,6 +165,75 @@ class A39LoadTestRunnerTest {
                 .doesNotHaveDuplicates();
     }
 
+    @Test
+    void durationAndRatePaceSubmissionsToPlannedTotalOrders() throws Exception {
+        RepeatingLoadClient client = new RepeatingLoadClient(response("200"));
+        A39SimulatorOptions options = durationRateOptions(2, 0, Duration.ofSeconds(1), 5, 5);
+
+        A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), ignored -> {
+        }).run(options);
+
+        assertThat(result.completed()).isEqualTo(5);
+        assertThat(result.successful()).isEqualTo(5);
+        assertThat(result.failed()).isZero();
+        assertThat(result.totalOrders()).isEqualTo(5);
+        assertThat(result.exitCode()).isZero();
+        assertThat(client.createPayloads).hasSize(5);
+    }
+
+    @Test
+    void durationAndRateAllowSmallToleranceAtHighRate() throws Exception {
+        RepeatingLoadClient client = new RepeatingLoadClient(response("200"));
+        A39SimulatorOptions options = durationRateOptions(2, 0, Duration.ofSeconds(1), 10, 10);
+
+        A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), ignored -> {
+        }).run(options);
+
+        assertThat(result.completed()).isBetween(9, 10);
+        assertThat(result.failed()).isZero();
+        assertThat(result.totalOrders()).isEqualTo(10);
+        assertThat(result.exitCode()).isZero();
+    }
+
+    private static A39SimulatorOptions durationRateOptions(
+            int concurrency,
+            int totalOrders,
+            Duration duration,
+            int ratePerSecond,
+            int plannedTotalOrders) {
+        return new A39SimulatorOptions(
+                "http://apitest.kalaiwang.com",
+                "app-id",
+                "app-secret",
+                "AES-KEY",
+                "73301280",
+                "18186222336",
+                "IGNORED-SCENARIO-OUT-ORDER",
+                "JANwG4jwiHGMaNc4EtPdbmkKxBhY7daR",
+                "1783224958",
+                1,
+                5200L,
+                1,
+                "",
+                0,
+                Duration.ZERO,
+                false,
+                "127.0.0.1",
+                19039,
+                Duration.ZERO,
+                A39SimulatorMode.LOAD,
+                concurrency,
+                plannedTotalOrders > 0 ? plannedTotalOrders : totalOrders,
+                Duration.ofSeconds(10),
+                "PERF-A39",
+                false,
+                List.of("200", "510"),
+                20,
+                Duration.ZERO,
+                duration,
+                ratePerSecond);
+    }
+
     private static A39SimulatorOptions options(int concurrency, int totalOrders, List<String> expectedCodes, int errorSampleLimit) {
         return options(concurrency, totalOrders, expectedCodes, errorSampleLimit, false);
     }
@@ -203,7 +272,9 @@ class A39LoadTestRunnerTest {
                 uniqueAccounts,
                 expectedCodes,
                 errorSampleLimit,
-                Duration.ZERO);
+                Duration.ZERO,
+                Duration.ZERO,
+                0);
     }
 
     private static V1CardApiClient.ApiResponse response(String code) {
@@ -228,6 +299,32 @@ class A39LoadTestRunnerTest {
                     fields.put(line.substring(0, delimiter), line.substring(delimiter + 1));
                 });
         return fields;
+    }
+
+    private static final class RepeatingLoadClient implements V1CardApiClient {
+
+        private final V1CardApiClient.ApiResponse response;
+        private final List<Map<String, Object>> createPayloads = java.util.Collections.synchronizedList(new ArrayList<>());
+
+        private RepeatingLoadClient(V1CardApiClient.ApiResponse response) {
+            this.response = response;
+        }
+
+        @Override
+        public String getToken(String appId, String appSecret) {
+            return "token";
+        }
+
+        @Override
+        public V1CardApiClient.ApiResponse createRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            createPayloads.add(new ConcurrentHashMap<>(payload));
+            return response;
+        }
+
+        @Override
+        public V1CardApiClient.ApiResponse getRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            throw new AssertionError("load mode must not query order");
+        }
     }
 
     private static final class CapturingLoadClient implements V1CardApiClient {

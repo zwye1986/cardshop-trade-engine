@@ -89,7 +89,9 @@ class A39BusinessSimulatorApplicationTest {
                 false,
                 List.of("200", "510"),
                 20,
-                Duration.ZERO);
+                Duration.ZERO,
+                Duration.ZERO,
+                0);
     }
 
     private static final class SingleCreateClient implements V1CardApiClient {

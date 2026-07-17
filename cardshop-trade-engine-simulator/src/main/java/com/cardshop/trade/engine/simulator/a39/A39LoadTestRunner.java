@@ -19,6 +19,7 @@ import java.util.concurrent.ExecutorCompletionService;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
@@ -95,7 +96,8 @@ public final class A39LoadTestRunner {
                 tokenElapsedNanos,
                 createWindowResult.elapsedNanos(),
                 totalElapsedNanos,
-                createWindowResult.requestResults());
+                createWindowResult.requestResults(),
+                options.duration());
     }
 
     private CreateWindowResult runCreateWindow(
@@ -105,28 +107,50 @@ public final class A39LoadTestRunner {
             String runId,
             Set<String> expectedCodes) throws Exception {
         int totalOrders = options.totalOrders();
+        Duration loadDuration = options.duration();
+        int ratePerSecond = options.ratePerSecond();
+        boolean hasDeadline = loadDuration != null && !loadDuration.isZero();
+        long deadlineNanos = hasDeadline ? System.nanoTime() + loadDuration.toNanos() : Long.MAX_VALUE;
+        long intervalNanos = ratePerSecond > 0 ? NANOS_PER_SECOND / ratePerSecond : 0L;
         int maxInFlight = Math.min(options.concurrency(), totalOrders);
         List<CreateRequestResult> results = new ArrayList<>(totalOrders);
         Duration progressInterval = options.progressInterval();
         long progressIntervalNanos = progressInterval == null ? 0L : progressInterval.toNanos();
         long windowStartNanos = System.nanoTime();
         long nextProgressNanos = windowStartNanos + progressIntervalNanos;
+        long nextSubmitSlotNanos = windowStartNanos;
 
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
             CompletionService<CreateRequestResult> completionService = new ExecutorCompletionService<>(executor);
             int submitted = 0;
-            for (; submitted < maxInFlight; submitted++) {
-                submitCreate(completionService, options, token, submitted + 1, usedNonces, runId, expectedCodes);
+            int inFlight = 0;
+
+            while (inFlight < maxInFlight && submitted < totalOrders && System.nanoTime() < deadlineNanos) {
+                paceSubmit(ratePerSecond, intervalNanos, nextSubmitSlotNanos);
+                if (ratePerSecond > 0) {
+                    nextSubmitSlotNanos += intervalNanos;
+                }
+                submitted++;
+                submitCreate(completionService, options, token, submitted, usedNonces, runId, expectedCodes);
+                inFlight++;
             }
 
-            while (results.size() < totalOrders) {
+            while (inFlight > 0) {
                 Future<CreateRequestResult> future = completionService.take();
                 CreateRequestResult result = completedResult(future, options.errorSampleLimit());
                 results.add(result);
-                if (submitted < totalOrders) {
+                inFlight--;
+
+                if (submitted < totalOrders && System.nanoTime() < deadlineNanos) {
+                    paceSubmit(ratePerSecond, intervalNanos, nextSubmitSlotNanos);
+                    if (ratePerSecond > 0) {
+                        nextSubmitSlotNanos += intervalNanos;
+                    }
                     submitted++;
                     submitCreate(completionService, options, token, submitted, usedNonces, runId, expectedCodes);
+                    inFlight++;
                 }
+
                 if (progressIntervalNanos > 0L && System.nanoTime() >= nextProgressNanos) {
                     logProgress(results, windowStartNanos);
                     nextProgressNanos += progressIntervalNanos;
@@ -134,6 +158,16 @@ public final class A39LoadTestRunner {
             }
         }
         return new CreateWindowResult(results, elapsedSince(windowStartNanos));
+    }
+
+    private static void paceSubmit(int ratePerSecond, long intervalNanos, long nextSubmitSlotNanos) {
+        if (ratePerSecond <= 0) {
+            return;
+        }
+        long waitNanos = nextSubmitSlotNanos - System.nanoTime();
+        if (waitNanos > 0L) {
+            LockSupport.parkNanos(waitNanos);
+        }
     }
 
     private void submitCreate(
@@ -259,7 +293,8 @@ public final class A39LoadTestRunner {
             long tokenElapsedNanos,
             long createElapsedNanos,
             long totalElapsedNanos,
-            List<CreateRequestResult> requestResults) {
+            List<CreateRequestResult> requestResults,
+            Duration loadDuration) {
         Map<String, Integer> businessCodeCounts = new LinkedHashMap<>();
         Map<String, Integer> errorCounts = new LinkedHashMap<>();
         List<String> errorSamples = new ArrayList<>();
@@ -316,7 +351,8 @@ public final class A39LoadTestRunner {
                 toMillis(createElapsedNanos),
                 toMillis(totalElapsedNanos),
                 qps(completed, createElapsedNanos),
-                startedAt);
+                startedAt,
+                loadDuration);
     }
 
     private LoadTestResult tokenFailureResult(
@@ -354,7 +390,8 @@ public final class A39LoadTestRunner {
                 0,
                 toMillis(totalElapsedNanos),
                 0.0d,
-                startedAt);
+                startedAt,
+                options.duration());
     }
 
     private void logProgress(List<CreateRequestResult> results, long windowStartNanos) {
@@ -448,13 +485,15 @@ public final class A39LoadTestRunner {
             long createElapsedMs,
             long totalElapsedMs,
             double qps,
-            Instant startedAt) {
+            Instant startedAt,
+            Duration loadDuration) {
 
         public LoadTestResult {
             baseUrl = Objects.requireNonNull(baseUrl, "baseUrl must not be null");
             runId = Objects.requireNonNull(runId, "runId must not be null");
             outOrderPrefix = Objects.requireNonNull(outOrderPrefix, "outOrderPrefix must not be null");
             requestTimeout = Objects.requireNonNull(requestTimeout, "requestTimeout must not be null");
+            loadDuration = loadDuration == null ? Duration.ZERO : loadDuration;
             businessCodeCounts = Collections.unmodifiableMap(new LinkedHashMap<>(businessCodeCounts));
             errorCounts = Collections.unmodifiableMap(new LinkedHashMap<>(errorCounts));
             errorSamples = List.copyOf(errorSamples);
@@ -467,7 +506,13 @@ public final class A39LoadTestRunner {
         }
 
         public int exitCode() {
-            return completed == totalOrders && failed == 0 ? 0 : 1;
+            if (failed != 0) {
+                return 1;
+            }
+            if (!loadDuration.isZero()) {
+                return 0;
+            }
+            return completed == totalOrders ? 0 : 1;
         }
 
         /**

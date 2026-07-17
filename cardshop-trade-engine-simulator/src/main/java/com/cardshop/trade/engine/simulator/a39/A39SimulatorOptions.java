@@ -47,7 +47,9 @@ public record A39SimulatorOptions(
         boolean uniqueAccounts,
         List<String> expectedCreateCodes,
         int errorSampleLimit,
-        Duration progressInterval) {
+        Duration progressInterval,
+        Duration duration,
+        int ratePerSecond) {
 
     public static final String DEFAULT_BASE_URL = "http://apitest.kalaiwang.com";
     public static final String DEFAULT_APP_ID = "A35cecjXS7lZ1W30NMN";
@@ -96,6 +98,13 @@ public record A39SimulatorOptions(
         outOrderPrefix = hasText(outOrderPrefix) ? outOrderPrefix.trim() : nextOutOrderSn(Clock.systemDefaultZone());
         expectedCreateCodes = normalizeCodes(expectedCreateCodes);
         progressInterval = progressInterval == null || progressInterval.isNegative() ? DEFAULT_PROGRESS_INTERVAL : progressInterval;
+        duration = duration == null ? Duration.ZERO : duration;
+        if (duration.isNegative()) {
+            throw new IllegalArgumentException("duration must not be negative");
+        }
+        if (ratePerSecond < 0) {
+            throw new IllegalArgumentException("ratePerSecond must not be negative");
+        }
         if (num < 1) {
             throw new IllegalArgumentException("num must be greater than 0");
         }
@@ -134,6 +143,15 @@ public record A39SimulatorOptions(
         String notifyUrl = mode == A39SimulatorMode.LOAD
                 ? optionPreservingBlank(options, env, "notify-url", "A39_NOTIFY_URL", notifyFallback)
                 : option(options, env, "notify-url", "A39_NOTIFY_URL", notifyFallback);
+        Duration loadDuration = duration(
+                option(options, env, "duration", "A39_LOAD_DURATION", "0"),
+                "duration");
+        if (loadDuration.isNegative()) {
+            throw new IllegalArgumentException("duration must not be negative");
+        }
+        int ratePerSecond = integer(option(options, env, "rate", "A39_LOAD_RATE", "0"), "rate");
+        boolean totalOrdersExplicit = options.containsKey("total-orders") || env.containsKey("A39_LOAD_TOTAL_ORDERS");
+        int totalOrders = resolveTotalOrders(options, env, loadDuration, ratePerSecond, totalOrdersExplicit);
         return new A39SimulatorOptions(
                 option(options, env, "base-url", "A39_BASE_URL", DEFAULT_BASE_URL),
                 option(options, env, "app-id", "A39_APP_ID", DEFAULT_APP_ID),
@@ -156,14 +174,39 @@ public record A39SimulatorOptions(
                 duration(option(options, env, "callback-wait", "A39_CALLBACK_WAIT", DEFAULT_CALLBACK_WAIT.toString()), "callback-wait"),
                 mode,
                 integer(option(options, env, "concurrency", "A39_LOAD_CONCURRENCY", String.valueOf(DEFAULT_LOAD_CONCURRENCY)), "concurrency"),
-                integer(option(options, env, "total-orders", "A39_LOAD_TOTAL_ORDERS", String.valueOf(DEFAULT_LOAD_TOTAL_ORDERS)), "total-orders"),
+                totalOrders,
                 duration(option(options, env, "request-timeout", "A39_REQUEST_TIMEOUT", DEFAULT_REQUEST_TIMEOUT.toString()), "request-timeout"),
                 option(options, env, "out-order-prefix", "A39_OUT_ORDER_PREFIX", nextOutOrderSn(clock)),
                 bool(option(options, env, "unique-accounts", "A39_UNIQUE_ACCOUNTS", "false")),
                 codes(optionPreservingBlank(options, env, "expected-create-codes", "A39_EXPECTED_CREATE_CODES", "200,510")),
                 integer(option(options, env, "error-sample-limit", "A39_ERROR_SAMPLE_LIMIT", String.valueOf(DEFAULT_ERROR_SAMPLE_LIMIT)), "error-sample-limit"),
-                duration(option(options, env, "progress-interval", "A39_LOAD_PROGRESS_INTERVAL", DEFAULT_PROGRESS_INTERVAL.toString()), "progress-interval")
+                duration(option(options, env, "progress-interval", "A39_LOAD_PROGRESS_INTERVAL", DEFAULT_PROGRESS_INTERVAL.toString()), "progress-interval"),
+                loadDuration,
+                ratePerSecond
         );
+    }
+
+    private static int resolveTotalOrders(
+            Map<String, String> options,
+            Map<String, String> env,
+            Duration loadDuration,
+            int ratePerSecond,
+            boolean totalOrdersExplicit) {
+        if (totalOrdersExplicit) {
+            return integer(option(options, env, "total-orders", "A39_LOAD_TOTAL_ORDERS", null), "total-orders");
+        }
+        if (!loadDuration.isZero()) {
+            if (ratePerSecond > 0) {
+                long seconds = Math.max(1L, loadDuration.toSeconds());
+                long computed = (long) ratePerSecond * seconds;
+                return (int) Math.min(computed, Integer.MAX_VALUE - 1L);
+            }
+            throw new IllegalArgumentException(
+                    "load mode with --duration requires --rate or --total-orders (or A39_LOAD_RATE / A39_LOAD_TOTAL_ORDERS)");
+        }
+        return integer(
+                option(options, env, "total-orders", "A39_LOAD_TOTAL_ORDERS", String.valueOf(DEFAULT_LOAD_TOTAL_ORDERS)),
+                "total-orders");
     }
 
     public static String usage() {
@@ -199,19 +242,23 @@ public record A39SimulatorOptions(
                 Load mode:
                   --concurrency 10
                   --total-orders 200
+                  --duration 0
+                  --rate 0
                   --out-order-prefix PERF-A39
                   --unique-accounts false
                   --expected-create-codes 200,510
                   --error-sample-limit 20
                   --progress-interval 10s
                   load mode uses blank notify_url and skips query/callback waiting.
+                  --duration sets load window length (0 disables, use total-orders only).
+                  --rate sets target create QPS (0 means saturate concurrency).
 
                 Environment fallbacks:
                   A39_MODE A39_BASE_URL A39_APP_ID A39_APP_SECRET A39_AES_KEY A39_PRODUCT_ID A39_ACCOUNT
                   A39_NUM A39_ORDER_PRICE A39_PRODUCT_TYPE A39_REQUEST_SM4 A39_REQUEST_TIMEOUT
                   A39_NOTIFY_URL A39_OUT_ORDER_SN A39_NONCE_STR A39_TIMESTAMP
                   A39_CALLBACK_BIND_HOST A39_CALLBACK_PORT A39_QUERY_ATTEMPTS A39_QUERY_INTERVAL A39_CALLBACK_WAIT
-                  A39_LOAD_CONCURRENCY A39_LOAD_TOTAL_ORDERS A39_OUT_ORDER_PREFIX A39_UNIQUE_ACCOUNTS A39_EXPECTED_CREATE_CODES A39_ERROR_SAMPLE_LIMIT A39_LOAD_PROGRESS_INTERVAL
+                  A39_LOAD_CONCURRENCY A39_LOAD_TOTAL_ORDERS A39_LOAD_DURATION A39_LOAD_RATE A39_OUT_ORDER_PREFIX A39_UNIQUE_ACCOUNTS A39_EXPECTED_CREATE_CODES A39_ERROR_SAMPLE_LIMIT A39_LOAD_PROGRESS_INTERVAL
 
                 Scenario example:
                   mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \\
@@ -220,13 +267,17 @@ public record A39SimulatorOptions(
                 Load example:
                   mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \\
                     -Dexec.args="--mode load --concurrency 10 --total-orders 200 --request-timeout 10s"
+
+                Load example with duration and rate:
+                  mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \\
+                    -Dexec.args="--mode load --concurrency 10 --duration 10m --rate 50 --request-timeout 10s"
                 """;
     }
 
     public String sanitizedSummary() {
-        return "mode=%s, baseUrl=%s, appId=%s, productId=%s, account=%s, outOrderSn=%s, notifyUrl=%s, queryAttempts=%d, requestSm4=%s, concurrency=%d, totalOrders=%d, requestTimeout=%s, uniqueAccounts=%s"
+        return "mode=%s, baseUrl=%s, appId=%s, productId=%s, account=%s, outOrderSn=%s, notifyUrl=%s, queryAttempts=%d, requestSm4=%s, concurrency=%d, totalOrders=%d, duration=%s, ratePerSecond=%d, requestTimeout=%s, uniqueAccounts=%s"
                 .formatted(mode, baseUrl, appId, productId, mask(account), outOrderSn, notifyUrl, queryAttempts,
-                        requestSm4Enabled, concurrency, totalOrders, requestTimeout, uniqueAccounts);
+                        requestSm4Enabled, concurrency, totalOrders, duration, ratePerSecond, requestTimeout, uniqueAccounts);
     }
 
     private static Map<String, String> parseArgs(String[] args) {

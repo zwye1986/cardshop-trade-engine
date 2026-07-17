@@ -196,7 +196,9 @@ class A39SimulatorOptionsTest {
                 false,
                 List.of("200", "510"),
                 20,
-                Duration.ZERO
+                Duration.ZERO,
+                Duration.ZERO,
+                0
         ))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("notifyUrl must not be blank in scenario mode");
@@ -235,6 +237,45 @@ class A39SimulatorOptionsTest {
 
         assertThat(options.mode()).isEqualTo(A39SimulatorMode.SCENARIO);
         assertThat(options.notifyUrl()).isEqualTo("http://127.0.0.1:19039/callback/order");
+    }
+
+    @Test
+    void durationAndRateAutoComputeTotalOrdersWhenTotalOrdersOmitted() {
+        A39SimulatorOptions options = A39SimulatorOptions.parse(
+                new String[]{"--mode", "load", "--duration", "10m", "--rate", "50"},
+                secretEnv(),
+                FIXED_CLOCK);
+
+        assertThat(options.duration()).isEqualTo(Duration.ofMinutes(10));
+        assertThat(options.ratePerSecond()).isEqualTo(50);
+        assertThat(options.totalOrders()).isEqualTo(30_000);
+    }
+
+    @Test
+    void durationWithoutRateOrTotalOrdersIsRejected() {
+        assertThatThrownBy(() -> A39SimulatorOptions.parse(
+                new String[]{"--mode", "load", "--duration", "10m"},
+                secretEnv(),
+                FIXED_CLOCK))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("requires --rate or --total-orders");
+    }
+
+    @Test
+    void negativeDurationAndRateAreRejected() {
+        assertThatThrownBy(() -> A39SimulatorOptions.parse(
+                new String[]{"--mode", "load", "--duration", "-1s"},
+                secretEnv(),
+                FIXED_CLOCK))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("duration must not be negative");
+
+        assertThatThrownBy(() -> A39SimulatorOptions.parse(
+                new String[]{"--mode", "load", "--rate", "-1"},
+                secretEnv(),
+                FIXED_CLOCK))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("ratePerSecond must not be negative");
     }
 
     @Test
@@ -284,6 +325,8 @@ class A39SimulatorOptionsTest {
                 .contains("--notify-url")
                 .contains("--concurrency")
                 .contains("--total-orders")
+                .contains("--duration")
+                .contains("--rate")
                 .contains("--request-timeout")
                 .contains("--unique-accounts")
                 .contains("--expected-create-codes")
@@ -314,6 +357,8 @@ class A39SimulatorOptionsTest {
                         "A39_CALLBACK_WAIT",
                         "A39_LOAD_CONCURRENCY",
                         "A39_LOAD_TOTAL_ORDERS",
+                        "A39_LOAD_DURATION",
+                        "A39_LOAD_RATE",
                         "A39_REQUEST_TIMEOUT",
                         "A39_OUT_ORDER_PREFIX",
                         "A39_UNIQUE_ACCOUNTS",

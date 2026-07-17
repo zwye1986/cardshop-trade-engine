@@ -23,7 +23,7 @@
 
 压测运行先完成一次 token 获取；token 获取失败时不发送任何下单请求，并以非零退出码结束。token 获取耗时单独打印，不纳入下单吞吐和延迟统计。
 
-压测器以固定并发模型发送总数固定的请求：任意时刻最多保留 `concurrency` 个下单请求在途，已完成请求立即补充下一笔，直到达到 `total-orders`。实现可使用 JDK 21 虚拟线程和有界提交；不得为每笔请求创建不受限制的平台线程。
+压测器以固定并发模型发送请求：任意时刻最多保留 `concurrency` 个下单请求在途，已完成请求立即补充下一笔。默认按 `total-orders` 计数结束；若 `--duration`>0，则在窗口截止时停止新提交并排空在途请求。若 `--rate`>0，每次提交前按 `1/rate` 秒间隔节流，并发仍限制最大在途数。
 
 每笔请求必须生成独立的：
 
@@ -42,7 +42,9 @@
 | --- | --- | --- | --- |
 | `--mode` | `A39_MODE` | `scenario` | `scenario` 为单笔联调；`load` 为固定并发下单压测。 |
 | `--concurrency` | `A39_LOAD_CONCURRENCY` | `10` | `load` 模式最大在途下单数，必须大于 0。 |
-| `--total-orders` | `A39_LOAD_TOTAL_ORDERS` | `200` | `load` 模式总下单数，必须大于 0。 |
+| `--total-orders` | `A39_LOAD_TOTAL_ORDERS` | `200` | `load` 模式总下单数，必须大于 0；未显式设置且 `--duration`>0 时由 `--rate`×时长自动推算。 |
+| `--duration` | `A39_LOAD_DURATION` | `0` | 压测窗口时长；`0` 表示禁用，仅按 `--total-orders` 计数结束。 |
+| `--rate` | `A39_LOAD_RATE` | `0` | 目标下单 QPS；`0` 表示不限速、按并发饱和提交。 |
 | `--request-timeout` | `A39_REQUEST_TIMEOUT` | `10s` | token、下单、查单的单个 HTTP 请求超时。 |
 | `--out-order-prefix` | `A39_OUT_ORDER_PREFIX` | 自动生成 | 压测订单号前缀；工具还会附加运行标识和序号。 |
 | `--expected-create-codes` | `A39_EXPECTED_CREATE_CODES` | `200,510` | 逗号分隔的可接受下单业务码。`510` 表示已异步受理，按本期定义计为成功。 |
@@ -67,7 +69,7 @@
 - 客户端侧耗时拆分（`timing.prepare` / `timing.untilHeaders` / `timing.bodyRead` / `timing.parse` / `timing.clientTotal`）的 min/max/p50/p95/p99。其中 `untilHeaders` 在 JDK HttpClient 下聚合 DNS、建连、TLS、写请求与等响应头，无法再细拆；用于与 nginx upstream timing 对照，区分客户端等待与服务端处理。
 - 有限错误样本和最终退出结论。
 
-只有所有请求均返回 `expected-create-codes` 中的业务码且没有 HTTP/网络异常时返回退出码 `0`；任一失败返回非零退出码，但仍等待已提交请求结束并打印完整报告。性能阈值判定、自动阶梯加压、HTML/JSON 报告和长时间稳定性测试不进入第一期。
+只有所有请求均返回 `expected-create-codes` 中的业务码且没有 HTTP/网络异常时返回退出码 `0`；任一失败返回非零退出码，但仍等待已提交请求结束并打印完整报告。固定 `--total-orders` 模式下还需 `completed == totalOrders`；`--duration`>0 时只要无失败即视为成功（窗口截止可能未提交全部计划订单）。性能阈值判定、自动阶梯加压、HTML/JSON 报告和长时间稳定性测试不进入第一期。
 
 ## 客户端侧耗时拆分
 
@@ -112,4 +114,4 @@ README 中现有 `notify_url` 说明会移入该独立章节：单笔模式需�
 
 - 不对生产环境或真实供应商发压。
 - 不把供应商派单、MQ 消费、订单终态或回调接收纳入本期吞吐统计。
-- 不实现固定 QPS、阶梯加压、持续时长压测、分布式压测或自动资源指标采集；这些在固定并发基线稳定后单独设计。
+- 不实现阶梯加压、分布式压测或自动资源指标采集；固定 QPS（`--rate`）与固定时长（`--duration`）已在 load 模式支持，更复杂的加压策略在基线稳定后单独设计。

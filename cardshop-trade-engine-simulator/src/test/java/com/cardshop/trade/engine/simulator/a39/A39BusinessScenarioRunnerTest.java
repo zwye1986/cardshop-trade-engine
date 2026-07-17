@@ -87,7 +87,9 @@ class A39BusinessScenarioRunnerTest {
                 false,
                 List.of("200", "510"),
                 20,
-                Duration.ZERO
+                Duration.ZERO,
+                Duration.ZERO,
+                0
         );
     }
 
