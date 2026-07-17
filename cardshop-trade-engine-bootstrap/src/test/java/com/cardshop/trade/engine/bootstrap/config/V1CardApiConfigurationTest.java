@@ -15,18 +15,26 @@ import com.cardshop.trade.engine.application.v1.IssueV1TokenUseCase;
 import com.cardshop.trade.engine.application.v1.QueryRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
+import com.cardshop.trade.engine.application.v1.V1MerchantConfigPreheatPort;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
 import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
+import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.ApplicationRunner;
+import org.springframework.boot.DefaultApplicationArguments;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 
 import java.lang.reflect.Proxy;
+import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.Executor;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * V1CardApiConfiguration 装配正确性测试。
@@ -167,6 +175,77 @@ class V1CardApiConfigurationTest {
                 });
     }
 
+    @Test
+    void doesNotRegisterMerchantConfigPreheatRunnerWhenDisabled() {
+        contextRunner.run(context -> assertThat(context).doesNotHaveBean("v1MerchantConfigPreheatRunner"));
+    }
+
+    @Test
+    void registersMerchantConfigPreheatRunnerWhenEnabledAndRunsConfiguredOrgCodes() {
+        RecordingMerchantConfigPreheatPort preheatPort = new RecordingMerchantConfigPreheatPort();
+        contextRunner
+                .withPropertyValues(
+                        "trade.engine.v1.merchant-config-preheat.enabled=true",
+                        "trade.engine.v1.merchant-config-preheat.org-codes[0]=A39")
+                .withBean(V1MerchantProfilePort.class, () -> (appId, orgCode) -> Optional.of(
+                        new com.cardshop.trade.engine.application.v1.V1MerchantProfile(
+                                "app-A39", orgCode, "secret", true, 54L)))
+                .withBean(V1MerchantConfigPreheatPort.class, () -> preheatPort)
+                .run(context -> {
+                    assertThat(context).hasBean("v1MerchantConfigPreheatRunner");
+
+                    context.getBean("v1MerchantConfigPreheatRunner", ApplicationRunner.class)
+                            .run(new DefaultApplicationArguments());
+
+                    assertThat(preheatPort.orgCodes).containsExactly("A39");
+                });
+    }
+
+    @Test
+    void merchantConfigPreheatRunnerFailsFastWhenDependenciesAreMissing() {
+        contextRunner
+                .withPropertyValues(
+                        "trade.engine.v1.merchant-config-preheat.enabled=true",
+                        "trade.engine.v1.merchant-config-preheat.org-codes[0]=A39",
+                        "trade.engine.v1.merchant-config-preheat.fail-on-error=true")
+                .run(context -> {
+                    ApplicationRunner runner = context.getBean("v1MerchantConfigPreheatRunner", ApplicationRunner.class);
+
+                    assertThatThrownBy(() -> runner.run(new DefaultApplicationArguments()))
+                            .isInstanceOf(IllegalStateException.class)
+                            .hasMessageContaining("V1MerchantProfilePort")
+                            .hasMessageContaining("V1MerchantConfigPreheatPort");
+                });
+    }
+
+    @Test
+    void merchantConfigPreheatRunnerFailsFastWhenOrgCodesAreEmptyAndFailOnError() {
+        contextRunner
+                .withPropertyValues(
+                        "trade.engine.v1.merchant-config-preheat.enabled=true",
+                        "trade.engine.v1.merchant-config-preheat.fail-on-error=true")
+                .run(context -> {
+                    ApplicationRunner runner = context.getBean("v1MerchantConfigPreheatRunner", ApplicationRunner.class);
+
+                    assertThatThrownBy(() -> runner.run(new DefaultApplicationArguments()))
+                            .isInstanceOf(IllegalStateException.class)
+                            .hasMessageContaining("白名单为空");
+                });
+    }
+
+    @Test
+    void merchantConfigPreheatRunnerContinuesWhenOrgCodesAreEmptyAndFailOnErrorDisabled() {
+        contextRunner
+                .withPropertyValues(
+                        "trade.engine.v1.merchant-config-preheat.enabled=true",
+                        "trade.engine.v1.merchant-config-preheat.fail-on-error=false")
+                .run(context -> {
+                    ApplicationRunner runner = context.getBean("v1MerchantConfigPreheatRunner", ApplicationRunner.class);
+
+                    runner.run(new DefaultApplicationArguments());
+                });
+    }
+
     private static <T> T interfaceProxy(Class<T> interfaceType) {
         return interfaceType.cast(Proxy.newProxyInstance(
                 interfaceType.getClassLoader(),
@@ -187,12 +266,8 @@ class V1CardApiConfigurationTest {
     }
 
     @org.springframework.boot.test.context.TestConfiguration
+    @EnableConfigurationProperties(TradeEngineProperties.class)
     static class StubBeans {
-        @Bean
-        com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties tradeEngineProperties() {
-            return new com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties();
-        }
-
         /**
          * 协议预检 stub，仅满足 Bean 依赖链，不接受方法调用。
          */
@@ -216,6 +291,16 @@ class V1CardApiConfigurationTest {
         @Qualifier("tradeDbTaskExecutor")
         Executor tradeDbTaskExecutor() {
             return Runnable::run;
+        }
+    }
+
+    private static final class RecordingMerchantConfigPreheatPort implements V1MerchantConfigPreheatPort {
+
+        private final List<String> orgCodes = new java.util.ArrayList<>();
+
+        @Override
+        public void preheat(com.cardshop.trade.engine.application.v1.V1MerchantProfile profile) {
+            orgCodes.add(profile.orgCode());
         }
     }
 

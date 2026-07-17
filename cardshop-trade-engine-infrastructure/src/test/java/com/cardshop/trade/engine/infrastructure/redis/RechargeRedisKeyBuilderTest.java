@@ -131,6 +131,8 @@ class RechargeRedisKeyBuilderTest {
     void productSelectionKeysShareOrgHashTagWithSelectedChildConfig() {
         var builder = new RechargeRedisKeyBuilder("cardshop:trade", 128);
 
+        assertThat(builder.merchantConfigKey("A39"))
+                .isEqualTo("cardshop:trade:recharge:{A39}:merchant:config");
         assertThat(builder.productSelectionKey("A39", "80100022"))
                 .isEqualTo("cardshop:trade:recharge:{A39}:product-selection:80100022");
         assertThat(builder.productSelectionRefreshLockKey("A39", "80100022"))

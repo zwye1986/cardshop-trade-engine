@@ -35,8 +35,12 @@ import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePo
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.recharge.V1MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.application.v1.CachedV1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.CachedV1ProductCandidateSelector;
+import com.cardshop.trade.engine.application.v1.V1CreateOrderStageObserver;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfileCacheObserver;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfileCacheSettings;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCacheObserver;
 import com.cardshop.trade.engine.application.v1.V1ProductCacheSettings;
@@ -251,14 +255,17 @@ public class TradeEngineInfrastructureConfiguration {
     @Bean
     @ConditionalOnMissingBean(RechargeRedisSessionFactory.class)
     public RechargeRedisSessionFactory rechargeRedisSessionFactory(
-            ObjectProvider<LettuceConnectionFactory> connectionFactoryProvider) {
+            ObjectProvider<LettuceConnectionFactory> connectionFactoryProvider,
+            ObjectProvider<V1CreateOrderStageObserver> createOrderStageObserverProvider) {
         LettuceConnectionFactory connectionFactory = connectionFactoryProvider.getIfAvailable();
         if (connectionFactory == null) {
             return () -> {
                 throw new IllegalStateException("LettuceConnectionFactory 未装配");
             };
         }
-        return new LettuceRechargeRedisSessionFactory(connectionFactory);
+        return new LettuceRechargeRedisSessionFactory(
+                connectionFactory,
+                () -> createOrderStageObserverProvider.getIfAvailable(V1CreateOrderStageObserver::noop));
     }
 
     @Bean
@@ -389,12 +396,33 @@ public class TradeEngineInfrastructureConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean(V1MerchantProfilePort.class)
-    public V1MerchantProfilePort v1MerchantProfilePort(ObjectProvider<V1MerchantProfileReader> readerProvider) {
+    public V1MerchantProfilePort v1MerchantProfilePort(
+            ObjectProvider<V1MerchantProfileReader> readerProvider,
+            TradeEngineProperties properties,
+            Clock clock,
+            ObjectProvider<V1MerchantProfileCacheObserver> observerProvider) {
         V1MerchantProfileReader reader = readerProvider.getIfAvailable();
         if (reader == null) {
             return unavailableV1MerchantProfilePort();
         }
-        return new MybatisV1MerchantProfileAdapter(reader);
+        V1MerchantProfilePort mybatisPort = new MybatisV1MerchantProfileAdapter(reader);
+        TradeEngineProperties.V1.MerchantProfileCache cache = properties.getV1().getMerchantProfileCache();
+        if (!cache.isEnabled()) {
+            return mybatisPort;
+        }
+        /*
+         * 参见详细设计「3. API/V1 接入层」：短 TTL 本地缓存降低 prepare 每单打 mc_ext_depart，
+         * 避免与异步落库争抢 Hikari；aesKey 仅存本进程内存，不写入 Redis。
+         */
+        return new CachedV1MerchantProfilePort(
+                mybatisPort,
+                new V1MerchantProfileCacheSettings(
+                        cache.isEnabled(),
+                        cache.getTtl(),
+                        cache.getNegativeTtl(),
+                        cache.getMaximumSize()),
+                clock,
+                () -> observerProvider.getIfAvailable(V1MerchantProfileCacheObserver::noop));
     }
 
     /**

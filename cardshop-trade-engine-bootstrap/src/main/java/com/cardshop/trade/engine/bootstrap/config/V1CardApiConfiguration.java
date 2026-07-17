@@ -23,6 +23,11 @@ import com.cardshop.trade.engine.application.v1.QueryRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
+import com.cardshop.trade.engine.application.v1.V1CreateOrderStageObserver;
+import com.cardshop.trade.engine.application.v1.V1MerchantConfigPreheatPort;
+import com.cardshop.trade.engine.application.v1.V1MerchantConfigPreheatResult;
+import com.cardshop.trade.engine.application.v1.V1MerchantConfigPreheatService;
+import com.cardshop.trade.engine.application.v1.V1MerchantConfigPreheatSettings;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
 import com.cardshop.trade.engine.application.v1.V1ProductConfigPreheatPort;
@@ -30,9 +35,13 @@ import com.cardshop.trade.engine.application.v1.V1TokenStorePort;
 import com.cardshop.trade.engine.domain.service.RequestHashCanonicalizer;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Clock;
 import java.time.Duration;
@@ -46,6 +55,8 @@ import java.util.concurrent.CompletableFuture;
  */
 @Configuration(proxyBeanMethods = false)
 public class V1CardApiConfiguration {
+
+    private static final Logger log = LoggerFactory.getLogger(V1CardApiConfiguration.class);
 
     @Bean
     public V1RoutingSettings v1RoutingSettings(TradeEngineProperties properties) {
@@ -86,6 +97,66 @@ public class V1CardApiConfiguration {
     }
 
     /**
+     * 启动期按白名单预热 V1 商户 Redis 门禁配置。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。该 runner 只在
+     * {@code trade.engine.v1.merchant-config-preheat.enabled=true} 时注册；执行时晚绑定商户资料端口和 Redis
+     * 预热端口，避免配置类解析顺序导致真实端口尚未出现就固化为 noop。开启后若白名单为空、依赖缺失或任一商户预热失败，
+     * 且 {@code fail-on-error=true}，必须阻止应用启动，避免“以为已预热”但 Lua 所需 {@code merchant:config} 仍缺失。
+     */
+    @Bean
+    @ConditionalOnProperty(
+            prefix = "trade.engine.v1.merchant-config-preheat",
+            name = "enabled",
+            havingValue = "true")
+    public ApplicationRunner v1MerchantConfigPreheatRunner(
+            TradeEngineProperties properties,
+            ObjectProvider<V1MerchantProfilePort> merchantProfilePortProvider,
+            ObjectProvider<V1MerchantConfigPreheatPort> merchantConfigPreheatPortProvider) {
+        V1MerchantConfigPreheatSettings settings = merchantConfigPreheatSettings(properties);
+        return args -> {
+            if (settings.normalizedOrgCodes().isEmpty()) {
+                String message = "V1商户配置启动预热已开启但白名单为空，无法补齐 merchant:config";
+                if (settings.failOnError()) {
+                    throw new IllegalStateException(message);
+                }
+                log.error(message);
+                return;
+            }
+            V1MerchantProfilePort merchantProfilePort = merchantProfilePortProvider.getIfAvailable();
+            V1MerchantConfigPreheatPort preheatPort = merchantConfigPreheatPortProvider.getIfAvailable();
+            if (merchantProfilePort == null || preheatPort == null) {
+                String message = "V1商户配置启动预热缺少依赖: V1MerchantProfilePort="
+                        + (merchantProfilePort != null)
+                        + ", V1MerchantConfigPreheatPort="
+                        + (preheatPort != null);
+                if (settings.failOnError()) {
+                    throw new IllegalStateException(message);
+                }
+                log.error(message);
+                return;
+            }
+            V1MerchantConfigPreheatResult result = new V1MerchantConfigPreheatService(
+                    merchantProfilePort,
+                    preheatPort,
+                    settings)
+                    .preheatConfiguredMerchants();
+            log.info("V1商户配置启动预热结束 requested={}, succeeded={}, failed={}",
+                    result.requested(),
+                    result.succeeded(),
+                    result.failed());
+        };
+    }
+
+    private static V1MerchantConfigPreheatSettings merchantConfigPreheatSettings(TradeEngineProperties properties) {
+        TradeEngineProperties.V1.MerchantConfigPreheat preheat = properties.getV1().getMerchantConfigPreheat();
+        return new V1MerchantConfigPreheatSettings(
+                preheat.isEnabled(),
+                preheat.getOrgCodes(),
+                preheat.isFailOnError());
+    }
+
+    /**
      * 创建 V1 直充下单用例。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。
@@ -110,7 +181,8 @@ public class V1CardApiConfiguration {
             RechargeOrderIdGenerator orderIdGenerator,
             Clock clock,
             V1RechargeAcceptSettings settings,
-            @org.springframework.beans.factory.annotation.Qualifier("tradeDbTaskExecutor") java.util.concurrent.Executor tradeDbTaskExecutor) {
+            @org.springframework.beans.factory.annotation.Qualifier("tradeDbTaskExecutor") java.util.concurrent.Executor tradeDbTaskExecutor,
+            ObjectProvider<V1CreateOrderStageObserver> createOrderStageObserverProvider) {
         V1MerchantProfilePort merchantProfilePort = merchantProfilePortProvider.getIfAvailable();
         V1ProductCandidateSelector productCandidateSelector = productCandidateSelectorProvider.getIfAvailable();
         AcceptRechargeOrderPort acceptRechargeOrderPort = acceptRechargeOrderPortProvider.getIfAvailable();
@@ -137,7 +209,8 @@ public class V1CardApiConfiguration {
                 orderIdGenerator,
                 clock,
                 settings,
-                tradeDbTaskExecutor);
+                tradeDbTaskExecutor,
+                () -> createOrderStageObserverProvider.getIfAvailable(V1CreateOrderStageObserver::noop));
     }
 
     @Bean

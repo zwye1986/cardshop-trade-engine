@@ -37,11 +37,11 @@ public final class V1Sm3Signer {
     );
 
     public Signature signCreateOrder(Map<String, ?> payload, String aesKey) {
-        return signSelected(payload, aesKey, CREATE_ORDER_SIGN_FIELDS);
+        return signSelected(payload, aesKey, CREATE_ORDER_SIGN_FIELDS, true);
     }
 
     public Signature signQueryOrder(Map<String, ?> payload, String aesKey) {
-        return signSelected(payload, aesKey, QUERY_ORDER_SIGN_FIELDS);
+        return signSelected(payload, aesKey, QUERY_ORDER_SIGN_FIELDS, false);
     }
 
     public Signature signCallback(Map<String, ?> payload, String aesKey) {
@@ -66,13 +66,13 @@ public final class V1Sm3Signer {
         return hex(output);
     }
 
-    private Signature signSelected(Map<String, ?> payload, String aesKey, List<String> fieldNames) {
+    private Signature signSelected(Map<String, ?> payload, String aesKey, List<String> fieldNames, boolean keepEmptyValues) {
         Objects.requireNonNull(payload, "payload must not be null");
         TreeMap<String, String> params = new TreeMap<>();
         for (String fieldName : fieldNames) {
             Object value = payload.get(fieldName);
-            if (hasText(value)) {
-                params.put(fieldName, String.valueOf(value));
+            if (keepEmptyValues ? payload.containsKey(fieldName) : hasText(value)) {
+                params.put(fieldName, value == null ? "null" : String.valueOf(value));
             }
         }
         params.put(AES_KEY_FIELD, requireText(aesKey, "aesKey"));

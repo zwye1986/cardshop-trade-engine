@@ -75,6 +75,12 @@ trade:
     fault-injection:
       # 生产/预生产禁止打开故障注入。
       enabled: false
+    v1:
+      merchant-config-preheat:
+        # 默认不写 Redis；联调或灰度商户基线缺失时按白名单显式开启。
+        enabled: false
+        org-codes: []
+        fail-on-error: true
     xxl-job:
       # 调度中心未完成生产配置前保持关闭，避免补偿任务误跑。
       enabled: false

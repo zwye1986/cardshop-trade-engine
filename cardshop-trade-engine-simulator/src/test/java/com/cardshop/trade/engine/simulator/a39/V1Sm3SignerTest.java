@@ -39,6 +39,26 @@ class V1Sm3SignerTest {
     }
 
     @Test
+    void createOrderSignatureKeepsBlankNotifyUrlForLoadMode() {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("product_id", "80100022");
+        payload.put("out_order_sn", "PERF-A39-1");
+        payload.put("account", "18186222336");
+        payload.put("timestamp", "1783224958");
+        payload.put("nonce_str", "JANwG4jwiHGMaNc4EtPdbmkKxBhY7daR");
+        payload.put("notify_url", "");
+        payload.put("num", 1);
+        payload.put("order_price", 0);
+        payload.put("product_type", 1);
+
+        V1Sm3Signer.Signature signature = signer.signCreateOrder(payload, "AES-KEY");
+
+        assertThat(signature.source()).isEqualTo(
+                "account=18186222336,aesKey=AES-KEY,nonce_str=JANwG4jwiHGMaNc4EtPdbmkKxBhY7daR,"
+                        + "notify_url=,num=1,out_order_sn=PERF-A39-1,product_id=80100022,timestamp=1783224958");
+    }
+
+    @Test
     void querySignatureUsesLegacyQueryFieldSet() {
         Map<String, Object> payload = Map.of(
                 "out_order_sn", "OUT-1",

@@ -44,7 +44,7 @@ public final class RechargeRedisKeyBuilder {
                 key("recharge:" + orgTag + ":order:event_index:" + command.orderId()),
                 key("recharge:" + orgTag + ":order:event:" + command.orderId() + ":1"),
                 key("recharge:" + orgTag + ":nonce:" + command.nonceStr()),
-                key("recharge:" + orgTag + ":merchant:config"),
+                merchantConfigKey(command.orgCode()),
                 productConfigKey(command.orgCode(), command.selectedProductId()),
                 key("recharge:" + orgTag + ":balance:repairing_lock"),
                 key("recharge:persist:pending:org_index:" + bucket),
@@ -168,6 +168,16 @@ public final class RechargeRedisKeyBuilder {
      */
     public String balanceRepairingLockKey(String orgCode) {
         return key("recharge:" + orgTag(orgCode) + ":balance:repairing_lock");
+    }
+
+    /**
+     * 构造商户动态配置 hash key。
+     *
+     * <p>参见详细设计「6. Redis 受理与缓存层」。启动白名单预热、缓存修复和接单 Lua 必须共享该方法，
+     * 保证 {@code merchant:config} 与余额、订单、商品配置处于同一个 {@code {orgCode}} hash tag。
+     */
+    public String merchantConfigKey(String orgCode) {
+        return key("recharge:" + orgTag(orgCode) + ":merchant:config");
     }
 
     /**

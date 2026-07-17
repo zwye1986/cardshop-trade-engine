@@ -799,6 +799,16 @@ public class TradeEngineProperties {
         private final ProductCache productCache = new ProductCache();
 
         /**
+         * 商户安全资料进程内短 TTL 本地缓存参数。
+         */
+        private final MerchantProfileCache merchantProfileCache = new MerchantProfileCache();
+
+        /**
+         * 商户配置启动白名单预热参数。
+         */
+        private final MerchantConfigPreheat merchantConfigPreheat = new MerchantConfigPreheat();
+
+        /**
          * 加解密和验签密钥来源配置。
          */
         private final Crypto crypto = new Crypto();
@@ -883,6 +893,14 @@ public class TradeEngineProperties {
             return productCache;
         }
 
+        public MerchantProfileCache getMerchantProfileCache() {
+            return merchantProfileCache;
+        }
+
+        public MerchantConfigPreheat getMerchantConfigPreheat() {
+            return merchantConfigPreheat;
+        }
+
         /**
          * V1 商品选品缓存参数。
          *
@@ -944,6 +962,100 @@ public class TradeEngineProperties {
 
             public void setNegativeCacheTtl(Duration negativeCacheTtl) {
                 this.negativeCacheTtl = negativeCacheTtl;
+            }
+        }
+
+        /**
+         * V1 商户安全资料进程内短 TTL 缓存参数。
+         *
+         * <p>参见详细设计「3. API/V1 接入层」。默认开启，用于降低下单 prepare 对
+         * {@code mc_ext_depart} 的每单直读；不把 aesKey 写入 Redis。
+         */
+        public static class MerchantProfileCache {
+
+            private boolean enabled = true;
+            private Duration ttl = Duration.ofSeconds(60);
+            private Duration negativeTtl = Duration.ofSeconds(10);
+            private int maximumSize = 1024;
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public Duration getTtl() {
+                return ttl;
+            }
+
+            public void setTtl(Duration ttl) {
+                this.ttl = ttl;
+            }
+
+            public Duration getNegativeTtl() {
+                return negativeTtl;
+            }
+
+            public void setNegativeTtl(Duration negativeTtl) {
+                this.negativeTtl = negativeTtl;
+            }
+
+            public int getMaximumSize() {
+                return maximumSize;
+            }
+
+            public void setMaximumSize(int maximumSize) {
+                this.maximumSize = maximumSize;
+            }
+        }
+
+        /**
+         * V1 商户配置启动预热参数。
+         *
+         * <p>参见详细设计「6. Redis 受理与缓存层」。默认关闭，只允许按显式白名单写入
+         * {@code merchant:config}，避免应用启动时意外扫描全量旧库或写入未灰度商户。
+         */
+        public static class MerchantConfigPreheat {
+
+            /**
+             * 是否在应用启动时执行商户配置预热。
+             */
+            private boolean enabled = false;
+
+            /**
+             * 需要预热的商户机构编码白名单。
+             */
+            private List<String> orgCodes = new ArrayList<>();
+
+            /**
+             * 预热失败是否阻止应用启动。
+             */
+            private boolean failOnError = true;
+
+            public boolean isEnabled() {
+                return enabled;
+            }
+
+            public void setEnabled(boolean enabled) {
+                this.enabled = enabled;
+            }
+
+            public List<String> getOrgCodes() {
+                return orgCodes;
+            }
+
+            public void setOrgCodes(List<String> orgCodes) {
+                this.orgCodes = orgCodes == null ? new ArrayList<>() : new ArrayList<>(orgCodes);
+            }
+
+            public boolean isFailOnError() {
+                return failOnError;
+            }
+
+            public void setFailOnError(boolean failOnError) {
+                this.failOnError = failOnError;
             }
         }
 

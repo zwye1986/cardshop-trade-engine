@@ -8,6 +8,7 @@ import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcilePort;
 import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.application.v1.V1MerchantConfigPreheatPort;
 import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceReconcileAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderQueryAdapter;
@@ -21,6 +22,7 @@ import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeCacheRepairAd
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPendingPersistOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotAdapter;
+import com.cardshop.trade.engine.infrastructure.redis.RedisV1MerchantConfigPreheatAdapter;
 import java.time.Clock;
 import java.time.Duration;
 import org.springframework.beans.factory.ObjectProvider;
@@ -141,6 +143,27 @@ public class TradeEngineRedisPendingAutoConfiguration {
         return new FallbackRechargeOrderQueryAdapter(
                 redisQueryPort,
                 new MybatisRechargeOrderQueryAdapter(orderMapper, extMapper));
+    }
+
+    /**
+     * 创建 V1 商户配置启动预热 Redis 端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「6. Redis 受理与缓存层」。该端口只在真实
+     * {@link ReactiveStringRedisTemplate} 存在时注册；没有 Redis 的环境不提供 noop，让启动 runner 可以按
+     * {@code fail-on-error} 明确暴露“预热依赖缺失”，避免误以为 {@code merchant:config} 已经写入。
+     */
+    @Bean
+    @ConditionalOnBean(ReactiveStringRedisTemplate.class)
+    @ConditionalOnMissingBean(V1MerchantConfigPreheatPort.class)
+    public V1MerchantConfigPreheatPort v1MerchantConfigPreheatPort(
+            ReactiveStringRedisTemplate redisTemplate,
+            RechargeRedisKeyBuilder keyBuilder,
+            TradeEngineProperties properties) {
+        int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
+        return new RedisV1MerchantConfigPreheatAdapter(
+                redisTemplate,
+                keyBuilder,
+                Duration.ofMillis(timeoutMs));
     }
 
     /**

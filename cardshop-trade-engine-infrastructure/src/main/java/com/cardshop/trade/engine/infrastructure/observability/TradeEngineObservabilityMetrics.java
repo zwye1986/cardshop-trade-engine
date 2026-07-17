@@ -1,6 +1,8 @@
 package com.cardshop.trade.engine.infrastructure.observability;
 
 import com.cardshop.trade.engine.application.logging.LogStormGuard;
+import com.cardshop.trade.engine.application.v1.V1CreateOrderStageObserver;
+import com.cardshop.trade.engine.application.v1.V1MerchantProfileCacheObserver;
 import com.cardshop.trade.engine.application.v1.V1ProductCacheObserver;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyStatus;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
@@ -27,7 +29,8 @@ import org.slf4j.LoggerFactory;
  * environment、status、event_type、anomaly_type、operation、result、fail_code。订单号、商户订单号、
  * 商户号和账号都只能进入日志或集成测试证据，不能进入 Micrometer label。
  */
-public class TradeEngineObservabilityMetrics implements V1ProductCacheObserver {
+public class TradeEngineObservabilityMetrics
+        implements V1ProductCacheObserver, V1MerchantProfileCacheObserver, V1CreateOrderStageObserver {
 
     private static final Logger log = LoggerFactory.getLogger(TradeEngineObservabilityMetrics.class);
     private static final String NONE = "none";
@@ -50,6 +53,8 @@ public class TradeEngineObservabilityMetrics implements V1ProductCacheObserver {
     private final ConcurrentMap<String, DistributionSummary> productCacheAgeSummaries = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Counter> productCacheRefreshCounters = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Timer> productCacheRefreshTimers = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Counter> merchantProfileCacheHitCounters = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Timer> createOrderStageTimers = new ConcurrentHashMap<>();
     private volatile Counter productCacheMysqlLoadCounter;
     private volatile MeterRegistry registry;
 
@@ -250,6 +255,54 @@ public class TradeEngineObservabilityMetrics implements V1ProductCacheObserver {
             }
         }
         counter.increment();
+    }
+
+    /**
+     * 记录 V1 商户资料短 TTL 本地缓存查找结果。
+     *
+     * <p>参见详细设计「3. API/V1 接入层」和「12. 可观测性」。result 仅允许 hit/negative/miss，
+     * lookup_type 仅允许 app_org/org；禁止 appId、orgCode、aesKey 进入标签。
+     */
+    @Override
+    public void recordLookup(String result, String lookupType) {
+        MeterRegistry current = registry;
+        if (current == null) {
+            return;
+        }
+        String safeResult = tagValue(result == null || result.isBlank() ? "unknown" : result);
+        String safeLookupType = tagValue(lookupType == null || lookupType.isBlank() ? "unknown" : lookupType);
+        String key = safeResult + "|" + safeLookupType;
+        merchantProfileCacheHitCounters.computeIfAbsent(key, ignored -> Counter.builder(
+                                "trade.engine.merchant.profile.cache.hit.total")
+                        .description("V1商户资料短TTL本地缓存查找结果计数")
+                        .tag("environment", environment)
+                        .tag("result", safeResult)
+                        .tag("lookup_type", safeLookupType)
+                        .register(current))
+                .increment();
+    }
+
+    /**
+     * 记录 V1 下单同步子阶段耗时。
+     *
+     * <p>参见详细设计「12. 可观测性」。stage 仅允许 prepare/accept/wait/mq_confirm/
+     * mark_persist_queued/redis_session_connect/sync_total。
+     */
+    @Override
+    public void recordStage(String stage, Duration duration) {
+        MeterRegistry current = registry;
+        if (current == null) {
+            return;
+        }
+        String safeStage = tagValue(stage == null || stage.isBlank() ? "unknown" : stage);
+        Duration safeDuration = duration == null || duration.isNegative() ? Duration.ZERO : duration;
+        createOrderStageTimers.computeIfAbsent(safeStage, ignored -> Timer.builder(
+                                "trade.engine.v1.create.stage.duration")
+                        .description("V1下单同步路径子阶段耗时")
+                        .tag("environment", environment)
+                        .tag("stage", safeStage)
+                        .register(current))
+                .record(safeDuration);
     }
 
     private void registerRedisPendingGauges(MeterRegistry registry) {

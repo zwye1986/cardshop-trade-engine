@@ -52,6 +52,13 @@ class TradeEnginePropertiesTest {
             assertThat(properties.getV1().getProductCache().getRefreshLockTtl()).isEqualTo(Duration.ofSeconds(5));
             assertThat(properties.getV1().getProductCache().getRefreshWaitTimeout()).isEqualTo(Duration.ofSeconds(1));
             assertThat(properties.getV1().getProductCache().getNegativeCacheTtl()).isEqualTo(Duration.ofMinutes(1));
+            assertThat(properties.getV1().getMerchantProfileCache().isEnabled()).isTrue();
+            assertThat(properties.getV1().getMerchantProfileCache().getTtl()).isEqualTo(Duration.ofSeconds(60));
+            assertThat(properties.getV1().getMerchantProfileCache().getNegativeTtl()).isEqualTo(Duration.ofSeconds(10));
+            assertThat(properties.getV1().getMerchantProfileCache().getMaximumSize()).isEqualTo(1024);
+            assertThat(properties.getV1().getMerchantConfigPreheat().isEnabled()).isFalse();
+            assertThat(properties.getV1().getMerchantConfigPreheat().getOrgCodes()).isEmpty();
+            assertThat(properties.getV1().getMerchantConfigPreheat().isFailOnError()).isTrue();
             assertThat(properties.getBalance().getOwnerMode()).isEqualTo("NEW");
             assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(16);
             assertThat(properties.getThreadPool().getDbMaxSize()).isEqualTo(32);
@@ -79,6 +86,14 @@ class TradeEnginePropertiesTest {
                         "trade.engine.v1.crypto.key-rotation-previous-enabled=false",
                         "trade.engine.v1.product-cache.refresh-after=20m",
                         "trade.engine.v1.product-cache.max-stale-age=29m",
+                        "trade.engine.v1.merchant-profile-cache.enabled=false",
+                        "trade.engine.v1.merchant-profile-cache.ttl=30s",
+                        "trade.engine.v1.merchant-profile-cache.negative-ttl=5s",
+                        "trade.engine.v1.merchant-profile-cache.maximum-size=128",
+                        "trade.engine.v1.merchant-config-preheat.enabled=true",
+                        "trade.engine.v1.merchant-config-preheat.org-codes[0]=A39",
+                        "trade.engine.v1.merchant-config-preheat.org-codes[1]=B01",
+                        "trade.engine.v1.merchant-config-preheat.fail-on-error=false",
                         "trade.engine.supplier.channels.fake.query-url=http://127.0.0.1:18082/supplier/query",
                         "trade.engine.thread-pool.db-core-size=4",
                         "trade.engine.thread-pool.db-max-size=8",
@@ -104,6 +119,14 @@ class TradeEnginePropertiesTest {
                     assertThat(properties.getV1().getCrypto().isKeyRotationPreviousEnabled()).isFalse();
                     assertThat(properties.getV1().getProductCache().getRefreshAfter()).isEqualTo(Duration.ofMinutes(20));
                     assertThat(properties.getV1().getProductCache().getMaxStaleAge()).isEqualTo(Duration.ofMinutes(29));
+                    assertThat(properties.getV1().getMerchantProfileCache().isEnabled()).isFalse();
+                    assertThat(properties.getV1().getMerchantProfileCache().getTtl()).isEqualTo(Duration.ofSeconds(30));
+                    assertThat(properties.getV1().getMerchantProfileCache().getNegativeTtl()).isEqualTo(Duration.ofSeconds(5));
+                    assertThat(properties.getV1().getMerchantProfileCache().getMaximumSize()).isEqualTo(128);
+                    assertThat(properties.getV1().getMerchantConfigPreheat().isEnabled()).isTrue();
+                    assertThat(properties.getV1().getMerchantConfigPreheat().getOrgCodes())
+                            .containsExactly("A39", "B01");
+                    assertThat(properties.getV1().getMerchantConfigPreheat().isFailOnError()).isFalse();
                     assertThat(properties.getSupplier().getChannels().get("fake").getQueryUrl())
                             .isEqualTo("http://127.0.0.1:18082/supplier/query");
                     assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(4);

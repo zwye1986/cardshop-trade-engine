@@ -24,6 +24,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPor
 import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.v1.CachedV1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.CachedV1ProductCandidateSelector;
 import com.cardshop.trade.engine.application.v1.V1ProductCacheSettings;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
@@ -240,6 +241,20 @@ class TradeEngineInfrastructureConfigurationTest {
     @Test
     void createsV1MerchantProfilePortWhenReaderExists() {
         contextRunner
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(V1MerchantProfileReader.class, () -> (appId, orgCode) -> null)
+                .run(context -> {
+                    assertThat(context).hasSingleBean(V1MerchantProfilePort.class);
+                    assertThat(context.getBean(V1MerchantProfilePort.class))
+                            .isInstanceOf(CachedV1MerchantProfilePort.class);
+                });
+    }
+
+    @Test
+    void createsPlainMysqlV1MerchantProfilePortWhenLocalCacheDisabled() {
+        contextRunner
+                .withPropertyValues("trade.engine.v1.merchant-profile-cache.enabled=false")
+                .withBean(Clock.class, Clock::systemUTC)
                 .withBean(V1MerchantProfileReader.class, () -> (appId, orgCode) -> null)
                 .run(context -> {
                     assertThat(context).hasSingleBean(V1MerchantProfilePort.class);
@@ -325,7 +340,7 @@ class TradeEngineInfrastructureConfigurationTest {
                     assertThat(context.getBean(V1TokenStorePort.class))
                             .isInstanceOf(RedisV1TokenStoreAdapter.class);
                     assertThat(context.getBean(V1MerchantProfilePort.class))
-                            .isInstanceOf(MybatisV1MerchantProfileAdapter.class);
+                            .isInstanceOf(CachedV1MerchantProfilePort.class);
                     assertThat(context.getBean(V1ProductCandidateSelector.class))
                             .isInstanceOf(CachedV1ProductCandidateSelector.class);
                     assertThat(context.getBean(V1ProductSelectionCachePort.class))
