@@ -345,6 +345,10 @@ public class TradeEngineInfrastructureConfiguration {
     @Bean
     @ConditionalOnBean({RabbitTemplate.class, PersistRechargeOrderConsumerService.class})
     @ConditionalOnMissingBean(RabbitPersistRechargeOrderMessageListener.class)
+    @ConditionalOnProperty(
+            name = "trade.engine.mq.persist-batch-enabled",
+            havingValue = "false",
+            matchIfMissing = true)
     public RabbitPersistRechargeOrderMessageListener rabbitPersistRechargeOrderMessageListener(
             ObjectMapper objectMapper,
             PersistRechargeOrderConsumerService consumerService,

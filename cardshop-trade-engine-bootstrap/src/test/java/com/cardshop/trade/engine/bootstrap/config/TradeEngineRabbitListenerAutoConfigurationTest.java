@@ -9,19 +9,24 @@ import com.cardshop.trade.engine.application.recharge.MarkPersistQueuedResult;
 import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
+import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderBatchMessageListener;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import org.junit.jupiter.api.Test;
+import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.amqp.RabbitProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * RabbitMQ listener 后置自动配置测试。
@@ -33,6 +38,9 @@ import org.springframework.context.annotation.Bean;
  * 这里用后置自动配置模拟该顺序，防止 listener 再次被静默跳过。
  */
 class TradeEngineRabbitListenerAutoConfigurationTest {
+
+    private static final String BATCH_JDBC_URL_PROPERTY =
+            "spring.datasource.url=jdbc:mysql://127.0.0.1:3306/cardshop_test?rewriteBatchedStatements=true";
 
     @Test
     void registersListenerWhenRabbitTemplateComesFromLaterAutoConfiguration() {
@@ -48,7 +56,116 @@ class TradeEngineRabbitListenerAutoConfigurationTest {
                     assertThat(context).hasSingleBean(RabbitTemplate.class);
                     assertThat(context).hasSingleBean(PersistRechargeOrderConsumerService.class);
                     assertThat(context).hasSingleBean(RabbitPersistRechargeOrderMessageListener.class);
+                    assertThat(context).doesNotHaveBean(RabbitPersistRechargeOrderBatchMessageListener.class);
                 });
+    }
+
+    @Test
+    void registersBatchListenerInsteadOfSingleListenerWhenBatchSwitchIsEnabled() {
+        new ApplicationContextRunner()
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withBean(RechargeOrderBatchPersistencePort.class, () -> ignored -> {
+                })
+                .withBean(PersistRechargeOrderConsumerService.class,
+                        TradeEngineRabbitListenerAutoConfigurationTest::consumerService)
+                .withPropertyValues(
+                        "trade.engine.mq.persist-batch-enabled=true",
+                        BATCH_JDBC_URL_PROPERTY)
+                .withConfiguration(AutoConfigurations.of(
+                        TestRabbitTemplateAutoConfiguration.class,
+                        TradeEngineRabbitListenerAutoConfiguration.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RabbitTemplate.class);
+                    assertThat(context).hasSingleBean(PersistRechargeOrderConsumerService.class);
+                    assertThat(context).hasSingleBean(RabbitPersistRechargeOrderBatchMessageListener.class);
+                    assertThat(context).doesNotHaveBean(RabbitPersistRechargeOrderMessageListener.class);
+                });
+    }
+
+    @Test
+    void batchSwitchCustomizesDefaultSimpleListenerFactoryWithBusinessBatchProperties() {
+        new ApplicationContextRunner()
+                .withBean(TradeEngineProperties.class, TradeEngineRabbitListenerAutoConfigurationTest::batchProperties)
+                .withBean(RechargeOrderBatchPersistencePort.class, () -> ignored -> {
+                })
+                .withBean(RabbitProperties.class, RabbitProperties::new)
+                .withBean(
+                        "rabbitListenerContainerFactory",
+                        SimpleRabbitListenerContainerFactory.class,
+                        SimpleRabbitListenerContainerFactory::new)
+                .withPropertyValues(
+                        "trade.engine.mq.persist-batch-enabled=true",
+                        BATCH_JDBC_URL_PROPERTY)
+                .withConfiguration(AutoConfigurations.of(TradeEngineRabbitListenerAutoConfiguration.class))
+                .run(context -> {
+                    SimpleRabbitListenerContainerFactory factory =
+                            context.getBean(SimpleRabbitListenerContainerFactory.class);
+
+                    assertThat(ReflectionTestUtils.getField(factory, "consumerBatchEnabled")).isEqualTo(true);
+                    assertThat(ReflectionTestUtils.getField(factory, "batchSize")).isEqualTo(7);
+                    assertThat(ReflectionTestUtils.getField(factory, "receiveTimeout")).isEqualTo(80L);
+                    assertThat(ReflectionTestUtils.getField(factory, "batchReceiveTimeout")).isEqualTo(150L);
+                });
+    }
+
+    @Test
+    void batchSwitchFailsFastWhenPrefetchIsSmallerThanBatchSize() {
+        new ApplicationContextRunner()
+                .withBean(TradeEngineProperties.class, TradeEngineRabbitListenerAutoConfigurationTest::batchProperties)
+                .withBean(RechargeOrderBatchPersistencePort.class, () -> ignored -> {
+                })
+                .withBean(RabbitProperties.class, () -> {
+                    RabbitProperties properties = new RabbitProperties();
+                    properties.getListener().getSimple().setPrefetch(3);
+                    return properties;
+                })
+                .withBean(
+                        "rabbitListenerContainerFactory",
+                        SimpleRabbitListenerContainerFactory.class,
+                        SimpleRabbitListenerContainerFactory::new)
+                .withPropertyValues(
+                        "trade.engine.mq.persist-batch-enabled=true",
+                        BATCH_JDBC_URL_PROPERTY)
+                .withConfiguration(AutoConfigurations.of(TradeEngineRabbitListenerAutoConfiguration.class))
+                .run(context -> assertThat(context)
+                        .hasFailed()
+                        .getFailure()
+                        .hasMessageContaining(
+                                "spring.rabbitmq.listener.simple.prefetch must be >= trade.engine.mq.persist-batch-size"));
+    }
+
+    @Test
+    void batchSwitchFailsFastWhenBatchPersistencePortIsMissing() {
+        new ApplicationContextRunner()
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withPropertyValues(
+                        "trade.engine.mq.persist-batch-enabled=true",
+                        BATCH_JDBC_URL_PROPERTY)
+                .withConfiguration(AutoConfigurations.of(TradeEngineRabbitListenerAutoConfiguration.class))
+                .run(context -> assertThat(context)
+                        .hasFailed()
+                        .getFailure()
+                        .hasRootCauseMessage(
+                                "trade.engine.mq.persist-batch-enabled=true requires RechargeOrderBatchPersistencePort"));
+    }
+
+    @Test
+    void batchSwitchFailsFastWhenRewriteBatchedStatementsMissing() {
+        new ApplicationContextRunner()
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withBean(RechargeOrderBatchPersistencePort.class, () -> ignored -> {
+                })
+                .withPropertyValues(
+                        "trade.engine.mq.persist-batch-enabled=true",
+                        "spring.datasource.url=jdbc:mysql://127.0.0.1:3306/cardshop_test?useSSL=false")
+                .withConfiguration(AutoConfigurations.of(TradeEngineRabbitListenerAutoConfiguration.class))
+                .run(context -> assertThat(context)
+                        .hasFailed()
+                        .getFailure()
+                        .hasRootCauseMessage(
+                                "trade.engine.mq.persist-batch-enabled=true requires "
+                                        + "spring.datasource.url to contain rewriteBatchedStatements=true"));
     }
 
     @AutoConfiguration(before = TradeEngineRabbitListenerAutoConfiguration.class)
@@ -65,8 +182,18 @@ class TradeEngineRabbitListenerAutoConfigurationTest {
                 com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort.noop(),
                 aggregate -> {
                 },
+                ignored -> {
+                },
                 new StubReliabilityPort(),
                 Clock.systemUTC());
+    }
+
+    private static TradeEngineProperties batchProperties() {
+        TradeEngineProperties properties = new TradeEngineProperties();
+        properties.getMq().setPersistBatchSize(7);
+        properties.getMq().setPersistBatchReceiveTimeoutMs(150);
+        properties.getMq().setPersistBatchPollTimeoutMs(80);
+        return properties;
     }
 
     private static final class TestRabbitTemplate extends RabbitTemplate {

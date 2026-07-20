@@ -355,6 +355,44 @@ public class TradeEngineProperties {
         private int confirmWorkerQueueCapacity = 10000;
 
         /**
+         * 是否启用 Redis/MQ 到 MySQL 的批消费落库路径。
+         *
+         * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。该开关只控制业务
+         * listener 互斥注册：默认 {@code false} 时保留单条消息一事务路径；开启时必须同步设置
+         * {@code spring.rabbitmq.listener.simple.consumer-batch-enabled=true}，让 Spring Rabbit 容器实际传入
+         * {@code List<Message>}。
+         */
+        private boolean persistBatchEnabled = false;
+
+        /**
+         * 批消费业务批大小。
+         *
+         * <p>默认 10，阶段 1 不建议超过 10。该值必须小于等于
+         * {@code spring.rabbitmq.listener.simple.prefetch}，并应与
+         * {@code spring.rabbitmq.listener.simple.batch-size} 保持一致，避免容器聚合批大小和业务验收口径漂移。
+         */
+        private int persistBatchSize = 10;
+
+        /**
+         * 批消费攒批等待上限，单位毫秒。
+         *
+         * <p>默认 200ms。对应 Spring AMQP {@code batchReceiveTimeout}：从收到本批第一条消息起，
+         * 容器在两次 {@code nextMessage} 之间检查是否超过该上限；超时后提交当前 partial batch。
+         * 该值越大越容易攒满批次，但低流量订单落库延迟也越大。不要把它和 {@link #persistBatchPollTimeoutMs}
+         * 混用：盲目放大 poll timeout 会把低流量 partial batch 一起拖长。
+         */
+        private int persistBatchReceiveTimeoutMs = 200;
+
+        /**
+         * 批消费单次从 broker 拉取消息的等待上限，单位毫秒。
+         *
+         * <p>默认 200ms。对应 Spring AMQP {@code receiveTimeout}：每一轮 {@code nextMessage(receiveTimeout)}
+         * 的阻塞上限。阶段 1 保持与攒批上限同量级即可；若单独放大该值，低流量时每一轮空等都会拉长
+         * partial batch 的提交时间。
+         */
+        private int persistBatchPollTimeoutMs = 200;
+
+        /**
          * MQ 发布熔断参数。
          */
         private final Breaker breaker = new Breaker();
@@ -469,6 +507,38 @@ public class TradeEngineProperties {
 
         public void setConfirmWorkerQueueCapacity(int confirmWorkerQueueCapacity) {
             this.confirmWorkerQueueCapacity = confirmWorkerQueueCapacity;
+        }
+
+        public boolean isPersistBatchEnabled() {
+            return persistBatchEnabled;
+        }
+
+        public void setPersistBatchEnabled(boolean persistBatchEnabled) {
+            this.persistBatchEnabled = persistBatchEnabled;
+        }
+
+        public int getPersistBatchSize() {
+            return persistBatchSize;
+        }
+
+        public void setPersistBatchSize(int persistBatchSize) {
+            this.persistBatchSize = persistBatchSize;
+        }
+
+        public int getPersistBatchReceiveTimeoutMs() {
+            return persistBatchReceiveTimeoutMs;
+        }
+
+        public void setPersistBatchReceiveTimeoutMs(int persistBatchReceiveTimeoutMs) {
+            this.persistBatchReceiveTimeoutMs = persistBatchReceiveTimeoutMs;
+        }
+
+        public int getPersistBatchPollTimeoutMs() {
+            return persistBatchPollTimeoutMs;
+        }
+
+        public void setPersistBatchPollTimeoutMs(int persistBatchPollTimeoutMs) {
+            this.persistBatchPollTimeoutMs = persistBatchPollTimeoutMs;
         }
 
         public Breaker getBreaker() {

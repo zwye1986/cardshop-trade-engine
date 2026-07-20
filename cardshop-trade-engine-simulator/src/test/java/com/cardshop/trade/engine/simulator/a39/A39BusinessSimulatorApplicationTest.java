@@ -1,7 +1,18 @@
 package com.cardshop.trade.engine.simulator.a39;
 
+import com.cardshop.trade.engine.simulator.supplier.SupplierMockOptions;
+import com.cardshop.trade.engine.simulator.supplier.SupplierMockServer;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.net.ServerSocket;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -10,6 +21,43 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class A39BusinessSimulatorApplicationTest {
+
+    private final HttpClient httpClient = HttpClient.newHttpClient();
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
+    @Test
+    void supplierMockHelpPrintsSupplierMockUsage() throws Exception {
+        PrintStream original = System.out;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(captured));
+        try {
+            int exitCode = A39BusinessSimulatorApplication.run(new String[]{"--help", "--mode", "supplier-mock"});
+
+            assertThat(exitCode).isZero();
+            assertThat(captured.toString()).contains("Supplier mock simulator");
+            assertThat(captured.toString()).doesNotContain("Secret sources:");
+        } finally {
+            System.setOut(original);
+        }
+    }
+
+    @Test
+    void supplierMockModeDoesNotRequireMerchantSecretsAndServesDispatch() throws Exception {
+        int port;
+        try (ServerSocket socket = new ServerSocket(0)) {
+            port = socket.getLocalPort();
+        }
+        SupplierMockOptions options = new SupplierMockOptions("127.0.0.1", port, 0, 0, 1.0);
+        List<String> logs = new ArrayList<>();
+        try (SupplierMockServer server = A39BusinessSimulatorApplication.startSupplierMockServer(options, logs::add)) {
+            JsonNode dispatch = parseJson(post(server.baseUri().resolve("/supplier/dispatch"),
+                    """
+                            {"order_id":"O-1","supplier_request_id":"dispatch-O-1"}
+                            """).body());
+            assertThat(dispatch.get("status").asText()).isEqualTo("PROCESSING");
+            assertThat(String.join("\n", logs)).contains("supplier-mock");
+        }
+    }
 
     @Test
     void loadModeReturnsRunnerExitCodeAndSkipsCallbackServerText() throws Exception {
@@ -58,6 +106,18 @@ class A39BusinessSimulatorApplicationTest {
                 .contains("failed=1")
                 .contains("error.IllegalStateException=1")
                 .contains("exitCode=1");
+    }
+
+    private HttpResponse<String> post(URI uri, String body) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(uri)
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(body))
+                .build();
+        return httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+    }
+
+    private JsonNode parseJson(String body) throws Exception {
+        return objectMapper.readTree(body);
     }
 
     private static A39SimulatorOptions loadOptions() {

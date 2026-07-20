@@ -73,6 +73,61 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
     int insertIfAbsent(RechargeOutboxDO outbox);
 
     /**
+     * 批量幂等写入可靠事件。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。批消费会在同一
+     * 订单事务内生成派单和余额刷账事件，按 event_id 唯一键幂等。
+     */
+    @Insert("""
+            <script>
+            insert into recharge_outbox (
+              event_id,
+              event_type,
+              org_code,
+              order_id,
+              out_order_sn,
+              payload,
+              status,
+              retry_count,
+              max_retry_count,
+              next_retry_time,
+              locked_by,
+              locked_until,
+              version,
+              last_error,
+              shard_key,
+              created_at,
+              updated_at
+            )
+            values
+            <foreach collection="rows" item="row" separator=",">
+            (
+              #{row.eventId},
+              #{row.eventType},
+              #{row.orgCode},
+              #{row.orderId},
+              #{row.outOrderSn},
+              #{row.payload},
+              #{row.status},
+              #{row.retryCount},
+              #{row.maxRetryCount},
+              #{row.nextRetryTime},
+              #{row.lockedBy},
+              #{row.lockedUntil},
+              #{row.version},
+              #{row.lastError},
+              #{row.shardKey},
+              #{row.createdAt},
+              #{row.updatedAt}
+            )
+            </foreach>
+            on duplicate key update
+              event_id = event_id
+            </script>
+            """)
+    int insertOutboxBatchIfAbsent(@Param("rows") List<RechargeOutboxDO> rows);
+
+    /**
      * 汇总未完成的余额 delta。
      *
      * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.5 余额对账任务」。对账时不能只比较

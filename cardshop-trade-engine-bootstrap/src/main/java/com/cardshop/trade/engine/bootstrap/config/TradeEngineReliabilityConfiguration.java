@@ -5,6 +5,7 @@ import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckReposito
 import com.cardshop.trade.engine.application.recharge.PendingPersistOrderPort;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
+import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
@@ -13,6 +14,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcilePo
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcileService;
 import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
 import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairService;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargePersistMqRepublishService;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
@@ -30,6 +32,7 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -190,12 +193,16 @@ public class TradeEngineReliabilityConfiguration {
     @ConditionalOnMissingBean(PersistRechargeOrderConsumerService.class)
     public PersistRechargeOrderConsumerService persistRechargeOrderConsumerService(
             org.springframework.beans.factory.ObjectProvider<PersistOrderSnapshotPort> snapshotPortProvider,
+            ObjectProvider<RechargeOrderBatchPersistencePort> batchPersistencePortProvider,
+            ObjectProvider<PersistedOrderStatePort> persistedOrderStatePortProvider,
             RechargeOrderPersistencePort persistencePort,
             RechargeAcceptReliabilityPort reliabilityPort,
             Clock clock) {
         return new PersistRechargeOrderConsumerService(
                 snapshotPortProvider.getIfAvailable(PersistOrderSnapshotPort::noop),
                 persistencePort,
+                batchPersistencePortProvider.getIfAvailable(),
+                persistedOrderStatePortProvider.getIfAvailable(PersistedOrderStatePort::noop),
                 reliabilityPort,
                 clock);
     }
@@ -217,6 +224,10 @@ public class TradeEngineReliabilityConfiguration {
     @Bean
     @ConditionalOnBean({RabbitTemplate.class, PersistRechargeOrderConsumerService.class})
     @ConditionalOnMissingBean(RabbitPersistRechargeOrderMessageListener.class)
+    @ConditionalOnProperty(
+            name = "trade.engine.mq.persist-batch-enabled",
+            havingValue = "false",
+            matchIfMissing = true)
     public RabbitPersistRechargeOrderMessageListener rabbitPersistRechargeOrderMessageListener(
             ObjectMapper objectMapper,
             PersistRechargeOrderConsumerService consumerService,

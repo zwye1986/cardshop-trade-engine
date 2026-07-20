@@ -55,7 +55,10 @@ public class TradeEngineObservabilityMetrics
     private final ConcurrentMap<String, Timer> productCacheRefreshTimers = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Counter> merchantProfileCacheHitCounters = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Timer> createOrderStageTimers = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Counter> persistBatchOrderCounters = new ConcurrentHashMap<>();
     private volatile Counter productCacheMysqlLoadCounter;
+    private volatile DistributionSummary persistBatchSizeSummary;
+    private volatile Timer persistBatchMysqlTimer;
     private volatile MeterRegistry registry;
 
     public TradeEngineObservabilityMetrics(
@@ -280,6 +283,84 @@ public class TradeEngineObservabilityMetrics
                         .tag("lookup_type", safeLookupType)
                         .register(current))
                 .increment();
+    }
+
+    /**
+     * 记录异步落库批大小。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。只记录批大小本身，
+     * 不写订单号等业务标签。Prometheus 暴露后名称为 {@code trade_engine_persist_batch_size}。
+     */
+    public void recordPersistBatchSize(int batchSize) {
+        MeterRegistry current = registry;
+        if (current == null || batchSize < 0) {
+            return;
+        }
+        DistributionSummary summary = persistBatchSizeSummary;
+        if (summary == null) {
+            synchronized (this) {
+                summary = persistBatchSizeSummary;
+                if (summary == null) {
+                    summary = DistributionSummary.builder("trade.engine.persist.batch.size")
+                            .description("异步落库批消费实际批大小")
+                            .tag("environment", environment)
+                            .register(current);
+                    persistBatchSizeSummary = summary;
+                }
+            }
+        }
+        summary.record(batchSize);
+    }
+
+    /**
+     * 记录异步落库批 MySQL 事务耗时。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。该耗时应覆盖
+     * MyBatis BATCH flush、事务 commit/rollback 与锁等待，而不是仅方法体内攒 SQL 的时间；由批写
+     * adapter 在事务 {@code afterCompletion} 上报。成功与失败都应记录。Prometheus 暴露后名称为
+     * {@code trade_engine_persist_batch_mysql_duration_seconds}。
+     */
+    public void recordPersistBatchMysqlDuration(Duration duration) {
+        MeterRegistry current = registry;
+        if (current == null) {
+            return;
+        }
+        Duration safeDuration = duration == null || duration.isNegative() ? Duration.ZERO : duration;
+        Timer timer = persistBatchMysqlTimer;
+        if (timer == null) {
+            synchronized (this) {
+                timer = persistBatchMysqlTimer;
+                if (timer == null) {
+                    timer = Timer.builder("trade.engine.persist.batch.mysql.duration")
+                            .description("异步落库批 MySQL 事务耗时")
+                            .tag("environment", environment)
+                            .register(current);
+                    persistBatchMysqlTimer = timer;
+                }
+            }
+        }
+        timer.record(safeDuration);
+    }
+
+    /**
+     * 记录异步落库批内订单结果计数。
+     *
+     * <p>result 仅允许 {@code success}/{@code failed}/{@code skipped_already_persisted} 等低基数取值，禁止订单号进标签。
+     * Prometheus 暴露后名称为 {@code trade_engine_persist_batch_orders_total}。
+     */
+    public void recordPersistBatchOrders(int orderCount, String result) {
+        MeterRegistry current = registry;
+        if (current == null || orderCount <= 0) {
+            return;
+        }
+        String safeResult = tagValue(result == null || result.isBlank() ? "unknown" : result);
+        persistBatchOrderCounters.computeIfAbsent(safeResult, ignored -> Counter.builder(
+                                "trade.engine.persist.batch.orders.total")
+                        .description("异步落库批内订单结果计数")
+                        .tag("environment", environment)
+                        .tag("result", safeResult)
+                        .register(current))
+                .increment(orderCount);
     }
 
     /**

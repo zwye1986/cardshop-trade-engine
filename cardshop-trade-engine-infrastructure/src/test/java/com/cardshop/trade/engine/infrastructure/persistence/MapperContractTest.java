@@ -51,6 +51,20 @@ class MapperContractTest {
     }
 
     @Test
+    void rechargeOrderExtMapperHasBatchPersistedStateLookup() throws IOException {
+        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeOrderExtMapper.java"));
+
+        assertThat(mapper)
+                .contains("List<RechargeOrderExtDO> selectByOrderIds")
+                .contains("from recharge_order_ext")
+                .contains("where order_id in")
+                .contains("<foreach collection=\"orderIds\" item=\"orderId\"")
+                .contains("persist_status")
+                .contains("persisted_version")
+                .doesNotContainIgnoringCase(" join ");
+    }
+
+    @Test
     void acceptAnomalyMapperRefreshesDuplicateByStableAnomalyId() throws IOException {
         String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeAcceptAnomalyMapper.java"));
 

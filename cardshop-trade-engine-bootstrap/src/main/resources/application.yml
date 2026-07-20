@@ -23,6 +23,8 @@ spring:
     listener:
       simple:
         acknowledge-mode: manual
+        consumer-batch-enabled: false
+        batch-size: 10
         prefetch: 50
         concurrency: 4
         max-concurrency: 16
@@ -73,6 +75,10 @@ trade:
       publish-confirm-timeout-ms: 500
       publish-retry-times: 3
       confirm-worker-queue-capacity: 10000
+      persist-batch-enabled: false
+      persist-batch-size: 10
+      persist-batch-receive-timeout-ms: 200
+      persist-batch-poll-timeout-ms: 200
       breaker:
         enabled: true
         failure-threshold: 20

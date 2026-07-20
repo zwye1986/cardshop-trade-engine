@@ -286,6 +286,49 @@ class TradeEngineObservabilityMetricsTest {
     }
 
     @Test
+    void recordsPersistBatchMetricsWithLowCardinalityTags() {
+        var registry = new SimpleMeterRegistry();
+        var metrics = new TradeEngineObservabilityMetrics(
+                TradeEngineObservabilitySnapshotProvider.empty(),
+                "test",
+                Duration.ofMillis(30));
+        metrics.bindTo(registry);
+
+        metrics.recordPersistBatchSize(7);
+        metrics.recordPersistBatchMysqlDuration(Duration.ofMillis(12));
+        metrics.recordPersistBatchOrders(7, "success");
+        metrics.recordPersistBatchOrders(3, "failed");
+
+        assertThat(registry.get("trade.engine.persist.batch.size")
+                        .tag("environment", "test")
+                        .summary()
+                        .count())
+                .isEqualTo(1L);
+        assertThat(registry.get("trade.engine.persist.batch.size")
+                        .tag("environment", "test")
+                        .summary()
+                        .totalAmount())
+                .isEqualTo(7.0);
+        assertThat(registry.get("trade.engine.persist.batch.mysql.duration")
+                        .tag("environment", "test")
+                        .timer()
+                        .count())
+                .isEqualTo(1L);
+        assertThat(registry.get("trade.engine.persist.batch.orders.total")
+                        .tag("environment", "test")
+                        .tag("result", "success")
+                        .counter()
+                        .count())
+                .isEqualTo(7.0);
+        assertThat(registry.get("trade.engine.persist.batch.orders.total")
+                        .tag("environment", "test")
+                        .tag("result", "failed")
+                        .counter()
+                        .count())
+                .isEqualTo(3.0);
+    }
+
+    @Test
     void logsAndReturnsEmptyGaugeValuesWhenSnapshotProviderFails(CapturedOutput output) {
         var registry = new SimpleMeterRegistry();
         var metrics = new TradeEngineObservabilityMetrics(

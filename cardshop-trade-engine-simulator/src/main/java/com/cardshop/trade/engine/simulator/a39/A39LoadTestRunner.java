@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -152,7 +153,7 @@ public final class A39LoadTestRunner {
                 }
 
                 if (progressIntervalNanos > 0L && System.nanoTime() >= nextProgressNanos) {
-                    logProgress(results, windowStartNanos);
+                    logProgress(options, results, windowStartNanos, inFlight);
                     nextProgressNanos += progressIntervalNanos;
                 }
             }
@@ -394,12 +395,138 @@ public final class A39LoadTestRunner {
                 options.duration());
     }
 
-    private void logProgress(List<CreateRequestResult> results, long windowStartNanos) {
-        long elapsedNanos = elapsedSince(windowStartNanos);
-        long successful = results.stream().filter(CreateRequestResult::successful).count();
+    /**
+     * 按 progress-interval 输出实时性能摘要。
+     *
+     * <p>QPS 口径：已完成请求数 / 已用时，等价于「每秒完成数在已用时段上的算术平均」。
+     * 延迟为单笔「提交前 → 收到完整响应/异常」墙钟；P95/P99 对当前累计样本重算。
+     * 参见 {@code docs/superpowers/specs/2026-07-15-a39-simulator-load-test-design.md}「结果与退出语义」。
+     */
+    private void logProgress(
+            A39SimulatorOptions options,
+            List<CreateRequestResult> results,
+            long windowStartNanos,
+            int inFlight) {
+        SnapshotStats stats = snapshotStats(results, elapsedSince(windowStartNanos));
+        double plannedDurationSec = options.duration() == null || options.duration().isZero()
+                ? 0.0d
+                : options.duration().toMillis() / 1000.0d;
+        // 机器可解析一行，便于脚本采集
+        logSink.accept(("[A39][LOAD][progress] concurrency=%d inFlight=%d durationSec=%.2f plannedDurationSec=%.2f "
+                + "success=%d failed=%d completed=%d qps=%.2f errorRatePct=%.2f avgMs=%d p95Ms=%d p99Ms=%d")
+                .formatted(
+                        options.concurrency(),
+                        inFlight,
+                        stats.durationSec(),
+                        plannedDurationSec,
+                        stats.successful(),
+                        stats.failed(),
+                        stats.completed(),
+                        stats.qps(),
+                        stats.errorRatePct(),
+                        stats.avgMs(),
+                        stats.p95Ms(),
+                        stats.p99Ms()));
+        // 中文可读块，字段对齐压测看板常见口径
+        logSink.accept("""
+                [A39][LOAD][stats]
+                并发数：%d
+                压测时长：%s 秒
+                成功请求数：%s
+                失败请求数：%s
+                QPS：%s
+                错误率：%s%%
+                平均响应时间：%dms
+                P95 响应时间：%dms
+                P99 响应时间：%dms""".formatted(
+                options.concurrency(),
+                formatSeconds(stats.durationSec()),
+                formatCount(stats.successful()),
+                formatCount(stats.failed()),
+                formatQps(stats.qps()),
+                formatErrorRate(stats.errorRatePct()),
+                stats.avgMs(),
+                stats.p95Ms(),
+                stats.p99Ms()));
+    }
+
+    private static SnapshotStats snapshotStats(List<CreateRequestResult> results, long elapsedNanos) {
         int completed = results.size();
-        logSink.accept("[A39][LOAD][progress] completed=%d successful=%d failed=%d elapsedMs=%d qps=%.2f"
-                .formatted(completed, successful, completed - successful, toMillis(elapsedNanos), qps(completed, elapsedNanos)));
+        int successful = 0;
+        long[] latencies = new long[completed];
+        long latencySum = 0L;
+        for (int i = 0; i < completed; i++) {
+            CreateRequestResult result = results.get(i);
+            if (result.successful()) {
+                successful++;
+            }
+            long ms = toMillis(result.latencyNanos());
+            latencies[i] = ms;
+            latencySum += ms;
+        }
+        int failed = completed - successful;
+        Arrays.sort(latencies);
+        double durationSec = elapsedNanos <= 0L ? 0.0d : (double) elapsedNanos / NANOS_PER_SECOND;
+        long avgMs = completed == 0 ? 0L : Math.round((double) latencySum / completed);
+        return new SnapshotStats(
+                completed,
+                successful,
+                failed,
+                durationSec,
+                qps(completed, elapsedNanos),
+                errorRatePct(successful, completed),
+                avgMs,
+                percentile(latencies, 95),
+                percentile(latencies, 99));
+    }
+
+    private static double errorRatePct(int successful, int completed) {
+        if (completed == 0) {
+            return 0.0d;
+        }
+        return (completed - successful) * 100.0d / completed;
+    }
+
+    private static long percentile(long[] sortedValues, int percentile) {
+        if (sortedValues.length == 0) {
+            return 0L;
+        }
+        int index = (int) Math.ceil((double) percentile * sortedValues.length / PERCENTILE_SCALE) - 1;
+        return sortedValues[Math.max(0, Math.min(index, sortedValues.length - 1))];
+    }
+
+    private static String formatCount(long value) {
+        return String.format(Locale.US, "%,d", value);
+    }
+
+    private static String formatSeconds(double seconds) {
+        if (seconds >= 100d || Math.rint(seconds) == seconds) {
+            return String.format(Locale.ROOT, "%.0f", seconds);
+        }
+        return String.format(Locale.ROOT, "%.1f", seconds);
+    }
+
+    private static String formatQps(double qps) {
+        if (qps >= 100d || Math.rint(qps) == qps) {
+            return String.format(Locale.ROOT, "%.0f", qps);
+        }
+        return String.format(Locale.ROOT, "%.2f", qps);
+    }
+
+    private static String formatErrorRate(double errorRatePct) {
+        return String.format(Locale.ROOT, "%.2f", errorRatePct);
+    }
+
+    private record SnapshotStats(
+            int completed,
+            int successful,
+            int failed,
+            double durationSec,
+            double qps,
+            double errorRatePct,
+            long avgMs,
+            long p95Ms,
+            long p99Ms) {
     }
 
     private static String outOrderSn(A39SimulatorOptions options, int sequence, String runId) {
@@ -535,8 +662,10 @@ public final class A39LoadTestRunner {
             fields.put("successful", String.valueOf(successful));
             fields.put("failed", String.valueOf(failed));
             fields.put("successRate", String.format(Locale.ROOT, "%.4f", successRate()));
+            fields.put("errorRatePct", String.format(Locale.ROOT, "%.2f", errorRatePct()));
             fields.put("tokenElapsedMs", String.valueOf(tokenElapsedMs));
             fields.put("createElapsedMs", String.valueOf(createElapsedMs));
+            fields.put("durationSec", String.format(Locale.ROOT, "%.3f", createElapsedMs / 1000.0d));
             fields.put("totalElapsedMs", String.valueOf(totalElapsedMs));
             fields.put("qps", String.format(Locale.ROOT, "%.2f", qps));
             fields.put("code." + SUCCESS_CODE, String.valueOf(businessCodeCounts.getOrDefault(SUCCESS_CODE, 0)));
@@ -548,6 +677,7 @@ public final class A39LoadTestRunner {
             errorCounts.entrySet().stream()
                     .sorted(Map.Entry.comparingByKey())
                     .forEach(entry -> fields.put("error." + entry.getKey(), String.valueOf(entry.getValue())));
+            fields.put("avgMs", String.valueOf(avgMs()));
             fields.put("minMs", String.valueOf(minMs()));
             fields.put("maxMs", String.valueOf(maxMs()));
             fields.put("p50Ms", String.valueOf(percentile(latencyMs, 50)));
@@ -564,7 +694,38 @@ public final class A39LoadTestRunner {
             }
             StringBuilder report = new StringBuilder(512);
             fields.forEach((key, value) -> report.append(key).append('=').append(value).append(System.lineSeparator()));
+            // 中文摘要块，与实时 stats 字段对齐，便于直接贴进压测记录
+            report.append(System.lineSeparator())
+                    .append("[A39][LOAD][summary]").append(System.lineSeparator())
+                    .append("并发数：").append(concurrency).append(System.lineSeparator())
+                    .append("压测时长：").append(formatSeconds(createElapsedMs / 1000.0d)).append(" 秒")
+                    .append(System.lineSeparator())
+                    .append("成功请求数：").append(formatCount(successful)).append(System.lineSeparator())
+                    .append("失败请求数：").append(formatCount(failed)).append(System.lineSeparator())
+                    .append("QPS：").append(formatQps(qps)).append(System.lineSeparator())
+                    .append("错误率：").append(formatErrorRate(errorRatePct())).append('%')
+                    .append(System.lineSeparator())
+                    .append("平均响应时间：").append(avgMs()).append("ms").append(System.lineSeparator())
+                    .append("P95 响应时间：").append(percentile(latencyMs, 95)).append("ms")
+                    .append(System.lineSeparator())
+                    .append("P99 响应时间：").append(percentile(latencyMs, 99)).append("ms")
+                    .append(System.lineSeparator());
             return report.toString();
+        }
+
+        private double errorRatePct() {
+            return A39LoadTestRunner.errorRatePct(successful, completed);
+        }
+
+        private long avgMs() {
+            if (latencyMs.isEmpty()) {
+                return 0L;
+            }
+            long sum = 0L;
+            for (Long value : latencyMs) {
+                sum += value;
+            }
+            return Math.round((double) sum / latencyMs.size());
         }
 
         private void putTimingFields(Map<String, String> fields, String prefix, List<Long> values) {

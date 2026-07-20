@@ -8,6 +8,7 @@ import com.cardshop.trade.engine.application.recharge.CancelUnconfirmedAcceptRes
 import com.cardshop.trade.engine.application.recharge.MarkPersistQueuedResult;
 import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
+import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
@@ -19,6 +20,7 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * 异步落库 Consumer 核心服务后置自动配置测试。
@@ -38,6 +40,22 @@ class TradeEngineConsumerAutoConfigurationTest {
                         TestConsumerDependencyAutoConfiguration.class,
                         TradeEngineConsumerAutoConfiguration.class))
                 .run(context -> assertThat(context).hasSingleBean(PersistRechargeOrderConsumerService.class));
+    }
+
+    @Test
+    void wiresPersistedOrderStatePortIntoConsumerServiceWhenAvailable() {
+        PersistedOrderStatePort persistedOrderStatePort = (orgCode, outOrderSn, orderId, orderVersion) -> true;
+
+        new ApplicationContextRunner()
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(PersistedOrderStatePort.class, () -> persistedOrderStatePort)
+                .withConfiguration(AutoConfigurations.of(
+                        TestConsumerDependencyAutoConfiguration.class,
+                        TradeEngineConsumerAutoConfiguration.class))
+                .run(context -> assertThat(ReflectionTestUtils.getField(
+                                context.getBean(PersistRechargeOrderConsumerService.class),
+                                "persistedOrderStatePort"))
+                        .isSameAs(persistedOrderStatePort));
     }
 
     @AutoConfiguration(before = TradeEngineConsumerAutoConfiguration.class)

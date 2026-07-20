@@ -39,6 +39,9 @@ class TradeEnginePropertiesTest {
             assertThat(properties.getMq().getPersistRetryRoutingKey()).isEqualTo("recharge.persist.mysql.retry");
             assertThat(properties.getMq().getConsumerRetryDelayMs()).isEqualTo(30000);
             assertThat(properties.getMq().getPublishConfirmTimeoutMs()).isEqualTo(500);
+            assertThat(properties.getMq().isPersistBatchEnabled()).isFalse();
+            assertThat(properties.getMq().getPersistBatchSize()).isEqualTo(10);
+            assertThat(properties.getMq().getPersistBatchReceiveTimeoutMs()).isEqualTo(200);
             assertThat(properties.getMq().getBreaker().isEnabled()).isTrue();
             assertThat(properties.getOrder().getPendingTtlDays()).isEqualTo(7);
             assertThat(properties.getOrder().getTerminalTtlHours()).isEqualTo(72);
@@ -80,6 +83,10 @@ class TradeEnginePropertiesTest {
                         "trade.engine.mq.persist-retry-queue=recharge.persist.mysql.gray.retry.queue",
                         "trade.engine.mq.persist-retry-routing-key=recharge.persist.mysql.gray.retry",
                         "trade.engine.mq.consumer-retry-delay-ms=1500",
+                        "trade.engine.mq.persist-batch-enabled=true",
+                        "trade.engine.mq.persist-batch-size=5",
+                        "trade.engine.mq.persist-batch-receive-timeout-ms=250",
+                        "trade.engine.mq.persist-batch-poll-timeout-ms=120",
                         "trade.engine.mq.breaker.failure-threshold=9",
                         "trade.engine.routing.gray-org-codes[0]=A11",
                         "trade.engine.routing.supported-paths[0]=/v1/cardapi/order/getRechargeOrder",
@@ -112,6 +119,10 @@ class TradeEnginePropertiesTest {
                     assertThat(properties.getMq().getPersistRetryQueue()).isEqualTo("recharge.persist.mysql.gray.retry.queue");
                     assertThat(properties.getMq().getPersistRetryRoutingKey()).isEqualTo("recharge.persist.mysql.gray.retry");
                     assertThat(properties.getMq().getConsumerRetryDelayMs()).isEqualTo(1500);
+                    assertThat(properties.getMq().isPersistBatchEnabled()).isTrue();
+                    assertThat(properties.getMq().getPersistBatchSize()).isEqualTo(5);
+                    assertThat(properties.getMq().getPersistBatchReceiveTimeoutMs()).isEqualTo(250);
+                    assertThat(properties.getMq().getPersistBatchPollTimeoutMs()).isEqualTo(120);
                     assertThat(properties.getMq().getBreaker().getFailureThreshold()).isEqualTo(9);
                     assertThat(properties.getRouting().getGrayOrgCodes()).containsExactly("A11");
                     assertThat(properties.getRouting().getSupportedPaths())
