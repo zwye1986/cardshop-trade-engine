@@ -217,7 +217,8 @@ public record A39SimulatorOptions(
                 Defaults: --base-url http://apitest.kalaiwang.com, --app-id A35cecjXS7lZ1W30NMN, --product-id 1011, --account 18186222336, --num 1, --product-type 1, --request-sm4 true
 
                 Common options:
-                  --mode scenario|load
+                  --mode scenario|load|supplier-mock
+                  supplier-mock mode uses SupplierMockOptions; see --help --mode supplier-mock
                   --base-url URL
                   --app-id APP_ID
                   --app-secret SECRET

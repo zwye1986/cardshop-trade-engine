@@ -1,7 +1,13 @@
 package com.cardshop.trade.engine.simulator.a39;
 
+import com.cardshop.trade.engine.simulator.supplier.SupplierMockOptions;
+import com.cardshop.trade.engine.simulator.supplier.SupplierMockOrderStore;
+import com.cardshop.trade.engine.simulator.supplier.SupplierMockServer;
+
+import java.io.IOException;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.Map;
 import java.util.function.Consumer;
 
 /**
@@ -23,11 +29,86 @@ public final class A39BusinessSimulatorApplication {
     }
 
     static int run(String[] args) throws Exception {
+        Map<String, String> env = System.getenv();
         if (hasHelp(args)) {
-            System.out.println(A39SimulatorOptions.usage());
+            A39SimulatorMode mode = tryResolveMode(args, env);
+            if (mode == A39SimulatorMode.SUPPLIER_MOCK) {
+                System.out.println(SupplierMockOptions.usage());
+            } else {
+                System.out.println(A39SimulatorOptions.usage());
+            }
             return 0;
         }
+        A39SimulatorMode mode = resolveMode(args, env);
+        if (mode == A39SimulatorMode.SUPPLIER_MOCK) {
+            return runSupplierMock(SupplierMockOptions.parse(args, env), System.out::println);
+        }
         return run(A39SimulatorOptions.parse(args), System.out::println);
+    }
+
+    /**
+     * 启动 supplier-mock HTTP 服务并输出监听信息，不阻塞当前线程；供单测与 {@link #runSupplierMock} 复用。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-20-supplier-mock-design.md}「入口分流」。
+     */
+    static SupplierMockServer startSupplierMockServer(SupplierMockOptions options, Consumer<String> logSink)
+            throws IOException {
+        SupplierMockOrderStore store = new SupplierMockOrderStore(
+                options.finalResultDelayMsMin(),
+                options.finalResultDelayMsMax(),
+                options.successRate());
+        SupplierMockServer server = SupplierMockServer.start(options, store);
+        logSink.accept("A39 simulator starting: supplier-mock " + options.sanitizedSummary());
+        logSink.accept("Supplier mock listening: " + server.baseUri());
+        logSink.accept("Dispatch paths: /supplier/dispatch, /tripartite/coupon/batchGrandCoupon");
+        logSink.accept("Query paths: /supplier/query, /tripartite/coupon/queryGrand");
+        return server;
+    }
+
+    private static int runSupplierMock(SupplierMockOptions options, Consumer<String> logSink) throws Exception {
+        SupplierMockServer server = startSupplierMockServer(options, logSink);
+        Runtime.getRuntime().addShutdownHook(new Thread(server::close, "supplier-mock-shutdown"));
+        logSink.accept("Press Ctrl+C to stop supplier mock.");
+        try {
+            Thread.currentThread().join();
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+        } finally {
+            server.close();
+        }
+        return 0;
+    }
+
+    static A39SimulatorMode resolveMode(String[] args, Map<String, String> env) {
+        return A39SimulatorMode.parse(extractModeValue(args, env));
+    }
+
+    static A39SimulatorMode tryResolveMode(String[] args, Map<String, String> env) {
+        try {
+            return resolveMode(args, env);
+        } catch (IllegalArgumentException ex) {
+            return A39SimulatorMode.SCENARIO;
+        }
+    }
+
+    private static String extractModeValue(String[] args, Map<String, String> env) {
+        for (int index = 0; index < args.length; index++) {
+            String arg = args[index];
+            if (arg.startsWith("--mode=")) {
+                return arg.substring("--mode=".length());
+            }
+            if ("--mode".equals(arg)) {
+                if (index + 1 < args.length && !args[index + 1].startsWith("--")) {
+                    return args[index + 1];
+                }
+                return "";
+            }
+        }
+        String envMode = env.get("A39_MODE");
+        if (envMode != null && !envMode.isBlank()) {
+            return envMode.trim();
+        }
+        return "scenario";
     }
 
     static int run(A39SimulatorOptions options, Consumer<String> logSink) throws Exception {

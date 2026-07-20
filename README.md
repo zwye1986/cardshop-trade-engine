@@ -100,15 +100,17 @@ mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
 
 ## A39 业务模拟器
 
-`cardshop-trade-engine-simulator` 是独立于主服务发布包的 dev/test 工具，按 `docs/交行直充接口技术文档-V1.1.docx` 模拟 A39 商户侧调用。它支持两种模式：`scenario` 用于单笔联调，完整执行 token、下单、查单和回调接收；`load` 用于下单入口压测，只获取一次 token 后按固定并发创建订单。
+`cardshop-trade-engine-simulator` 是独立于主服务发布包的 dev/test 工具，按 `docs/交行直充接口技术文档-V1.1.docx` 模拟 A39 商户侧调用。它支持三种模式：`scenario` 用于单笔联调，完整执行 token、下单、查单和回调接收；`load` 用于下单入口压测，只获取一次 token 后按固定并发创建订单；`supplier-mock` 用于在本机启动供应商 HTTP mock，供交易引擎 dev/test 联调 MINISO 等供应商路由。
 
 ### 工具定位与安全边界
 
 模拟器不进入 `./scripts/package.sh` 生成的主服务包，也不会在打包阶段注入 `base_url`、`app_id`、`product_id`、`account`、`out_order_sn`、`app_secret`、`aesKey`、`notify_url` 等业务参数。打包只生成可执行 jar、运行脚本和配置模板；实际参数在运行阶段通过命令行参数或环境变量传入。
 
-`--app-secret` / `A39_APP_SECRET` 和 `--aes-key` / `A39_AES_KEY` 是必填敏感参数。真实值只应写入部署机本地 `config/a39-simulator.env`、临时环境变量或密钥系统，不能提交到 Git，也不建议直接写进会进入 shell 历史的命令行。
+`--app-secret` / `A39_APP_SECRET` 和 `--aes-key` / `A39_AES_KEY` 是 `scenario` / `load` 模式的必填敏感参数。`supplier-mock` 模式不需要商户凭证，可单独启动。真实值只应写入部署机本地 `config/a39-simulator.env`、临时环境变量或密钥系统，不能提交到 Git，也不建议直接写进会进入 shell 历史的命令行。
 
-`load` 模式只允许在 dev/test 环境使用，必须使用 test188 专用测试商户、测试产品和安全的供应商 mock，避免压到真实供应商或真实商户回调链路。test188 当前 `MINISO` 供应商已在 `cardshop-trade-engine-supplier.yaml` 指向本机 mock：`127.0.0.1:18082/tripartite/coupon/*`，`timeout-ms=10000`；mock 默认按 `1200-9800ms` 返回大部分请求，并用少量 `10500-22000ms` 样本触发供应商超时。
+`scenario` / `load` 与 `supplier-mock` 可在同一台机器上并行运行：前者调用交易引擎 V1 接口，后者只监听供应商 HTTP 端口，互不依赖。
+
+`load` 模式只允许在 dev/test 环境使用，必须使用 test188 专用测试商户、测试产品和安全的供应商 mock，避免压到真实供应商或真实商户回调链路。test188 当前 `MINISO` 供应商已在 `cardshop-trade-engine-supplier.yaml` 指向本机 mock：`127.0.0.1:18082/tripartite/coupon/*`，`timeout-ms=10000`；mock 下单接口会**立即**返回 `PROCESSING`，最终结果在 `final-result-delay-ms-min/max`（默认 `1200-9800ms`）窗口内通过查单接口变为 `SUCCESS`/`FAILED`。
 
 ### 打包与 test188 配置
 
@@ -213,13 +215,36 @@ mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \
 
 压测前确认 `A39_PRODUCT_ID` 指向 test188 专用测试父产品，供应商路由指向安全 mock，并确认压测窗口内没有其它同商户大流量测试。所有请求会生成唯一 `out_order_sn` 和 `nonce_str`；进程退出码为 `0` 表示全部请求完成且无失败，否则为非 `0`。
 
+### supplier-mock 供应商 HTTP mock 模式
+
+`supplier-mock` 模式在本机启动供应商 HTTP mock，注册下单/查单四条路径（`/supplier/dispatch`、`/supplier/query` 以及 MINISO 兼容路径 `/tripartite/coupon/batchGrandCoupon`、`/tripartite/coupon/queryGrand`）。该模式**不需要** `app-secret` / `aes-key`，可与 `scenario` / `load` 在同一台机器并行运行。
+
+```bash
+./bin/run-a39-simulator.sh \
+  --mode=supplier-mock \
+  --bind-host=0.0.0.0 \
+  --port=18082 \
+  --final-result-delay-ms-min=1200 \
+  --final-result-delay-ms-max=9800 \
+  --success-rate=0.95
+```
+
+Nacos / `cardshop-trade-engine-supplier.yaml` 中将 `dispatch-url` / `query-url` 指向 mock 基址即可，例如：
+
+- MINISO 兼容路径：`http://127.0.0.1:18082/tripartite/coupon/batchGrandCoupon` 与 `http://127.0.0.1:18082/tripartite/coupon/queryGrand`
+- 通用路径：`http://127.0.0.1:18082/supplier/dispatch` 与 `http://127.0.0.1:18082/supplier/query`
+
+`127.0.0.1` 是从**每个 trade-engine 进程所在机器**解析的：mock 必须与发起派单的引擎实例同机，或把 URL 改成 mock 所在主机的内网 IP。pro143/pro140/pro120 多实例共用同一 Nacos 时，只在本机起了 mock 的节点才能通；其余节点会出现连接失败并触发 Outbox 可重试。该模式仅限 dev/test/联调，禁止把生产供应商流量指到 mock。
+
+下单接口立即返回 `PROCESSING`；查单接口在配置的延迟窗口过后返回最终 `SUCCESS`/`FAILED` 结果。
+
 ### 参数与环境变量
 
 通用参数：
 
 | 参数 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `--mode` | `A39_MODE` | `scenario` | 运行模式：`scenario` 或 `load`。 |
+| `--mode` | `A39_MODE` | `scenario` | 运行模式：`scenario`、`load` 或 `supplier-mock`。 |
 | `--base-url` | `A39_BASE_URL` | `http://apitest.kalaiwang.com` | 请求前缀，不包含接口路径。 |
 | `--app-id` | `A39_APP_ID` | `A35cecjXS7lZ1W30NMN` | A39 机构 `app_id`。 |
 | `--app-secret` | `A39_APP_SECRET` | 必填 | A39 机构密钥，必须用 `***` 之外的真实值在本地安全注入。 |
