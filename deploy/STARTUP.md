@@ -61,7 +61,8 @@ Minimal dev datasource and Redis content belongs in `cardshop-trade-engine-dev.y
 ```yaml
 spring:
   datasource:
-    url: jdbc:mysql://<host>/cardshop_test?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=true&serverTimezone=GMT%2B8&allowMultiQueries=true
+    # rewriteBatchedStatements=true is required before enabling persist batch consumer.
+    url: jdbc:mysql://<host>/cardshop_test?useUnicode=true&characterEncoding=utf8&zeroDateTimeBehavior=convertToNull&useSSL=true&serverTimezone=GMT%2B8&allowMultiQueries=true&rewriteBatchedStatements=true
     username: <mysql-user>
     password: <mysql-password>
     hikari:

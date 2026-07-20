@@ -93,6 +93,9 @@ class A39LoadTestRunnerTest {
                 .containsEntry("code.200", "1")
                 .containsEntry("code.510", "1");
         assertThat(fields).containsKeys(
+                "avgMs",
+                "errorRatePct",
+                "durationSec",
                 "p50Ms",
                 "p95Ms",
                 "p99Ms",
@@ -101,6 +104,7 @@ class A39LoadTestRunnerTest {
                 "timing.bodyRead.p95Ms",
                 "timing.parse.p95Ms",
                 "timing.clientTotal.p95Ms");
+        assertThat(report).contains("并发数：", "成功请求数：", "QPS：", "错误率：", "P95 响应时间：", "P99 响应时间：");
         assertThat(logs).isEmpty();
     }
 
@@ -113,6 +117,34 @@ class A39LoadTestRunnerTest {
         new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), logs::add).run(options);
 
         assertThat(logs).isEmpty();
+    }
+
+    @Test
+    void progressLogsEmitRealtimeStatsWhenIntervalElapsed() throws Exception {
+        SlowRepeatingLoadClient client = new SlowRepeatingLoadClient(response("200"), Duration.ofMillis(80));
+        List<String> logs = new ArrayList<>();
+        A39SimulatorOptions options = progressOptions(2, 6, Duration.ofMillis(50));
+
+        A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(
+                client, new V1Sm3Signer(), Clock.systemUTC(), logs::add).run(options);
+
+        assertThat(result.successful()).isEqualTo(6);
+        assertThat(logs.stream().anyMatch(line -> line.startsWith("[A39][LOAD][progress]"))).isTrue();
+        assertThat(logs.stream().anyMatch(line -> line.contains("并发数："))).isTrue();
+        assertThat(logs.stream().anyMatch(line -> line.contains("QPS："))).isTrue();
+        assertThat(logs.stream().anyMatch(line -> line.contains("P99 响应时间："))).isTrue();
+        String progress = logs.stream()
+                .filter(line -> line.startsWith("[A39][LOAD][progress]"))
+                .findFirst()
+                .orElseThrow();
+        assertThat(progress)
+                .contains("concurrency=2")
+                .contains("success=")
+                .contains("qps=")
+                .contains("errorRatePct=")
+                .contains("avgMs=")
+                .contains("p95Ms=")
+                .contains("p99Ms=");
     }
 
     @Test
@@ -244,6 +276,26 @@ class A39LoadTestRunnerTest {
             List<String> expectedCodes,
             int errorSampleLimit,
             boolean uniqueAccounts) {
+        return options(
+                concurrency,
+                totalOrders,
+                expectedCodes,
+                errorSampleLimit,
+                uniqueAccounts,
+                Duration.ZERO);
+    }
+
+    private static A39SimulatorOptions progressOptions(int concurrency, int totalOrders, Duration progressInterval) {
+        return options(concurrency, totalOrders, List.of("200", "510"), 20, false, progressInterval);
+    }
+
+    private static A39SimulatorOptions options(
+            int concurrency,
+            int totalOrders,
+            List<String> expectedCodes,
+            int errorSampleLimit,
+            boolean uniqueAccounts,
+            Duration progressInterval) {
         return new A39SimulatorOptions(
                 "http://apitest.kalaiwang.com",
                 "app-id",
@@ -272,7 +324,7 @@ class A39LoadTestRunnerTest {
                 uniqueAccounts,
                 expectedCodes,
                 errorSampleLimit,
-                Duration.ZERO,
+                progressInterval,
                 Duration.ZERO,
                 0);
     }
@@ -293,12 +345,42 @@ class A39LoadTestRunnerTest {
         Map<String, String> fields = new LinkedHashMap<>();
         report.lines()
                 .filter(line -> !line.isBlank())
+                .filter(line -> line.indexOf('=') > 0)
                 .forEach(line -> {
                     int delimiter = line.indexOf('=');
-                    assertThat(delimiter).isPositive();
                     fields.put(line.substring(0, delimiter), line.substring(delimiter + 1));
                 });
         return fields;
+    }
+
+    private static final class SlowRepeatingLoadClient implements V1CardApiClient {
+
+        private final V1CardApiClient.ApiResponse response;
+        private final Duration delay;
+
+        private SlowRepeatingLoadClient(V1CardApiClient.ApiResponse response, Duration delay) {
+            this.response = response;
+            this.delay = delay;
+        }
+
+        @Override
+        public String getToken(String appId, String appSecret) {
+            return "token";
+        }
+
+        @Override
+        public V1CardApiClient.ApiResponse createRechargeOrder(
+                String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey)
+                throws InterruptedException {
+            Thread.sleep(delay.toMillis());
+            return response;
+        }
+
+        @Override
+        public V1CardApiClient.ApiResponse getRechargeOrder(
+                String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            throw new AssertionError("load mode must not query order");
+        }
     }
 
     private static final class RepeatingLoadClient implements V1CardApiClient {

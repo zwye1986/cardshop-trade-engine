@@ -6,9 +6,12 @@ import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
+import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisBatchRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisPersistedOrderStateAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
@@ -27,10 +30,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Duration;
 import org.apache.ibatis.session.SqlSessionFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
 import org.springframework.boot.autoconfigure.transaction.TransactionAutoConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -82,6 +87,27 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
                 outboxMapper,
                 departRecordMapper,
                 objectMapper);
+    }
+
+    /**
+     * 创建 Redis/MQ 到 MySQL 异步落库批写端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。批端口独立于单条端口，
+     * 使用 MyBatis {@code ExecutorType.BATCH} 的 {@code SqlSessionTemplate}，避免批执行器的延迟 row count
+     * 影响单条路径中已有的控制流。
+     */
+    @Bean
+    @ConditionalOnBean(SqlSessionFactory.class)
+    @ConditionalOnMissingBean(RechargeOrderBatchPersistencePort.class)
+    @ConditionalOnProperty(name = "trade.engine.mq.persist-batch-enabled", havingValue = "true")
+    public RechargeOrderBatchPersistencePort rechargeOrderBatchPersistencePort(
+            SqlSessionFactory sqlSessionFactory,
+            ObjectMapper objectMapper,
+            ObjectProvider<TradeEngineObservabilityMetrics> observabilityMetricsProvider) {
+        return new MybatisBatchRechargeOrderPersistenceAdapter(
+                sqlSessionFactory,
+                objectMapper,
+                observabilityMetricsProvider.getIfAvailable(TradeEngineObservabilityMetrics::noop));
     }
 
     @Bean

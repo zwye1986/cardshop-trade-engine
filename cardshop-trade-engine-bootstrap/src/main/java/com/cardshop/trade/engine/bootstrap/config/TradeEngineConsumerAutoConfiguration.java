@@ -3,6 +3,7 @@ package com.cardshop.trade.engine.bootstrap.config;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import java.time.Clock;
 import org.springframework.beans.factory.ObjectProvider;
@@ -35,12 +36,14 @@ public class TradeEngineConsumerAutoConfiguration {
     @ConditionalOnMissingBean(PersistRechargeOrderConsumerService.class)
     public PersistRechargeOrderConsumerService persistRechargeOrderConsumerService(
             ObjectProvider<PersistOrderSnapshotPort> snapshotPortProvider,
+            ObjectProvider<RechargeOrderBatchPersistencePort> batchPersistencePortProvider,
             RechargeOrderPersistencePort persistencePort,
             RechargeAcceptReliabilityPort reliabilityPort,
             Clock clock) {
         return new PersistRechargeOrderConsumerService(
                 snapshotPortProvider.getIfAvailable(PersistOrderSnapshotPort::noop),
                 persistencePort,
+                batchPersistencePortProvider.getIfAvailable(),
                 reliabilityPort,
                 clock);
     }

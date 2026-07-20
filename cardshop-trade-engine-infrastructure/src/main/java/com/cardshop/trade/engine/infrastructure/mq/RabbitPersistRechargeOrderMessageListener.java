@@ -74,7 +74,7 @@ public class RabbitPersistRechargeOrderMessageListener {
         CompletableFuture<Void> publish(byte[] body, int nextRetryCount);
     }
 
-    private static RetryPublisher rabbitRetryPublisher(RabbitTemplate rabbitTemplate, String exchange, String routingKey) {
+    static RetryPublisher rabbitRetryPublisher(RabbitTemplate rabbitTemplate, String exchange, String routingKey) {
         Objects.requireNonNull(rabbitTemplate, "rabbitTemplate must not be null");
         return (body, nextRetryCount) -> {
             MessageProperties properties = new MessageProperties();
@@ -194,7 +194,7 @@ public class RabbitPersistRechargeOrderMessageListener {
         }
     }
 
-    private static int currentRetryCount(Message message) {
+    static int currentRetryCount(Message message) {
         Object raw = message.getMessageProperties().getHeader(RETRY_COUNT_HEADER);
         if (raw instanceof Number number) {
             return number.intValue();

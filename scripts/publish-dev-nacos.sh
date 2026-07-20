@@ -20,6 +20,21 @@ for name in NACOS_SERVER_ADDR NACOS_NAMESPACE NACOS_GROUP NACOS_USERNAME NACOS_P
   [[ -n "${!name:-}" ]] || fail "Required variable $name is missing in $ENV_FILE"
 done
 
+# 批消费阶段 1 要求 JDBC rewriteBatchedStatements=true；发布前自动补齐，避免灰度打开后 BATCH 退化为逐条发送。
+ensure_rewrite_batched_statements() {
+  local url="$1"
+  if printf '%s' "$url" | grep -Eqi '(^|[?&])rewriteBatchedStatements=true([&#]|$)'; then
+    printf '%s\n' "$url"
+    return 0
+  fi
+  if [[ "$url" == *"?"* ]]; then
+    printf '%s&rewriteBatchedStatements=true\n' "$url"
+  else
+    printf '%s?rewriteBatchedStatements=true\n' "$url"
+  fi
+}
+MYSQL_URL="$(ensure_rewrite_batched_statements "$MYSQL_URL")"
+
 normalize_nacos_addr() {
   local addr="$1"
   addr="${addr#http://}"

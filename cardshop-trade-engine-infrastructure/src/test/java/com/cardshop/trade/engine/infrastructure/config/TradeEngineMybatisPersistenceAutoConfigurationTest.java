@@ -2,15 +2,19 @@ package com.cardshop.trade.engine.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.baomidou.mybatisplus.autoconfigure.DdlApplicationRunner;
+import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
-import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
+import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
-import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisBatchRechargeOrderPersistenceAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
@@ -25,14 +29,15 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAccep
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
-import com.baomidou.mybatisplus.autoconfigure.DdlApplicationRunner;
-import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.time.Clock;
 import javax.sql.DataSource;
+import org.apache.ibatis.mapping.Environment;
+import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.session.SqlSessionFactory;
+import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.ApplicationRunner;
@@ -67,6 +72,33 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                     assertThat(context).hasSingleBean(RechargeOrderPersistencePort.class);
                     assertThat(context.getBean(RechargeOrderPersistencePort.class))
                             .isInstanceOf(MybatisRechargeOrderPersistenceAdapter.class);
+                });
+    }
+
+    @Test
+    void skipsBatchPersistencePortByDefault() {
+        new ApplicationContextRunner()
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withConfiguration(AutoConfigurations.of(
+                        TestMapperAutoConfiguration.class,
+                        TradeEngineMybatisPersistenceAutoConfiguration.class))
+                .run(context -> assertThat(context).doesNotHaveBean(RechargeOrderBatchPersistencePort.class));
+    }
+
+    @Test
+    void registersBatchPersistencePortOnlyWhenBatchSwitchIsEnabled() {
+        new ApplicationContextRunner()
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withPropertyValues("trade.engine.mq.persist-batch-enabled=true")
+                .withConfiguration(AutoConfigurations.of(
+                        TestMapperAutoConfiguration.class,
+                        TradeEngineMybatisPersistenceAutoConfiguration.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargeOrderBatchPersistencePort.class);
+                    assertThat(context.getBean(RechargeOrderBatchPersistencePort.class))
+                            .isInstanceOf(MybatisBatchRechargeOrderPersistenceAdapter.class);
                 });
     }
 
@@ -166,7 +198,7 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
 
         @Bean
         SqlSessionFactory sqlSessionFactory() {
-            return mapperProxy(SqlSessionFactory.class);
+            return configuredSqlSessionFactory();
         }
 
         @Bean
@@ -218,6 +250,29 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         RechargeAcceptAnomalyMapper rechargeAcceptAnomalyMapper() {
             return mapperProxy(RechargeAcceptAnomalyMapper.class);
         }
+    }
+
+    private static SqlSessionFactory configuredSqlSessionFactory() {
+        Configuration configuration = new Configuration();
+        configuration.setEnvironment(new Environment(
+                "configuration-test",
+                new JdbcTransactionFactory(),
+                dataSource()));
+        configuration.addMapper(McOrderMapper.class);
+        configuration.addMapper(RechargeOrderExtMapper.class);
+        configuration.addMapper(RechargeOutboxMapper.class);
+        configuration.addMapper(McDepartRecordMapper.class);
+        Object proxy = Proxy.newProxyInstance(
+                SqlSessionFactory.class.getClassLoader(),
+                new Class<?>[]{SqlSessionFactory.class},
+                (ignored, method, args) -> {
+                    if ("getConfiguration".equals(method.getName())) {
+                        return configuration;
+                    }
+                    throw new AssertionError(
+                            "configuration test should not invoke SqlSessionFactory method " + method.getName());
+                });
+        return SqlSessionFactory.class.cast(proxy);
     }
 
     private static <T> T mapperProxy(Class<T> mapperType) {

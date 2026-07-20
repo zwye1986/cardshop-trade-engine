@@ -108,6 +108,8 @@ class ProfileResourceIsolationTest {
         assertThat(application.getProperty("spring.rabbitmq.listener.simple.prefetch")).isEqualTo("50");
         assertThat(application.getProperty("spring.rabbitmq.listener.simple.concurrency")).isEqualTo("4");
         assertThat(application.getProperty("spring.rabbitmq.listener.simple.max-concurrency")).isEqualTo("16");
+        assertThat(application.getProperty("spring.rabbitmq.listener.simple.consumer-batch-enabled")).isEqualTo("false");
+        assertThat(application.getProperty("spring.rabbitmq.listener.simple.batch-size")).isEqualTo("10");
         assertThat(application.getProperty("trade.engine.mq.persist-queue"))
                 .isEqualTo("recharge.persist.mysql.queue");
         assertThat(application.getProperty("trade.engine.mq.persist-dead-letter-exchange"))
@@ -124,6 +126,12 @@ class ProfileResourceIsolationTest {
                 .isEqualTo("recharge.persist.mysql.retry");
         assertThat(application.getProperty("trade.engine.mq.consumer-retry-delay-ms"))
                 .isEqualTo("30000");
+        assertThat(application.getProperty("trade.engine.mq.persist-batch-enabled"))
+                .isEqualTo("false");
+        assertThat(application.getProperty("trade.engine.mq.persist-batch-size"))
+                .isEqualTo("10");
+        assertThat(application.getProperty("trade.engine.mq.persist-batch-receive-timeout-ms"))
+                .isEqualTo("200");
     }
 
     private Properties load(String resourcePath) {
