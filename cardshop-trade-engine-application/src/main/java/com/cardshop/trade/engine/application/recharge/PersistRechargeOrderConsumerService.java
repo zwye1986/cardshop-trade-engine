@@ -8,6 +8,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -39,6 +40,7 @@ public class PersistRechargeOrderConsumerService {
     private static final String LOG_EVENT_REDIS_MARK_FAILED_TIMEOUT = "persist-consumer.redis-mark-failed.timeout";
     private static final String LOG_EVENT_REDIS_MARK_FAILED_INTERRUPTED = "persist-consumer.redis-mark-failed.interrupted";
     private static final String LOG_EVENT_REDIS_MARK_FAILED_EXCEPTION = "persist-consumer.redis-mark-failed.exception";
+    private static final String LOG_EVENT_PERSISTED_STATE_LOOKUP_FAILED = "persist-consumer.persisted-state.lookup.failed";
     private static final long RETRY_DELAY_MILLIS = 60_000L;
     private static final Duration DEFAULT_REDIS_MARK_TIMEOUT = Duration.ofSeconds(3);
     private static final int MAX_FAIL_REASON_LENGTH = 500;
@@ -48,6 +50,7 @@ public class PersistRechargeOrderConsumerService {
     private final PersistOrderSnapshotPort snapshotPort;
     private final RechargeOrderPersistencePort persistencePort;
     private final RechargeOrderBatchPersistencePort batchPersistencePort;
+    private final PersistedOrderStatePort persistedOrderStatePort;
     private final RechargeAcceptReliabilityPort reliabilityPort;
     private final Clock clock;
     private final Duration redisMarkTimeout;
@@ -58,7 +61,14 @@ public class PersistRechargeOrderConsumerService {
             RechargeOrderPersistencePort persistencePort,
             RechargeAcceptReliabilityPort reliabilityPort,
             Clock clock) {
-        this(snapshotPort, persistencePort, null, reliabilityPort, clock, DEFAULT_REDIS_MARK_TIMEOUT);
+        this(
+                snapshotPort,
+                persistencePort,
+                null,
+                PersistedOrderStatePort.noop(),
+                reliabilityPort,
+                clock,
+                DEFAULT_REDIS_MARK_TIMEOUT);
     }
 
     public PersistRechargeOrderConsumerService(
@@ -67,7 +77,31 @@ public class PersistRechargeOrderConsumerService {
             RechargeOrderBatchPersistencePort batchPersistencePort,
             RechargeAcceptReliabilityPort reliabilityPort,
             Clock clock) {
-        this(snapshotPort, persistencePort, batchPersistencePort, reliabilityPort, clock, DEFAULT_REDIS_MARK_TIMEOUT);
+        this(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                PersistedOrderStatePort.noop(),
+                reliabilityPort,
+                clock,
+                DEFAULT_REDIS_MARK_TIMEOUT);
+    }
+
+    public PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeOrderBatchPersistencePort batchPersistencePort,
+            PersistedOrderStatePort persistedOrderStatePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            Clock clock) {
+        this(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedOrderStatePort,
+                reliabilityPort,
+                clock,
+                DEFAULT_REDIS_MARK_TIMEOUT);
     }
 
     /**
@@ -84,19 +118,30 @@ public class PersistRechargeOrderConsumerService {
             RechargeAcceptReliabilityPort reliabilityPort,
             Clock clock,
             Duration redisMarkTimeout) {
-        this(snapshotPort, persistencePort, null, reliabilityPort, clock, redisMarkTimeout);
+        this(
+                snapshotPort,
+                persistencePort,
+                null,
+                PersistedOrderStatePort.noop(),
+                reliabilityPort,
+                clock,
+                redisMarkTimeout);
     }
 
     PersistRechargeOrderConsumerService(
             PersistOrderSnapshotPort snapshotPort,
             RechargeOrderPersistencePort persistencePort,
             RechargeOrderBatchPersistencePort batchPersistencePort,
+            PersistedOrderStatePort persistedOrderStatePort,
             RechargeAcceptReliabilityPort reliabilityPort,
             Clock clock,
             Duration redisMarkTimeout) {
         this.snapshotPort = Objects.requireNonNull(snapshotPort, "snapshotPort must not be null");
         this.persistencePort = Objects.requireNonNull(persistencePort, "persistencePort must not be null");
         this.batchPersistencePort = batchPersistencePort;
+        this.persistedOrderStatePort = Objects.requireNonNull(
+                persistedOrderStatePort,
+                "persistedOrderStatePort must not be null");
         this.reliabilityPort = Objects.requireNonNull(reliabilityPort, "reliabilityPort must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.redisMarkTimeout = positiveTimeout(redisMarkTimeout);
@@ -179,21 +224,39 @@ public class PersistRechargeOrderConsumerService {
         }
 
         List<SelectedBatchMessage> selectedMessages = new ArrayList<>(messages.size());
-        List<OrderPersistAggregate> aggregates = new ArrayList<>(messages.size());
         for (PersistTradeOrderMessage message : messages) {
             Objects.requireNonNull(message, "messages must not contain null");
             boolean redisOrderWritten = redisOrderWritten(message);
             SelectedSnapshot selected = selectSnapshot(message, redisOrderWritten);
-            selectedMessages.add(new SelectedBatchMessage(message, redisOrderWritten, selected));
-            aggregates.add(new OrderPersistAggregate(
+            OrderPersistAggregate aggregate = new OrderPersistAggregate(
                     message.messageId(),
                     selected.snapshot(),
                     selected.persistSource(),
-                    clock.instant()));
+                    clock.instant());
+            selectedMessages.add(new SelectedBatchMessage(
+                    message,
+                    redisOrderWritten,
+                    selected,
+                    aggregate,
+                    new PersistedOrderProbe(
+                            selected.snapshot().orgCode(),
+                            selected.snapshot().outOrderSn(),
+                            selected.snapshot().orderId(),
+                            selected.snapshot().orderVersion())));
         }
+        Set<PersistedOrderProbe> alreadyPersistedProbes = alreadyPersistedProbes(selectedMessages);
+        List<SelectedBatchMessage> persistedCandidates = selectedMessages.stream()
+                .filter(selectedMessage -> !alreadyPersistedProbes.contains(selectedMessage.persistedProbe()))
+                .toList();
+        int skippedAlreadyPersistedCount = selectedMessages.size() - persistedCandidates.size();
+        List<OrderPersistAggregate> aggregates = persistedCandidates.stream()
+                .map(SelectedBatchMessage::aggregate)
+                .toList();
 
         try {
-            batchPersistencePort.persistBatch(aggregates);
+            if (!aggregates.isEmpty()) {
+                batchPersistencePort.persistBatch(aggregates);
+            }
         } catch (RuntimeException ex) {
             logSampledError(LOG_EVENT_MYSQL_PERSIST_FAILED, decision -> log.error(
                     "Redis订单批量异步落MySQL失败 batchSize={}, firstMessageId={}, lastMessageId={}, occurrence={}, sampled={}",
@@ -204,7 +267,7 @@ public class PersistRechargeOrderConsumerService {
                     decision.sampledOccurrence(),
                     ex));
             String failReason = truncateFailReason(ex.getMessage());
-            for (SelectedBatchMessage selectedMessage : selectedMessages) {
+            for (SelectedBatchMessage selectedMessage : persistedCandidates) {
                 if (selectedMessage.redisOrderWritten()) {
                     markPersistFailed(
                             selectedMessage.message(),
@@ -243,7 +306,32 @@ public class PersistRechargeOrderConsumerService {
         return PersistRechargeOrderBatchResult.persisted(
                 messages.size(),
                 aggregates.size(),
+                skippedAlreadyPersistedCount,
                 redisMarkFailedCount);
+    }
+
+    private Set<PersistedOrderProbe> alreadyPersistedProbes(List<SelectedBatchMessage> selectedMessages) {
+        List<PersistedOrderProbe> probes = selectedMessages.stream()
+                .map(SelectedBatchMessage::persistedProbe)
+                .toList();
+        try {
+            return persistedOrderStatePort.findPersistedAtLeast(probes);
+        } catch (RuntimeException ex) {
+            /*
+             * 参见 docs/交行直充业务系统详细设计.md「8.3 异步落库 Consumer」。
+             * 二次确认只是用于降低 Rabbit 重复副本的 MySQL 写入成本；查询失败时不能把订单当作已落库，
+             * 否则会误跳过真正未提交的订单。这里采样记录 error 后退回原批写幂等路径。
+             */
+            logSampledError(LOG_EVENT_PERSISTED_STATE_LOOKUP_FAILED, decision -> log.error(
+                    "批量二次确认MySQL已落库状态失败 batchSize={}, firstMessageId={}, lastMessageId={}, occurrence={}, sampled={}",
+                    selectedMessages.size(),
+                    selectedMessages.getFirst().message().messageId(),
+                    selectedMessages.getLast().message().messageId(),
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
+            return Set.of();
+        }
     }
 
     private SelectedSnapshot selectSnapshot(PersistTradeOrderMessage message, boolean redisOrderWritten) {
@@ -480,6 +568,8 @@ public class PersistRechargeOrderConsumerService {
     private record SelectedBatchMessage(
             PersistTradeOrderMessage message,
             boolean redisOrderWritten,
-            SelectedSnapshot selected) {
+            SelectedSnapshot selected,
+            OrderPersistAggregate aggregate,
+            PersistedOrderProbe persistedProbe) {
     }
 }

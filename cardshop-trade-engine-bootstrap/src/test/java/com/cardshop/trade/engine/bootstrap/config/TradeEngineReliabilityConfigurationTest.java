@@ -13,6 +13,7 @@ import com.cardshop.trade.engine.application.recharge.MarkPersistQueuedResult;
 import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
+import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
 import com.cardshop.trade.engine.application.recharge.PersistMessagePublishResult;
@@ -56,6 +57,7 @@ import org.springframework.amqp.rabbit.listener.RabbitListenerContainerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
+import org.springframework.test.util.ReflectionTestUtils;
 
 /**
  * 交易可靠性补偿服务装配测试。
@@ -170,6 +172,22 @@ class TradeEngineReliabilityConfigurationTest {
                     assertThat(context).hasSingleBean(PersistRechargeOrderConsumerService.class);
                     assertThat(context).hasSingleBean(RabbitPersistRechargeOrderMessageListener.class);
                 });
+    }
+
+    @Test
+    void wiresPersistedOrderStatePortIntoConsumerServiceWhenAvailable() {
+        PersistedOrderStatePort persistedOrderStatePort = (orgCode, outOrderSn, orderId, orderVersion) -> true;
+
+        contextRunner
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(RechargeOrderPersistencePort.class, () -> aggregate -> {
+                })
+                .withBean(RechargeAcceptReliabilityPort.class, StubReliabilityPort::new)
+                .withBean(PersistedOrderStatePort.class, () -> persistedOrderStatePort)
+                .run(context -> assertThat(ReflectionTestUtils.getField(
+                                context.getBean(PersistRechargeOrderConsumerService.class),
+                                "persistedOrderStatePort"))
+                        .isSameAs(persistedOrderStatePort));
     }
 
     private static final class StubPersistPublisher implements PersistRechargeOrderMessagePublisher {

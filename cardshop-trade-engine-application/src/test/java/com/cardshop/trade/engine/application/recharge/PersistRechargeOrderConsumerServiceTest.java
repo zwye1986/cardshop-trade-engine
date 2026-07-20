@@ -7,9 +7,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import org.junit.jupiter.api.Test;
@@ -350,6 +353,96 @@ class PersistRechargeOrderConsumerServiceTest {
                 .containsExactly("", "MERCHANT_CONFIG_STALE");
     }
 
+    @Test
+    void persistBatchSkipsAlreadyPersistedDuplicatesAndStillRepairsRedisMark() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingBatchPersistencePort batchPersistencePort = new RecordingBatchPersistencePort();
+        RecordingPersistedOrderStatePort persistedStatePort = new RecordingPersistedOrderStatePort();
+        persistedStatePort.alreadyPersisted("A36", "OUT-1001", "ORDER-1001", 1L);
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedStatePort,
+                reliabilityPort,
+                CLOCK);
+
+        PersistRechargeOrderBatchResult result = service.persistBatch(List.of(
+                message(1L),
+                message("persist-ORDER-1002-01", "ORDER-1002", "OUT-1002", 1L)));
+
+        assertThat(result.shouldAck()).isTrue();
+        assertThat(result.batchSize()).isEqualTo(2);
+        assertThat(result.persistedCount()).isEqualTo(1);
+        assertThat(result.skippedAlreadyPersistedCount()).isEqualTo(1);
+        assertThat(persistedStatePort.batchLookupCalls).isEqualTo(1);
+        assertThat(batchPersistencePort.batchCalls).hasSize(1);
+        assertThat(batchPersistencePort.batchCalls.getFirst())
+                .extracting(aggregate -> aggregate.snapshot().orderId())
+                .containsExactly("ORDER-1002");
+        assertThat(reliabilityPort.markDbPersistedOrderIds)
+                .containsExactly("ORDER-1001", "ORDER-1002");
+        assertThat(reliabilityPort.markPersistFailedCalls).isZero();
+    }
+
+    @Test
+    void persistBatchCountsEverySkippedMessageWhenSamePersistedOrderAppearsMoreThanOnce() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingBatchPersistencePort batchPersistencePort = new RecordingBatchPersistencePort();
+        RecordingPersistedOrderStatePort persistedStatePort = new RecordingPersistedOrderStatePort();
+        persistedStatePort.alreadyPersisted("A36", "OUT-1001", "ORDER-1001", 1L);
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedStatePort,
+                reliabilityPort,
+                CLOCK);
+
+        PersistRechargeOrderBatchResult result = service.persistBatch(List.of(
+                message("persist-ORDER-1001-01", "ORDER-1001", "OUT-1001", 1L),
+                message("persist-ORDER-1001-02", "ORDER-1001", "OUT-1001", 1L)));
+
+        assertThat(result.shouldAck()).isTrue();
+        assertThat(result.persistedCount()).isZero();
+        assertThat(result.skippedAlreadyPersistedCount()).isEqualTo(2);
+        assertThat(batchPersistencePort.batchCalls).isEmpty();
+        assertThat(reliabilityPort.markDbPersistedOrderIds).containsExactly("ORDER-1001", "ORDER-1001");
+    }
+
+    @Test
+    void persistBatchUsesSelectedRedisSnapshotVersionBeforeSkippingAlreadyPersistedMessage() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(
+                Optional.of(snapshot(2L, "Redis更新商品名", true)));
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingBatchPersistencePort batchPersistencePort = new RecordingBatchPersistencePort();
+        RecordingPersistedOrderStatePort persistedStatePort = new RecordingPersistedOrderStatePort();
+        persistedStatePort.alreadyPersisted("A36", "OUT-1001", "ORDER-1001", 1L);
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedStatePort,
+                reliabilityPort,
+                CLOCK);
+
+        PersistRechargeOrderBatchResult result = service.persistBatch(List.of(message(1L)));
+
+        assertThat(result.shouldAck()).isTrue();
+        assertThat(result.persistedCount()).isEqualTo(1);
+        assertThat(result.skippedAlreadyPersistedCount()).isZero();
+        assertThat(persistedStatePort.probes)
+                .containsExactly(new PersistedOrderProbe("A36", "OUT-1001", "ORDER-1001", 2L));
+        assertThat(batchPersistencePort.batchCalls).hasSize(1);
+        assertThat(batchPersistencePort.batchCalls.getFirst().getFirst().snapshot().orderVersion()).isEqualTo(2L);
+        assertThat(reliabilityPort.lastPersistedVersion).isEqualTo(2L);
+    }
+
     private static PersistTradeOrderMessage message(long orderVersion) {
         return message("persist-ORDER-1001-01", "ORDER-1001", "OUT-1001", orderVersion);
     }
@@ -525,9 +618,37 @@ class PersistRechargeOrderConsumerServiceTest {
         }
     }
 
+    private static final class RecordingPersistedOrderStatePort implements PersistedOrderStatePort {
+
+        private final Set<PersistedOrderProbe> alreadyPersisted = new HashSet<>();
+        private final List<PersistedOrderProbe> probes = new ArrayList<>();
+        private int batchLookupCalls;
+
+        private void alreadyPersisted(String orgCode, String outOrderSn, String orderId, long orderVersion) {
+            alreadyPersisted.add(new PersistedOrderProbe(orgCode, outOrderSn, orderId, orderVersion));
+        }
+
+        @Override
+        public boolean isPersistedAtLeast(String orgCode, String outOrderSn, String orderId, long orderVersion) {
+            PersistedOrderProbe probe = new PersistedOrderProbe(orgCode, outOrderSn, orderId, orderVersion);
+            probes.add(probe);
+            return alreadyPersisted.contains(probe);
+        }
+
+        @Override
+        public Set<PersistedOrderProbe> findPersistedAtLeast(Collection<PersistedOrderProbe> requestedProbes) {
+            batchLookupCalls++;
+            probes.addAll(requestedProbes);
+            Set<PersistedOrderProbe> result = new HashSet<>(requestedProbes);
+            result.retainAll(alreadyPersisted);
+            return result;
+        }
+    }
+
     private static final class RecordingReliabilityPort implements RechargeAcceptReliabilityPort {
 
         private final List<String> events = new ArrayList<>();
+        private final List<String> markDbPersistedOrderIds = new ArrayList<>();
         private int markDbPersistedCalls;
         private int markPersistFailedCalls;
         private long lastPersistedVersion = -1L;
@@ -568,6 +689,7 @@ class PersistRechargeOrderConsumerServiceTest {
                 long persistedVersion,
                 long nowEpochMillis) {
             events.add("markDbPersisted");
+            markDbPersistedOrderIds.add(acceptResult.orderId());
             markDbPersistedCalls++;
             lastPersistedVersion = persistedVersion;
             return markDbPersistedFuture;

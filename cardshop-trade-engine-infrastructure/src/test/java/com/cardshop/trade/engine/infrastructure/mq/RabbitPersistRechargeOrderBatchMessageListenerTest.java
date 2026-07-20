@@ -4,10 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderBatchResult;
 import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
+import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
+import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilitySnapshotProvider;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.Channel;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -43,6 +47,41 @@ class RabbitPersistRechargeOrderBatchMessageListenerTest {
         assertThat(channel.ackMultiples).containsExactly(true);
         assertThat(channel.nackTags).isEmpty();
         assertThat(channel.rejectTags).isEmpty();
+    }
+
+    @Test
+    void recordsPersistedAndAlreadyPersistedSkippedOrdersSeparatelyWhenAckingBatch() throws Exception {
+        var registry = new SimpleMeterRegistry();
+        var metrics = new TradeEngineObservabilityMetrics(
+                TradeEngineObservabilitySnapshotProvider.empty(),
+                "test",
+                Duration.ofMillis(30));
+        metrics.bindTo(registry);
+        RecordingChannel channel = new RecordingChannel();
+        var listener = listener(
+                ignored -> PersistRechargeOrderBatchResult.persisted(3, 2, 1, 0),
+                (body, next) -> CompletableFuture.completedFuture(null),
+                3,
+                metrics);
+
+        listener.onMessage(List.of(
+                message(validPayload("1"), 111L),
+                message(validPayload("2"), 112L),
+                message(validPayload("3"), 113L)), channel.proxy());
+
+        assertThat(channel.ackTags).containsExactly(113L);
+        assertThat(registry.get("trade.engine.persist.batch.orders.total")
+                        .tag("environment", "test")
+                        .tag("result", "success")
+                        .counter()
+                        .count())
+                .isEqualTo(2.0);
+        assertThat(registry.get("trade.engine.persist.batch.orders.total")
+                        .tag("environment", "test")
+                        .tag("result", "skipped_already_persisted")
+                        .counter()
+                        .count())
+                .isEqualTo(1.0);
     }
 
     @Test
@@ -190,6 +229,19 @@ class RabbitPersistRechargeOrderBatchMessageListenerTest {
             RabbitPersistRechargeOrderMessageListener.RetryPublisher retryPublisher,
             int maxRetry) {
         return new RabbitPersistRechargeOrderBatchMessageListener(objectMapper, consumer, retryPublisher, maxRetry);
+    }
+
+    private RabbitPersistRechargeOrderBatchMessageListener listener(
+            Function<List<PersistTradeOrderMessage>, PersistRechargeOrderBatchResult> consumer,
+            RabbitPersistRechargeOrderMessageListener.RetryPublisher retryPublisher,
+            int maxRetry,
+            TradeEngineObservabilityMetrics observabilityMetrics) {
+        return new RabbitPersistRechargeOrderBatchMessageListener(
+                objectMapper,
+                consumer,
+                retryPublisher,
+                maxRetry,
+                observabilityMetrics);
     }
 
     private String validPayload(String suffix) throws Exception {

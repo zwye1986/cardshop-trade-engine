@@ -8,6 +8,7 @@ package com.cardshop.trade.engine.application.recharge;
  *
  * @param batchSize 本次 Rabbit 批次消息数
  * @param persistedCount 已成功提交 MySQL 的订单数
+ * @param skippedAlreadyPersistedCount MySQL 已经覆盖目标版本、跳过本次批写的重复消息数
  * @param redisMarkFailedCount MySQL 已提交后 Redis mark 失败的订单数
  * @param shouldAck 是否允许 Rabbit adapter ack 原批次
  * @param failCode 失败码，成功时为空
@@ -16,6 +17,7 @@ package com.cardshop.trade.engine.application.recharge;
 public record PersistRechargeOrderBatchResult(
         int batchSize,
         int persistedCount,
+        int skippedAlreadyPersistedCount,
         int redisMarkFailedCount,
         boolean shouldAck,
         String failCode,
@@ -28,6 +30,9 @@ public record PersistRechargeOrderBatchResult(
         if (persistedCount < 0) {
             throw new IllegalArgumentException("persistedCount must be >= 0");
         }
+        if (skippedAlreadyPersistedCount < 0) {
+            throw new IllegalArgumentException("skippedAlreadyPersistedCount must be >= 0");
+        }
         if (redisMarkFailedCount < 0) {
             throw new IllegalArgumentException("redisMarkFailedCount must be >= 0");
         }
@@ -39,6 +44,14 @@ public record PersistRechargeOrderBatchResult(
             int batchSize,
             int persistedCount,
             int redisMarkFailedCount) {
+        return persisted(batchSize, persistedCount, 0, redisMarkFailedCount);
+    }
+
+    public static PersistRechargeOrderBatchResult persisted(
+            int batchSize,
+            int persistedCount,
+            int skippedAlreadyPersistedCount,
+            int redisMarkFailedCount) {
         String failCode = redisMarkFailedCount > 0
                 ? PersistRechargeOrderResult.FAIL_CODE_REDIS_MARK_DB_PERSISTED_FAILED
                 : "";
@@ -48,6 +61,7 @@ public record PersistRechargeOrderBatchResult(
         return new PersistRechargeOrderBatchResult(
                 batchSize,
                 persistedCount,
+                skippedAlreadyPersistedCount,
                 redisMarkFailedCount,
                 true,
                 failCode,
@@ -60,6 +74,7 @@ public record PersistRechargeOrderBatchResult(
             String failReason) {
         return new PersistRechargeOrderBatchResult(
                 batchSize,
+                0,
                 0,
                 0,
                 false,

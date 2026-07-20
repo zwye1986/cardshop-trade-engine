@@ -345,7 +345,7 @@ public class TradeEngineObservabilityMetrics
     /**
      * 记录异步落库批内订单结果计数。
      *
-     * <p>result 仅允许 {@code success}/{@code failed} 等低基数取值，禁止订单号进标签。
+     * <p>result 仅允许 {@code success}/{@code failed}/{@code skipped_already_persisted} 等低基数取值，禁止订单号进标签。
      * Prometheus 暴露后名称为 {@code trade_engine_persist_batch_orders_total}。
      */
     public void recordPersistBatchOrders(int orderCount, String result) {

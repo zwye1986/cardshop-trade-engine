@@ -32,6 +32,7 @@ public class RabbitPersistRechargeOrderBatchMessageListener {
     private static final Logger log = LoggerFactory.getLogger(RabbitPersistRechargeOrderBatchMessageListener.class);
     private static final String RESULT_SUCCESS = "success";
     private static final String RESULT_FAILED = "failed";
+    private static final String RESULT_SKIPPED_ALREADY_PERSISTED = "skipped_already_persisted";
 
     private final ObjectMapper objectMapper;
     private final Function<List<PersistTradeOrderMessage>, PersistRechargeOrderBatchResult> consumer;
@@ -156,7 +157,7 @@ public class RabbitPersistRechargeOrderBatchMessageListener {
         try {
             PersistRechargeOrderBatchResult result = consumer.apply(List.copyOf(persistMessages));
             if (result.shouldAck()) {
-                observabilityMetrics.recordPersistBatchOrders(messages.size(), RESULT_SUCCESS);
+                recordAckedBatchOrders(result);
                 channel.basicAck(lastDeliveryTag, true);
                 return;
             }
@@ -177,6 +178,13 @@ public class RabbitPersistRechargeOrderBatchMessageListener {
             observabilityMetrics.recordPersistBatchOrders(messages.size(), RESULT_FAILED);
             retryOrDeadLetterBatch(channel, messages, ex.getMessage());
         }
+    }
+
+    private void recordAckedBatchOrders(PersistRechargeOrderBatchResult result) {
+        observabilityMetrics.recordPersistBatchOrders(result.persistedCount(), RESULT_SUCCESS);
+        observabilityMetrics.recordPersistBatchOrders(
+                result.skippedAlreadyPersistedCount(),
+                RESULT_SKIPPED_ALREADY_PERSISTED);
     }
 
     private void retryOrDeadLetterBatch(

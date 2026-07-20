@@ -7,6 +7,7 @@ import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 /**
  * 新链路订单扩展表 Mapper。
@@ -157,7 +158,7 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
             on duplicate key update
               persist_source = case
                 when values(persisted_version) &gt; persisted_version then values(persist_source)
-                when values(persisted_version) = persisted_version and persist_status != 'DB_PERSISTED'
+                when values(persisted_version) = persisted_version and persist_status &lt;&gt; 'DB_PERSISTED'
                 then values(persist_source)
                 else persist_source
               end,
@@ -184,6 +185,29 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
             </script>
             """)
     int insertExtBatchOrUpdatePersistState(@Param("rows") List<RechargeOrderExtDO> rows);
+
+    /**
+     * 批量读取订单扩展表的落库状态。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。批 Consumer 在写库前用
+     * 该单表查询识别 RabbitMQ 主队列里的已落库重复消息，避免一批内逐条查询抵消批写收益。
+     */
+    @Select("""
+            <script>
+            select
+              order_id,
+              org_code,
+              out_order_sn,
+              persist_status,
+              persisted_version
+            from recharge_order_ext
+            where order_id in
+            <foreach collection="orderIds" item="orderId" open="(" separator="," close=")">
+              #{orderId}
+            </foreach>
+            </script>
+            """)
+    List<RechargeOrderExtDO> selectByOrderIds(@Param("orderIds") List<String> orderIds);
 
     /**
      * 按平台订单号读取扩展状态。
