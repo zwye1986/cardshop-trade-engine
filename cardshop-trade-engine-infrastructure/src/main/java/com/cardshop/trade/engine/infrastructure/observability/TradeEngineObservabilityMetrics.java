@@ -452,9 +452,9 @@ public class TradeEngineObservabilityMetrics
      *
      * <p>参见详细设计「9.1 派单 Outbox」「9.2 余额 Delta 刷账 Outbox」与高可用「12.2 指标」：
      * 目标指标为 {@code trade.engine.dispatch.outbox.pending.total{event_type,status}} 与
-     * {@code trade.engine.balance.delta.pending.total{status}}。兼容期保留
-     * {@code trade.engine.outbox.pending}：派单事件读 dispatch 快照；{@code BALANCE_DELTA_FLUSH}
-     * 读读余额 status 快照，便于旧告警迁移。禁止 {@code org_code} 等高基数标签。
+     * {@code trade.engine.balance.delta.pending.total{status}}。
+     * 旧名 {@code trade.engine.outbox.pending} 仅保留为派单兼容视图；余额积压不得再写入该旧 gauge，
+     * 避免压测/告警继续按混合 outbox 口径读数。禁止 {@code org_code} 等高基数标签。
      */
     private void registerOutboxGauges(MeterRegistry registry) {
         for (OutboxEventType eventType : DISPATCH_OUTBOX_EVENT_TYPES) {
@@ -493,7 +493,7 @@ public class TradeEngineObservabilityMetrics
                                 "trade.engine.outbox.max.age.seconds",
                                 snapshotProvider,
                                 provider -> snapshot(provider).outboxMaxAgeSeconds(event, taskStatus))
-                        .description("派单 outbox 最大滞留秒数（兼容名）")
+                        .description("派单 outbox 最大滞留秒数（兼容名，仅派单）")
                         .tag("environment", environment)
                         .tag("event_type", event)
                         .tag("status", taskStatus)
@@ -516,25 +516,6 @@ public class TradeEngineObservabilityMetrics
                             provider -> snapshot(provider).balanceDeltaMaxAgeSeconds(taskStatus))
                     .description("余额 delta 刷账 outbox 最大滞留时间秒数")
                     .tag("environment", environment)
-                    .tag("status", taskStatus)
-                    .register(registry);
-            // 兼容旧 trade.engine.outbox.pending{event_type=BALANCE_DELTA_FLUSH}
-            Gauge.builder(
-                            "trade.engine.outbox.pending",
-                            snapshotProvider,
-                            provider -> snapshot(provider).balanceDeltaCount(taskStatus))
-                    .description("余额 delta 积压兼容视图（event_type=BALANCE_DELTA_FLUSH），新告警请改用 balance.delta.pending.total")
-                    .tag("environment", environment)
-                    .tag("event_type", OutboxEventType.BALANCE_DELTA_FLUSH.name())
-                    .tag("status", taskStatus)
-                    .register(registry);
-            Gauge.builder(
-                            "trade.engine.outbox.max.age.seconds",
-                            snapshotProvider,
-                            provider -> snapshot(provider).balanceDeltaMaxAgeSeconds(taskStatus))
-                    .description("余额 delta 最大滞留兼容视图")
-                    .tag("environment", environment)
-                    .tag("event_type", OutboxEventType.BALANCE_DELTA_FLUSH.name())
                     .tag("status", taskStatus)
                     .register(registry);
         }

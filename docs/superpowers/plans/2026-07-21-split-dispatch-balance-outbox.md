@@ -23,7 +23,6 @@
 - `docs/交行直充业务系统高可用方案设计.md`
 - `docs/superpowers/specs/2026-07-17-persist-batch-consumer-design.md`
 - `docs/superpowers/specs/2026-07-21-split-dispatch-balance-outbox-design.md`
-- `docs/跨项目联调记忆.md` — update once frontend observation work is completed
 
 ### Create
 - `cardshop-trade-engine-infrastructure/.../entity/RechargeDispatchOutboxDO.java`
@@ -405,7 +404,6 @@ mvn -pl cardshop-trade-engine-bootstrap -am test
 - `/Users/mac/Documents/codeSpace/frontend/cardshop-trade-engine-test-console/src/utils/evidence.js`
 - `/Users/mac/Documents/codeSpace/frontend/cardshop-trade-engine-test-console/README.md`
 - `/Users/mac/Documents/codeSpace/frontend/cardshop-trade-engine-test-console/AGENTS.md`
-- Backend: `docs/跨项目联调记忆.md`
 
 - [ ] **Step 1: Update observation SQL templates** from old `recharge_outbox` to both `recharge_dispatch_outbox` and `recharge_balance_delta_outbox`. Use `order_id` / `out_order_sn` columns, not the old `aggregate_id` template.
 
@@ -420,8 +418,6 @@ cd /Users/mac/Documents/codeSpace/frontend/cardshop-trade-engine-test-console
 npm run test:unit
 npm run build
 ```
-
-- [ ] **Step 5: Update backend `docs/跨项目联调记忆.md`** with the exact frontend files changed and any remaining manual observation caveats.
 
 ---
 

@@ -15,11 +15,11 @@ This is a Java 21, Maven multi-module Spring Boot service. The root `pom.xml` is
 
 Put production code in each module's `src/main/java`, tests in `src/test/java`, and resources in `src/main/resources`. Do not commit `target/`, logs, IDE files, or compiled classes.
 
-## Cross-Project Integration Memory
+## Cross-Project Integration
 
 During dev/test integration testing this backend is tightly coupled with the test helper frontend at `/Users/mac/Documents/codeSpace/frontend/cardshop-trade-engine-test-console`. The frontend is a separate project, but changes to V1 APIs, Actuator/RabbitMQ metrics, Redis pending republish parameters, integration-test evidence, or dev/test environment defaults must be considered cross-project changes.
 
-Before changing integration-test flows or helper endpoints, read `docs/跨项目联调记忆.md`. If the change affects frontend requests, curl generation, observation aggregation, or execution-record Markdown, update the frontend project README/AGENTS and relevant source files as part of the same work. The frontend remains dev/test-only and must not introduce `local` as an integration-test environment.
+If the change affects frontend requests, curl generation, observation aggregation, or execution-record Markdown, update the frontend project README/AGENTS and relevant source files as part of the same work. The frontend remains dev/test-only and must not introduce `local` as an integration-test environment.
 
 ## Build, Test, and Development Commands
 

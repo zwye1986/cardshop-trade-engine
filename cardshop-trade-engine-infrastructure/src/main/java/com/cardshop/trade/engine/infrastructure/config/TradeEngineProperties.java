@@ -5,6 +5,8 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 /**
@@ -1292,6 +1294,8 @@ public class TradeEngineProperties {
      */
     public static class Outbox {
 
+        private static final Logger log = LoggerFactory.getLogger(Outbox.class);
+
         /**
          * 详细设计默认退避序列 {@code 5,30,120,600}（秒）。
          */
@@ -1349,14 +1353,16 @@ public class TradeEngineProperties {
         /**
          * 解析逗号分隔退避秒数为 {@link Duration} 列表。
          *
-         * <p>空白或无法解析为正向秒数的片段会被忽略；若最终列表为空则回退到详细设计默认序列，
-         * 避免错误配置导致刷账失败后立即 tight-loop 重试。
+         * <p>参见详细设计「9.2 余额 Delta 刷账 Outbox」「11. 配置中心」。空白配置回退设计默认序列；
+         * 非空但含非法片段（非正整数）时必须 fail-fast，禁止静默降级掩盖 Nacos 配错。
+         * 解析失败路径写 {@code error} 日志并抛出 {@link IllegalArgumentException}，符合生产 catch 留证规范。
          */
         public List<Duration> balanceDeltaRetryBackoffDurations() {
             if (balanceDeltaRetryBackoffSeconds == null || balanceDeltaRetryBackoffSeconds.isBlank()) {
                 return DEFAULT_BALANCE_DELTA_RETRY_BACKOFF_DURATIONS;
             }
             List<Duration> parsed = new ArrayList<>();
+            List<String> invalidTokens = new ArrayList<>();
             for (String token : balanceDeltaRetryBackoffSeconds.split(",")) {
                 String trimmed = token == null ? "" : token.strip();
                 if (trimmed.isEmpty()) {
@@ -1366,12 +1372,34 @@ public class TradeEngineProperties {
                     long seconds = Long.parseLong(trimmed);
                     if (seconds > 0L) {
                         parsed.add(Duration.ofSeconds(seconds));
+                    } else {
+                        invalidTokens.add(trimmed);
                     }
-                } catch (NumberFormatException ignored) {
-                    // 忽略非法片段，最终空列表回退默认序列。
+                } catch (NumberFormatException ex) {
+                    invalidTokens.add(trimmed);
+                    log.error(
+                            "解析 trade.engine.outbox.balance-delta-retry-backoff-seconds 片段失败 rawConfig={}, token={}",
+                            balanceDeltaRetryBackoffSeconds,
+                            trimmed,
+                            ex);
                 }
             }
-            return parsed.isEmpty() ? DEFAULT_BALANCE_DELTA_RETRY_BACKOFF_DURATIONS : List.copyOf(parsed);
+            if (parsed.isEmpty() && invalidTokens.isEmpty()) {
+                // 仅逗号/空白，等价于未配置，回退设计默认序列。
+                return DEFAULT_BALANCE_DELTA_RETRY_BACKOFF_DURATIONS;
+            }
+            if (!invalidTokens.isEmpty() || parsed.isEmpty()) {
+                log.error(
+                        "trade.engine.outbox.balance-delta-retry-backoff-seconds 非法，拒绝静默降级 rawConfig={}, invalidTokens={}",
+                        balanceDeltaRetryBackoffSeconds,
+                        invalidTokens);
+                throw new IllegalArgumentException(
+                        "trade.engine.outbox.balance-delta-retry-backoff-seconds must be a comma-separated list of positive seconds, raw="
+                                + balanceDeltaRetryBackoffSeconds
+                                + ", invalidTokens="
+                                + invalidTokens);
+            }
+            return List.copyOf(parsed);
         }
     }
 

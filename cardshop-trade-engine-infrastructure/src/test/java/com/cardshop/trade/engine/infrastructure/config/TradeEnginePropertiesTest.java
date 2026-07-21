@@ -1,6 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
@@ -168,9 +169,9 @@ class TradeEnginePropertiesTest {
     }
 
     @Test
-    void outboxBackoffFallsBackToDesignDefaultWhenBlankOrInvalid() {
+    void outboxBackoffUsesDesignDefaultWhenBlank() {
         contextRunner
-                .withPropertyValues("trade.engine.outbox.balance-delta-retry-backoff-seconds=  ,abc,")
+                .withPropertyValues("trade.engine.outbox.balance-delta-retry-backoff-seconds=  ,  ,")
                 .run(context -> {
                     var properties = context.getBean(TradeEngineProperties.class);
                     assertThat(properties.getOutbox().balanceDeltaRetryBackoffDurations())
@@ -179,6 +180,19 @@ class TradeEnginePropertiesTest {
                                     Duration.ofSeconds(30),
                                     Duration.ofSeconds(120),
                                     Duration.ofSeconds(600));
+                });
+    }
+
+    @Test
+    void outboxBackoffRejectsInvalidConfigWithoutSilentFallback() {
+        contextRunner
+                .withPropertyValues("trade.engine.outbox.balance-delta-retry-backoff-seconds=5,abc,30")
+                .run(context -> {
+                    var properties = context.getBean(TradeEngineProperties.class);
+                    assertThatThrownBy(() -> properties.getOutbox().balanceDeltaRetryBackoffDurations())
+                            .isInstanceOf(IllegalArgumentException.class)
+                            .hasMessageContaining("balance-delta-retry-backoff-seconds")
+                            .hasMessageContaining("abc");
                 });
     }
 

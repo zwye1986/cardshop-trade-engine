@@ -74,13 +74,25 @@ class TradeEngineObservabilityMetricsTest {
                         .gauge()
                         .value())
                 .isEqualTo(1.0);
-        assertThat(registry.get("trade.engine.outbox.max.age.seconds")
+        assertThat(registry.get("trade.engine.balance.delta.max.age.seconds")
                         .tag("environment", "test")
-                        .tag("event_type", OutboxEventType.BALANCE_DELTA_FLUSH.name())
                         .tag("status", TaskStatus.MANUAL_REQUIRED.name())
                         .gauge()
                         .value())
                 .isEqualTo(600.0);
+        // 旧 outbox.pending 不得再挂 BALANCE_DELTA_FLUSH（Spec §10：旧 gauge 仅派单兼容视图）。
+        assertThat(registry.find("trade.engine.outbox.pending")
+                        .tag("environment", "test")
+                        .tag("event_type", OutboxEventType.BALANCE_DELTA_FLUSH.name())
+                        .tag("status", TaskStatus.MANUAL_REQUIRED.name())
+                        .gauge())
+                .isNull();
+        assertThat(registry.find("trade.engine.outbox.max.age.seconds")
+                        .tag("environment", "test")
+                        .tag("event_type", OutboxEventType.BALANCE_DELTA_FLUSH.name())
+                        .tag("status", TaskStatus.MANUAL_REQUIRED.name())
+                        .gauge())
+                .isNull();
         assertThat(registry.get("trade.engine.accept.anomaly.open")
                         .tag("environment", "test")
                         .tag("anomaly_type", AcceptAnomalyType.LUA_TIMEOUT.name())

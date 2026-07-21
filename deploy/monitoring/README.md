@@ -63,9 +63,18 @@ RabbitMQ 面板默认使用常见 exporter 指标：
 
 触发 `CardshopTradeOutboxFailedOrManual` 或 `CardshopTradeOutboxTooOld` 时：
 
-1. 按 `event_type` 区分供应商派单、异步查单、作废、余额刷账、商户回调或缓存修复。
-2. 核查对应固定 job 是否运行、下游供应商或商户回调是否异常、`locked_until` 是否长期未释放。
-3. 需要人工关闭事件时，先保留 MySQL 证据和日志上下文，再按执行记录回填 `docs/集成测试.md` 或生产事件单。
+1. 这两条规则盯的是**派单履约**积压。Prometheus 名 `trade_engine_outbox_pending` 仅为派单兼容视图；目标指标优先读 `trade_engine_dispatch_outbox_pending_total{event_type,status}`。
+2. 按 `event_type` 区分 `SUPPLIER_DISPATCH` / `SUPPLIER_QUERY` / `INVALID_ORDER`，核查对应固定 job、下游供应商与 `locked_until`。
+3. **余额刷账积压**不在本规则范围；见下方「余额 Delta 刷账告警」与 `trade_engine_balance_delta_pending_total{status}`。
+4. 需要人工关闭事件时，先保留 MySQL 证据和日志上下文，再按执行记录回填 `docs/集成测试.md` 或生产事件单。
+
+## 余额 Delta 刷账告警
+
+触发 `CardshopTradeBalanceDeltaFailedOrManual` 或 `CardshopTradeBalanceDeltaTooOld` 时：
+
+1. 只看 `trade_engine_balance_delta_pending_total` / `trade_engine_balance_delta_max_age_seconds`，不要再用旧 `trade_engine_outbox_pending{event_type=BALANCE_DELTA_FLUSH}`（拆表后已不再暴露）。
+2. 核查 `rechargeBalanceDeltaFlushJob`、`recharge_balance_delta_outbox`、`mc_ext_depart` 行锁，以及 `trade.engine.outbox.balance-delta-*` 租约/退避配置。
+3. 非法退避 CSV 会导致应用启动 fail-fast；先核对 Nacos `TRADE_ENGINE_OUTBOX_BALANCE_DELTA_RETRY_BACKOFF_SECONDS`。
 
 ## 接单异常告警
 
@@ -79,7 +88,7 @@ RabbitMQ 面板默认使用常见 exporter 指标：
 
 触发 `CardshopTradeBalanceDiffDetected` 时：
 
-1. 暂停扩大灰度范围，核查 `mc_ext_depart.balance`、Redis available、未完成 `BALANCE_DELTA_FLUSH` 和 balance owner。
+1. 暂停扩大灰度范围，核查 `mc_ext_depart.balance`、Redis available、未完成 `recharge_balance_delta_outbox`（指标 `trade_engine_balance_delta_pending_total`）和 balance owner。
 2. 新旧系统共享旧库期间，确认同一商户同一交易类型没有双写余额。
 3. 差异修复必须保留审计记录，不能直接覆盖 Redis 或 MySQL。
 
