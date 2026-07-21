@@ -36,9 +36,9 @@ class TradeEngineObservabilityMetricsTest {
                 Map.of(
                         new TradeEngineObservabilitySnapshot.OutboxKey(
                                 OutboxEventType.SUPPLIER_DISPATCH.name(), TaskStatus.INIT.name()),
-                        new TradeEngineObservabilitySnapshot.CountAge(3, 120),
-                        new TradeEngineObservabilitySnapshot.OutboxKey(
-                                OutboxEventType.BALANCE_DELTA_FLUSH.name(), TaskStatus.MANUAL_REQUIRED.name()),
+                        new TradeEngineObservabilitySnapshot.CountAge(3, 120)),
+                Map.of(
+                        TaskStatus.MANUAL_REQUIRED.name(),
                         new TradeEngineObservabilitySnapshot.CountAge(1, 600)),
                 Map.of(
                         new TradeEngineObservabilitySnapshot.AcceptAnomalyKey(
@@ -54,6 +54,13 @@ class TradeEngineObservabilityMetricsTest {
                 .isEqualTo(5.0);
         assertThat(registry.get("trade.engine.redis.pending.max.age.seconds").tag("environment", "test").gauge().value())
                 .isEqualTo(90.0);
+        assertThat(registry.get("trade.engine.dispatch.outbox.pending.total")
+                        .tag("environment", "test")
+                        .tag("event_type", OutboxEventType.SUPPLIER_DISPATCH.name())
+                        .tag("status", TaskStatus.INIT.name())
+                        .gauge()
+                        .value())
+                .isEqualTo(3.0);
         assertThat(registry.get("trade.engine.outbox.pending")
                         .tag("environment", "test")
                         .tag("event_type", OutboxEventType.SUPPLIER_DISPATCH.name())
@@ -61,6 +68,12 @@ class TradeEngineObservabilityMetricsTest {
                         .gauge()
                         .value())
                 .isEqualTo(3.0);
+        assertThat(registry.get("trade.engine.balance.delta.pending.total")
+                        .tag("environment", "test")
+                        .tag("status", TaskStatus.MANUAL_REQUIRED.name())
+                        .gauge()
+                        .value())
+                .isEqualTo(1.0);
         assertThat(registry.get("trade.engine.outbox.max.age.seconds")
                         .tag("environment", "test")
                         .tag("event_type", OutboxEventType.BALANCE_DELTA_FLUSH.name())
@@ -297,6 +310,11 @@ class TradeEngineObservabilityMetricsTest {
         metrics.recordPersistBatchSize(7);
         metrics.recordPersistBatchMysqlDuration(Duration.ofMillis(12));
         metrics.recordPersistBatchMysqlPhaseDuration("mc_order", Duration.ofMillis(3));
+        // 详细设计「8.3」phase 白名单：拆表后使用 recharge_dispatch_outbox / recharge_balance_delta_outbox。
+        metrics.recordPersistBatchMysqlPhaseDuration("recharge_dispatch_outbox", Duration.ofMillis(2));
+        metrics.recordPersistBatchMysqlPhaseDuration("recharge_balance_delta_outbox", Duration.ofMillis(1));
+        // 旧混合表 phase 不得进入低基数白名单，应折叠为 unknown。
+        metrics.recordPersistBatchMysqlPhaseDuration("recharge_outbox", Duration.ofMillis(4));
         metrics.recordPersistBatchOrders(7, "success");
         metrics.recordPersistBatchOrders(3, "failed");
 
@@ -321,6 +339,29 @@ class TradeEngineObservabilityMetricsTest {
                         .timer()
                         .totalTime(TimeUnit.MILLISECONDS))
                 .isEqualTo(3.0);
+        assertThat(registry.get("trade.engine.persist.batch.mysql.phase.duration")
+                        .tag("environment", "test")
+                        .tag("phase", "recharge_dispatch_outbox")
+                        .timer()
+                        .totalTime(TimeUnit.MILLISECONDS))
+                .isEqualTo(2.0);
+        assertThat(registry.get("trade.engine.persist.batch.mysql.phase.duration")
+                        .tag("environment", "test")
+                        .tag("phase", "recharge_balance_delta_outbox")
+                        .timer()
+                        .totalTime(TimeUnit.MILLISECONDS))
+                .isEqualTo(1.0);
+        assertThat(registry.get("trade.engine.persist.batch.mysql.phase.duration")
+                        .tag("environment", "test")
+                        .tag("phase", "unknown")
+                        .timer()
+                        .totalTime(TimeUnit.MILLISECONDS))
+                .isEqualTo(4.0);
+        assertThat(registry.find("trade.engine.persist.batch.mysql.phase.duration")
+                        .tag("environment", "test")
+                        .tag("phase", "recharge_outbox")
+                        .timer())
+                .isNull();
         assertThat(registry.get("trade.engine.persist.batch.orders.total")
                         .tag("environment", "test")
                         .tag("result", "success")

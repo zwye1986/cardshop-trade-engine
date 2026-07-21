@@ -9,8 +9,9 @@ import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObserva
 import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilitySnapshotProvider;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McDepartRecordDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeBalanceDeltaOutboxDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeDispatchOutboxDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
-import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import java.time.Duration;
@@ -26,8 +27,10 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 /**
  * MyBatis 批量异步落库适配器测试。
  *
-     * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。批 adapter
-     * 独立于单笔 adapter，必须调用显式 multi-row mapper，并由数据库唯一键保证重复 MQ/补投重试的幂等性。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。批 adapter
+ * 独立于单笔 adapter，必须调用显式 multi-row mapper，并按拆表后的写序
+ * {@code mc_order -> recharge_order_ext -> mc_depart_record -> recharge_dispatch_outbox ->
+ * recharge_balance_delta_outbox} 分组上报 phase；由数据库唯一键保证重复 MQ/补投重试的幂等性。
  */
 class MybatisBatchRechargeOrderPersistenceAdapterTest {
 
@@ -35,6 +38,7 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
     void writesPreDeductRecordByDatabaseIdempotencyInBatchPath() {
         RecordingStore store = new RecordingStore();
         MybatisBatchRechargeOrderPersistenceAdapter adapter = new MybatisBatchRechargeOrderPersistenceAdapter(
+                store,
                 store,
                 store,
                 store,
@@ -49,13 +53,17 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
                 "departBatch:ORDER-1001");
         assertThat(store.departRecords).hasSize(1);
         assertThat(store.departRecords.getFirst().getOrderId()).isEqualTo("ORDER-1001");
-        assertThat(store.outboxesByEventId).containsKeys("dispatch-ORDER-1001", "balance-flush-ORDER-1001");
+        assertThat(store.dispatchByEventId).containsKey("dispatch-ORDER-1001");
+        assertThat(store.balanceByEventId).containsKey("balance-flush-ORDER-1001");
+        assertThat(store.balanceByEventId.get("balance-flush-ORDER-1001").getDeltaType()).isEqualTo("PRE_DEDUCT");
+        assertThat(store.balanceByEventId.get("balance-flush-ORDER-1001").getDeltaAmount()).isEqualTo(-5200L);
     }
 
     @Test
     void writesBatchInStableOrderAndGroupsStatementsByTable() {
         RecordingStore store = new RecordingStore();
         MybatisBatchRechargeOrderPersistenceAdapter adapter = new MybatisBatchRechargeOrderPersistenceAdapter(
+                store,
                 store,
                 store,
                 store,
@@ -70,7 +78,8 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
                 "orderBatch:ORDER-1001,ORDER-1002",
                 "extBatch:ORDER-1001,ORDER-1002",
                 "departBatch:ORDER-1001,ORDER-1002",
-                "outboxBatch:dispatch-ORDER-1001,balance-flush-ORDER-1001,dispatch-ORDER-1002,balance-flush-ORDER-1002");
+                "dispatchOutboxBatch:dispatch-ORDER-1001,dispatch-ORDER-1002",
+                "balanceDeltaBatch:balance-flush-ORDER-1001,balance-flush-ORDER-1002");
     }
 
     @Test
@@ -83,6 +92,7 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
         metrics.bindTo(registry);
         RecordingStore store = new RecordingStore();
         MybatisBatchRechargeOrderPersistenceAdapter adapter = new MybatisBatchRechargeOrderPersistenceAdapter(
+                store,
                 store,
                 store,
                 store,
@@ -107,6 +117,23 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
                             .timer()
                             .count())
                     .isEqualTo(1L);
+            assertThat(registry.get("trade.engine.persist.batch.mysql.phase.duration")
+                            .tag("environment", "test")
+                            .tag("phase", "recharge_dispatch_outbox")
+                            .timer()
+                            .count())
+                    .isEqualTo(1L);
+            assertThat(registry.get("trade.engine.persist.batch.mysql.phase.duration")
+                            .tag("environment", "test")
+                            .tag("phase", "recharge_balance_delta_outbox")
+                            .timer()
+                            .count())
+                    .isEqualTo(1L);
+            assertThat(registry.find("trade.engine.persist.batch.mysql.phase.duration")
+                            .tag("environment", "test")
+                            .tag("phase", "recharge_outbox")
+                            .timer())
+                    .isNull();
             assertThat(registry.find("trade.engine.persist.batch.mysql.phase.duration")
                             .tag("environment", "test")
                             .tag("phase", "commit")
@@ -179,13 +206,15 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
     private static final class RecordingStore
             implements McOrderBatchPersistWriter,
             RechargeOrderExtBatchPersistWriter,
-            RechargeOutboxBatchPersistWriter,
+            RechargeDispatchOutboxBatchPersistWriter,
+            RechargeBalanceDeltaOutboxBatchPersistWriter,
             McDepartRecordBatchPersistWriter {
 
         private final List<String> events = new ArrayList<>();
         private final List<McDepartRecordDO> departRecords = new ArrayList<>();
         private final Map<String, McDepartRecordDO> departRecordsByKey = new LinkedHashMap<>();
-        private final Map<String, RechargeOutboxDO> outboxesByEventId = new LinkedHashMap<>();
+        private final Map<String, RechargeDispatchOutboxDO> dispatchByEventId = new LinkedHashMap<>();
+        private final Map<String, RechargeBalanceDeltaOutboxDO> balanceByEventId = new LinkedHashMap<>();
 
         @Override
         public int insertOrderBatchIfAbsent(List<McOrderDO> orders) {
@@ -200,10 +229,19 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
         }
 
         @Override
-        public int insertOutboxBatchIfAbsent(List<RechargeOutboxDO> rows) {
-            events.add("outboxBatch:" + eventIds(rows));
-            for (RechargeOutboxDO outbox : rows) {
-                outboxesByEventId.putIfAbsent(outbox.getEventId(), outbox);
+        public int insertDispatchOutboxBatchIfAbsent(List<RechargeDispatchOutboxDO> rows) {
+            events.add("dispatchOutboxBatch:" + dispatchEventIds(rows));
+            for (RechargeDispatchOutboxDO outbox : rows) {
+                dispatchByEventId.putIfAbsent(outbox.getEventId(), outbox);
+            }
+            return rows.size();
+        }
+
+        @Override
+        public int insertBalanceDeltaBatchIfAbsent(List<RechargeBalanceDeltaOutboxDO> rows) {
+            events.add("balanceDeltaBatch:" + balanceEventIds(rows));
+            for (RechargeBalanceDeltaOutboxDO outbox : rows) {
+                balanceByEventId.putIfAbsent(outbox.getEventId(), outbox);
             }
             return rows.size();
         }
@@ -236,8 +274,12 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
             return String.join(",", rows.stream().map(McDepartRecordDO::getOrderId).toList());
         }
 
-        private static String eventIds(List<RechargeOutboxDO> rows) {
-            return String.join(",", rows.stream().map(RechargeOutboxDO::getEventId).toList());
+        private static String dispatchEventIds(List<RechargeDispatchOutboxDO> rows) {
+            return String.join(",", rows.stream().map(RechargeDispatchOutboxDO::getEventId).toList());
+        }
+
+        private static String balanceEventIds(List<RechargeBalanceDeltaOutboxDO> rows) {
+            return String.join(",", rows.stream().map(RechargeBalanceDeltaOutboxDO::getEventId).toList());
         }
     }
 }

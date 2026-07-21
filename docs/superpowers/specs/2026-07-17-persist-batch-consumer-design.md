@@ -4,6 +4,7 @@
 > 状态：已实现基础批消费，按压测反馈优化中（Rabbit 原生批消费）
 > 关联：`docs/交行直充业务系统详细设计.md`「8.3 异步落库 Consumer」  
 > 压测基线：`PERF-A39-T5-RATE50-20260717213507`（直连 50 QPS×10min，同步 30000/30000；异步稳态约 9 persist QPS）
+> 后续更新：`docs/superpowers/specs/2026-07-21-split-dispatch-balance-outbox-design.md` 已把旧 `recharge_outbox` 目标态拆为 `recharge_dispatch_outbox` 与 `recharge_balance_delta_outbox`。本文中批写表集合、phase 标签和幂等说明以该拆表设计及正式详细设计为准。
 
 ## 1. 背景与目标
 
@@ -20,7 +21,7 @@
 
 一致性边界（用户确认 **C**）：
 
-- **不拆事务表集合**：每笔订单仍在同一事务内写 `mc_order`、`recharge_order_ext`，并按需要写 `mc_depart_record` / `recharge_outbox`
+- **不拆事务表集合**：每笔订单仍在同一事务内写 `mc_order`、`recharge_order_ext`，并按需要写 `mc_depart_record` / `recharge_dispatch_outbox` / `recharge_balance_delta_outbox`；旧 `recharge_outbox` 仅作为未上线旧实现背景，不设计数据迁移兼容
 - **不做跨订单业务合并**；批只是「N 笔订单共享一次 commit」
 
 推荐方案（用户确认）：**Rabbit 原生批消费（方案 2）**，并以显式 multi-row mapper 与 JDBC `rewriteBatchedStatements` 等作为底座。
@@ -90,7 +91,7 @@ Rabbit 主队列 recharge.persist.mysql.queue
 
 - `mc_order`：`insertIfAbsent`
 - `recharge_order_ext`：版本前进 upsert
-- `mc_depart_record` / `recharge_outbox`：业务唯一键幂等
+- `mc_depart_record` / `recharge_dispatch_outbox` / `recharge_balance_delta_outbox`：业务唯一键幂等
 - 已 `DB_PERSISTED` 的重复消息：写库无害，mark 幂等，ack
 
 ### 5.3 与 republish 的关系
@@ -104,7 +105,7 @@ Rabbit 主队列 recharge.persist.mysql.queue
 阶段 1 必做：
 
 - 数据源 URL 启用 `rewriteBatchedStatements=true`（若尚未启用）
-- 批写路径调用 `mc_order`、`recharge_order_ext`、`mc_depart_record`、`recharge_outbox` 的显式 multi-row mapper，在**单个** Spring 事务内提交
+- 批写路径调用 `mc_order`、`recharge_order_ext`、`mc_depart_record`、`recharge_dispatch_outbox`、`recharge_balance_delta_outbox` 的显式 multi-row mapper，在**单个** Spring 事务内提交
 - 单笔路径也可受益于 `rewriteBatchedStatements`，但不改变一消息一事务模型
 
 说明：单笔多语句伪批量（仅方案 3）不足以达到 50 QPS，但作为批模式的底座保留。
@@ -115,7 +116,7 @@ Rabbit 主队列 recharge.persist.mysql.queue
 | --- | --- |
 | `trade.engine.persist.batch.size`（summary） | 实际批大小；Prometheus 为 `trade_engine_persist_batch_size` |
 | `trade.engine.persist.batch.mysql.duration` | 批事务耗时；Prometheus 为 `trade_engine_persist_batch_mysql_duration_seconds` |
-| `trade.engine.persist.batch.mysql.phase.duration{phase}` | 批事务分段耗时，`phase` 固定为 `mc_order`、`recharge_order_ext`、`mc_depart_record`、`recharge_outbox`、`commit`；Prometheus 为 `trade_engine_persist_batch_mysql_phase_duration_seconds` |
+| `trade.engine.persist.batch.mysql.phase.duration{phase}` | 批事务分段耗时，`phase` 固定为 `mc_order`、`recharge_order_ext`、`mc_depart_record`、`recharge_dispatch_outbox`、`recharge_balance_delta_outbox`、`commit`；旧 `recharge_outbox` 只作历史压测对比背景；Prometheus 为 `trade_engine_persist_batch_mysql_phase_duration_seconds` |
 | `trade.engine.persist.batch.orders.total{result}` | 批内订单 success/fail 计数 |
 | 现有 `spring_rabbitmq_listener_seconds` | 批模式下按批计时；报告换算 per-order |
 | Hikari active/pending、`08S01` / timeout 采样 error | 确认读超时风暴收敛 |

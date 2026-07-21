@@ -1,8 +1,6 @@
 package com.cardshop.trade.engine.infrastructure.persistence;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
-import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxCommand;
-import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxCommand;
@@ -11,8 +9,8 @@ import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxComman
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.domain.order.TaskStatus;
-import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeDispatchOutboxDO;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
@@ -24,31 +22,43 @@ import java.util.Map;
 import java.util.Objects;
 
 /**
- * 基于 MyBatis 的 outbox 扫描、抢占和作废事件写入适配器。
+ * 基于 {@code recharge_dispatch_outbox} 的派单履约 outbox 适配器。
  *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和「9.2 作废设计」。
- * outbox 的 {@code shard_key} 固定使用 {@code event_id}，避免不同任务混用分片语义。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」「8.3 异步落库 Consumer」以及
+ * 「9.3 作废设计」中 {@code INVALID_ORDER} 入队路径。本适配器只服务供应商履约生命周期
+ * （{@code SUPPLIER_DISPATCH}/{@code SUPPLIER_QUERY}/{@code INVALID_ORDER}），不写入余额刷账事件；
+ * 余额 delta 入队见 {@link MybatisBalanceDeltaOutboxWriteAdapter}
+ * （详细设计「9.2 余额 Delta 刷账 Outbox」）。
+ *
+ * <p>分片键固定使用 {@code event_id}，与高可用方案 {@code docs/交行直充业务系统高可用方案设计.md}
+ * 「17.2 分片规则」一致，避免不同任务混用分片语义。
  */
-public class MybatisRechargeOutboxAdapter
-        implements RechargeOutboxPort, SupplierQueryOutboxPort, InvalidRechargeOrderOutboxPort, BalanceDeltaFlushOutboxPort {
+public class MybatisRechargeDispatchOutboxAdapter
+        implements RechargeOutboxPort, SupplierQueryOutboxPort, InvalidRechargeOrderOutboxPort {
 
     private static final int DEFAULT_MAX_RETRY_COUNT = 10;
     private static final ZoneId LEGACY_CARDSHOP_DB_ZONE = ZoneId.of("Asia/Shanghai");
 
-    private final RechargeOutboxMapper mapper;
-    private final RechargeOutboxPersistWriter writer;
+    private final RechargeDispatchOutboxMapper mapper;
+    private final RechargeDispatchOutboxPersistWriter writer;
     private final ObjectMapper objectMapper;
     private final Clock clock;
 
-    public MybatisRechargeOutboxAdapter(RechargeOutboxMapper mapper, ObjectMapper objectMapper, Clock clock) {
+    public MybatisRechargeDispatchOutboxAdapter(
+            RechargeDispatchOutboxMapper mapper,
+            ObjectMapper objectMapper,
+            Clock clock) {
         this.mapper = Objects.requireNonNull(mapper, "mapper must not be null");
         this.writer = mapper::insertIfAbsent;
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
     }
 
-    MybatisRechargeOutboxAdapter(
-            RechargeOutboxPersistWriter writer,
+    /**
+     * 测试用构造：只注入写入桩，扫描/抢占路径仍要求真实 Mapper。
+     */
+    MybatisRechargeDispatchOutboxAdapter(
+            RechargeDispatchOutboxPersistWriter writer,
             ObjectMapper objectMapper,
             Clock clock) {
         this.mapper = null;
@@ -74,13 +84,13 @@ public class MybatisRechargeOutboxAdapter
 
     @Override
     public void markSuccess(RechargeOutboxEvent event) {
-        requireMapper().update(null, new LambdaUpdateWrapper<RechargeOutboxDO>()
-                .eq(RechargeOutboxDO::getEventId, event.eventId())
-                .eq(RechargeOutboxDO::getVersion, event.version())
-                .set(RechargeOutboxDO::getStatus, TaskStatus.SUCCESS.name())
-                .set(RechargeOutboxDO::getLockedUntil, null)
-                .set(RechargeOutboxDO::getLastError, "")
-                .set(RechargeOutboxDO::getUpdatedAt, now())
+        requireMapper().update(null, new LambdaUpdateWrapper<RechargeDispatchOutboxDO>()
+                .eq(RechargeDispatchOutboxDO::getEventId, event.eventId())
+                .eq(RechargeDispatchOutboxDO::getVersion, event.version())
+                .set(RechargeDispatchOutboxDO::getStatus, TaskStatus.SUCCESS.name())
+                .set(RechargeDispatchOutboxDO::getLockedUntil, null)
+                .set(RechargeDispatchOutboxDO::getLastError, "")
+                .set(RechargeDispatchOutboxDO::getUpdatedAt, now())
                 .setSql("version = version + 1"));
     }
 
@@ -90,27 +100,27 @@ public class MybatisRechargeOutboxAdapter
             markManualRequired(event, errorMessage);
             return;
         }
-        requireMapper().update(null, new LambdaUpdateWrapper<RechargeOutboxDO>()
-                .eq(RechargeOutboxDO::getEventId, event.eventId())
-                .eq(RechargeOutboxDO::getVersion, event.version())
-                .set(RechargeOutboxDO::getStatus, TaskStatus.FAILED.name())
-                .set(RechargeOutboxDO::getNextRetryTime, now().plusNanos(nextRetryDelay.toNanos()))
-                .set(RechargeOutboxDO::getLockedUntil, null)
-                .set(RechargeOutboxDO::getLastError, truncate(errorMessage, 1000))
-                .set(RechargeOutboxDO::getUpdatedAt, now())
+        requireMapper().update(null, new LambdaUpdateWrapper<RechargeDispatchOutboxDO>()
+                .eq(RechargeDispatchOutboxDO::getEventId, event.eventId())
+                .eq(RechargeDispatchOutboxDO::getVersion, event.version())
+                .set(RechargeDispatchOutboxDO::getStatus, TaskStatus.FAILED.name())
+                .set(RechargeDispatchOutboxDO::getNextRetryTime, now().plusNanos(nextRetryDelay.toNanos()))
+                .set(RechargeDispatchOutboxDO::getLockedUntil, null)
+                .set(RechargeDispatchOutboxDO::getLastError, truncate(errorMessage, 1000))
+                .set(RechargeDispatchOutboxDO::getUpdatedAt, now())
                 .setSql("retry_count = retry_count + 1")
                 .setSql("version = version + 1"));
     }
 
     @Override
     public void markManualRequired(RechargeOutboxEvent event, String errorMessage) {
-        LambdaUpdateWrapper<RechargeOutboxDO> wrapper = new LambdaUpdateWrapper<RechargeOutboxDO>()
-                .eq(RechargeOutboxDO::getEventId, event.eventId())
-                .eq(RechargeOutboxDO::getVersion, event.version())
-                .set(RechargeOutboxDO::getStatus, TaskStatus.MANUAL_REQUIRED.name())
-                .set(RechargeOutboxDO::getLockedUntil, null)
-                .set(RechargeOutboxDO::getLastError, truncate(errorMessage, 1000))
-                .set(RechargeOutboxDO::getUpdatedAt, now())
+        LambdaUpdateWrapper<RechargeDispatchOutboxDO> wrapper = new LambdaUpdateWrapper<RechargeDispatchOutboxDO>()
+                .eq(RechargeDispatchOutboxDO::getEventId, event.eventId())
+                .eq(RechargeDispatchOutboxDO::getVersion, event.version())
+                .set(RechargeDispatchOutboxDO::getStatus, TaskStatus.MANUAL_REQUIRED.name())
+                .set(RechargeDispatchOutboxDO::getLockedUntil, null)
+                .set(RechargeDispatchOutboxDO::getLastError, truncate(errorMessage, 1000))
+                .set(RechargeDispatchOutboxDO::getUpdatedAt, now())
                 .setSql("version = version + 1");
         if (!event.retryExhausted()) {
             wrapper.setSql("retry_count = retry_count + 1");
@@ -118,12 +128,18 @@ public class MybatisRechargeOutboxAdapter
         requireMapper().update(null, wrapper);
     }
 
+    /**
+     * 写入 {@code INVALID_ORDER} 可靠事件，供派单 Worker 异步调用供应商作废。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 作废设计」「9.1 派单 Outbox」。
+     * {@code event_id} 固定为 {@code invalid-{orderId}}，{@code shard_key} 与之相同以保证分片稳定。
+     */
     @Override
     public void enqueueInvalidOrder(InvalidRechargeOrderOutboxCommand command) {
         Objects.requireNonNull(command, "command must not be null");
         LocalDateTime now = now();
         String eventId = "invalid-" + command.orderId();
-        RechargeOutboxDO outbox = new RechargeOutboxDO();
+        RechargeDispatchOutboxDO outbox = new RechargeDispatchOutboxDO();
         outbox.setEventId(eventId);
         outbox.setEventType(OutboxEventType.INVALID_ORDER.name());
         outbox.setOrgCode(command.orgCode());
@@ -144,11 +160,17 @@ public class MybatisRechargeOutboxAdapter
         writer.insertIfAbsent(outbox);
     }
 
+    /**
+     * 写入 {@code SUPPLIER_QUERY} 可靠事件。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。
+     * {@code event_id} 唯一键保证 dispatch 重试或 Worker 宕机恢复时不会重复入查单事件。
+     */
     @Override
     public void enqueueSupplierQuery(SupplierQueryOutboxCommand command) {
         Objects.requireNonNull(command, "command must not be null");
         LocalDateTime now = now();
-        RechargeOutboxDO outbox = new RechargeOutboxDO();
+        RechargeDispatchOutboxDO outbox = new RechargeDispatchOutboxDO();
         outbox.setEventId(command.eventId());
         outbox.setEventType(OutboxEventType.SUPPLIER_QUERY.name());
         outbox.setOrgCode(command.orgCode());
@@ -166,39 +188,10 @@ public class MybatisRechargeOutboxAdapter
         outbox.setShardKey(command.eventId());
         outbox.setCreatedAt(now);
         outbox.setUpdatedAt(now);
-        // event_id 唯一键保证 dispatch 重试或 Worker 宕机恢复时不会重复创建查单事件。
         writer.insertIfAbsent(outbox);
     }
 
-    @Override
-    public void enqueueBalanceDeltaFlush(BalanceDeltaFlushOutboxCommand command) {
-        Objects.requireNonNull(command, "command must not be null");
-        LocalDateTime now = now();
-        String normalizedDeltaType = normalizeDeltaType(command.deltaType());
-        String eventId = "balance-flush-" + normalizedDeltaType.toLowerCase(java.util.Locale.ROOT) + "-"
-                + command.orderId();
-        RechargeOutboxDO outbox = new RechargeOutboxDO();
-        outbox.setEventId(eventId);
-        outbox.setEventType(OutboxEventType.BALANCE_DELTA_FLUSH.name());
-        outbox.setOrgCode(command.orgCode());
-        outbox.setOrderId(command.orderId());
-        outbox.setOutOrderSn(command.outOrderSn());
-        outbox.setPayload(balanceDeltaPayload(command, normalizedDeltaType));
-        outbox.setStatus(TaskStatus.INIT.name());
-        outbox.setRetryCount(0);
-        outbox.setMaxRetryCount(DEFAULT_MAX_RETRY_COUNT);
-        outbox.setNextRetryTime(now);
-        outbox.setLockedBy(null);
-        outbox.setLockedUntil(null);
-        outbox.setVersion(0L);
-        outbox.setLastError("");
-        outbox.setShardKey(eventId);
-        outbox.setCreatedAt(now);
-        outbox.setUpdatedAt(now);
-        writer.insertIfAbsent(outbox);
-    }
-
-    private RechargeOutboxEvent toEvent(RechargeOutboxDO outbox) {
+    private RechargeOutboxEvent toEvent(RechargeDispatchOutboxDO outbox) {
         return new RechargeOutboxEvent(
                 outbox.getEventId(),
                 OutboxEventType.valueOf(outbox.getEventType()),
@@ -225,20 +218,6 @@ public class MybatisRechargeOutboxAdapter
         }
     }
 
-    private String balanceDeltaPayload(BalanceDeltaFlushOutboxCommand command, String normalizedDeltaType) {
-        try {
-            return objectMapper.writeValueAsString(Map.of(
-                    "org_code", command.orgCode(),
-                    "order_id", command.orderId(),
-                    "out_order_sn", command.outOrderSn(),
-                    "delta_amount", command.deltaAmount(),
-                    "delta_type", normalizedDeltaType,
-                    "reason", command.reason() == null ? "" : command.reason()));
-        } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("serialize balance delta flush outbox payload failed", ex);
-        }
-    }
-
     private String supplierQueryPayload(SupplierQueryOutboxCommand command) {
         try {
             return objectMapper.writeValueAsString(Map.of(
@@ -253,20 +232,13 @@ public class MybatisRechargeOutboxAdapter
         }
     }
 
-    private static String normalizeDeltaType(String deltaType) {
-        if (deltaType == null || deltaType.isBlank()) {
-            return "RELEASE";
-        }
-        return deltaType.strip().toUpperCase(java.util.Locale.ROOT);
-    }
-
     private LocalDateTime now() {
         return LocalDateTime.ofInstant(clock.instant(), LEGACY_CARDSHOP_DB_ZONE);
     }
 
-    private RechargeOutboxMapper requireMapper() {
+    private RechargeDispatchOutboxMapper requireMapper() {
         if (mapper == null) {
-            throw new IllegalStateException("RechargeOutboxMapper is required for this operation");
+            throw new IllegalStateException("RechargeDispatchOutboxMapper is required for this operation");
         }
         return mapper;
     }

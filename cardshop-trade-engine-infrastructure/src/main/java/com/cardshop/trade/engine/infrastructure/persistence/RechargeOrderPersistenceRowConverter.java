@@ -10,8 +10,9 @@ import com.cardshop.trade.engine.domain.order.TaskStatus;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McDepartRecordDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeBalanceDeltaOutboxDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeDispatchOutboxDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
-import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.LocalDateTime;
@@ -25,11 +26,16 @@ import java.util.Objects;
  * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。单条 adapter 和批写 adapter
  * 共享同一套 DO 字段映射，避免批写为了“独立事务控制流”复制字段契约；事务边界、写入顺序和是否依赖 row count
  * 仍由各自 adapter 单独决定。
+ *
+ * <p>拆表后派单事件映射到 {@link RechargeDispatchOutboxDO}（详细设计「9.1 派单 Outbox」），
+ * 余额刷账事件映射到 {@link RechargeBalanceDeltaOutboxDO}（详细设计「9.2 余额 Delta 刷账 Outbox」）；
+ * 不再写入旧混合表 {@code recharge_outbox}。
  */
 final class RechargeOrderPersistenceRowConverter {
 
     private static final String DATA_STATUS_PROCESSED = "PROCESSED";
     private static final String PRE_DEDUCT_RECORD_TYPE = "1";
+    private static final String BALANCE_DELTA_TYPE_PRE_DEDUCT = "PRE_DEDUCT";
     private static final int DEFAULT_MAX_RETRY_COUNT = 10;
     private static final ZoneId LEGACY_CARDSHOP_DB_ZONE = ZoneId.of("Asia/Shanghai");
 
@@ -125,11 +131,18 @@ final class RechargeOrderPersistenceRowConverter {
         return record;
     }
 
-    RechargeOutboxDO toDispatchOutbox(OrderPersistAggregate aggregate) {
+    /**
+     * 构造供应商派单 outbox 行。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」「9.1 派单 Outbox」。
+     * {@code event_id=dispatch-{orderId}}，{@code shard_key} 固定等于 {@code event_id}，
+     * {@code event_type=SUPPLIER_DISPATCH}；payload 仅承载派单所需非密钥字段。
+     */
+    RechargeDispatchOutboxDO toDispatchOutbox(OrderPersistAggregate aggregate) {
         PersistOrderSnapshot snapshot = aggregate.snapshot();
         LocalDateTime persistedAt = persistedAt(aggregate);
         String eventId = "dispatch-" + snapshot.orderId();
-        RechargeOutboxDO outbox = new RechargeOutboxDO();
+        RechargeDispatchOutboxDO outbox = new RechargeDispatchOutboxDO();
         outbox.setEventId(eventId);
         outbox.setEventType(OutboxEventType.SUPPLIER_DISPATCH.name());
         outbox.setOrgCode(snapshot.orgCode());
@@ -150,17 +163,26 @@ final class RechargeOrderPersistenceRowConverter {
         return outbox;
     }
 
-    RechargeOutboxDO toBalanceDeltaFlushOutbox(OrderPersistAggregate aggregate) {
+    /**
+     * 构造余额预扣刷账 outbox 行。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」
+     * 「9.2 余额 Delta 刷账 Outbox」。{@code event_id=balance-flush-{orderId}}，
+     * {@code delta_type=PRE_DEDUCT}，{@code delta_amount=-orderPrice}（预扣为负，单位分）；
+     * 本表使用结构化字段，不写 JSON payload / event_type / shard_key。
+     */
+    RechargeBalanceDeltaOutboxDO toBalanceDeltaFlushOutbox(OrderPersistAggregate aggregate) {
         PersistOrderSnapshot snapshot = aggregate.snapshot();
         LocalDateTime persistedAt = persistedAt(aggregate);
         String eventId = "balance-flush-" + snapshot.orderId();
-        RechargeOutboxDO outbox = new RechargeOutboxDO();
+        RechargeBalanceDeltaOutboxDO outbox = new RechargeBalanceDeltaOutboxDO();
         outbox.setEventId(eventId);
-        outbox.setEventType(OutboxEventType.BALANCE_DELTA_FLUSH.name());
         outbox.setOrgCode(snapshot.orgCode());
         outbox.setOrderId(snapshot.orderId());
         outbox.setOutOrderSn(snapshot.outOrderSn());
-        outbox.setPayload(balanceDeltaPayload(aggregate));
+        outbox.setDeltaType(BALANCE_DELTA_TYPE_PRE_DEDUCT);
+        // 与旧 payload 中 delta_amount=-orderPrice 符号一致；PRE_DEDUCT 为负，单位分。
+        outbox.setDeltaAmount(-snapshot.orderPrice());
         outbox.setStatus(TaskStatus.INIT.name());
         outbox.setRetryCount(0);
         outbox.setMaxRetryCount(DEFAULT_MAX_RETRY_COUNT);
@@ -169,11 +191,6 @@ final class RechargeOrderPersistenceRowConverter {
         outbox.setLockedUntil(null);
         outbox.setVersion(0L);
         outbox.setLastError("");
-        /*
-         * 详细设计「13. 测试与验收标准」要求 outbox shard_key 固定使用 event_id；余额刷账按商户聚合发生在
-         * D12 job 内部，不能在落库阶段把 shard_key 改成 org_code，否则会和通用 outbox 扫描语义分叉。
-         */
-        outbox.setShardKey(eventId);
         outbox.setCreatedAt(persistedAt);
         outbox.setUpdatedAt(persistedAt);
         return outbox;
@@ -207,22 +224,6 @@ final class RechargeOrderPersistenceRowConverter {
         }
     }
 
-    private String balanceDeltaPayload(OrderPersistAggregate aggregate) {
-        PersistOrderSnapshot snapshot = aggregate.snapshot();
-        try {
-            return objectMapper.writeValueAsString(Map.ofEntries(
-                    Map.entry("order_id", snapshot.orderId()),
-                    Map.entry("org_code", snapshot.orgCode()),
-                    Map.entry("out_order_sn", snapshot.outOrderSn()),
-                    Map.entry("delta_amount", -snapshot.orderPrice()),
-                    Map.entry("delta_type", "PRE_DEDUCT"),
-                    Map.entry("persist_msg_id", aggregate.persistMessageId()),
-                    Map.entry("persist_source", aggregate.persistSource().name())));
-        } catch (JsonProcessingException ex) {
-            throw new IllegalStateException("serialize balance delta flush outbox payload failed", ex);
-        }
-    }
-
     private String resData(OrderPersistAggregate aggregate) {
         try {
             return objectMapper.writeValueAsString(Map.of(
@@ -242,7 +243,7 @@ final class RechargeOrderPersistenceRowConverter {
     private static LocalDateTime persistedAt(OrderPersistAggregate aggregate) {
         /*
          * docs/交行直充业务系统详细设计.md「8.3 异步落库 Consumer」
-         * mc_order/recharge_order_ext/recharge_outbox 使用 MySQL datetime 字面值，旧卡管库按 Asia/Shanghai
+         * mc_order/recharge_order_ext 与拆表后的 outbox 使用 MySQL datetime 字面值，旧卡管库按 Asia/Shanghai
          * 读写和展示时间。这里将 Instant 转成本地业务时区的 LocalDateTime，避免补偿任务按 next_retry_time
          * 扫描时比真实时间偏移 8 小时。
          */

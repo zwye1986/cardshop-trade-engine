@@ -7,7 +7,8 @@ import com.cardshop.trade.engine.application.v1.V1CreateOrderStageObserver;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfileCacheObserver;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
@@ -41,7 +42,8 @@ public class TradeEngineObservabilityAutoConfiguration {
     @ConditionalOnBean({
             ReactiveStringRedisTemplate.class,
             RechargeRedisKeyBuilder.class,
-            RechargeOutboxMapper.class,
+            RechargeDispatchOutboxMapper.class,
+            RechargeBalanceDeltaOutboxMapper.class,
             RechargeAcceptAnomalyMapper.class,
             McExtDepartMapper.class
     })
@@ -50,7 +52,8 @@ public class TradeEngineObservabilityAutoConfiguration {
             ReactiveStringRedisTemplate redisTemplate,
             RechargeRedisKeyBuilder keyBuilder,
             TradeEngineProperties properties,
-            RechargeOutboxMapper outboxMapper,
+            RechargeDispatchOutboxMapper dispatchOutboxMapper,
+            RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
             RechargeAcceptAnomalyMapper acceptAnomalyMapper,
             McExtDepartMapper extDepartMapper,
             Clock clock) {
@@ -58,7 +61,8 @@ public class TradeEngineObservabilityAutoConfiguration {
                 redisTemplate,
                 keyBuilder,
                 properties,
-                outboxMapper,
+                dispatchOutboxMapper,
+                balanceDeltaOutboxMapper,
                 acceptAnomalyMapper,
                 extDepartMapper,
                 clock);

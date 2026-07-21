@@ -57,12 +57,13 @@ import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObserva
 import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyRecordAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisBalanceDeltaOutboxWriteAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderQueryAdapter;
-import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOutboxAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeDispatchOutboxAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisPersistedOrderStateAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisV1MerchantProfileAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisV1ProductCandidateSelector;
@@ -74,9 +75,10 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMa
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.LettuceRechargeRedisSessionFactory;
 import com.cardshop.trade.engine.infrastructure.redis.InMemoryRedisHaGuard;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeOrderQueryAdapter;
@@ -575,51 +577,78 @@ public class TradeEngineInfrastructureConfiguration {
      * 装配 MySQL 异步落库端口。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
-     * 四个 Mapper 同时存在时才启用，确保事务内能完整写 `mc_order`、`recharge_order_ext`、
-     * `mc_depart_record(PRE_DEDUCT)` 和 outbox。该 Bean 主要覆盖显式提供 Mapper 的 slice test 或局部上下文；
-     * 真实 dev/test/prod 中 Mapper 来自 MyBatis 自动配置，最终兜底由
+     * 必需 Mapper 同时存在时才启用，确保事务内能完整写 {@code mc_order}、{@code recharge_order_ext}、
+     * {@code mc_depart_record(PRE_DEDUCT)}、{@code recharge_dispatch_outbox}（「9.1」）与
+     * {@code recharge_balance_delta_outbox}（「9.2」）。该 Bean 主要覆盖显式提供 Mapper 的 slice test
+     * 或局部上下文；真实 dev/test/prod 中 Mapper 来自 MyBatis 自动配置，最终兜底由
      * {@link TradeEngineMybatisPersistenceAutoConfiguration} 在 MyBatis mapper scanner 完成后执行。
      */
     @Bean
-    @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class, RechargeOutboxMapper.class, McDepartRecordMapper.class})
+    @ConditionalOnBean({
+            McOrderMapper.class,
+            RechargeOrderExtMapper.class,
+            RechargeDispatchOutboxMapper.class,
+            RechargeBalanceDeltaOutboxMapper.class,
+            McDepartRecordMapper.class
+    })
     @ConditionalOnMissingBean(RechargeOrderPersistencePort.class)
     public RechargeOrderPersistencePort rechargeOrderPersistencePort(
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
-            RechargeOutboxMapper outboxMapper,
+            RechargeDispatchOutboxMapper dispatchOutboxMapper,
+            RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
             McDepartRecordMapper departRecordMapper,
             ObjectMapper objectMapper) {
-        return new MybatisRechargeOrderPersistenceAdapter(orderMapper, extMapper, outboxMapper, departRecordMapper, objectMapper);
+        return new MybatisRechargeOrderPersistenceAdapter(
+                orderMapper,
+                extMapper,
+                dispatchOutboxMapper,
+                balanceDeltaOutboxMapper,
+                departRecordMapper,
+                objectMapper);
     }
 
     @Bean
-    @ConditionalOnBean({RechargeOutboxMapper.class, McExtDepartMapper.class, PlatformTransactionManager.class})
+    @ConditionalOnBean({
+            RechargeBalanceDeltaOutboxMapper.class,
+            McExtDepartMapper.class,
+            PlatformTransactionManager.class
+    })
     @ConditionalOnMissingBean(RechargeBalanceDeltaFlushPort.class)
     public RechargeBalanceDeltaFlushPort rechargeBalanceDeltaFlushPort(
-            RechargeOutboxMapper outboxMapper,
+            RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
             McExtDepartMapper extDepartMapper,
-            ObjectMapper objectMapper,
             Clock clock,
             TradeEngineProperties properties,
             PlatformTransactionManager transactionManager) {
+        var outbox = properties.getOutbox();
         return new MybatisRechargeBalanceDeltaFlushAdapter(
-                outboxMapper,
+                balanceDeltaOutboxMapper,
                 extDepartMapper,
-                objectMapper,
                 clock,
-                Duration.ofSeconds(properties.getFulfillment().getOutboxClaimLeaseSeconds()),
-                Duration.ofSeconds(properties.getFulfillment().getOutboxRetryBackoffSeconds()),
+                Duration.ofSeconds(outbox.getBalanceDeltaClaimLeaseSeconds()),
+                outbox.balanceDeltaRetryBackoffDurations(),
+                outbox.getBalanceDeltaFlushBatchSize(),
                 transactionManager);
     }
 
     @Bean
-    @ConditionalOnBean(RechargeOutboxMapper.class)
+    @ConditionalOnBean(RechargeDispatchOutboxMapper.class)
     @ConditionalOnMissingBean(RechargeOutboxPort.class)
-    public MybatisRechargeOutboxAdapter rechargeOutboxPort(
-            RechargeOutboxMapper outboxMapper,
+    public MybatisRechargeDispatchOutboxAdapter rechargeOutboxPort(
+            RechargeDispatchOutboxMapper dispatchOutboxMapper,
             ObjectMapper objectMapper,
             Clock clock) {
-        return new MybatisRechargeOutboxAdapter(outboxMapper, objectMapper, clock);
+        return new MybatisRechargeDispatchOutboxAdapter(dispatchOutboxMapper, objectMapper, clock);
+    }
+
+    @Bean
+    @ConditionalOnBean(RechargeBalanceDeltaOutboxMapper.class)
+    @ConditionalOnMissingBean(BalanceDeltaFlushOutboxPort.class)
+    public BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort(
+            RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
+            Clock clock) {
+        return new MybatisBalanceDeltaOutboxWriteAdapter(balanceDeltaOutboxMapper, clock);
     }
 
     @Bean

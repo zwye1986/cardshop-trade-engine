@@ -5,10 +5,11 @@ import java.util.Map;
 /**
  * 供应商派单请求。
  *
- * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「6.6 新增表」供应商派单幂等协议。
- * {@code supplierRequestId} 固定使用 outbox event_id，便于宕机恢复后按同一幂等号查证。
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」与
+ * {@code docs/交行直充业务系统高可用方案设计.md}「6.6 新增表」供应商派单幂等协议。
+ * {@code supplierRequestId} 固定使用派单 outbox {@code event_id}，便于宕机恢复后按同一幂等号查证。
  *
- * @param supplierRequestId 供应商请求幂等号，固定取 {@code recharge_outbox.event_id}
+ * @param supplierRequestId 供应商请求幂等号，固定取 {@code recharge_dispatch_outbox.event_id}
  * @param orderId 平台订单号，对应旧表 {@code mc_order.order_Id}
  * @param outOrderSn 商户外部订单号，对应旧表 {@code mc_order.out_orderId}
  * @param orgCode 商户编码，对应旧表 {@code mc_order.org_code}

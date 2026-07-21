@@ -5,22 +5,23 @@ import java.time.LocalDateTime;
 import java.util.Objects;
 
 /**
- * Worker 处理用的 outbox 事件视图。
+ * Worker 处理用的派单 outbox 事件视图。
  *
- * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「6.6 新增表」。该对象只暴露执行路由、
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」与
+ * {@code docs/交行直充业务系统高可用方案设计.md}「6.6 新增表」。该对象只暴露执行路由、
  * CAS 版本和非敏感业务定位字段，避免 application 层依赖 MyBatis DO。
  *
- * @param eventId outbox 事件唯一 ID，对应 {@code recharge_outbox.event_id}
- * @param eventType 事件类型，对应 {@code recharge_outbox.event_type}
- * @param orgCode 商户编码，对应 {@code recharge_outbox.org_code}
- * @param orderId 平台订单号，对应 {@code recharge_outbox.order_id}
- * @param outOrderSn 商户外部订单号，对应 {@code recharge_outbox.out_order_sn}
- * @param payload 事件载荷 JSON，对应 {@code recharge_outbox.payload}
- * @param retryCount 已重试次数，对应 {@code recharge_outbox.retry_count}
- * @param maxRetryCount 最大重试次数，对应 {@code recharge_outbox.max_retry_count}
- * @param version CAS 版本号，对应 {@code recharge_outbox.version}
- * @param nextRetryTime 下次可执行时间，对应 {@code recharge_outbox.next_retry_time}
- * @param lastError 最近一次失败原因，对应 {@code recharge_outbox.last_error}
+ * @param eventId outbox 事件唯一 ID，对应 {@code recharge_dispatch_outbox.event_id}
+ * @param eventType 事件类型，对应 {@code recharge_dispatch_outbox.event_type}
+ * @param orgCode 商户编码，对应 {@code recharge_dispatch_outbox.org_code}
+ * @param orderId 平台订单号，对应 {@code recharge_dispatch_outbox.order_id}
+ * @param outOrderSn 商户外部订单号，对应 {@code recharge_dispatch_outbox.out_order_sn}
+ * @param payload 事件载荷 JSON，对应 {@code recharge_dispatch_outbox.payload}
+ * @param retryCount 已重试次数，对应 {@code recharge_dispatch_outbox.retry_count}
+ * @param maxRetryCount 最大重试次数，对应 {@code recharge_dispatch_outbox.max_retry_count}
+ * @param version CAS 版本号，对应 {@code recharge_dispatch_outbox.version}
+ * @param nextRetryTime 下次可执行时间，对应 {@code recharge_dispatch_outbox.next_retry_time}
+ * @param lastError 最近一次失败原因，对应 {@code recharge_dispatch_outbox.last_error}
  */
 public record RechargeOutboxEvent(
         String eventId,

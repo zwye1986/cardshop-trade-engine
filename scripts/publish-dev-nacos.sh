@@ -194,6 +194,10 @@ trade:
       write-enabled: true
     balance:
       owner-mode: NEW
+    outbox:
+      balance-delta-flush-batch-size: \${TRADE_ENGINE_OUTBOX_BALANCE_DELTA_FLUSH_BATCH_SIZE:500}
+      balance-delta-claim-lease-seconds: \${TRADE_ENGINE_OUTBOX_BALANCE_DELTA_CLAIM_LEASE_SECONDS:120}
+      balance-delta-retry-backoff-seconds: \${TRADE_ENGINE_OUTBOX_BALANCE_DELTA_RETRY_BACKOFF_SECONDS:5,30,120,600}
     mq:
       publish-confirm-timeout-ms: 1000
     fault-injection:

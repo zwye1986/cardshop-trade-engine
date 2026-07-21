@@ -5,12 +5,14 @@ import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersiste
 import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McDepartRecordDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeBalanceDeltaOutboxDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeDispatchOutboxDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
-import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -30,6 +32,11 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。本 adapter 只服务
  * RabbitMQ 批消费灰度路径，单条消息仍走 {@link MybatisRechargeOrderPersistenceAdapter}。批模式按订单稳定排序、
  * 按表分组写入，并调用 mapper 的显式 multi-row 方法，降低并发批次死锁概率和 JDBC rewrite 不确定性。
+ *
+ * <p>写表顺序固定为 {@code mc_order -> recharge_order_ext -> mc_depart_record ->
+ * recharge_dispatch_outbox -> recharge_balance_delta_outbox}；派单与余额刷账拆表后分别上报 phase
+ *（详细设计「9.1 派单 Outbox」「9.2 余额 Delta 刷账 Outbox」），不再使用旧混合表
+ * {@code recharge_outbox} 及其 phase。
  */
 public class MybatisBatchRechargeOrderPersistenceAdapter
         implements RechargeOrderBatchPersistencePort {
@@ -37,7 +44,8 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
     private static final String PHASE_MC_ORDER = "mc_order";
     private static final String PHASE_RECHARGE_ORDER_EXT = "recharge_order_ext";
     private static final String PHASE_MC_DEPART_RECORD = "mc_depart_record";
-    private static final String PHASE_RECHARGE_OUTBOX = "recharge_outbox";
+    private static final String PHASE_RECHARGE_DISPATCH_OUTBOX = "recharge_dispatch_outbox";
+    private static final String PHASE_RECHARGE_BALANCE_DELTA_OUTBOX = "recharge_balance_delta_outbox";
     private static final String PHASE_COMMIT = "commit";
 
     private static final Comparator<OrderPersistAggregate> STABLE_ORDER =
@@ -47,7 +55,8 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
 
     private final McOrderBatchPersistWriter orderWriter;
     private final RechargeOrderExtBatchPersistWriter extWriter;
-    private final RechargeOutboxBatchPersistWriter outboxWriter;
+    private final RechargeDispatchOutboxBatchPersistWriter dispatchOutboxWriter;
+    private final RechargeBalanceDeltaOutboxBatchPersistWriter balanceDeltaOutboxWriter;
     private final McDepartRecordBatchPersistWriter departRecordWriter;
     private final RechargeOrderPersistenceRowConverter rowConverter;
     private final TradeEngineObservabilityMetrics observabilityMetrics;
@@ -72,7 +81,8 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
         this(
                 mappers.orderMapper()::insertOrderBatchIfAbsent,
                 mappers.extMapper()::insertExtBatchOrUpdatePersistState,
-                mappers.outboxMapper()::insertOutboxBatchIfAbsent,
+                mappers.dispatchOutboxMapper()::insertDispatchOutboxBatchIfAbsent,
+                mappers.balanceDeltaOutboxMapper()::insertBalanceDeltaBatchIfAbsent,
                 mappers.departRecordMapper()::insertDepartRecordBatchIfAbsent,
                 objectMapper,
                 observabilityMetrics);
@@ -81,22 +91,34 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
     MybatisBatchRechargeOrderPersistenceAdapter(
             McOrderBatchPersistWriter orderWriter,
             RechargeOrderExtBatchPersistWriter extWriter,
-            RechargeOutboxBatchPersistWriter outboxWriter,
+            RechargeDispatchOutboxBatchPersistWriter dispatchOutboxWriter,
+            RechargeBalanceDeltaOutboxBatchPersistWriter balanceDeltaOutboxWriter,
             McDepartRecordBatchPersistWriter departRecordWriter,
             ObjectMapper objectMapper) {
-        this(orderWriter, extWriter, outboxWriter, departRecordWriter, objectMapper, TradeEngineObservabilityMetrics.noop());
+        this(
+                orderWriter,
+                extWriter,
+                dispatchOutboxWriter,
+                balanceDeltaOutboxWriter,
+                departRecordWriter,
+                objectMapper,
+                TradeEngineObservabilityMetrics.noop());
     }
 
     MybatisBatchRechargeOrderPersistenceAdapter(
             McOrderBatchPersistWriter orderWriter,
             RechargeOrderExtBatchPersistWriter extWriter,
-            RechargeOutboxBatchPersistWriter outboxWriter,
+            RechargeDispatchOutboxBatchPersistWriter dispatchOutboxWriter,
+            RechargeBalanceDeltaOutboxBatchPersistWriter balanceDeltaOutboxWriter,
             McDepartRecordBatchPersistWriter departRecordWriter,
             ObjectMapper objectMapper,
             TradeEngineObservabilityMetrics observabilityMetrics) {
         this.orderWriter = Objects.requireNonNull(orderWriter, "orderWriter must not be null");
         this.extWriter = Objects.requireNonNull(extWriter, "extWriter must not be null");
-        this.outboxWriter = Objects.requireNonNull(outboxWriter, "outboxWriter must not be null");
+        this.dispatchOutboxWriter = Objects.requireNonNull(
+                dispatchOutboxWriter, "dispatchOutboxWriter must not be null");
+        this.balanceDeltaOutboxWriter = Objects.requireNonNull(
+                balanceDeltaOutboxWriter, "balanceDeltaOutboxWriter must not be null");
         this.departRecordWriter = Objects.requireNonNull(departRecordWriter, "departRecordWriter must not be null");
         this.rowConverter = new RechargeOrderPersistenceRowConverter(objectMapper);
         this.observabilityMetrics = observabilityMetrics == null
@@ -105,11 +127,12 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
     }
 
     /**
-     * 在一个 MySQL 事务内批量写入订单事实、扩展状态和必要 outbox。
+     * 在一个 MySQL 事务内批量写入订单事实、扩展状态和拆表后的必要 outbox。
      *
      * <p>批写路径不能依赖 {@code mc_order.insertIfAbsent} 的即时 row count。资金流水直接走
      * {@code mc_depart_record.insertDepartRecordBatchIfAbsent}，由 {@code uk_mc_depart_record_trade_engine_key}
-     * 唯一键保证重复 MQ/补投重试不会产生重复扣款流水。
+     * 唯一键保证重复 MQ/补投重试不会产生重复扣款流水。派单与余额刷账必须调用各自表的显式 multi-row 方法，
+     * 并分别记录 phase（详细设计「8.3」）。
      */
     @Override
     @Transactional
@@ -153,17 +176,23 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
                         departRecordWriter.insertPreDeductBatchIfAbsent(departRecordRows));
             }
 
-            List<RechargeOutboxDO> outboxRows = new ArrayList<>(sorted.size() * 2);
+            List<RechargeDispatchOutboxDO> dispatchRows = new ArrayList<>(sorted.size());
+            List<RechargeBalanceDeltaOutboxDO> balanceRows = new ArrayList<>(sorted.size());
             for (OrderPersistAggregate aggregate : sorted) {
                 if (aggregate.dispatchOutboxRequired()) {
-                    outboxRows.add(rowConverter.toDispatchOutbox(aggregate));
+                    dispatchRows.add(rowConverter.toDispatchOutbox(aggregate));
                 }
                 if (aggregate.snapshot().balanceReserved()) {
-                    outboxRows.add(rowConverter.toBalanceDeltaFlushOutbox(aggregate));
+                    balanceRows.add(rowConverter.toBalanceDeltaFlushOutbox(aggregate));
                 }
             }
-            if (!outboxRows.isEmpty()) {
-                recordPhase(PHASE_RECHARGE_OUTBOX, () -> outboxWriter.insertOutboxBatchIfAbsent(outboxRows));
+            if (!dispatchRows.isEmpty()) {
+                recordPhase(PHASE_RECHARGE_DISPATCH_OUTBOX, () ->
+                        dispatchOutboxWriter.insertDispatchOutboxBatchIfAbsent(dispatchRows));
+            }
+            if (!balanceRows.isEmpty()) {
+                recordPhase(PHASE_RECHARGE_BALANCE_DELTA_OUTBOX, () ->
+                        balanceDeltaOutboxWriter.insertBalanceDeltaBatchIfAbsent(balanceRows));
             }
         } finally {
             long finishedAtNanos = System.nanoTime();
@@ -211,14 +240,16 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
         return new BatchMapperBundle(
                 sqlSessionTemplate.getMapper(McOrderMapper.class),
                 sqlSessionTemplate.getMapper(RechargeOrderExtMapper.class),
-                sqlSessionTemplate.getMapper(RechargeOutboxMapper.class),
+                sqlSessionTemplate.getMapper(RechargeDispatchOutboxMapper.class),
+                sqlSessionTemplate.getMapper(RechargeBalanceDeltaOutboxMapper.class),
                 sqlSessionTemplate.getMapper(McDepartRecordMapper.class));
     }
 
     private record BatchMapperBundle(
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
-            RechargeOutboxMapper outboxMapper,
+            RechargeDispatchOutboxMapper dispatchOutboxMapper,
+            RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
             McDepartRecordMapper departRecordMapper) {
     }
 }
@@ -233,9 +264,24 @@ interface RechargeOrderExtBatchPersistWriter {
     int insertBatchOrUpdatePersistState(List<RechargeOrderExtDO> rows);
 }
 
-interface RechargeOutboxBatchPersistWriter {
+/**
+ * 派单 outbox 批写端口。
+ *
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」「9.1 派单 Outbox」。
+ */
+interface RechargeDispatchOutboxBatchPersistWriter {
 
-    int insertOutboxBatchIfAbsent(List<RechargeOutboxDO> rows);
+    int insertDispatchOutboxBatchIfAbsent(List<RechargeDispatchOutboxDO> rows);
+}
+
+/**
+ * 余额刷账 outbox 批写端口。
+ *
+ * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」「9.2 余额 Delta 刷账 Outbox」。
+ */
+interface RechargeBalanceDeltaOutboxBatchPersistWriter {
+
+    int insertBalanceDeltaBatchIfAbsent(List<RechargeBalanceDeltaOutboxDO> rows);
 }
 
 interface McDepartRecordBatchPersistWriter {

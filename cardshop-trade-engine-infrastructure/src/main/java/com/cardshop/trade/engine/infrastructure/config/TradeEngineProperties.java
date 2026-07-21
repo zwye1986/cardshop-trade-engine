@@ -58,6 +58,15 @@ public class TradeEngineProperties {
     private final Fulfillment fulfillment = new Fulfillment();
 
     /**
+     * 余额 Delta 刷账 outbox 运行参数；参见详细设计「9.2 余额 Delta 刷账 Outbox」
+     * 与「11. 配置中心、部署与健康检查」中 {@code trade.engine.outbox.*}。
+     *
+     * <p>派单履约租约/退避仍使用 {@link #fulfillment}；本配置族只服务
+     * {@code recharge_balance_delta_outbox} 刷账任务，不提供旧混合表兼容开关。
+     */
+    private final Outbox outbox = new Outbox();
+
+    /**
      * D10 商户回调任务参数；参见详细设计「9.3 回调设计」。
      */
     private final Notify notify = new Notify();
@@ -126,6 +135,10 @@ public class TradeEngineProperties {
 
     public Fulfillment getFulfillment() {
         return fulfillment;
+    }
+
+    public Outbox getOutbox() {
+        return outbox;
     }
 
     public Notify getNotify() {
@@ -1213,7 +1226,10 @@ public class TradeEngineProperties {
     }
 
     /**
-     * outbox 履约配置。
+     * 派单履约 outbox 与限频配置。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。
+     * 仅作用于 {@code recharge_dispatch_outbox}；余额刷账见 {@link Outbox}。
      */
     public static class Fulfillment {
 
@@ -1261,6 +1277,101 @@ public class TradeEngineProperties {
 
         public void setFrequencySuccessMinimumHoldSeconds(int frequencySuccessMinimumHoldSeconds) {
             this.frequencySuccessMinimumHoldSeconds = frequencySuccessMinimumHoldSeconds;
+        }
+    }
+
+    /**
+     * 余额 Delta 刷账 outbox 运行参数。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.2 余额 Delta 刷账 Outbox」与
+     * 「11. 配置中心、部署与健康检查」{@code trade.engine.outbox.*}；租约与退避约束见
+     * {@code docs/交行直充业务系统高可用方案设计.md}「14.7 {@code mc_ext_depart.balance} 刷账协议」。
+     *
+     * <p>拆表是上线前目标模型，不提供旧 {@code recharge_outbox} 双写/读取开关。默认值必须保持低风险，
+     * 仅允许通过 Nacos、环境变量或部署密钥覆盖。
+     */
+    public static class Outbox {
+
+        /**
+         * 详细设计默认退避序列 {@code 5,30,120,600}（秒）。
+         */
+        private static final String DEFAULT_BALANCE_DELTA_RETRY_BACKOFF_SECONDS = "5,30,120,600";
+
+        private static final List<Duration> DEFAULT_BALANCE_DELTA_RETRY_BACKOFF_DURATIONS = List.of(
+                Duration.ofSeconds(5),
+                Duration.ofSeconds(30),
+                Duration.ofSeconds(120),
+                Duration.ofSeconds(600));
+
+        /**
+         * 余额 delta 刷账单轮抢占上限；对应
+         * {@code trade.engine.outbox.balance-delta-flush-batch-size}，默认 500。
+         */
+        private int balanceDeltaFlushBatchSize = 500;
+
+        /**
+         * 余额刷账 CAS 租约秒数；对应
+         * {@code trade.engine.outbox.balance-delta-claim-lease-seconds}，默认 120。
+         * 必须覆盖单轮刷账事务 P99。
+         */
+        private int balanceDeltaClaimLeaseSeconds = 120;
+
+        /**
+         * 余额刷账失败退避序列（秒，逗号分隔）；对应
+         * {@code trade.engine.outbox.balance-delta-retry-backoff-seconds}，默认 {@code 5,30,120,600}。
+         */
+        private String balanceDeltaRetryBackoffSeconds = DEFAULT_BALANCE_DELTA_RETRY_BACKOFF_SECONDS;
+
+        public int getBalanceDeltaFlushBatchSize() {
+            return balanceDeltaFlushBatchSize;
+        }
+
+        public void setBalanceDeltaFlushBatchSize(int balanceDeltaFlushBatchSize) {
+            this.balanceDeltaFlushBatchSize = balanceDeltaFlushBatchSize;
+        }
+
+        public int getBalanceDeltaClaimLeaseSeconds() {
+            return balanceDeltaClaimLeaseSeconds;
+        }
+
+        public void setBalanceDeltaClaimLeaseSeconds(int balanceDeltaClaimLeaseSeconds) {
+            this.balanceDeltaClaimLeaseSeconds = balanceDeltaClaimLeaseSeconds;
+        }
+
+        public String getBalanceDeltaRetryBackoffSeconds() {
+            return balanceDeltaRetryBackoffSeconds;
+        }
+
+        public void setBalanceDeltaRetryBackoffSeconds(String balanceDeltaRetryBackoffSeconds) {
+            this.balanceDeltaRetryBackoffSeconds = balanceDeltaRetryBackoffSeconds;
+        }
+
+        /**
+         * 解析逗号分隔退避秒数为 {@link Duration} 列表。
+         *
+         * <p>空白或无法解析为正向秒数的片段会被忽略；若最终列表为空则回退到详细设计默认序列，
+         * 避免错误配置导致刷账失败后立即 tight-loop 重试。
+         */
+        public List<Duration> balanceDeltaRetryBackoffDurations() {
+            if (balanceDeltaRetryBackoffSeconds == null || balanceDeltaRetryBackoffSeconds.isBlank()) {
+                return DEFAULT_BALANCE_DELTA_RETRY_BACKOFF_DURATIONS;
+            }
+            List<Duration> parsed = new ArrayList<>();
+            for (String token : balanceDeltaRetryBackoffSeconds.split(",")) {
+                String trimmed = token == null ? "" : token.strip();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                try {
+                    long seconds = Long.parseLong(trimmed);
+                    if (seconds > 0L) {
+                        parsed.add(Duration.ofSeconds(seconds));
+                    }
+                } catch (NumberFormatException ignored) {
+                    // 忽略非法片段，最终空列表回退默认序列。
+                }
+            }
+            return parsed.isEmpty() ? DEFAULT_BALANCE_DELTA_RETRY_BACKOFF_DURATIONS : List.copyOf(parsed);
         }
     }
 

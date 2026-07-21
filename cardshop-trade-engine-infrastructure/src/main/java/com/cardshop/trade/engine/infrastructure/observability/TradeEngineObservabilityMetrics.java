@@ -39,11 +39,16 @@ public class TradeEngineObservabilityMetrics
     private static final String UNKNOWN = "unknown";
     private static final int MAX_TAG_VALUE_LENGTH = 64;
     private static final Duration SNAPSHOT_FALLBACK_LOG_INTERVAL = Duration.ofSeconds(60);
+    /*
+     * 详细设计「8.3 异步落库 Consumer」phase 白名单：拆表后使用 recharge_dispatch_outbox /
+     * recharge_balance_delta_outbox；旧混合表 recharge_outbox 不得再作为低基数 phase 标签。
+     */
     private static final Set<String> PERSIST_BATCH_MYSQL_PHASES = Set.of(
             "mc_order",
             "recharge_order_ext",
             "mc_depart_record",
-            "recharge_outbox",
+            "recharge_dispatch_outbox",
+            "recharge_balance_delta_outbox",
             "commit");
     private static final String LOG_EVENT_SNAPSHOT_FALLBACK = "observability.snapshot.fallback";
     private static final LogStormGuard SNAPSHOT_FALLBACK_LOG_GUARD =
@@ -442,16 +447,44 @@ public class TradeEngineObservabilityMetrics
                 .register(registry);
     }
 
+    /**
+     * 注册派单/余额 outbox 积压 Gauge。
+     *
+     * <p>参见详细设计「9.1 派单 Outbox」「9.2 余额 Delta 刷账 Outbox」与高可用「12.2 指标」：
+     * 目标指标为 {@code trade.engine.dispatch.outbox.pending.total{event_type,status}} 与
+     * {@code trade.engine.balance.delta.pending.total{status}}。兼容期保留
+     * {@code trade.engine.outbox.pending}：派单事件读 dispatch 快照；{@code BALANCE_DELTA_FLUSH}
+     * 读读余额 status 快照，便于旧告警迁移。禁止 {@code org_code} 等高基数标签。
+     */
     private void registerOutboxGauges(MeterRegistry registry) {
-        for (OutboxEventType eventType : OutboxEventType.values()) {
+        for (OutboxEventType eventType : DISPATCH_OUTBOX_EVENT_TYPES) {
             for (TaskStatus status : TaskStatus.values()) {
                 String event = eventType.name();
                 String taskStatus = status.name();
                 Gauge.builder(
+                                "trade.engine.dispatch.outbox.pending.total",
+                                snapshotProvider,
+                                provider -> snapshot(provider).outboxCount(event, taskStatus))
+                        .description("派单 outbox 未完成事件数量")
+                        .tag("environment", environment)
+                        .tag("event_type", event)
+                        .tag("status", taskStatus)
+                        .register(registry);
+                Gauge.builder(
+                                "trade.engine.dispatch.outbox.max.age.seconds",
+                                snapshotProvider,
+                                provider -> snapshot(provider).outboxMaxAgeSeconds(event, taskStatus))
+                        .description("派单 outbox 未完成事件最大滞留时间秒数")
+                        .tag("environment", environment)
+                        .tag("event_type", event)
+                        .tag("status", taskStatus)
+                        .register(registry);
+                // 兼容旧指标名：仅派单事件，新压测结论应改读 dispatch.outbox.*
+                Gauge.builder(
                                 "trade.engine.outbox.pending",
                                 snapshotProvider,
                                 provider -> snapshot(provider).outboxCount(event, taskStatus))
-                        .description("Outbox 未完成事件数量")
+                        .description("派单 outbox 未完成事件数量（兼容名，等同 dispatch.outbox.pending.total）")
                         .tag("environment", environment)
                         .tag("event_type", event)
                         .tag("status", taskStatus)
@@ -460,14 +493,57 @@ public class TradeEngineObservabilityMetrics
                                 "trade.engine.outbox.max.age.seconds",
                                 snapshotProvider,
                                 provider -> snapshot(provider).outboxMaxAgeSeconds(event, taskStatus))
-                        .description("Outbox 未完成事件最大滞留时间秒数")
+                        .description("派单 outbox 最大滞留秒数（兼容名）")
                         .tag("environment", environment)
                         .tag("event_type", event)
                         .tag("status", taskStatus)
                         .register(registry);
             }
         }
+        for (TaskStatus status : TaskStatus.values()) {
+            String taskStatus = status.name();
+            Gauge.builder(
+                            "trade.engine.balance.delta.pending.total",
+                            snapshotProvider,
+                            provider -> snapshot(provider).balanceDeltaCount(taskStatus))
+                    .description("余额 delta 刷账 outbox 未完成事件数量")
+                    .tag("environment", environment)
+                    .tag("status", taskStatus)
+                    .register(registry);
+            Gauge.builder(
+                            "trade.engine.balance.delta.max.age.seconds",
+                            snapshotProvider,
+                            provider -> snapshot(provider).balanceDeltaMaxAgeSeconds(taskStatus))
+                    .description("余额 delta 刷账 outbox 最大滞留时间秒数")
+                    .tag("environment", environment)
+                    .tag("status", taskStatus)
+                    .register(registry);
+            // 兼容旧 trade.engine.outbox.pending{event_type=BALANCE_DELTA_FLUSH}
+            Gauge.builder(
+                            "trade.engine.outbox.pending",
+                            snapshotProvider,
+                            provider -> snapshot(provider).balanceDeltaCount(taskStatus))
+                    .description("余额 delta 积压兼容视图（event_type=BALANCE_DELTA_FLUSH），新告警请改用 balance.delta.pending.total")
+                    .tag("environment", environment)
+                    .tag("event_type", OutboxEventType.BALANCE_DELTA_FLUSH.name())
+                    .tag("status", taskStatus)
+                    .register(registry);
+            Gauge.builder(
+                            "trade.engine.outbox.max.age.seconds",
+                            snapshotProvider,
+                            provider -> snapshot(provider).balanceDeltaMaxAgeSeconds(taskStatus))
+                    .description("余额 delta 最大滞留兼容视图")
+                    .tag("environment", environment)
+                    .tag("event_type", OutboxEventType.BALANCE_DELTA_FLUSH.name())
+                    .tag("status", taskStatus)
+                    .register(registry);
+        }
     }
+
+    private static final Set<OutboxEventType> DISPATCH_OUTBOX_EVENT_TYPES = Set.of(
+            OutboxEventType.SUPPLIER_DISPATCH,
+            OutboxEventType.SUPPLIER_QUERY,
+            OutboxEventType.INVALID_ORDER);
 
     private void registerAcceptAnomalyGauges(MeterRegistry registry) {
         for (AcceptAnomalyType anomalyType : AcceptAnomalyType.values()) {

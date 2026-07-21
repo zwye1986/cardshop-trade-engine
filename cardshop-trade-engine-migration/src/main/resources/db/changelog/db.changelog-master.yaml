@@ -442,3 +442,77 @@ databaseChangeLog:
             sql: |
               ALTER TABLE recharge_order_ext
                 DROP COLUMN dispatch_status
+  # 0014：创建供应商履约可靠事件表。对应 docs/交行直充业务系统详细设计.md「8.2 Liquibase 约束」「9.1 派单 Outbox」。
+  - changeSet:
+      id: 0014-d2-create-recharge-dispatch-outbox
+      author: codex
+      changes:
+        - sql:
+            splitStatements: false
+            stripComments: false
+            sql: |
+              create table if not exists recharge_dispatch_outbox (
+                id bigint not null auto_increment comment '表主键',
+                event_id varchar(100) not null comment '履约事件唯一ID',
+                event_type varchar(64) not null comment '履约事件类型',
+                org_code varchar(64) not null comment '商户编码',
+                order_id varchar(100) not null comment '平台订单号',
+                out_order_sn varchar(100) not null comment '商户订单号',
+                payload json not null comment '履约事件参数JSON',
+                status varchar(32) not null comment '事件状态',
+                retry_count int not null default 0 comment '已重试次数',
+                max_retry_count int not null default 10 comment '最大重试次数',
+                next_retry_time datetime not null comment '下次允许执行时间',
+                locked_by varchar(100) default null comment '当前抢占该事件的应用实例ID',
+                locked_until datetime default null comment '抢占租约到期时间',
+                version bigint not null default 0 comment '乐观锁版本号',
+                last_error varchar(1000) default null comment '最近一次失败原因',
+                shard_key varchar(128) not null comment '固定使用event_id，避免不同任务分片语义冲突',
+                created_at datetime not null default current_timestamp comment '创建时间',
+                updated_at datetime not null default current_timestamp on update current_timestamp comment '更新时间',
+                primary key (id),
+                unique key uk_dispatch_outbox_event_id (event_id),
+                key idx_dispatch_outbox_due (status, next_retry_time, id),
+                key idx_dispatch_outbox_lease (status, locked_until, id)
+              ) engine=InnoDB default charset=utf8mb4 comment='交易订单供应商履约可靠事件表'
+      rollback:
+        - sql:
+            sql: |
+              drop table if exists recharge_dispatch_outbox
+  # 0015：创建余额增量刷账事件表。对应 docs/交行直充业务系统详细设计.md「8.2 Liquibase 约束」「9.2 余额 Delta 刷账 Outbox」。
+  - changeSet:
+      id: 0015-d2-create-recharge-balance-delta-outbox
+      author: codex
+      changes:
+        - sql:
+            splitStatements: false
+            stripComments: false
+            sql: |
+              create table if not exists recharge_balance_delta_outbox (
+                id bigint not null auto_increment comment '表主键',
+                event_id varchar(120) not null comment '余额刷账事件唯一ID',
+                org_code varchar(64) not null comment '商户编码',
+                order_id varchar(100) not null comment '平台订单号',
+                out_order_sn varchar(100) not null comment '商户订单号',
+                delta_type varchar(32) not null comment '余额变动类型，例如 PRE_DEDUCT 或 RELEASE',
+                delta_amount bigint not null comment '余额变动金额，单位分；扣减为负，释放为正',
+                status varchar(32) not null comment '刷账状态',
+                retry_count int not null default 0 comment '已重试次数',
+                max_retry_count int not null default 10 comment '最大重试次数',
+                next_retry_time datetime not null comment '下次允许执行时间',
+                locked_by varchar(100) default null comment '当前抢占该事件的应用实例ID',
+                locked_until datetime default null comment '抢占租约到期时间',
+                version bigint not null default 0 comment '乐观锁版本号',
+                last_error varchar(1000) default null comment '最近一次失败原因',
+                created_at datetime not null default current_timestamp comment '创建时间',
+                updated_at datetime not null default current_timestamp on update current_timestamp comment '更新时间',
+                primary key (id),
+                unique key uk_balance_delta_event_id (event_id),
+                key idx_balance_delta_due (status, next_retry_time, org_code, id),
+                key idx_balance_delta_lease (status, locked_until, id),
+                key idx_balance_delta_org_status (org_code, status, id)
+              ) engine=InnoDB default charset=utf8mb4 comment='交易订单余额增量刷账事件表'
+      rollback:
+        - sql:
+            sql: |
+              drop table if exists recharge_balance_delta_outbox

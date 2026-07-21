@@ -48,11 +48,13 @@ LOG_PATTERNS = (
     "MYSQL_PERSIST_FAILED",
     "Lock wait",
 )
+# 详细设计「8.3」phase 白名单：拆表后为 dispatch / balance 两段，旧 recharge_outbox 仅作历史对比。
 MYSQL_PHASES = (
     "mc_order",
     "recharge_order_ext",
     "mc_depart_record",
-    "recharge_outbox",
+    "recharge_dispatch_outbox",
+    "recharge_balance_delta_outbox",
     "commit",
 )
 
