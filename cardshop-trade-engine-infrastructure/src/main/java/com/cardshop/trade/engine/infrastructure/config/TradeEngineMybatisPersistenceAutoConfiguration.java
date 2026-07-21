@@ -93,8 +93,7 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
      * 创建 Redis/MQ 到 MySQL 异步落库批写端口。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。批端口独立于单条端口，
-     * 使用 MyBatis {@code ExecutorType.BATCH} 的 {@code SqlSessionTemplate}，避免批执行器的延迟 row count
-     * 影响单条路径中已有的控制流。
+     * 使用 mapper 显式 multi-row SQL 写入，避免批执行器的延迟 row count 影响单条路径中已有的控制流。
      */
     @Bean
     @ConditionalOnBean(SqlSessionFactory.class)

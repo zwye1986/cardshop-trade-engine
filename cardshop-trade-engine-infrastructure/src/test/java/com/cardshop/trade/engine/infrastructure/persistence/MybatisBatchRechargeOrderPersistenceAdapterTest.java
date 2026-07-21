@@ -26,15 +26,14 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 /**
  * MyBatis 批量异步落库适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。批 adapter
- * 独立于单笔 adapter，不能依赖 MyBatis BATCH 模式下不稳定的即时 row count 做资金流水控制流。
+     * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。批 adapter
+     * 独立于单笔 adapter，必须调用显式 multi-row mapper，并由数据库唯一键保证重复 MQ/补投重试的幂等性。
  */
 class MybatisBatchRechargeOrderPersistenceAdapterTest {
 
     @Test
-    void writesPreDeductRecordByDatabaseIdempotencyWhenOrderInsertResultIsZero() {
+    void writesPreDeductRecordByDatabaseIdempotencyInBatchPath() {
         RecordingStore store = new RecordingStore();
-        store.nextOrderInsertResult = 0;
         MybatisBatchRechargeOrderPersistenceAdapter adapter = new MybatisBatchRechargeOrderPersistenceAdapter(
                 store,
                 store,
@@ -44,7 +43,10 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
 
         adapter.persistBatch(List.of(aggregate("ORDER-1001", "OUT-1001")));
 
-        assertThat(store.events).contains("order:ORDER-1001", "ext:ORDER-1001", "depart:ORDER-1001");
+        assertThat(store.events).contains(
+                "orderBatch:ORDER-1001",
+                "extBatch:ORDER-1001",
+                "departBatch:ORDER-1001");
         assertThat(store.departRecords).hasSize(1);
         assertThat(store.departRecords.getFirst().getOrderId()).isEqualTo("ORDER-1001");
         assertThat(store.outboxesByEventId).containsKeys("dispatch-ORDER-1001", "balance-flush-ORDER-1001");
@@ -65,16 +67,10 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
                 aggregate("ORDER-1001", "OUT-1001")));
 
         assertThat(store.events).containsExactly(
-                "order:ORDER-1001",
-                "order:ORDER-1002",
-                "ext:ORDER-1001",
-                "ext:ORDER-1002",
-                "depart:ORDER-1001",
-                "depart:ORDER-1002",
-                "outbox:dispatch-ORDER-1001",
-                "outbox:balance-flush-ORDER-1001",
-                "outbox:dispatch-ORDER-1002",
-                "outbox:balance-flush-ORDER-1002");
+                "orderBatch:ORDER-1001,ORDER-1002",
+                "extBatch:ORDER-1001,ORDER-1002",
+                "departBatch:ORDER-1001,ORDER-1002",
+                "outboxBatch:dispatch-ORDER-1001,balance-flush-ORDER-1001,dispatch-ORDER-1002,balance-flush-ORDER-1002");
     }
 
     @Test
@@ -99,6 +95,23 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
             adapter.persistBatch(List.of(aggregate("ORDER-1003", "OUT-1003")));
 
             assertThat(registry.find("trade.engine.persist.batch.mysql.duration").timer()).isNull();
+            assertThat(registry.get("trade.engine.persist.batch.mysql.phase.duration")
+                            .tag("environment", "test")
+                            .tag("phase", "mc_order")
+                            .timer()
+                            .count())
+                    .isEqualTo(1L);
+            assertThat(registry.get("trade.engine.persist.batch.mysql.phase.duration")
+                            .tag("environment", "test")
+                            .tag("phase", "recharge_order_ext")
+                            .timer()
+                            .count())
+                    .isEqualTo(1L);
+            assertThat(registry.find("trade.engine.persist.batch.mysql.phase.duration")
+                            .tag("environment", "test")
+                            .tag("phase", "commit")
+                            .timer())
+                    .isNull();
 
             List<TransactionSynchronization> synchronizations =
                     List.copyOf(TransactionSynchronizationManager.getSynchronizations());
@@ -109,6 +122,12 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
 
             assertThat(registry.get("trade.engine.persist.batch.mysql.duration")
                             .tag("environment", "test")
+                            .timer()
+                            .count())
+                    .isEqualTo(1L);
+            assertThat(registry.get("trade.engine.persist.batch.mysql.phase.duration")
+                            .tag("environment", "test")
+                            .tag("phase", "commit")
                             .timer()
                             .count())
                     .isEqualTo(1L);
@@ -158,46 +177,67 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
     }
 
     private static final class RecordingStore
-            implements McOrderPersistWriter,
-            RechargeOrderExtPersistWriter,
-            RechargeOutboxPersistWriter,
-            McDepartRecordPersistWriter {
+            implements McOrderBatchPersistWriter,
+            RechargeOrderExtBatchPersistWriter,
+            RechargeOutboxBatchPersistWriter,
+            McDepartRecordBatchPersistWriter {
 
         private final List<String> events = new ArrayList<>();
         private final List<McDepartRecordDO> departRecords = new ArrayList<>();
         private final Map<String, McDepartRecordDO> departRecordsByKey = new LinkedHashMap<>();
         private final Map<String, RechargeOutboxDO> outboxesByEventId = new LinkedHashMap<>();
-        private int nextOrderInsertResult = 1;
 
         @Override
-        public int insertIfAbsent(McOrderDO order) {
-            events.add("order:" + order.getOrderId());
-            return nextOrderInsertResult;
+        public int insertOrderBatchIfAbsent(List<McOrderDO> orders) {
+            events.add("orderBatch:" + orderIds(orders));
+            return orders.size();
         }
 
         @Override
-        public int insertOrUpdatePersistState(RechargeOrderExtDO ext) {
-            events.add("ext:" + ext.getOrderId());
-            return 1;
+        public int insertBatchOrUpdatePersistState(List<RechargeOrderExtDO> rows) {
+            events.add("extBatch:" + extOrderIds(rows));
+            return rows.size();
         }
 
         @Override
-        public int insertIfAbsent(RechargeOutboxDO outbox) {
-            events.add("outbox:" + outbox.getEventId());
-            outboxesByEventId.putIfAbsent(outbox.getEventId(), outbox);
-            return 1;
-        }
-
-        @Override
-        public int insertPreDeductIfAbsent(McDepartRecordDO record) {
-            events.add("depart:" + record.getOrderId());
-            String recordKey = record.getOrderId() + ":" + record.getType();
-            if (departRecordsByKey.containsKey(recordKey)) {
-                return 0;
+        public int insertOutboxBatchIfAbsent(List<RechargeOutboxDO> rows) {
+            events.add("outboxBatch:" + eventIds(rows));
+            for (RechargeOutboxDO outbox : rows) {
+                outboxesByEventId.putIfAbsent(outbox.getEventId(), outbox);
             }
-            departRecordsByKey.put(recordKey, record);
-            departRecords.add(record);
-            return 1;
+            return rows.size();
+        }
+
+        @Override
+        public int insertPreDeductBatchIfAbsent(List<McDepartRecordDO> rows) {
+            events.add("departBatch:" + departOrderIds(rows));
+            int inserted = 0;
+            for (McDepartRecordDO record : rows) {
+                String recordKey = record.getOrderId() + ":" + record.getType();
+                if (departRecordsByKey.containsKey(recordKey)) {
+                    continue;
+                }
+                departRecordsByKey.put(recordKey, record);
+                departRecords.add(record);
+                inserted++;
+            }
+            return inserted;
+        }
+
+        private static String orderIds(List<McOrderDO> rows) {
+            return String.join(",", rows.stream().map(McOrderDO::getOrderId).toList());
+        }
+
+        private static String extOrderIds(List<RechargeOrderExtDO> rows) {
+            return String.join(",", rows.stream().map(RechargeOrderExtDO::getOrderId).toList());
+        }
+
+        private static String departOrderIds(List<McDepartRecordDO> rows) {
+            return String.join(",", rows.stream().map(McDepartRecordDO::getOrderId).toList());
+        }
+
+        private static String eventIds(List<RechargeOutboxDO> rows) {
+            return String.join(",", rows.stream().map(RechargeOutboxDO::getEventId).toList());
         }
     }
 }

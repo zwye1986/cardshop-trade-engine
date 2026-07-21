@@ -15,6 +15,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -35,8 +36,15 @@ public class TradeEngineObservabilityMetrics
     private static final Logger log = LoggerFactory.getLogger(TradeEngineObservabilityMetrics.class);
     private static final String NONE = "none";
     private static final String RESULT_CONFIRMED = "confirmed";
+    private static final String UNKNOWN = "unknown";
     private static final int MAX_TAG_VALUE_LENGTH = 64;
     private static final Duration SNAPSHOT_FALLBACK_LOG_INTERVAL = Duration.ofSeconds(60);
+    private static final Set<String> PERSIST_BATCH_MYSQL_PHASES = Set.of(
+            "mc_order",
+            "recharge_order_ext",
+            "mc_depart_record",
+            "recharge_outbox",
+            "commit");
     private static final String LOG_EVENT_SNAPSHOT_FALLBACK = "observability.snapshot.fallback";
     private static final LogStormGuard SNAPSHOT_FALLBACK_LOG_GUARD =
             LogStormGuard.atMostOncePer(SNAPSHOT_FALLBACK_LOG_INTERVAL);
@@ -56,6 +64,7 @@ public class TradeEngineObservabilityMetrics
     private final ConcurrentMap<String, Counter> merchantProfileCacheHitCounters = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Timer> createOrderStageTimers = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, Counter> persistBatchOrderCounters = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, Timer> persistBatchMysqlPhaseTimers = new ConcurrentHashMap<>();
     private volatile Counter productCacheMysqlLoadCounter;
     private volatile DistributionSummary persistBatchSizeSummary;
     private volatile Timer persistBatchMysqlTimer;
@@ -343,6 +352,29 @@ public class TradeEngineObservabilityMetrics
     }
 
     /**
+     * 记录异步落库批 MySQL 分段耗时。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。phase 只允许固定表名或
+     * commit 阶段名；未知取值折叠为 {@code unknown}，避免把 SQL、订单号等高基数字段带入 Prometheus 标签。
+     * Prometheus 暴露后名称为 {@code trade_engine_persist_batch_mysql_phase_duration_seconds}。
+     */
+    public void recordPersistBatchMysqlPhaseDuration(String phase, Duration duration) {
+        MeterRegistry current = registry;
+        if (current == null) {
+            return;
+        }
+        String safePhase = persistBatchMysqlPhase(phase);
+        Duration safeDuration = duration == null || duration.isNegative() ? Duration.ZERO : duration;
+        persistBatchMysqlPhaseTimers.computeIfAbsent(safePhase, ignored -> Timer.builder(
+                                "trade.engine.persist.batch.mysql.phase.duration")
+                        .description("异步落库批 MySQL 分段耗时")
+                        .tag("environment", environment)
+                        .tag("phase", safePhase)
+                        .register(current))
+                .record(safeDuration);
+    }
+
+    /**
      * 记录异步落库批内订单结果计数。
      *
      * <p>result 仅允许 {@code success}/{@code failed}/{@code skipped_already_persisted} 等低基数取值，禁止订单号进标签。
@@ -481,11 +513,16 @@ public class TradeEngineObservabilityMetrics
     }
 
     private static String tagValue(String raw) {
-        String value = raw == null || raw.isBlank() ? "unknown" : raw.strip();
+        String value = raw == null || raw.isBlank() ? UNKNOWN : raw.strip();
         value = value.replaceAll("[^A-Za-z0-9_.:-]", "_");
         if (value.length() > MAX_TAG_VALUE_LENGTH) {
             return value.substring(0, MAX_TAG_VALUE_LENGTH);
         }
         return value;
+    }
+
+    private static String persistBatchMysqlPhase(String phase) {
+        String normalized = tagValue(phase);
+        return PERSIST_BATCH_MYSQL_PHASES.contains(normalized) ? normalized : UNKNOWN;
     }
 }

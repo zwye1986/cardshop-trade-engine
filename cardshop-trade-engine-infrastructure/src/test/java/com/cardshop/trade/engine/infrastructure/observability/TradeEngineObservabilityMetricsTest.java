@@ -296,6 +296,7 @@ class TradeEngineObservabilityMetricsTest {
 
         metrics.recordPersistBatchSize(7);
         metrics.recordPersistBatchMysqlDuration(Duration.ofMillis(12));
+        metrics.recordPersistBatchMysqlPhaseDuration("mc_order", Duration.ofMillis(3));
         metrics.recordPersistBatchOrders(7, "success");
         metrics.recordPersistBatchOrders(3, "failed");
 
@@ -314,6 +315,12 @@ class TradeEngineObservabilityMetricsTest {
                         .timer()
                         .count())
                 .isEqualTo(1L);
+        assertThat(registry.get("trade.engine.persist.batch.mysql.phase.duration")
+                        .tag("environment", "test")
+                        .tag("phase", "mc_order")
+                        .timer()
+                        .totalTime(TimeUnit.MILLISECONDS))
+                .isEqualTo(3.0);
         assertThat(registry.get("trade.engine.persist.batch.orders.total")
                         .tag("environment", "test")
                         .tag("result", "success")
