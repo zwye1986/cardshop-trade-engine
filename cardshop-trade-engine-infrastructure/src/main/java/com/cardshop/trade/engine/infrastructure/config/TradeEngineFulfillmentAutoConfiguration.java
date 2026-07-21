@@ -29,7 +29,8 @@ import org.springframework.context.annotation.Bean;
  * 供应商履约、作废和商户回调 worker 的后置自动配置。
  *
  * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」、
- * 「9.2 作废设计」和「9.3 回调设计」。这些 worker 同时依赖 MyBatis Mapper、RedisTemplate、
+ * 「9.3 作废设计」「9.4 回调设计」和「9.2 余额 Delta 刷账 Outbox」（余额释放入队）。
+ * 这些 worker 同时依赖 MyBatis Mapper、RedisTemplate、
  * HTTP 供应商/回调客户端和商户资料端口；真实 dev/test/prod 中这些依赖常由 Spring Boot/MyBatis/Redis
  * 后置自动配置创建。若只放在普通 {@code @Configuration} 中用 {@code @ConditionalOnBean} 判断，条件可能在
  * 端口 BeanDefinition 出现前被判定为不满足，最终表现为应用健康但 `outbox-publish` 人工入口拿不到 job。
@@ -48,7 +49,8 @@ public class TradeEngineFulfillmentAutoConfiguration {
      *
      * <p>该 worker 是 SUP-001/SUP-002/INV-001 的同一业务执行器，必须复用一套 CAS 抢占、供应商调用、
      * 余额释放、回调任务生成和状态回写语义。payload signer 允许测试显式注入；真实环境默认使用 V1 商户资料端口
-     * 计算回调签名，保持和详细设计「9.3 回调设计」一致。
+     * 计算回调签名，保持和详细设计「9.4 回调设计」一致。
+     * 失败/作废后的余额释放入队走 {@link BalanceDeltaFlushOutboxPort}（「9.2 余额 Delta 刷账 Outbox」）。
      */
     @Bean
     @ConditionalOnBean({

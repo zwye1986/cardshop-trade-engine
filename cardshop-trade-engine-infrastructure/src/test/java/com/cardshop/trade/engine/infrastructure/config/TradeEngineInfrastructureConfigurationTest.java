@@ -45,8 +45,11 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecor
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.InMemoryRedisHaGuard;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisScriptLoader;
@@ -367,7 +370,8 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(McOrderMapper.class, () -> mapperProxy(McOrderMapper.class))
                 .withBean(RechargeOrderExtMapper.class, () -> mapperProxy(RechargeOrderExtMapper.class))
-                .withBean(RechargeOutboxMapper.class, () -> mapperProxy(RechargeOutboxMapper.class))
+                .withBean(RechargeDispatchOutboxMapper.class, () -> mapperProxy(RechargeDispatchOutboxMapper.class))
+                .withBean(RechargeBalanceDeltaOutboxMapper.class, () -> mapperProxy(RechargeBalanceDeltaOutboxMapper.class))
                 .withBean(McDepartRecordMapper.class, () -> mapperProxy(McDepartRecordMapper.class))
                 .run(context -> {
                     assertThat(context).hasSingleBean(RechargeOrderPersistencePort.class);
@@ -380,7 +384,7 @@ class TradeEngineInfrastructureConfigurationTest {
     void createsBalanceDeltaFlushPortWhenOutboxMerchantAndTransactionManagerExist() {
         contextRunner
                 .withBean(ObjectMapper.class, ObjectMapper::new)
-                .withBean(RechargeOutboxMapper.class, () -> mapperProxy(RechargeOutboxMapper.class))
+                .withBean(RechargeBalanceDeltaOutboxMapper.class, () -> mapperProxy(RechargeBalanceDeltaOutboxMapper.class))
                 .withBean(McExtDepartMapper.class, () -> mapperProxy(McExtDepartMapper.class))
                 .withBean(PlatformTransactionManager.class, TradeEngineInfrastructureConfigurationTest::transactionManager)
                 .run(context -> {
@@ -396,7 +400,8 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(McOrderMapper.class, () -> mapperProxy(McOrderMapper.class))
                 .withBean(RechargeOrderExtMapper.class, () -> mapperProxy(RechargeOrderExtMapper.class))
-                .withBean(RechargeOutboxMapper.class, () -> mapperProxy(RechargeOutboxMapper.class))
+                .withBean(RechargeDispatchOutboxMapper.class, () -> mapperProxy(RechargeDispatchOutboxMapper.class))
+                .withBean(RechargeBalanceDeltaOutboxMapper.class, () -> mapperProxy(RechargeBalanceDeltaOutboxMapper.class))
                 .run(context -> assertThat(context).doesNotHaveBean(RechargeOrderPersistencePort.class));
     }
 

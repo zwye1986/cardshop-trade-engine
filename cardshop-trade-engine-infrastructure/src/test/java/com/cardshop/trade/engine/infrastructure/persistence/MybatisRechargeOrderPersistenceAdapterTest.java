@@ -9,8 +9,9 @@ import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.domain.order.TaskStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McDepartRecordDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeBalanceDeltaOutboxDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeDispatchOutboxDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
-import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.time.LocalDateTime;
@@ -23,8 +24,10 @@ import org.junit.jupiter.api.Test;
 /**
  * MyBatis 异步落库适配器测试。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
- * 该测试不启动数据库，只验证 D7A 聚合到 DO/Mapper 的字段契约和 outbox 生成边界。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」「9.1 派单 Outbox」
+ * 「9.2 余额 Delta 刷账 Outbox」。该测试不启动数据库，只验证 D7A 聚合到拆表 DO/Mapper 的字段契约
+ * 与 outbox 生成边界：派单写入 {@code recharge_dispatch_outbox}，余额刷账写入
+ * {@code recharge_balance_delta_outbox}，不再写入旧混合表 {@code recharge_outbox}。
  */
 class MybatisRechargeOrderPersistenceAdapterTest {
 
@@ -32,6 +35,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
     void writesAcceptedOrderExtSupplierDispatchAndBalanceFlushOutbox() {
         RecordingStore store = new RecordingStore();
         MybatisRechargeOrderPersistenceAdapter adapter = new MybatisRechargeOrderPersistenceAdapter(
+                store,
                 store,
                 store,
                 store,
@@ -74,7 +78,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.departRecord.getBalance()).isNull();
         assertThat(store.departRecord.getCreateTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
 
-        RechargeOutboxDO dispatchOutbox = store.outboxByEventId("dispatch-ORDER-1001");
+        RechargeDispatchOutboxDO dispatchOutbox = store.dispatchByEventId("dispatch-ORDER-1001");
         assertThat(dispatchOutbox.getEventType()).isEqualTo(OutboxEventType.SUPPLIER_DISPATCH.name());
         assertThat(dispatchOutbox.getStatus()).isEqualTo(TaskStatus.INIT.name());
         assertThat(dispatchOutbox.getRetryCount()).isZero();
@@ -85,22 +89,22 @@ class MybatisRechargeOrderPersistenceAdapterTest {
                 .contains("\"order_id\":\"ORDER-1001\"")
                 .contains("\"supplier_channel\":\"BOCOM\"");
 
-        RechargeOutboxDO balanceOutbox = store.outboxByEventId("balance-flush-ORDER-1001");
-        assertThat(balanceOutbox.getEventType()).isEqualTo(OutboxEventType.BALANCE_DELTA_FLUSH.name());
+        RechargeBalanceDeltaOutboxDO balanceOutbox = store.balanceByEventId("balance-flush-ORDER-1001");
+        assertThat(balanceOutbox.getDeltaType()).isEqualTo("PRE_DEDUCT");
+        assertThat(balanceOutbox.getDeltaAmount()).isEqualTo(-5200L);
+        assertThat(balanceOutbox.getOrgCode()).isEqualTo("A36");
+        assertThat(balanceOutbox.getOrderId()).isEqualTo("ORDER-1001");
         assertThat(balanceOutbox.getStatus()).isEqualTo(TaskStatus.INIT.name());
         assertThat(balanceOutbox.getRetryCount()).isZero();
         assertThat(balanceOutbox.getMaxRetryCount()).isEqualTo(10);
-        assertThat(balanceOutbox.getShardKey()).isEqualTo("balance-flush-ORDER-1001");
-        assertThat(balanceOutbox.getPayload())
-                .contains("\"delta_amount\":-5200")
-                .contains("\"org_code\":\"A36\"")
-                .contains("\"order_id\":\"ORDER-1001\"");
+        assertThat(balanceOutbox.getNextRetryTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
     }
 
     @Test
     void doesNotCreateSupplierDispatchOutboxForValidationFailedOrder() {
         RecordingStore store = new RecordingStore();
         MybatisRechargeOrderPersistenceAdapter adapter = new MybatisRechargeOrderPersistenceAdapter(
+                store,
                 store,
                 store,
                 store,
@@ -116,7 +120,8 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.ext.getValidationStatus()).isEqualTo("FAILED");
         assertThat(store.ext.getDispatchAllowed()).isFalse();
         assertThat(store.departRecord).isNull();
-        assertThat(store.outboxes).isEmpty();
+        assertThat(store.dispatchOutboxes).isEmpty();
+        assertThat(store.balanceOutboxes).isEmpty();
     }
 
     @Test
@@ -128,14 +133,15 @@ class MybatisRechargeOrderPersistenceAdapterTest {
                 store,
                 store,
                 store,
+                store,
                 new ObjectMapper());
 
         adapter.persist(aggregate(snapshot("PASSED", true, "", "")));
 
         assertThat(store.ext.getOrderId()).isEqualTo("ORDER-1001");
         assertThat(store.departRecord).isNull();
-        assertThat(store.outboxByEventId("dispatch-ORDER-1001").getEventId()).isEqualTo("dispatch-ORDER-1001");
-        assertThat(store.outboxByEventId("balance-flush-ORDER-1001").getEventId()).isEqualTo("balance-flush-ORDER-1001");
+        assertThat(store.dispatchByEventId("dispatch-ORDER-1001").getEventId()).isEqualTo("dispatch-ORDER-1001");
+        assertThat(store.balanceByEventId("balance-flush-ORDER-1001").getEventId()).isEqualTo("balance-flush-ORDER-1001");
     }
 
     @Test
@@ -146,19 +152,23 @@ class MybatisRechargeOrderPersistenceAdapterTest {
                 store,
                 store,
                 store,
+                store,
                 new ObjectMapper());
 
         adapter.persist(aggregate(snapshot("PASSED", true, "", "")));
         adapter.persist(aggregate(snapshot("PASSED", true, "", "")));
 
         // 对应详细设计「8.3 异步落库 Consumer」：重复 MQ 消费第二次命中 mc_order 唯一键后，
-        // 不能重复写 PRE_DEDUCT 资金流水，也不能重复创建 D9/D12 outbox 事件。
+        // 不能重复写 PRE_DEDUCT 资金流水，也不能重复创建拆表后的派单/余额刷账事件。
         assertThat(store.orderInsertResults).containsExactly(1, 0);
         assertThat(store.extPersistCalls).isEqualTo(2);
         assertThat(store.departRecords).hasSize(1);
-        assertThat(store.outboxes)
-                .extracting(RechargeOutboxDO::getEventId)
-                .containsExactly("dispatch-ORDER-1001", "balance-flush-ORDER-1001");
+        assertThat(store.dispatchOutboxes)
+                .extracting(RechargeDispatchOutboxDO::getEventId)
+                .containsExactly("dispatch-ORDER-1001");
+        assertThat(store.balanceOutboxes)
+                .extracting(RechargeBalanceDeltaOutboxDO::getEventId)
+                .containsExactly("balance-flush-ORDER-1001");
         assertThat(store.ext.getPersistedVersion()).isEqualTo(1L);
     }
 
@@ -209,16 +219,19 @@ class MybatisRechargeOrderPersistenceAdapterTest {
     private static final class RecordingStore
             implements McOrderPersistWriter,
             RechargeOrderExtPersistWriter,
-            RechargeOutboxPersistWriter,
+            RechargeDispatchOutboxPersistWriter,
+            RechargeBalanceDeltaOutboxPersistWriter,
             McDepartRecordPersistWriter {
 
         private McOrderDO order;
         private RechargeOrderExtDO ext;
-        private final List<RechargeOutboxDO> outboxes = new ArrayList<>();
+        private final List<RechargeDispatchOutboxDO> dispatchOutboxes = new ArrayList<>();
+        private final List<RechargeBalanceDeltaOutboxDO> balanceOutboxes = new ArrayList<>();
         private final List<McDepartRecordDO> departRecords = new ArrayList<>();
         private final List<Integer> orderInsertResults = new ArrayList<>();
         private final Map<String, McOrderDO> ordersByDirectKey = new LinkedHashMap<>();
-        private final Map<String, RechargeOutboxDO> outboxesByEventId = new LinkedHashMap<>();
+        private final Map<String, RechargeDispatchOutboxDO> dispatchByEventId = new LinkedHashMap<>();
+        private final Map<String, RechargeBalanceDeltaOutboxDO> balanceByEventId = new LinkedHashMap<>();
         private final Map<String, McDepartRecordDO> departRecordsByKey = new LinkedHashMap<>();
         private McDepartRecordDO departRecord;
         private int extPersistCalls;
@@ -253,13 +266,24 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         }
 
         @Override
-        public int insertIfAbsent(RechargeOutboxDO outbox) {
-            // recharge_outbox 的 event_id 是可靠事件幂等键；重复 MQ 消费只能保留首次事件。
-            if (outboxesByEventId.containsKey(outbox.getEventId())) {
+        public int insertIfAbsent(RechargeDispatchOutboxDO outbox) {
+            // recharge_dispatch_outbox 的 event_id 是派单事件幂等键；重复 MQ 消费只能保留首次事件。
+            if (dispatchByEventId.containsKey(outbox.getEventId())) {
                 return 0;
             }
-            this.outboxes.add(outbox);
-            this.outboxesByEventId.put(outbox.getEventId(), outbox);
+            this.dispatchOutboxes.add(outbox);
+            this.dispatchByEventId.put(outbox.getEventId(), outbox);
+            return 1;
+        }
+
+        @Override
+        public int insertIfAbsent(RechargeBalanceDeltaOutboxDO outbox) {
+            // recharge_balance_delta_outbox 的 event_id 是余额刷账幂等键；重复 MQ 消费只能保留首次事件。
+            if (balanceByEventId.containsKey(outbox.getEventId())) {
+                return 0;
+            }
+            this.balanceOutboxes.add(outbox);
+            this.balanceByEventId.put(outbox.getEventId(), outbox);
             return 1;
         }
 
@@ -276,11 +300,18 @@ class MybatisRechargeOrderPersistenceAdapterTest {
             return 1;
         }
 
-        private RechargeOutboxDO outboxByEventId(String eventId) {
-            return outboxes.stream()
+        private RechargeDispatchOutboxDO dispatchByEventId(String eventId) {
+            return dispatchOutboxes.stream()
                     .filter(outbox -> eventId.equals(outbox.getEventId()))
                     .findFirst()
-                    .orElseThrow(() -> new AssertionError("missing outbox event " + eventId));
+                    .orElseThrow(() -> new AssertionError("missing dispatch outbox event " + eventId));
+        }
+
+        private RechargeBalanceDeltaOutboxDO balanceByEventId(String eventId) {
+            return balanceOutboxes.stream()
+                    .filter(outbox -> eventId.equals(outbox.getEventId()))
+                    .findFirst()
+                    .orElseThrow(() -> new AssertionError("missing balance delta outbox event " + eventId));
         }
     }
 }

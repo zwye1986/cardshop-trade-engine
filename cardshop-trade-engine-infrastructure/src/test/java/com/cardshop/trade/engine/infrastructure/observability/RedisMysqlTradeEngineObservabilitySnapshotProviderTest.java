@@ -73,6 +73,9 @@ class RedisMysqlTradeEngineObservabilitySnapshotProviderTest {
                                 OutboxEventType.SUPPLIER_QUERY.name(), TaskStatus.FAILED.name()),
                         new TradeEngineObservabilitySnapshot.CountAge(6, 300)),
                 Map.of(
+                        TaskStatus.INIT.name(),
+                        new TradeEngineObservabilitySnapshot.CountAge(2, 90)),
+                Map.of(
                         new TradeEngineObservabilitySnapshot.AcceptAnomalyKey(
                                 AcceptAnomalyType.REDIS_BUSY.name(), AcceptAnomalyStatus.INIT.name()),
                         4L),
@@ -90,6 +93,7 @@ class RedisMysqlTradeEngineObservabilitySnapshotProviderTest {
                 .isEqualTo(6.0);
         assertThat(snapshot.outboxMaxAgeSeconds(OutboxEventType.SUPPLIER_QUERY.name(), TaskStatus.FAILED.name()))
                 .isEqualTo(300.0);
+        assertThat(snapshot.balanceDeltaCount(TaskStatus.INIT.name())).isEqualTo(2.0);
         assertThat(snapshot.acceptAnomalyCount(AcceptAnomalyType.REDIS_BUSY.name(), AcceptAnomalyStatus.INIT.name()))
                 .isEqualTo(4.0);
         assertThat(snapshot.balanceReconcileDiffOrgs()).isEqualTo(2);
@@ -107,6 +111,7 @@ class RedisMysqlTradeEngineObservabilitySnapshotProviderTest {
     private static TradeEngineObservabilitySnapshot snapshot(long total, long due) {
         return new TradeEngineObservabilitySnapshot(
                 new TradeEngineObservabilitySnapshot.RedisPending(total, due, 60),
+                Map.of(),
                 Map.of(),
                 Map.of(),
                 0,

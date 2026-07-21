@@ -9,7 +9,8 @@ import java.util.Objects;
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
  * 该对象把 MQ 消息、Redis/MQ 快照来源和落库时间合并成 infrastructure 可直接映射到
- * `mc_order`、`recharge_order_ext` 和 `recharge_outbox` 的最小事实集合。
+ * {@code mc_order}、{@code recharge_order_ext}、{@code recharge_dispatch_outbox}
+ * 与 {@code recharge_balance_delta_outbox} 的最小事实集合（详细设计「8.3」「9.1」「9.2」）。
  *
  * @param persistMessageId RabbitMQ 落库消息 ID
  * @param snapshot 实际用于 MySQL 落库的订单快照

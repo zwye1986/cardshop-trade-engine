@@ -1,6 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
 import org.junit.jupiter.api.Test;
@@ -63,6 +64,16 @@ class TradeEnginePropertiesTest {
             assertThat(properties.getV1().getMerchantConfigPreheat().getOrgCodes()).isEmpty();
             assertThat(properties.getV1().getMerchantConfigPreheat().isFailOnError()).isTrue();
             assertThat(properties.getBalance().getOwnerMode()).isEqualTo("NEW");
+            // 余额 Delta 刷账 outbox 默认值；参见详细设计「9.2 余额 Delta 刷账 Outbox」「11. 配置中心」。
+            assertThat(properties.getOutbox().getBalanceDeltaFlushBatchSize()).isEqualTo(500);
+            assertThat(properties.getOutbox().getBalanceDeltaClaimLeaseSeconds()).isEqualTo(120);
+            assertThat(properties.getOutbox().getBalanceDeltaRetryBackoffSeconds()).isEqualTo("5,30,120,600");
+            assertThat(properties.getOutbox().balanceDeltaRetryBackoffDurations())
+                    .containsExactly(
+                            Duration.ofSeconds(5),
+                            Duration.ofSeconds(30),
+                            Duration.ofSeconds(120),
+                            Duration.ofSeconds(600));
             assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(16);
             assertThat(properties.getThreadPool().getDbMaxSize()).isEqualTo(32);
             assertThat(properties.getIntegration().getManualJobTimeoutMs()).isEqualTo(30000);
@@ -102,6 +113,9 @@ class TradeEnginePropertiesTest {
                         "trade.engine.v1.merchant-config-preheat.org-codes[1]=B01",
                         "trade.engine.v1.merchant-config-preheat.fail-on-error=false",
                         "trade.engine.supplier.channels.fake.query-url=http://127.0.0.1:18082/supplier/query",
+                        "trade.engine.outbox.balance-delta-flush-batch-size=200",
+                        "trade.engine.outbox.balance-delta-claim-lease-seconds=90",
+                        "trade.engine.outbox.balance-delta-retry-backoff-seconds=10,60,300",
                         "trade.engine.thread-pool.db-core-size=4",
                         "trade.engine.thread-pool.db-max-size=8",
                         "trade.engine.integration.manual-job-timeout-ms=12345")
@@ -140,9 +154,45 @@ class TradeEnginePropertiesTest {
                     assertThat(properties.getV1().getMerchantConfigPreheat().isFailOnError()).isFalse();
                     assertThat(properties.getSupplier().getChannels().get("fake").getQueryUrl())
                             .isEqualTo("http://127.0.0.1:18082/supplier/query");
+                    assertThat(properties.getOutbox().getBalanceDeltaFlushBatchSize()).isEqualTo(200);
+                    assertThat(properties.getOutbox().getBalanceDeltaClaimLeaseSeconds()).isEqualTo(90);
+                    assertThat(properties.getOutbox().getBalanceDeltaRetryBackoffSeconds()).isEqualTo("10,60,300");
+                    assertThat(properties.getOutbox().balanceDeltaRetryBackoffDurations())
+                            .containsExactly(
+                                    Duration.ofSeconds(10),
+                                    Duration.ofSeconds(60),
+                                    Duration.ofSeconds(300));
                     assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(4);
                     assertThat(properties.getThreadPool().getDbMaxSize()).isEqualTo(8);
                     assertThat(properties.getIntegration().getManualJobTimeoutMs()).isEqualTo(12345);
+                });
+    }
+
+    @Test
+    void outboxBackoffUsesDesignDefaultWhenBlank() {
+        contextRunner
+                .withPropertyValues("trade.engine.outbox.balance-delta-retry-backoff-seconds=  ,  ,")
+                .run(context -> {
+                    var properties = context.getBean(TradeEngineProperties.class);
+                    assertThat(properties.getOutbox().balanceDeltaRetryBackoffDurations())
+                            .containsExactly(
+                                    Duration.ofSeconds(5),
+                                    Duration.ofSeconds(30),
+                                    Duration.ofSeconds(120),
+                                    Duration.ofSeconds(600));
+                });
+    }
+
+    @Test
+    void outboxBackoffRejectsInvalidConfigWithoutSilentFallback() {
+        contextRunner
+                .withPropertyValues("trade.engine.outbox.balance-delta-retry-backoff-seconds=5,abc,30")
+                .run(context -> {
+                    var properties = context.getBean(TradeEngineProperties.class);
+                    assertThatThrownBy(() -> properties.getOutbox().balanceDeltaRetryBackoffDurations())
+                            .isInstanceOf(IllegalArgumentException.class)
+                            .hasMessageContaining("balance-delta-retry-backoff-seconds")
+                            .hasMessageContaining("abc");
                 });
     }
 

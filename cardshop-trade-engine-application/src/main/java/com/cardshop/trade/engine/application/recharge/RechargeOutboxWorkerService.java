@@ -10,11 +10,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
- * MySQL outbox 履约 Worker。
+ * MySQL 派单 outbox 履约 Worker。
  *
  * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」、
- * 「9.2 作废设计」和「9.3 回调设计」。本服务只负责编排端口：扫描并抢占 outbox、
- * 调用供应商 Gateway、回写订单/流水、生成回调任务；具体 MySQL、Redis 和 HTTP 实现都在基础设施层。
+ * 「9.3 作废设计」和「9.4 回调设计」。本服务只扫描履约事件
+ * （{@code SUPPLIER_DISPATCH}/{@code SUPPLIER_QUERY}/{@code INVALID_ORDER}），不处理
+ * {@code BALANCE_DELTA_FLUSH}；余额释放只通过 {@link BalanceDeltaFlushOutboxPort} 写入
+ * {@code recharge_balance_delta_outbox}（详细设计「9.2 余额 Delta 刷账 Outbox」）。
+ * 具体 MySQL、Redis 和 HTTP 实现都在基础设施层。
  */
 public class RechargeOutboxWorkerService {
 
@@ -522,9 +525,10 @@ public class RechargeOutboxWorkerService {
 
     private void enqueueReleaseBalanceDelta(RechargeFulfillmentOrder order, String reason) {
         /*
-         * docs/交行直充业务系统详细设计.md「9.2 作废设计」要求作废/失败完成后生成反向
-         * BALANCE_DELTA_FLUSH。这里仅写可靠事件，不在 Worker 线程直接改 mc_ext_depart.balance，
-         * 保持 D12 余额刷账的 CAS 抢占和重试语义。
+         * docs/交行直充业务系统详细设计.md「9.2 余额 Delta 刷账 Outbox」要求作废/失败完成后
+         * 写入 delta_type=RELEASE 的刷账事件（event_id=balance-flush-release-{orderId}）。
+         * 这里仅写可靠事件，不在 Worker 线程直接改 mc_ext_depart.balance，
+         * 保持余额刷账的 CAS 抢占、按 org 聚合和重试语义（高可用「14.7」）。
          */
         balanceDeltaFlushOutboxPort.enqueueBalanceDeltaFlush(new BalanceDeltaFlushOutboxCommand(
                 order.orgCode(),

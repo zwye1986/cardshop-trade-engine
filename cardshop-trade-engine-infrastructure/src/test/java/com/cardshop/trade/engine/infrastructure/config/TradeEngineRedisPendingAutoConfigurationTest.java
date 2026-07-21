@@ -8,8 +8,8 @@ import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceReconcileAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeCacheRepairAdapter;
 import java.lang.reflect.Proxy;
@@ -116,8 +116,8 @@ class TradeEngineRedisPendingAutoConfigurationTest {
         }
 
         @Bean
-        RechargeOutboxMapper rechargeOutboxMapper() {
-            return proxy(RechargeOutboxMapper.class);
+        RechargeBalanceDeltaOutboxMapper rechargeBalanceDeltaOutboxMapper() {
+            return proxy(RechargeBalanceDeltaOutboxMapper.class);
         }
     }
 }

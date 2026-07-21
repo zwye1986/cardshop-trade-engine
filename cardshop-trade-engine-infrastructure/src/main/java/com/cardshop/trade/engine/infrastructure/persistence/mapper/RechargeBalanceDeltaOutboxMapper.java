@@ -1,8 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.persistence.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
-import com.cardshop.trade.engine.domain.order.OutboxEventType;
-import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOutboxDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeBalanceDeltaOutboxDO;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -13,29 +12,35 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 /**
- * 可靠事件表 Mapper。
+ * 余额增量刷账事件表 {@code recharge_balance_delta_outbox} Mapper。
  *
- * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md} 的「6.6 新增表」。
- * 新旧系统共享旧订单表期间，扫描和抢占都必须通过 `recharge_order_ext` 确认订单归属。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.2 余额 Delta 刷账 Outbox」「8.3 异步落库 Consumer」。
+ * 写入使用结构化 {@code delta_type}/{@code delta_amount}，不再写 JSON payload。
+ * 扫描、CAS 抢占后按 {@code org_code} 聚合刷入 {@code mc_ext_depart.balance} 的编排在
+ * {@code MybatisRechargeBalanceDeltaFlushAdapter}；本 Mapper 只提供表级 SQL。
+ *
+ * <p>对账与刷账协议见 {@code docs/交行直充业务系统高可用方案设计.md}
+ * 「14.7 {@code mc_ext_depart.balance} 刷账协议」「17.5 余额对账任务」。
+ * 归属哨兵与派单表一致：必须存在 {@code recharge_order_ext.persist_status = DB_PERSISTED}。
  */
 @Mapper
-public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
+public interface RechargeBalanceDeltaOutboxMapper extends BaseMapper<RechargeBalanceDeltaOutboxDO> {
 
     /**
-     * 幂等写入可靠事件。
+     * 幂等写入余额刷账事件。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。
-     * Persist Consumer 可能因为 RabbitMQ 重投重复处理同一订单，`SUPPLIER_DISPATCH` outbox 必须按
-     * `event_id` 幂等插入，避免唯一键冲突被误判为数据库故障。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」「9.2 余额 Delta 刷账 Outbox」。
+     * 稳定 {@code event_id} 规则：预扣 {@code balance-flush-{orderId}}，释放
+     * {@code balance-flush-release-{orderId}}。重复 MQ/补投不得产生重复刷账行。
      */
     @Insert("""
-            insert into recharge_outbox (
+            insert into recharge_balance_delta_outbox (
               event_id,
-              event_type,
               org_code,
               order_id,
               out_order_sn,
-              payload,
+              delta_type,
+              delta_amount,
               status,
               retry_count,
               max_retry_count,
@@ -44,17 +49,16 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
               locked_until,
               version,
               last_error,
-              shard_key,
               created_at,
               updated_at
             )
             values (
               #{eventId},
-              #{eventType},
               #{orgCode},
               #{orderId},
               #{outOrderSn},
-              #{payload},
+              #{deltaType},
+              #{deltaAmount},
               #{status},
               #{retryCount},
               #{maxRetryCount},
@@ -63,30 +67,30 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
               #{lockedUntil},
               #{version},
               #{lastError},
-              #{shardKey},
               #{createdAt},
               #{updatedAt}
             )
             on duplicate key update
               event_id = event_id
             """)
-    int insertIfAbsent(RechargeOutboxDO outbox);
+    int insertIfAbsent(RechargeBalanceDeltaOutboxDO outbox);
 
     /**
-     * 批量幂等写入可靠事件。
+     * 批量幂等写入余额刷账事件。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。批消费会在同一
-     * 订单事务内生成派单和余额刷账事件，按 event_id 唯一键幂等。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」批写约束：
+     * 必须调用显式 multi-row 方法 {@code insertBalanceDeltaBatchIfAbsent}，并单独上报 phase
+     * {@code recharge_balance_delta_outbox}。写表顺序在派单表之后。
      */
     @Insert("""
             <script>
-            insert into recharge_outbox (
+            insert into recharge_balance_delta_outbox (
               event_id,
-              event_type,
               org_code,
               order_id,
               out_order_sn,
-              payload,
+              delta_type,
+              delta_amount,
               status,
               retry_count,
               max_retry_count,
@@ -95,7 +99,6 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
               locked_until,
               version,
               last_error,
-              shard_key,
               created_at,
               updated_at
             )
@@ -103,11 +106,11 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
             <foreach collection="rows" item="row" separator=",">
             (
               #{row.eventId},
-              #{row.eventType},
               #{row.orgCode},
               #{row.orderId},
               #{row.outOrderSn},
-              #{row.payload},
+              #{row.deltaType},
+              #{row.deltaAmount},
               #{row.status},
               #{row.retryCount},
               #{row.maxRetryCount},
@@ -116,7 +119,6 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
               #{row.lockedUntil},
               #{row.version},
               #{row.lastError},
-              #{row.shardKey},
               #{row.createdAt},
               #{row.updatedAt}
             )
@@ -125,20 +127,19 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
               event_id = event_id
             </script>
             """)
-    int insertOutboxBatchIfAbsent(@Param("rows") List<RechargeOutboxDO> rows);
+    int insertBalanceDeltaBatchIfAbsent(@Param("rows") List<RechargeBalanceDeltaOutboxDO> rows);
 
     /**
-     * 汇总未完成的余额 delta。
+     * 汇总指定商户尚未 SUCCESS 的余额 delta。
      *
-     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.5 余额对账任务」。对账时不能只比较
-     * `mc_ext_depart.balance` 和 Redis available；还必须把尚未刷入旧表的 `BALANCE_DELTA_FLUSH` 事件纳入
-     * 投影，否则正在重试的刷账事件会被误报为资金差异。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.2 余额 Delta 刷账 Outbox」与
+     * {@code docs/交行直充业务系统高可用方案设计.md}「17.5 余额对账任务」。
+     * 对账只汇总本表未终态 delta，不再扫描派单表或旧 {@code recharge_outbox}。
      */
     @Select("""
-            select coalesce(sum(cast(json_unquote(json_extract(o.payload, '$.delta_amount')) as signed)), 0)
-            from recharge_outbox o
+            select coalesce(sum(o.delta_amount), 0)
+            from recharge_balance_delta_outbox o
             where o.org_code = #{orgCode}
-              and o.event_type = 'BALANCE_DELTA_FLUSH'
               and o.status <> 'SUCCESS'
               and exists (
                 select 1
@@ -152,18 +153,17 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
     Long sumUnfinishedBalanceDelta(@Param("orgCode") String orgCode);
 
     /**
-     * 汇总 outbox 未完成事件数量和最大滞留时间。
+     * 汇总余额刷账未完成事件数量和最大滞留时间。
      *
-     * <p>参见 {@code docs/开发进度.md}「5.1 监控告警最小闭环执行边界」。该 SQL 只返回低基数
-     * event_type/status 聚合值，不返回订单号或商户号，避免业务监控制造高基数标签。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.2」可观测性：只按 {@code status} 聚合，
+     * 禁止把 {@code org_code} 做成 Prometheus 高基数标签；按商户排障用 SQL 临时采样。
      */
     @Select("""
             select
-              o.event_type,
               o.status,
               count(*) as count,
               coalesce(timestampdiff(second, min(coalesce(o.created_at, o.updated_at, #{now})), #{now}), 0) as max_age_seconds
-            from recharge_outbox o
+            from recharge_balance_delta_outbox o
             where o.status in ('INIT', 'PROCESSING', 'FAILED', 'MANUAL_REQUIRED')
               and exists (
                 select 1
@@ -173,68 +173,40 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
                   and ext.out_order_sn = o.out_order_sn
                   and ext.persist_status = 'DB_PERSISTED'
               )
-            group by o.event_type, o.status
+            group by o.status
             """)
-    List<Map<String, Object>> selectObservabilityOutboxMetrics(@Param("now") LocalDateTime now);
+    List<Map<String, Object>> selectObservabilityBalanceDeltaMetrics(@Param("now") LocalDateTime now);
 
     /**
-     * 扫描到期事件和租约失效事件。
-     */
-    default List<RechargeOutboxDO> selectDueForShard(int shardTotal, int shardIndex, int limit) {
-        return selectDueForShardByEventTypes(
-                shardTotal,
-                shardIndex,
-                limit,
-                List.of(
-                        OutboxEventType.SUPPLIER_DISPATCH.name(),
-                        OutboxEventType.SUPPLIER_QUERY.name(),
-                        OutboxEventType.INVALID_ORDER.name()));
-    }
-
-    /**
-     * 按事件类型扫描到期事件和租约失效事件。
+     * 扫描当前分片到期/租约失效的余额刷账事件。
      *
-     * <p>D9/D10 的履约 worker 与 D12 的余额刷账 worker 共享 outbox 表，但处理语义不同；扫描时必须
-     * 先按 event_type 隔离，避免通用供应商 worker 把 `BALANCE_DELTA_FLUSH` 误标为不支持事件。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.2 余额 Delta 刷账 Outbox」：
+     * 先按 {@code status + next_retry_time} 找到期事件，并按 {@code status + locked_until}
+     * 恢复租约过期的 {@code PROCESSING}；残余分片谓词使用 {@code crc32(event_id)}。
      */
-    default List<RechargeOutboxDO> selectDueForShardByEventTypes(
-            int shardTotal,
-            int shardIndex,
-            int limit,
-            List<String> eventTypes) {
-        return selectDueForShardByEventTypes(shardTotal, shardIndex, limit, eventTypes, LocalDateTime.now());
-    }
-
-    /**
-     * 使用调用方注入的时钟扫描到期事件，便于固定 Clock 的测试和生产排障统一时间来源。
-     */
-    default List<RechargeOutboxDO> selectDueForShardByEventTypes(
-            int shardTotal,
-            int shardIndex,
-            int limit,
-            List<String> eventTypes,
-            LocalDateTime now) {
+    default List<RechargeBalanceDeltaOutboxDO> selectDueForFlush(
+            int shardTotal, int shardIndex, int limit, LocalDateTime now) {
         int safeLimit = Math.max(1, Math.min(limit, 1000));
-        return selectDueForShardByEventTypesSql(shardTotal, shardIndex, safeLimit, eventTypes, now);
+        return selectDueForFlushSql(shardTotal, shardIndex, safeLimit, now);
     }
 
     /**
-     * 扫描新交易引擎拥有的到期事件和租约失效事件。
+     * 扫描归属本引擎且到期/租约失效的余额刷账事件。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。新旧系统共享
-     * {@code mc_order} 期间，只有能在 {@code recharge_order_ext} 中确认 `DB_PERSISTED` 的订单事件
-     * 才允许进入 outbox 自动任务；可执行集合按 {@code created_at, id} 排序，保证先生成的事件优先处理。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.2 余额 Delta 刷账 Outbox」。
+     * 批大小默认受 {@code trade.engine.outbox.balance-delta-flush-batch-size} 约束
+     *（详细设计「11. 配置中心」outbox 配置族）。
      */
     @Select("""
             <script>
             select
               o.id,
               o.event_id,
-              o.event_type,
               o.org_code,
               o.order_id,
               o.out_order_sn,
-              o.payload,
+              o.delta_type,
+              o.delta_amount,
               o.status,
               o.retry_count,
               o.max_retry_count,
@@ -243,15 +215,10 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
               o.locked_until,
               o.version,
               o.last_error,
-              o.shard_key,
               o.created_at,
               o.updated_at
-            from recharge_outbox o
-            where o.event_type in
-              <foreach collection="eventTypes" item="eventType" open="(" separator="," close=")">
-                #{eventType}
-              </foreach>
-              and (
+            from recharge_balance_delta_outbox o
+            where (
                 (o.status in ('INIT', 'FAILED') and o.next_retry_time &lt;= #{now})
                 or (o.status = 'PROCESSING' and (o.locked_until &lt; #{now} or o.locked_until is null))
               )
@@ -263,20 +230,19 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
                   and ext.out_order_sn = o.out_order_sn
                   and ext.persist_status = 'DB_PERSISTED'
               )
-              and mod(crc32(o.shard_key), #{shardTotal}) = #{shardIndex}
+              and mod(crc32(o.event_id), #{shardTotal}) = #{shardIndex}
             order by o.created_at asc, o.id asc
             limit #{limit}
             </script>
             """)
-    List<RechargeOutboxDO> selectDueForShardByEventTypesSql(
+    List<RechargeBalanceDeltaOutboxDO> selectDueForFlushSql(
             @Param("shardTotal") int shardTotal,
             @Param("shardIndex") int shardIndex,
             @Param("limit") int limit,
-            @Param("eventTypes") List<String> eventTypes,
             @Param("now") LocalDateTime now);
 
     /**
-     * 基于事件 ID 和版本号抢占事件。
+     * 基于事件 ID 和版本号抢占余额刷账事件。
      */
     default int claimProcessing(String eventId, long currentVersion, String workerId, LocalDateTime lockedUntil) {
         return claimProcessing(eventId, currentVersion, workerId, lockedUntil, LocalDateTime.now());
@@ -295,13 +261,14 @@ public interface RechargeOutboxMapper extends BaseMapper<RechargeOutboxDO> {
     }
 
     /**
-     * 基于事件 ID、版本号和订单归属哨兵抢占事件。
+     * 基于事件 ID、版本号和订单归属哨兵抢占余额刷账事件。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。抢占阶段重复校验
-     * {@code recharge_order_ext}，避免扫描后扩展状态变化或绕过扫描的调用方处理旧系统订单。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.2 余额 Delta 刷账 Outbox」。
+     * 租约秒数由 {@code trade.engine.outbox.balance-delta-claim-lease-seconds} 控制，必须覆盖单轮
+     * 刷账事务 P99（高可用方案「14.7」）。
      */
     @Update("""
-            update recharge_outbox o
+            update recharge_balance_delta_outbox o
             set status = 'PROCESSING',
                 locked_by = #{workerId},
                 locked_until = #{lockedUntil},

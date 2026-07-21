@@ -35,15 +35,16 @@ groups:
           runbook: "deploy/monitoring/README.md#redis-pending-告警"
 
       - alert: CardshopTradeOutboxFailedOrManual
+        # 拆表后 trade_engine_outbox_pending 仅派单兼容视图；余额积压见 balance_delta 规则。
         expr: sum by (environment, status, event_type) (trade_engine_outbox_pending{environment!="",status=~"FAILED|MANUAL_REQUIRED"}) > 0
         for: 1m
         labels:
           severity: warning
           service: cardshop-trade-engine
-          scope: outbox
+          scope: outbox-dispatch
         annotations:
-          summary: "Outbox 存在失败或待人工事件（{{ $labels.environment }}）"
-          description: "event_type={{ $labels.event_type }} status={{ $labels.status }} 存在未关闭事件。检查 supplier/notify/balance/cache 对应固定 job，必要时人工确认后重试或关闭。"
+          summary: "派单 Outbox 存在失败或待人工事件（{{ $labels.environment }}）"
+          description: "event_type={{ $labels.event_type }} status={{ $labels.status }} 存在未关闭派单履约事件。检查 supplier/query/invalid 对应固定 job；余额刷账请看 CardshopTradeBalanceDeltaPending。"
           runbook: "deploy/monitoring/README.md#outbox-告警"
 
       - alert: CardshopTradeOutboxTooOld
@@ -52,11 +53,35 @@ groups:
         labels:
           severity: warning
           service: cardshop-trade-engine
-          scope: outbox
+          scope: outbox-dispatch
         annotations:
-          summary: "Outbox 堆积超过 10 分钟（{{ $labels.environment }}）"
-          description: "event_type={{ $labels.event_type }} status={{ $labels.status }} 的最老事件超过 600 秒。核查 worker/XXL-Job 是否运行、共享旧库下是否存在 dev/test worker 抢占样本、下游供应商/回调是否异常。"
+          summary: "派单 Outbox 堆积超过 10 分钟（{{ $labels.environment }}）"
+          description: "event_type={{ $labels.event_type }} status={{ $labels.status }} 的最老派单事件超过 600 秒。核查 worker/XXL-Job、共享旧库抢占与供应商/回调下游。"
           runbook: "deploy/monitoring/README.md#outbox-告警"
+
+      - alert: CardshopTradeBalanceDeltaFailedOrManual
+        expr: sum by (environment, status) (trade_engine_balance_delta_pending_total{environment!="",status=~"FAILED|MANUAL_REQUIRED"}) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: cardshop-trade-engine
+          scope: balance-delta
+        annotations:
+          summary: "余额 Delta 刷账存在失败或待人工事件（{{ $labels.environment }}）"
+          description: "status={{ $labels.status }} 存在未关闭余额刷账事件。核查 rechargeBalanceDeltaFlushJob、mc_ext_depart 行锁与 trade.engine.outbox.* 退避配置。"
+          runbook: "deploy/monitoring/README.md#余额对账告警"
+
+      - alert: CardshopTradeBalanceDeltaTooOld
+        expr: max by (environment, status) (trade_engine_balance_delta_max_age_seconds{environment!="",status!="SUCCESS"}) > 600
+        for: 5m
+        labels:
+          severity: warning
+          service: cardshop-trade-engine
+          scope: balance-delta
+        annotations:
+          summary: "余额 Delta 刷账堆积超过 10 分钟（{{ $labels.environment }}）"
+          description: "status={{ $labels.status }} 的最老余额刷账事件超过 600 秒。核查刷账 job、商户余额行锁与未 SUCCESS 的 recharge_balance_delta_outbox。"
+          runbook: "deploy/monitoring/README.md#余额对账告警"
 
       - alert: CardshopTradeAcceptAnomalyOpen
         expr: sum by (environment, status, anomaly_type) (trade_engine_accept_anomaly_open{environment!="",status=~"INIT|CHECKING|MANUAL_REQUIRED"}) > 0

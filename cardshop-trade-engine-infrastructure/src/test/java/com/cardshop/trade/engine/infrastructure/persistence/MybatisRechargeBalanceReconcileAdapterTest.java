@@ -12,7 +12,7 @@ import org.junit.jupiter.api.Test;
  * 余额对账适配器测试。
  *
  * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.5 余额对账任务」。当前阶段只做
- * dev/test 可观测对账：比较 `mc_ext_depart.balance + 未完成 BALANCE_DELTA_FLUSH` 与 Redis available，
+ * dev/test 可观测对账：比较 `mc_ext_depart.balance + 未 SUCCESS 的余额 delta` 与 Redis available，
  * 发现差异后记录失败计数，不在对账任务内直接改钱。
  */
 class MybatisRechargeBalanceReconcileAdapterTest {

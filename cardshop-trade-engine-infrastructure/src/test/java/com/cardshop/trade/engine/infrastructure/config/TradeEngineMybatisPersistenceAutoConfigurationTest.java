@@ -15,10 +15,10 @@ import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisBatchRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeDispatchOutboxAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
-import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOutboxAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartProductMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
@@ -26,9 +26,10 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McProductMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
@@ -113,7 +114,7 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                 .run(context -> {
                     assertThat(context).hasSingleBean(RechargeOutboxPort.class);
                     assertThat(context.getBean(RechargeOutboxPort.class))
-                            .isInstanceOf(MybatisRechargeOutboxAdapter.class);
+                            .isInstanceOf(MybatisRechargeDispatchOutboxAdapter.class);
                     assertThat(context).hasSingleBean(RechargeFulfillmentOrderPort.class);
                     assertThat(context.getBean(RechargeFulfillmentOrderPort.class))
                             .isInstanceOf(MybatisRechargeFulfillmentOrderAdapter.class);
@@ -212,8 +213,13 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         }
 
         @Bean
-        RechargeOutboxMapper rechargeOutboxMapper() {
-            return mapperProxy(RechargeOutboxMapper.class);
+        RechargeDispatchOutboxMapper rechargeDispatchOutboxMapper() {
+            return mapperProxy(RechargeDispatchOutboxMapper.class);
+        }
+
+        @Bean
+        RechargeBalanceDeltaOutboxMapper rechargeBalanceDeltaOutboxMapper() {
+            return mapperProxy(RechargeBalanceDeltaOutboxMapper.class);
         }
 
         @Bean
@@ -260,7 +266,8 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                 dataSource()));
         configuration.addMapper(McOrderMapper.class);
         configuration.addMapper(RechargeOrderExtMapper.class);
-        configuration.addMapper(RechargeOutboxMapper.class);
+        configuration.addMapper(RechargeDispatchOutboxMapper.class);
+        configuration.addMapper(RechargeBalanceDeltaOutboxMapper.class);
         configuration.addMapper(McDepartRecordMapper.class);
         Object proxy = Proxy.newProxyInstance(
                 SqlSessionFactory.class.getClassLoader(),

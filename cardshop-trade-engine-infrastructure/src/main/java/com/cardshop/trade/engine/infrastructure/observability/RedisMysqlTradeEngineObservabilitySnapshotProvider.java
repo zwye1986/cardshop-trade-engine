@@ -4,7 +4,8 @@ import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McExtDepartDO;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import java.time.Clock;
 import java.time.Duration;
@@ -25,8 +26,14 @@ import org.springframework.util.StringUtils;
 /**
  * 基于 Redis/MySQL 的业务监控快照 Provider。
  *
- * <p>参见 {@code docs/开发进度.md}「5.1 监控告警最小闭环执行边界」。test/dev 共享旧卡管测试库时，
- * Prometheus scrape 不能直接触发高频全表扫描；本类使用 TTL 缓存快照，刷新失败时返回上一次快照。
+ * <p>参见 {@code docs/开发进度.md}「5.1 监控告警最小闭环执行边界」与
+ * {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」「9.2 余额 Delta 刷账 Outbox」。
+ * test/dev 共享旧卡管测试库时，Prometheus scrape 不能直接触发高频全表扫描；本类使用 TTL 缓存快照，
+ * 刷新失败时返回上一次快照。
+ *
+ * <p>拆表后同时注入 {@link RechargeDispatchOutboxMapper} 与 {@link RechargeBalanceDeltaOutboxMapper}：
+ * 派单积压按 event_type+status；余额积压只按 status。对账采样的未完成 delta 只读余额表。
+ * 禁止把 {@code org_code} 做成 Prometheus 标签。
  */
 public class RedisMysqlTradeEngineObservabilitySnapshotProvider implements TradeEngineObservabilitySnapshotProvider {
 
@@ -53,7 +60,8 @@ public class RedisMysqlTradeEngineObservabilitySnapshotProvider implements Trade
             ReactiveStringRedisTemplate redisTemplate,
             RechargeRedisKeyBuilder keyBuilder,
             TradeEngineProperties properties,
-            RechargeOutboxMapper outboxMapper,
+            RechargeDispatchOutboxMapper dispatchOutboxMapper,
+            RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
             RechargeAcceptAnomalyMapper acceptAnomalyMapper,
             McExtDepartMapper extDepartMapper,
             Clock clock) {
@@ -62,7 +70,8 @@ public class RedisMysqlTradeEngineObservabilitySnapshotProvider implements Trade
                         redisTemplate,
                         keyBuilder,
                         properties,
-                        outboxMapper,
+                        dispatchOutboxMapper,
+                        balanceDeltaOutboxMapper,
                         acceptAnomalyMapper,
                         extDepartMapper,
                         clock),
@@ -133,7 +142,8 @@ public class RedisMysqlTradeEngineObservabilitySnapshotProvider implements Trade
         private final ReactiveStringRedisTemplate redisTemplate;
         private final RechargeRedisKeyBuilder keyBuilder;
         private final TradeEngineProperties properties;
-        private final RechargeOutboxMapper outboxMapper;
+        private final RechargeDispatchOutboxMapper dispatchOutboxMapper;
+        private final RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper;
         private final RechargeAcceptAnomalyMapper acceptAnomalyMapper;
         private final McExtDepartMapper extDepartMapper;
         private final Clock clock;
@@ -143,14 +153,18 @@ public class RedisMysqlTradeEngineObservabilitySnapshotProvider implements Trade
                 ReactiveStringRedisTemplate redisTemplate,
                 RechargeRedisKeyBuilder keyBuilder,
                 TradeEngineProperties properties,
-                RechargeOutboxMapper outboxMapper,
+                RechargeDispatchOutboxMapper dispatchOutboxMapper,
+                RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
                 RechargeAcceptAnomalyMapper acceptAnomalyMapper,
                 McExtDepartMapper extDepartMapper,
                 Clock clock) {
             this.redisTemplate = Objects.requireNonNull(redisTemplate, "redisTemplate must not be null");
             this.keyBuilder = Objects.requireNonNull(keyBuilder, "keyBuilder must not be null");
             this.properties = Objects.requireNonNull(properties, "properties must not be null");
-            this.outboxMapper = Objects.requireNonNull(outboxMapper, "outboxMapper must not be null");
+            this.dispatchOutboxMapper =
+                    Objects.requireNonNull(dispatchOutboxMapper, "dispatchOutboxMapper must not be null");
+            this.balanceDeltaOutboxMapper =
+                    Objects.requireNonNull(balanceDeltaOutboxMapper, "balanceDeltaOutboxMapper must not be null");
             this.acceptAnomalyMapper = Objects.requireNonNull(acceptAnomalyMapper, "acceptAnomalyMapper must not be null");
             this.extDepartMapper = Objects.requireNonNull(extDepartMapper, "extDepartMapper must not be null");
             this.clock = Objects.requireNonNull(clock, "clock must not be null");
@@ -163,7 +177,8 @@ public class RedisMysqlTradeEngineObservabilitySnapshotProvider implements Trade
             LocalDateTime now = legacyCardshopDbNow(clock);
             return new TradeEngineObservabilitySnapshot(
                     redisPending(nowMillis),
-                    outboxMetrics(now),
+                    dispatchOutboxMetrics(now),
+                    balanceDeltaMetrics(now),
                     acceptAnomalyMetrics(),
                     balanceDiffOrgCount(),
                     false);
@@ -201,11 +216,14 @@ public class RedisMysqlTradeEngineObservabilitySnapshotProvider implements Trade
             return new TradeEngineObservabilitySnapshot.RedisPending(total, due, maxAgeSeconds);
         }
 
-        private Map<TradeEngineObservabilitySnapshot.OutboxKey, TradeEngineObservabilitySnapshot.CountAge> outboxMetrics(
-                LocalDateTime now) {
+        /**
+         * 派单 outbox 积压：event_type + status，对应详细设计「9.1」。
+         */
+        private Map<TradeEngineObservabilitySnapshot.OutboxKey, TradeEngineObservabilitySnapshot.CountAge>
+                dispatchOutboxMetrics(LocalDateTime now) {
             Map<TradeEngineObservabilitySnapshot.OutboxKey, TradeEngineObservabilitySnapshot.CountAge> result =
                     new LinkedHashMap<>();
-            for (Map<String, Object> row : outboxMapper.selectObservabilityOutboxMetrics(now)) {
+            for (Map<String, Object> row : dispatchOutboxMapper.selectObservabilityDispatchOutboxMetrics(now)) {
                 String eventType = text(row.get("event_type"));
                 String status = text(row.get("status"));
                 if (!StringUtils.hasText(eventType) || !StringUtils.hasText(status)) {
@@ -213,6 +231,25 @@ public class RedisMysqlTradeEngineObservabilitySnapshotProvider implements Trade
                 }
                 result.put(
                         new TradeEngineObservabilitySnapshot.OutboxKey(eventType, status),
+                        new TradeEngineObservabilitySnapshot.CountAge(
+                                longValue(row.get("count")),
+                                longValue(row.get("max_age_seconds"))));
+            }
+            return result;
+        }
+
+        /**
+         * 余额 delta 积压：仅 status，对应详细设计「9.2」；禁止 org_code 标签。
+         */
+        private Map<String, TradeEngineObservabilitySnapshot.CountAge> balanceDeltaMetrics(LocalDateTime now) {
+            Map<String, TradeEngineObservabilitySnapshot.CountAge> result = new LinkedHashMap<>();
+            for (Map<String, Object> row : balanceDeltaOutboxMapper.selectObservabilityBalanceDeltaMetrics(now)) {
+                String status = text(row.get("status"));
+                if (!StringUtils.hasText(status)) {
+                    continue;
+                }
+                result.put(
+                        status,
                         new TradeEngineObservabilitySnapshot.CountAge(
                                 longValue(row.get("count")),
                                 longValue(row.get("max_age_seconds"))));
@@ -250,7 +287,7 @@ public class RedisMysqlTradeEngineObservabilitySnapshotProvider implements Trade
                 }
                 long redisAvailable = parseLong(value);
                 long mysqlBalance = row.getBalance() == null ? 0L : row.getBalance();
-                Long unfinishedDeltaValue = outboxMapper.sumUnfinishedBalanceDelta(row.getOrgCode());
+                Long unfinishedDeltaValue = balanceDeltaOutboxMapper.sumUnfinishedBalanceDelta(row.getOrgCode());
                 long unfinishedDelta = unfinishedDeltaValue == null ? 0L : unfinishedDeltaValue;
                 if (mysqlBalance + unfinishedDelta != redisAvailable) {
                     diffCount++;

@@ -134,12 +134,22 @@ class MapperContractTest {
     }
 
     @Test
-    void outboxMapperScopesDueScanAndClaimToTradeEngineOwnedOrders() throws IOException {
-        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeOutboxMapper.java"));
+    void dispatchOutboxMapperTargetsDispatchTableAndOwnedOrders() throws IOException {
+        String mapper = Files.readString(Path.of(
+                "src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeDispatchOutboxMapper.java"));
+        String entity = Files.readString(Path.of(
+                "src/main/java/com/cardshop/trade/engine/infrastructure/persistence/entity/RechargeDispatchOutboxDO.java"));
 
+        assertThat(entity)
+                .contains("@TableName(\"recharge_dispatch_outbox\")")
+                .contains("「9.1 派单 Outbox」");
         assertThat(mapper)
+                .contains("insert into recharge_dispatch_outbox")
+                .contains("insertDispatchOutboxBatchIfAbsent")
+                .contains("OutboxEventType.SUPPLIER_DISPATCH.name()")
                 .contains("OutboxEventType.SUPPLIER_QUERY.name()")
-                .contains("from recharge_outbox o")
+                .contains("OutboxEventType.INVALID_ORDER.name()")
+                .contains("from recharge_dispatch_outbox o")
                 .contains("from recharge_order_ext ext")
                 .contains("ext.order_id = o.order_id")
                 .contains("ext.org_code = o.org_code")
@@ -151,31 +161,62 @@ class MapperContractTest {
                 .contains("retry_count < max_retry_count")
                 .contains("mod(crc32(o.shard_key), #{shardTotal}) = #{shardIndex}")
                 .contains("version = version + 1")
+                .contains("selectObservabilityDispatchOutboxMetrics")
+                .doesNotContain("sumUnfinishedBalanceDelta")
                 .doesNotContainIgnoringCase(" join ");
     }
 
     @Test
-    void outboxMapperScansEligibleEventsByCreationTime() throws IOException {
-        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeOutboxMapper.java"));
+    void dispatchOutboxMapperScansEligibleEventsByCreationTime() throws IOException {
+        String mapper = Files.readString(Path.of(
+                "src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeDispatchOutboxMapper.java"));
 
         assertThat(mapper)
-                .contains("List<RechargeOutboxDO> selectDueForShardByEventTypesSql")
+                .contains("List<RechargeDispatchOutboxDO> selectDueForShardByEventTypesSql")
                 .contains("o.next_retry_time &lt;= #{now}")
                 .contains("order by o.created_at asc, o.id asc")
-                .doesNotContain("orderByAsc(RechargeOutboxDO::getNextRetryTime)")
+                .doesNotContain("orderByAsc(RechargeDispatchOutboxDO::getNextRetryTime)")
                 .doesNotContain("order by o.next_retry_time asc");
     }
 
     @Test
-    void outboxMapperScopesBalanceAndObservabilityAggregatesToOwnedOrders() throws IOException {
-        String mapper = Files.readString(Path.of("src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeOutboxMapper.java"));
+    void balanceDeltaOutboxMapperUsesStructuredDeltaColumnsWithoutPayload() throws IOException {
+        String mapper = Files.readString(Path.of(
+                "src/main/java/com/cardshop/trade/engine/infrastructure/persistence/mapper/RechargeBalanceDeltaOutboxMapper.java"));
+        String entity = Files.readString(Path.of(
+                "src/main/java/com/cardshop/trade/engine/infrastructure/persistence/entity/RechargeBalanceDeltaOutboxDO.java"));
+
+        assertThat(entity)
+                .contains("@TableName(\"recharge_balance_delta_outbox\")")
+                .contains("「9.2 余额 Delta 刷账 Outbox」")
+                .contains("deltaType")
+                .contains("deltaAmount")
+                .doesNotContain("payload")
+                .doesNotContain("eventType")
+                .doesNotContain("shardKey");
+
+        String insertIfAbsent = mapper.substring(mapper.indexOf("int insertIfAbsent"), mapper.indexOf("int insertBalanceDeltaBatchIfAbsent"));
+        assertThat(insertIfAbsent)
+                .contains("insert into recharge_balance_delta_outbox")
+                .contains("delta_type")
+                .contains("delta_amount")
+                .doesNotContain("payload")
+                .doesNotContain("event_type")
+                .doesNotContain("shard_key");
 
         assertThat(mapper)
+                .contains("insertBalanceDeltaBatchIfAbsent")
+                .contains("selectDueForFlush")
+                .contains("mod(crc32(o.event_id), #{shardTotal}) = #{shardIndex}")
+                .contains("order by o.created_at asc, o.id asc")
                 .contains("Long sumUnfinishedBalanceDelta")
-                .contains("List<Map<String, Object>> selectObservabilityOutboxMetrics")
-                .contains("from recharge_outbox o")
+                .contains("coalesce(sum(o.delta_amount), 0)")
+                .contains("selectObservabilityBalanceDeltaMetrics")
+                .contains("group by o.status")
                 .contains("from recharge_order_ext ext")
-                .contains("ext.persist_status = 'DB_PERSISTED'");
+                .contains("ext.persist_status = 'DB_PERSISTED'")
+                .doesNotContain("group by o.event_type")
+                .doesNotContainIgnoringCase(" join ");
     }
 
     @Test

@@ -48,6 +48,15 @@ LOG_PATTERNS = (
     "MYSQL_PERSIST_FAILED",
     "Lock wait",
 )
+# 详细设计「8.3」phase 白名单：拆表后为 dispatch / balance 两段，旧 recharge_outbox 仅作历史对比。
+MYSQL_PHASES = (
+    "mc_order",
+    "recharge_order_ext",
+    "mc_depart_record",
+    "recharge_dispatch_outbox",
+    "recharge_balance_delta_outbox",
+    "commit",
+)
 
 
 def load_env(path: Path) -> dict[str, str]:
@@ -95,6 +104,9 @@ def percentile(sorted_vals: list[float], p: float) -> float:
 @dataclass
 class PromWindow:
     mysql_means: list[float] = field(default_factory=list)
+    phase_means: dict[str, list[float]] = field(
+        default_factory=lambda: {phase: [] for phase in MYSQL_PHASES}
+    )
     listener_means: list[float] = field(default_factory=list)
     size_means: list[float] = field(default_factory=list)
     prev: dict[str, float] | None = None
@@ -108,6 +120,15 @@ class PromWindow:
                 "trade_engine_persist_batch_mysql_duration_seconds_count",
                 "trade_engine_persist_batch_mysql_duration_seconds_sum",
             )
+            for phase in MYSQL_PHASES:
+                self._add_mean(
+                    self.phase_means[phase],
+                    self.prev,
+                    cur,
+                    "trade_engine_persist_batch_mysql_phase_duration_seconds_count",
+                    "trade_engine_persist_batch_mysql_phase_duration_seconds_sum",
+                    extra_contains=f'phase="{phase}"',
+                )
             self._add_mean(
                 self.listener_means,
                 self.prev,
@@ -307,6 +328,16 @@ def fmt_pct(vals: list[float]) -> str:
     )
 
 
+def fmt_phase_pct(phase_means: dict[str, list[float]]) -> str:
+    parts = []
+    for phase in MYSQL_PHASES:
+        vals = phase_means.get(phase, [])
+        if not vals:
+            continue
+        parts.append(f"{phase}: {fmt_pct(vals[-30:])}")
+    return " | ".join(parts) if parts else "n/a"
+
+
 def render(
     ts: str,
     persisted,
@@ -316,6 +347,7 @@ def render(
     size_avg: float | None,
     size_max: float | None,
     mysql_pct: str,
+    phase_pct: str,
     mysql_max: float | None,
     listener_pct: str,
     listener_max: float | None,
@@ -337,6 +369,7 @@ def render(
         f"persist_batch_size: avg={size_avg if size_avg is not None else 'n/a'} "
         f"max={size_max if size_max is not None else 'n/a'}",
         f"persist_batch_mysql_duration (window估): {mysql_pct}  max_gauge={mysql_max}",
+        f"persist_batch_mysql_phase_duration (window估): {phase_pct}",
         f"spring_rabbitmq_listener (window估): {listener_pct}  max_gauge={listener_max}",
         f"Hikari active/pending: {hikari_active}/{hikari_pending}",
         "日志增量: "
@@ -427,6 +460,7 @@ def main() -> int:
                 round(size_avg, 3) if size_avg is not None else None,
                 size_max,
                 fmt_pct(window.mysql_means[-30:]),  # recent window estimates
+                fmt_phase_pct(window.phase_means),
                 mysql_max,
                 fmt_pct(window.listener_means[-30:]),
                 listener_max,

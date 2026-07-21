@@ -183,12 +183,17 @@
       },
       "targets": [
         {
-          "expr": "sum by (status, event_type) (trade_engine_outbox_pending{environment=~\"$environment\"})",
-          "legendFormat": "{{status}} / {{event_type}}",
+          "expr": "sum by (status, event_type) (trade_engine_dispatch_outbox_pending_total{environment=~\"$environment\"})",
+          "legendFormat": "dispatch {{status}} / {{event_type}}",
           "refId": "A"
+        },
+        {
+          "expr": "sum by (status) (trade_engine_balance_delta_pending_total{environment=~\"$environment\"})",
+          "legendFormat": "balance {{status}}",
+          "refId": "B"
         }
       ],
-      "title": "Outbox pending by status and event type",
+      "title": "Dispatch / balance outbox pending",
       "type": "timeseries"
     },
     {

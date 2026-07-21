@@ -2,6 +2,7 @@ package com.cardshop.trade.engine.infrastructure.config;
 
 import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
+import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
@@ -11,21 +12,23 @@ import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePo
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisBalanceDeltaOutboxWriteAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisBatchRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisPersistedOrderStateAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeDispatchOutboxAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
-import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOutboxAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.time.Duration;
@@ -55,9 +58,10 @@ import org.springframework.transaction.PlatformTransactionManager;
  * 必须同时排在 Spring Boot 事务管理器自动配置之后；否则 test188 dev 会出现应用已有
  * {@link PlatformTransactionManager} 实例、但 {@link RechargeBalanceDeltaFlushPort} 条件判断过早失败，
  * 人工刷账一直 scanned=0。基础设施普通配置类中的同名 Bean 仍保留给 slice test 或显式提供 Mapper 的局部上下文；
- * 本自动配置只要求 {@link SqlSessionFactory} 已经存在，然后把四个必需 Mapper 作为构造参数直接注入。
- * 若 mapper scan 漏掉任一 Mapper，dev/test/prod 应在启动期 fail-fast，不能静默缺失 Consumer 后继续对外显示健康。
- */
+     * 本自动配置只要求 {@link SqlSessionFactory} 已经存在，然后把落库必需 Mapper 作为构造参数直接注入
+     *（含拆表后的 {@link RechargeDispatchOutboxMapper} 与 {@link RechargeBalanceDeltaOutboxMapper}）。
+     * 若 mapper scan 漏掉任一 Mapper，dev/test/prod 应在启动期 fail-fast，不能静默缺失 Consumer 后继续对外显示健康。
+     */
 @AutoConfiguration(after = {
         MybatisPlusAutoConfiguration.class,
         DataSourceTransactionManagerAutoConfiguration.class,
@@ -71,6 +75,10 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
      *
      * <p>只以 {@link SqlSessionFactory} 作为 MyBatis 就绪条件，不再以 Mapper Bean 做条件判断。Mapper 作为方法参数
      * 注入，能够在所有 BeanDefinition 注册完成后的实例化阶段解析；若缺失则启动失败，避免半闭环消费 MQ 消息。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」：落库事务写
+     * {@code recharge_dispatch_outbox}（「9.1 派单 Outbox」）与
+     * {@code recharge_balance_delta_outbox}（「9.2 余额 Delta 刷账 Outbox」），不再写旧混合表。
      */
     @Bean
     @ConditionalOnBean(SqlSessionFactory.class)
@@ -78,13 +86,15 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     public RechargeOrderPersistencePort rechargeOrderPersistencePort(
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
-            RechargeOutboxMapper outboxMapper,
+            RechargeDispatchOutboxMapper dispatchOutboxMapper,
+            RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
             McDepartRecordMapper departRecordMapper,
             ObjectMapper objectMapper) {
         return new MybatisRechargeOrderPersistenceAdapter(
                 orderMapper,
                 extMapper,
-                outboxMapper,
+                dispatchOutboxMapper,
+                balanceDeltaOutboxMapper,
                 departRecordMapper,
                 objectMapper);
     }
@@ -93,8 +103,8 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
      * 创建 Redis/MQ 到 MySQL 异步落库批写端口。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」。批端口独立于单条端口，
-     * 使用 MyBatis {@code ExecutorType.BATCH} 的 {@code SqlSessionTemplate}，避免批执行器的延迟 row count
-     * 影响单条路径中已有的控制流。
+     * 使用 mapper 显式 multi-row SQL 写入拆表后的派单/余额 outbox，并分别上报 phase，避免批执行器的延迟
+     * row count 影响单条路径中已有的控制流。
      */
     @Bean
     @ConditionalOnBean(SqlSessionFactory.class)
@@ -118,27 +128,43 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     }
 
     /**
-     * 创建派单/作废 outbox 端口。
+     * 创建派单履约 outbox 端口。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。真实 dev/test/prod
      * 中 Mapper BeanDefinition 由 MyBatis-Plus 后置注册；这里以 {@link SqlSessionFactory} 作为 MyBatis
      * 就绪条件，并把 Mapper 放到方法参数上解析，避免普通配置类过早按 Mapper 条件判断导致 outbox worker
-     * 缺少 {@link RechargeOutboxPort} 和 {@link com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort}。
+     * 缺少 {@link RechargeOutboxPort}。余额入队见 {@link #balanceDeltaFlushOutboxPort}（「9.2」）。
      */
     @Bean
     @ConditionalOnBean(SqlSessionFactory.class)
     @ConditionalOnMissingBean(RechargeOutboxPort.class)
-    public MybatisRechargeOutboxAdapter rechargeOutboxPort(
-            RechargeOutboxMapper outboxMapper,
+    public MybatisRechargeDispatchOutboxAdapter rechargeOutboxPort(
+            RechargeDispatchOutboxMapper dispatchOutboxMapper,
             ObjectMapper objectMapper,
             Clock clock) {
-        return new MybatisRechargeOutboxAdapter(outboxMapper, objectMapper, clock);
+        return new MybatisRechargeDispatchOutboxAdapter(dispatchOutboxMapper, objectMapper, clock);
+    }
+
+    /**
+     * 创建余额 Delta 刷账 outbox 写入端口。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.2 余额 Delta 刷账 Outbox」。
+     * 履约 Worker 释放预扣后通过本端口写入 {@code recharge_balance_delta_outbox}；与刷账扫描端口分开，
+     * 避免派单适配器再混写余额事件。
+     */
+    @Bean
+    @ConditionalOnBean(SqlSessionFactory.class)
+    @ConditionalOnMissingBean(BalanceDeltaFlushOutboxPort.class)
+    public BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort(
+            RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
+            Clock clock) {
+        return new MybatisBalanceDeltaOutboxWriteAdapter(balanceDeltaOutboxMapper, clock);
     }
 
     /**
      * 创建供应商履约订单读写端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和「9.2 作废设计」。
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」和「9.3 作废设计」。
      * SUP/INV 联调必须能读取旧订单、写供应商流水并推进 `recharge_order_ext.dispatch_status`；若任一 Mapper
      * 缺失，应在启动期暴露依赖错误，而不是静默跳过 worker。
      */
@@ -204,19 +230,20 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     @ConditionalOnBean({SqlSessionFactory.class, PlatformTransactionManager.class})
     @ConditionalOnMissingBean(RechargeBalanceDeltaFlushPort.class)
     public RechargeBalanceDeltaFlushPort rechargeBalanceDeltaFlushPort(
-            RechargeOutboxMapper outboxMapper,
+            RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
             McExtDepartMapper extDepartMapper,
-            ObjectMapper objectMapper,
             Clock clock,
             TradeEngineProperties properties,
             PlatformTransactionManager transactionManager) {
+        // 余额刷账租约/退避/批大小读 trade.engine.outbox.*；参见详细设计「9.2 余额 Delta 刷账 Outbox」。
+        var outbox = properties.getOutbox();
         return new MybatisRechargeBalanceDeltaFlushAdapter(
-                outboxMapper,
+                balanceDeltaOutboxMapper,
                 extDepartMapper,
-                objectMapper,
                 clock,
-                Duration.ofSeconds(properties.getFulfillment().getOutboxClaimLeaseSeconds()),
-                Duration.ofSeconds(properties.getFulfillment().getOutboxRetryBackoffSeconds()),
+                Duration.ofSeconds(outbox.getBalanceDeltaClaimLeaseSeconds()),
+                outbox.balanceDeltaRetryBackoffDurations(),
+                outbox.getBalanceDeltaFlushBatchSize(),
                 transactionManager);
     }
 }

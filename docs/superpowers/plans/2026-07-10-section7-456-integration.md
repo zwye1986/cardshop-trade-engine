@@ -24,7 +24,6 @@
 - Modify `docs/集成测试方案.md`: define SUP/INV/CB/BAL dev/test cases and evidence fields.
 - Modify `docs/集成测试.md`: add execution-record templates for section 7 items 4, 5, and 6.
 - Modify `docs/开发进度.md`: keep items open until dev/test evidence exists; update statuses to show code readiness and exact next commands.
-- Modify `docs/跨项目联调记忆.md`: record backend endpoints and test-console follow-up needs.
 
 ## Task 1: Manual Dev/Test Job Endpoints
 
@@ -144,7 +143,6 @@ Run the same Maven command. Expected: Redis adapter tests pass.
 - Modify: `docs/集成测试方案.md`
 - Modify: `docs/集成测试.md`
 - Modify: `docs/开发进度.md`
-- Modify: `docs/跨项目联调记忆.md`
 
 - [ ] **Step 1: Update test plan**
 

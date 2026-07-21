@@ -15,7 +15,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrder
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RedisDirectRechargeFrequencyAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeCacheRepairAdapter;
@@ -169,37 +169,41 @@ public class TradeEngineRedisPendingAutoConfiguration {
     /**
      * 创建余额对账端口。
      *
-     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.5 余额对账任务」。该端口同时依赖
-     * MySQL 旧余额、未完成余额刷账 outbox 和 Redis 实时余额。test188 dev 曾出现 Redis 后置配置早于
-     * Mapper 条件判断执行，导致真实 RedisTemplate 存在但对账端口缺失。这里不再用 Mapper 做 Bean 条件：
-     * 如果 Bean 创建时 Mapper 已就绪，直接返回真实 adapter；否则返回执行期晚解析端口，真正执行时仍缺 Mapper
-     * 就 fail-fast，让人工入口返回 FAILED，而不是静默 scanned=0。
+     * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.5 余额对账任务」与
+     * {@code docs/交行直充业务系统详细设计.md}「9.2 余额 Delta 刷账 Outbox」。
+     * 该端口同时依赖 MySQL 旧余额、未完成 {@code recharge_balance_delta_outbox} delta 和 Redis 实时余额。
+     * test188 dev 曾出现 Redis 后置配置早于 Mapper 条件判断执行，导致真实 RedisTemplate 存在但对账端口缺失。
+     * 这里不再用 Mapper 做 Bean 条件：如果 Bean 创建时 Mapper 已就绪，直接返回真实 adapter；否则返回执行期晚解析端口，
+     * 真正执行时仍缺 Mapper 就 fail-fast，让人工入口返回 FAILED，而不是静默 scanned=0。
      */
     @Bean
     @ConditionalOnBean(ReactiveStringRedisTemplate.class)
     @ConditionalOnMissingBean(RechargeBalanceReconcilePort.class)
     public RechargeBalanceReconcilePort rechargeBalanceReconcilePort(
             ObjectProvider<McExtDepartMapper> extDepartMapperProvider,
-            ObjectProvider<RechargeOutboxMapper> outboxMapperProvider,
+            ObjectProvider<RechargeBalanceDeltaOutboxMapper> balanceDeltaOutboxMapperProvider,
             ReactiveStringRedisTemplate redisTemplate,
             RechargeRedisKeyBuilder keyBuilder,
             TradeEngineProperties properties) {
         int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
         McExtDepartMapper extDepartMapper = extDepartMapperProvider.getIfAvailable();
-        RechargeOutboxMapper outboxMapper = outboxMapperProvider.getIfAvailable();
-        if (extDepartMapper != null && outboxMapper != null) {
-            return balanceReconcilePort(extDepartMapper, outboxMapper, redisTemplate, keyBuilder, timeoutMs);
+        RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper =
+                balanceDeltaOutboxMapperProvider.getIfAvailable();
+        if (extDepartMapper != null && balanceDeltaOutboxMapper != null) {
+            return balanceReconcilePort(
+                    extDepartMapper, balanceDeltaOutboxMapper, redisTemplate, keyBuilder, timeoutMs);
         }
         return (shardTotal, shardIndex, limit, workerId) -> {
             McExtDepartMapper lateExtDepartMapper = extDepartMapperProvider.getIfAvailable();
-            RechargeOutboxMapper lateOutboxMapper = outboxMapperProvider.getIfAvailable();
-            if (lateExtDepartMapper == null || lateOutboxMapper == null) {
+            RechargeBalanceDeltaOutboxMapper lateBalanceDeltaOutboxMapper =
+                    balanceDeltaOutboxMapperProvider.getIfAvailable();
+            if (lateExtDepartMapper == null || lateBalanceDeltaOutboxMapper == null) {
                 throw new IllegalStateException(
-                        "RechargeBalanceReconcilePort requires McExtDepartMapper and RechargeOutboxMapper");
+                        "RechargeBalanceReconcilePort requires McExtDepartMapper and RechargeBalanceDeltaOutboxMapper");
             }
             return balanceReconcilePort(
                     lateExtDepartMapper,
-                    lateOutboxMapper,
+                    lateBalanceDeltaOutboxMapper,
                     redisTemplate,
                     keyBuilder,
                     timeoutMs)
@@ -238,13 +242,13 @@ public class TradeEngineRedisPendingAutoConfiguration {
 
     private static RechargeBalanceReconcilePort balanceReconcilePort(
             McExtDepartMapper extDepartMapper,
-            RechargeOutboxMapper outboxMapper,
+            RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
             ReactiveStringRedisTemplate redisTemplate,
             RechargeRedisKeyBuilder keyBuilder,
             int timeoutMs) {
         return new MybatisRechargeBalanceReconcileAdapter(
                 extDepartMapper,
-                outboxMapper,
+                balanceDeltaOutboxMapper,
                 redisTemplate,
                 keyBuilder,
                 Duration.ofMillis(timeoutMs));
