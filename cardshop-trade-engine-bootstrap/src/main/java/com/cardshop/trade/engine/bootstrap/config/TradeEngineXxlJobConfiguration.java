@@ -8,6 +8,8 @@ import com.cardshop.trade.engine.job.recharge.RechargeBalanceReconcileJob;
 import com.cardshop.trade.engine.job.recharge.RechargeCacheRepairJob;
 import com.cardshop.trade.engine.job.recharge.RechargeOutboxPublishJob;
 import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
+import com.cardshop.trade.engine.job.recharge.RechargeSupplierDispatchJob;
+import com.cardshop.trade.engine.job.recharge.RechargeSupplierQueryJob;
 import com.xxl.job.core.executor.impl.XxlJobSpringExecutor;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -38,6 +40,8 @@ public class TradeEngineXxlJobConfiguration {
     public TradeEngineXxlJobHandlers tradeEngineXxlJobHandlers(
             ObjectProvider<RechargePersistMqRepublishJob> persistMqRepublishJobProvider,
             ObjectProvider<RechargeOutboxPublishJob> outboxPublishJobProvider,
+            ObjectProvider<RechargeSupplierDispatchJob> supplierDispatchJobProvider,
+            ObjectProvider<RechargeSupplierQueryJob> supplierQueryJobProvider,
             ObjectProvider<RechargeNotifyWorkerService> notifyWorkerServiceProvider,
             ObjectProvider<RechargeBalanceDeltaFlushJob> balanceDeltaFlushJobProvider,
             ObjectProvider<RechargeBalanceReconcileJob> balanceReconcileJobProvider,
@@ -46,6 +50,8 @@ public class TradeEngineXxlJobConfiguration {
         return new TradeEngineXxlJobHandlers(
                 persistMqRepublishJobProvider,
                 outboxPublishJobProvider,
+                supplierDispatchJobProvider,
+                supplierQueryJobProvider,
                 notifyWorkerServiceProvider,
                 balanceDeltaFlushJobProvider,
                 balanceReconcileJobProvider,

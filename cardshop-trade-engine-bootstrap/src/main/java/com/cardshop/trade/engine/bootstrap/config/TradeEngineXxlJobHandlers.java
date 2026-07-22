@@ -11,12 +11,17 @@ import com.cardshop.trade.engine.job.recharge.RechargeBalanceReconcileJob;
 import com.cardshop.trade.engine.job.recharge.RechargeCacheRepairJob;
 import com.cardshop.trade.engine.job.recharge.RechargeOutboxPublishJob;
 import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
+import com.cardshop.trade.engine.job.recharge.RechargeSupplierDispatchJob;
+import com.cardshop.trade.engine.job.recharge.RechargeSupplierQueryJob;
 import com.xxl.job.core.context.XxlJobHelper;
 import com.xxl.job.core.handler.annotation.XxlJob;
+import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import java.lang.management.ManagementFactory;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
@@ -44,6 +49,8 @@ public class TradeEngineXxlJobHandlers {
 
     static final String PERSIST_MQ_REPUBLISH_HANDLER = "rechargePersistMqRepublishJob";
     static final String OUTBOX_PUBLISH_HANDLER = "rechargeOutboxPublishJob";
+    static final String SUPPLIER_DISPATCH_HANDLER = "rechargeSupplierDispatchJob";
+    static final String SUPPLIER_QUERY_HANDLER = "rechargeSupplierQueryJob";
     static final String NOTIFY_RETRY_HANDLER = "rechargeNotifyRetryJob";
     static final String BALANCE_DELTA_FLUSH_HANDLER = "rechargeBalanceDeltaFlushJob";
     static final String BALANCE_RECONCILE_HANDLER = "rechargeBalanceReconcileJob";
@@ -57,8 +64,20 @@ public class TradeEngineXxlJobHandlers {
     private static final int DEFAULT_HANDLER_LIMIT = 0;
     private static final int MAX_WORKER_ID_LENGTH = 120;
 
+    private static final List<OutboxEventType> ALL_FULFILLMENT_EVENT_TYPES = List.of(
+            OutboxEventType.SUPPLIER_DISPATCH,
+            OutboxEventType.SUPPLIER_QUERY,
+            OutboxEventType.INVALID_ORDER);
+    private static final List<OutboxEventType> DEFAULT_PUBLISH_EVENT_TYPES =
+            List.of(OutboxEventType.SUPPLIER_DISPATCH);
+    private static final List<OutboxEventType> QUERY_JOB_EVENT_TYPES = List.of(
+            OutboxEventType.SUPPLIER_QUERY,
+            OutboxEventType.INVALID_ORDER);
+
     private final Supplier<RechargePersistMqRepublishJob> persistMqRepublishJob;
     private final Supplier<RechargeOutboxPublishJob> outboxPublishJob;
+    private final Supplier<RechargeSupplierDispatchJob> supplierDispatchJob;
+    private final Supplier<RechargeSupplierQueryJob> supplierQueryJob;
     private final Supplier<RechargeNotifyWorkerService> notifyWorkerService;
     private final Supplier<RechargeBalanceDeltaFlushJob> balanceDeltaFlushJob;
     private final Supplier<RechargeBalanceReconcileJob> balanceReconcileJob;
@@ -68,6 +87,8 @@ public class TradeEngineXxlJobHandlers {
     public TradeEngineXxlJobHandlers(
             ObjectProvider<RechargePersistMqRepublishJob> persistMqRepublishJobProvider,
             ObjectProvider<RechargeOutboxPublishJob> outboxPublishJobProvider,
+            ObjectProvider<RechargeSupplierDispatchJob> supplierDispatchJobProvider,
+            ObjectProvider<RechargeSupplierQueryJob> supplierQueryJobProvider,
             ObjectProvider<RechargeNotifyWorkerService> notifyWorkerServiceProvider,
             ObjectProvider<RechargeBalanceDeltaFlushJob> balanceDeltaFlushJobProvider,
             ObjectProvider<RechargeBalanceReconcileJob> balanceReconcileJobProvider,
@@ -76,6 +97,8 @@ public class TradeEngineXxlJobHandlers {
         this(
                 persistMqRepublishJobProvider::getIfAvailable,
                 outboxPublishJobProvider::getIfAvailable,
+                supplierDispatchJobProvider::getIfAvailable,
+                supplierQueryJobProvider::getIfAvailable,
                 notifyWorkerServiceProvider::getIfAvailable,
                 balanceDeltaFlushJobProvider::getIfAvailable,
                 balanceReconcileJobProvider::getIfAvailable,
@@ -86,6 +109,8 @@ public class TradeEngineXxlJobHandlers {
     TradeEngineXxlJobHandlers(
             Supplier<RechargePersistMqRepublishJob> persistMqRepublishJob,
             Supplier<RechargeOutboxPublishJob> outboxPublishJob,
+            Supplier<RechargeSupplierDispatchJob> supplierDispatchJob,
+            Supplier<RechargeSupplierQueryJob> supplierQueryJob,
             Supplier<RechargeNotifyWorkerService> notifyWorkerService,
             Supplier<RechargeBalanceDeltaFlushJob> balanceDeltaFlushJob,
             Supplier<RechargeBalanceReconcileJob> balanceReconcileJob,
@@ -95,6 +120,8 @@ public class TradeEngineXxlJobHandlers {
                 persistMqRepublishJob,
                 "persistMqRepublishJob must not be null");
         this.outboxPublishJob = Objects.requireNonNull(outboxPublishJob, "outboxPublishJob must not be null");
+        this.supplierDispatchJob = Objects.requireNonNull(supplierDispatchJob, "supplierDispatchJob must not be null");
+        this.supplierQueryJob = Objects.requireNonNull(supplierQueryJob, "supplierQueryJob must not be null");
         this.notifyWorkerService = Objects.requireNonNull(
                 notifyWorkerService,
                 "notifyWorkerService must not be null");
@@ -131,6 +158,7 @@ public class TradeEngineXxlJobHandlers {
      * 通用 outbox 推进调度入口。
      *
      * <p>参见详细设计「10.1 XXL-Job Handler 契约」的 {@code rechargeOutboxPublishJob}。
+     * 默认仅 {@link OutboxEventType#SUPPLIER_DISPATCH}；参数 {@code eventTypes=ALL} 可恢复旧混扫。
      */
     @XxlJob(OUTBOX_PUBLISH_HANDLER)
     public void executeOutboxPublish() {
@@ -138,6 +166,40 @@ public class TradeEngineXxlJobHandlers {
                 OUTBOX_PUBLISH_HANDLER,
                 context,
                 runOutboxPublishFromXxlContext(
+                        context.shardTotal(),
+                        context.shardIndex(),
+                        context.jobId(),
+                        context.jobParam())));
+    }
+
+    /**
+     * 供应商派单 outbox 调度入口。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}。
+     */
+    @XxlJob(SUPPLIER_DISPATCH_HANDLER)
+    public void executeSupplierDispatch() {
+        execute(SUPPLIER_DISPATCH_HANDLER, context -> outboxMessage(
+                SUPPLIER_DISPATCH_HANDLER,
+                context,
+                runSupplierDispatchFromXxlContext(
+                        context.shardTotal(),
+                        context.shardIndex(),
+                        context.jobId(),
+                        context.jobParam())));
+    }
+
+    /**
+     * 供应商查单与作废 outbox 调度入口。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}。
+     */
+    @XxlJob(SUPPLIER_QUERY_HANDLER)
+    public void executeSupplierQuery() {
+        execute(SUPPLIER_QUERY_HANDLER, context -> outboxMessage(
+                SUPPLIER_QUERY_HANDLER,
+                context,
+                runSupplierQueryFromXxlContext(
                         context.shardTotal(),
                         context.shardIndex(),
                         context.jobId(),
@@ -254,26 +316,60 @@ public class TradeEngineXxlJobHandlers {
             int shardIndex,
             long jobId,
             String jobParam) {
-        XxlRunOptions options = XxlRunOptions.parse(jobId, jobParam);
-        logStart(OUTBOX_PUBLISH_HANDLER, shardTotal, shardIndex, options);
-        RechargeOutboxBatchResult result = requireJob(outboxPublishJob, "RechargeOutboxPublishJob").runOnce(
+        OutboxXxlRunOptions options = OutboxXxlRunOptions.parse(jobId, jobParam, DEFAULT_PUBLISH_EVENT_TYPES);
+        return runOutboxJob(
+                OUTBOX_PUBLISH_HANDLER,
+                outboxPublishJob,
+                "RechargeOutboxPublishJob",
                 shardTotal,
                 shardIndex,
-                options.limit(),
-                options.workerId());
-        log.info("XXL-Job触发完成 handler={}, shardTotal={}, shardIndex={}, limit={}, workerId={}, batchId={}, "
-                        + "scanned={}, claimed={}, succeeded={}, failed={}, skipped={}",
-                OUTBOX_PUBLISH_HANDLER,
+                options);
+    }
+
+    RechargeOutboxBatchResult runSupplierDispatchFromXxlContext(
+            int shardTotal,
+            int shardIndex,
+            long jobId,
+            String jobParam) {
+        OutboxXxlRunOptions options = OutboxXxlRunOptions.parse(jobId, jobParam, DEFAULT_PUBLISH_EVENT_TYPES)
+                .withEventTypes(DEFAULT_PUBLISH_EVENT_TYPES);
+        logOutboxStart(SUPPLIER_DISPATCH_HANDLER, shardTotal, shardIndex, options);
+        RechargeOutboxBatchResult result = requireJob(supplierDispatchJob, "RechargeSupplierDispatchJob")
+                .runOnce(shardTotal, shardIndex, options.limit(), options.workerId(), options.parallelism());
+        logOutboxComplete(SUPPLIER_DISPATCH_HANDLER, shardTotal, shardIndex, options, result);
+        return result;
+    }
+
+    RechargeOutboxBatchResult runSupplierQueryFromXxlContext(
+            int shardTotal,
+            int shardIndex,
+            long jobId,
+            String jobParam) {
+        OutboxXxlRunOptions options = OutboxXxlRunOptions.parse(jobId, jobParam, QUERY_JOB_EVENT_TYPES)
+                .withEventTypes(QUERY_JOB_EVENT_TYPES);
+        logOutboxStart(SUPPLIER_QUERY_HANDLER, shardTotal, shardIndex, options);
+        RechargeOutboxBatchResult result = requireJob(supplierQueryJob, "RechargeSupplierQueryJob")
+                .runOnce(shardTotal, shardIndex, options.limit(), options.workerId(), options.parallelism());
+        logOutboxComplete(SUPPLIER_QUERY_HANDLER, shardTotal, shardIndex, options, result);
+        return result;
+    }
+
+    private RechargeOutboxBatchResult runOutboxJob(
+            String handlerName,
+            Supplier<RechargeOutboxPublishJob> jobSupplier,
+            String jobName,
+            int shardTotal,
+            int shardIndex,
+            OutboxXxlRunOptions options) {
+        logOutboxStart(handlerName, shardTotal, shardIndex, options);
+        RechargeOutboxBatchResult result = requireJob(jobSupplier, jobName).runOnce(
                 shardTotal,
                 shardIndex,
                 options.limit(),
                 options.workerId(),
-                options.batchId(),
-                result.scanned(),
-                result.claimed(),
-                result.succeeded(),
-                result.failed(),
-                result.skipped());
+                options.eventTypes(),
+                options.parallelism());
+        logOutboxComplete(handlerName, shardTotal, shardIndex, options, result);
         return result;
     }
 
@@ -411,6 +507,49 @@ public class TradeEngineXxlJobHandlers {
                 options.batchId());
     }
 
+    private static void logOutboxStart(String handlerName, int shardTotal, int shardIndex, OutboxXxlRunOptions options) {
+        log.info(
+                "XXL-Job触发 handler={}, shardTotal={}, shardIndex={}, limit={}, workerId={}, batchId={}, "
+                        + "parallelism={}, eventTypes={}",
+                handlerName,
+                shardTotal,
+                shardIndex,
+                options.limit(),
+                options.workerId(),
+                options.batchId(),
+                options.parallelism(),
+                formatEventTypes(options.eventTypes()));
+    }
+
+    private static void logOutboxComplete(
+            String handlerName,
+            int shardTotal,
+            int shardIndex,
+            OutboxXxlRunOptions options,
+            RechargeOutboxBatchResult result) {
+        log.info("XXL-Job触发完成 handler={}, shardTotal={}, shardIndex={}, limit={}, workerId={}, batchId={}, "
+                        + "parallelism={}, eventTypes={}, scanned={}, claimed={}, succeeded={}, failed={}, skipped={}, "
+                        + "deferred={}",
+                handlerName,
+                shardTotal,
+                shardIndex,
+                options.limit(),
+                options.workerId(),
+                options.batchId(),
+                options.parallelism(),
+                formatEventTypes(options.eventTypes()),
+                result.scanned(),
+                result.claimed(),
+                result.succeeded(),
+                result.failed(),
+                result.skipped(),
+                result.deferred());
+    }
+
+    private static String formatEventTypes(List<OutboxEventType> eventTypes) {
+        return eventTypes.stream().map(OutboxEventType::name).reduce((left, right) -> left + "," + right).orElse("");
+    }
+
     private static void logCompensationComplete(
             String handlerName,
             int shardTotal,
@@ -451,8 +590,11 @@ public class TradeEngineXxlJobHandlers {
     }
 
     private static String outboxMessage(String handlerName, XxlInvocationContext context, RechargeOutboxBatchResult result) {
-        XxlRunOptions options = XxlRunOptions.parse(context.jobId(), context.jobParam());
-        return "%s finished shardTotal=%d, shardIndex=%d, limit=%d, workerId=%s, batchId=%s, scanned=%d, claimed=%d, succeeded=%d, failed=%d, skipped=%d"
+        List<OutboxEventType> defaultEventTypes = defaultEventTypesForHandler(handlerName);
+        OutboxXxlRunOptions options = OutboxXxlRunOptions.parse(
+                context.jobId(), context.jobParam(), defaultEventTypes);
+        return "%s finished shardTotal=%d, shardIndex=%d, limit=%d, workerId=%s, batchId=%s, parallelism=%d, "
+                        + "eventTypes=%s, scanned=%d, claimed=%d, succeeded=%d, failed=%d, skipped=%d, deferred=%d"
                 .formatted(
                         handlerName,
                         context.shardTotal(),
@@ -460,11 +602,21 @@ public class TradeEngineXxlJobHandlers {
                         options.limit(),
                         options.workerId(),
                         options.batchId(),
+                        options.parallelism(),
+                        formatEventTypes(options.eventTypes()),
                         result.scanned(),
                         result.claimed(),
                         result.succeeded(),
                         result.failed(),
-                        result.skipped());
+                        result.skipped(),
+                        result.deferred());
+    }
+
+    private static List<OutboxEventType> defaultEventTypesForHandler(String handlerName) {
+        if (SUPPLIER_QUERY_HANDLER.equals(handlerName)) {
+            return QUERY_JOB_EVENT_TYPES;
+        }
+        return DEFAULT_PUBLISH_EVENT_TYPES;
     }
 
     private static String notifyMessage(String handlerName, XxlInvocationContext context, RechargeNotifyBatchResult result) {
@@ -536,7 +688,11 @@ public class TradeEngineXxlJobHandlers {
     record XxlRunOptions(int limit, String workerId, String batchId) {
 
         static XxlRunOptions parse(long jobId, String jobParam) {
-            Map<String, String> params = parseParams(jobParam);
+            return parseParams(jobId, jobParam);
+        }
+
+        private static XxlRunOptions parseParams(long jobId, String jobParam) {
+            Map<String, String> params = parseParamMap(jobParam);
             String batchId = valueOrDefault(params.get("batchid"), "job-" + jobId);
             int limit = parseLimit(params.get("limit"));
             String workerId = params.get("workerid");
@@ -547,7 +703,7 @@ public class TradeEngineXxlJobHandlers {
             return new XxlRunOptions(limit, workerId, batchId);
         }
 
-        private static Map<String, String> parseParams(String jobParam) {
+        private static Map<String, String> parseParamMap(String jobParam) {
             Map<String, String> params = new LinkedHashMap<>();
             if (!StringUtils.hasText(jobParam)) {
                 return params;
@@ -610,6 +766,66 @@ public class TradeEngineXxlJobHandlers {
             } catch (UnknownHostException ex) {
                 return "unknown-host:" + runtimeName;
             }
+        }
+    }
+
+    record OutboxXxlRunOptions(
+            int limit, String workerId, String batchId, int parallelism, List<OutboxEventType> eventTypes) {
+
+        OutboxXxlRunOptions withEventTypes(List<OutboxEventType> fixedEventTypes) {
+            return new OutboxXxlRunOptions(limit, workerId, batchId, parallelism, List.copyOf(fixedEventTypes));
+        }
+
+        static OutboxXxlRunOptions parse(long jobId, String jobParam, List<OutboxEventType> defaultEventTypes) {
+            Map<String, String> params = XxlRunOptions.parseParamMap(jobParam);
+            XxlRunOptions base = XxlRunOptions.parseParams(jobId, jobParam);
+            return new OutboxXxlRunOptions(
+                    base.limit(),
+                    base.workerId(),
+                    base.batchId(),
+                    parseParallelism(params.get("parallelism")),
+                    parseEventTypes(params.get("eventtypes"), defaultEventTypes));
+        }
+
+        private static int parseParallelism(String value) {
+            if (!StringUtils.hasText(value)) {
+                return -1;
+            }
+            try {
+                return Integer.parseInt(value.trim());
+            } catch (NumberFormatException ex) {
+                throw new IllegalArgumentException("parallelism must be an integer", ex);
+            }
+        }
+
+        private static List<OutboxEventType> parseEventTypes(String value, List<OutboxEventType> defaultEventTypes) {
+            if (!StringUtils.hasText(value)) {
+                return List.copyOf(defaultEventTypes);
+            }
+            List<OutboxEventType> parsed = new ArrayList<>();
+            for (String token : value.split(",")) {
+                if (!StringUtils.hasText(token)) {
+                    continue;
+                }
+                String normalized = token.trim().toUpperCase(Locale.ROOT);
+                if ("ALL".equals(normalized)) {
+                    return ALL_FULFILLMENT_EVENT_TYPES;
+                }
+                parsed.add(parseEventTypeToken(normalized));
+            }
+            if (parsed.isEmpty()) {
+                return List.copyOf(defaultEventTypes);
+            }
+            return List.copyOf(parsed);
+        }
+
+        private static OutboxEventType parseEventTypeToken(String token) {
+            return switch (token) {
+                case "DISPATCH" -> OutboxEventType.SUPPLIER_DISPATCH;
+                case "QUERY" -> OutboxEventType.SUPPLIER_QUERY;
+                case "INVALID", "INVALID_ORDER" -> OutboxEventType.INVALID_ORDER;
+                default -> OutboxEventType.valueOf(token);
+            };
         }
     }
 }

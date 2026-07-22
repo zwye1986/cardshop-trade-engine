@@ -254,6 +254,15 @@ class TradeEngineReliabilityConfigurationTest {
                     }
 
                     @Override
+                    public List<com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent> selectDueForShard(
+                            int shardTotal,
+                            int shardIndex,
+                            int limit,
+                            List<com.cardshop.trade.engine.domain.order.OutboxEventType> eventTypes) {
+                        return List.of();
+                    }
+
+                    @Override
                     public Optional<com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent> claim(
                             com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent event,
                             String workerId,
@@ -332,6 +341,11 @@ class TradeEngineReliabilityConfigurationTest {
 
                     @Override
                     public void releaseIfOwned(String orgCode, String account, String orderId, Duration minimumHold) {
+                    }
+
+                    @Override
+                    public Optional<String> currentOwner(String orgCode, String account) {
+                        return Optional.empty();
                     }
                 },
                 com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort.noop(),

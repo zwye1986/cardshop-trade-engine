@@ -71,10 +71,10 @@ class RedisMysqlTradeEngineObservabilitySnapshotProviderTest {
                 Map.of(
                         new TradeEngineObservabilitySnapshot.OutboxKey(
                                 OutboxEventType.SUPPLIER_QUERY.name(), TaskStatus.FAILED.name()),
-                        new TradeEngineObservabilitySnapshot.CountAge(6, 300)),
+                        new TradeEngineObservabilitySnapshot.CountAge(6, 300, 90)),
                 Map.of(
                         TaskStatus.INIT.name(),
-                        new TradeEngineObservabilitySnapshot.CountAge(2, 90)),
+                        new TradeEngineObservabilitySnapshot.CountAge(2, 90, 30)),
                 Map.of(
                         new TradeEngineObservabilitySnapshot.AcceptAnomalyKey(
                                 AcceptAnomalyType.REDIS_BUSY.name(), AcceptAnomalyStatus.INIT.name()),

@@ -18,11 +18,14 @@ import com.cardshop.trade.engine.application.recharge.RechargeCompensationBatchR
 import com.cardshop.trade.engine.application.recharge.RechargePersistMqRepublishService;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
+import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.job.recharge.AcceptAnomalyAutoCheckJob;
 import com.cardshop.trade.engine.job.recharge.RechargeBalanceDeltaFlushJob;
 import com.cardshop.trade.engine.job.recharge.RechargeBalanceReconcileJob;
 import com.cardshop.trade.engine.job.recharge.RechargeCacheRepairJob;
 import com.cardshop.trade.engine.job.recharge.RechargeOutboxPublishJob;
+import com.cardshop.trade.engine.job.recharge.RechargeSupplierDispatchJob;
+import com.cardshop.trade.engine.job.recharge.RechargeSupplierQueryJob;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
 import com.xxl.job.core.handler.annotation.XxlJob;
@@ -108,6 +111,8 @@ class TradeEngineXxlJobConfigurationTest {
         assertThat(handlerNames).containsExactlyInAnyOrder(
                 "rechargePersistMqRepublishJob",
                 "rechargeOutboxPublishJob",
+                "rechargeSupplierDispatchJob",
+                "rechargeSupplierQueryJob",
                 "rechargeNotifyRetryJob",
                 "rechargeBalanceDeltaFlushJob",
                 "rechargeBalanceReconcileJob",
@@ -137,6 +142,8 @@ class TradeEngineXxlJobConfigurationTest {
         TradeEngineXxlJobHandlers handler = new TradeEngineXxlJobHandlers(
                 () -> new RechargePersistMqRepublishJob(service),
                 () -> { throw new AssertionError("outbox job is not used by this test"); },
+                () -> { throw new AssertionError("dispatch job is not used by this test"); },
+                () -> { throw new AssertionError("query job is not used by this test"); },
                 () -> { throw new AssertionError("notify worker is not used by this test"); },
                 () -> { throw new AssertionError("delta flush job is not used by this test"); },
                 () -> { throw new AssertionError("reconcile job is not used by this test"); },
@@ -157,6 +164,8 @@ class TradeEngineXxlJobConfigurationTest {
     void everyImplementedHandlerDelegatesToItsJobFacade() {
         RechargePersistMqRepublishJob persistJob = mock(RechargePersistMqRepublishJob.class);
         RechargeOutboxPublishJob outboxJob = mock(RechargeOutboxPublishJob.class);
+        RechargeSupplierDispatchJob dispatchJob = mock(RechargeSupplierDispatchJob.class);
+        RechargeSupplierQueryJob queryJob = mock(RechargeSupplierQueryJob.class);
         RechargeNotifyWorkerService notifyWorker = mock(RechargeNotifyWorkerService.class);
         RechargeBalanceDeltaFlushJob deltaFlushJob = mock(RechargeBalanceDeltaFlushJob.class);
         RechargeBalanceReconcileJob reconcileJob = mock(RechargeBalanceReconcileJob.class);
@@ -164,8 +173,12 @@ class TradeEngineXxlJobConfigurationTest {
         AcceptAnomalyAutoCheckJob anomalyJob = mock(AcceptAnomalyAutoCheckJob.class);
         when(persistJob.runOnce(4, 2, 25, "xxl-worker-1"))
                 .thenReturn(new RechargeCompensationBatchResult(25, 1, 0, 0));
-        when(outboxJob.runOnce(4, 2, 25, "xxl-worker-1"))
-                .thenReturn(new RechargeOutboxBatchResult(25, 1, 1, 0, 0));
+        when(outboxJob.runOnce(4, 2, 25, "xxl-worker-1", List.of(OutboxEventType.SUPPLIER_DISPATCH), -1))
+                .thenReturn(new RechargeOutboxBatchResult(25, 1, 1, 0, 0, 0));
+        when(dispatchJob.runOnce(4, 2, 25, "xxl-worker-1", -1))
+                .thenReturn(new RechargeOutboxBatchResult(25, 1, 1, 0, 0, 0));
+        when(queryJob.runOnce(4, 2, 25, "xxl-worker-1", -1))
+                .thenReturn(new RechargeOutboxBatchResult(25, 1, 1, 0, 0, 0));
         when(notifyWorker.processDue(25, "xxl-worker-1"))
                 .thenReturn(new RechargeNotifyBatchResult(25, 1, 1, 0, 0));
         when(deltaFlushJob.runOnce(4, 2, 25, "xxl-worker-1"))
@@ -179,6 +192,8 @@ class TradeEngineXxlJobConfigurationTest {
         TradeEngineXxlJobHandlers handler = new TradeEngineXxlJobHandlers(
                 () -> persistJob,
                 () -> outboxJob,
+                () -> dispatchJob,
+                () -> queryJob,
                 () -> notifyWorker,
                 () -> deltaFlushJob,
                 () -> reconcileJob,
@@ -188,6 +203,8 @@ class TradeEngineXxlJobConfigurationTest {
 
         handler.runPersistMqRepublishFromXxlContext(4, 2, 99L, param);
         handler.runOutboxPublishFromXxlContext(4, 2, 99L, param);
+        handler.runSupplierDispatchFromXxlContext(4, 2, 99L, param);
+        handler.runSupplierQueryFromXxlContext(4, 2, 99L, param);
         handler.runNotifyRetryFromXxlContext(4, 2, 99L, param);
         handler.runBalanceDeltaFlushFromXxlContext(4, 2, 99L, param);
         handler.runBalanceReconcileFromXxlContext(4, 2, 99L, param);
@@ -195,12 +212,82 @@ class TradeEngineXxlJobConfigurationTest {
         handler.runAcceptAnomalyAutoCheckFromXxlContext(4, 2, 99L, param);
 
         verify(persistJob).runOnce(4, 2, 25, "xxl-worker-1");
-        verify(outboxJob).runOnce(4, 2, 25, "xxl-worker-1");
+        verify(outboxJob).runOnce(4, 2, 25, "xxl-worker-1", List.of(OutboxEventType.SUPPLIER_DISPATCH), -1);
+        verify(dispatchJob).runOnce(4, 2, 25, "xxl-worker-1", -1);
+        verify(queryJob).runOnce(4, 2, 25, "xxl-worker-1", -1);
         verify(notifyWorker).processDue(25, "xxl-worker-1");
         verify(deltaFlushJob).runOnce(4, 2, 25, "xxl-worker-1");
         verify(reconcileJob).runOnce(4, 2, 25, "xxl-worker-1");
         verify(cacheRepairJob).runOnce(4, 2, 25, "xxl-worker-1");
         verify(anomalyJob).runOnce(25, "xxl-worker-1");
+    }
+
+    @Test
+    void outboxHandlersParseParallelismAndEventTypes() {
+        RechargeOutboxPublishJob outboxJob = mock(RechargeOutboxPublishJob.class);
+        when(outboxJob.runOnce(
+                        1,
+                        0,
+                        10,
+                        "xxl-worker-1",
+                        List.of(
+                                OutboxEventType.SUPPLIER_DISPATCH,
+                                OutboxEventType.SUPPLIER_QUERY,
+                                OutboxEventType.INVALID_ORDER),
+                        4))
+                .thenReturn(new RechargeOutboxBatchResult(10, 2, 2, 0, 0, 1));
+        TradeEngineXxlJobHandlers handler = new TradeEngineXxlJobHandlers(
+                () -> { throw new AssertionError("persist job is not used by this test"); },
+                () -> outboxJob,
+                () -> { throw new AssertionError("dispatch job is not used by this test"); },
+                () -> { throw new AssertionError("query job is not used by this test"); },
+                () -> { throw new AssertionError("notify worker is not used by this test"); },
+                () -> { throw new AssertionError("delta flush job is not used by this test"); },
+                () -> { throw new AssertionError("reconcile job is not used by this test"); },
+                () -> { throw new AssertionError("cache repair job is not used by this test"); },
+                () -> { throw new AssertionError("anomaly job is not used by this test"); });
+
+        handler.runOutboxPublishFromXxlContext(
+                1, 0, 99L, "limit=10,workerId=xxl-worker-1,parallelism=4,eventTypes=ALL");
+
+        verify(outboxJob).runOnce(
+                1,
+                0,
+                10,
+                "xxl-worker-1",
+                List.of(
+                        OutboxEventType.SUPPLIER_DISPATCH,
+                        OutboxEventType.SUPPLIER_QUERY,
+                        OutboxEventType.INVALID_ORDER),
+                        4);
+    }
+
+    @Test
+    void supplierDispatchAndQueryHandlersParseParallelism() {
+        RechargeSupplierDispatchJob dispatchJob = mock(RechargeSupplierDispatchJob.class);
+        RechargeSupplierQueryJob queryJob = mock(RechargeSupplierQueryJob.class);
+        when(dispatchJob.runOnce(1, 0, 10, "xxl-worker-1", 4))
+                .thenReturn(new RechargeOutboxBatchResult(10, 2, 2, 0, 0, 1));
+        when(queryJob.runOnce(1, 0, 10, "xxl-worker-1", 2))
+                .thenReturn(new RechargeOutboxBatchResult(10, 2, 2, 0, 0, 0));
+        TradeEngineXxlJobHandlers handler = new TradeEngineXxlJobHandlers(
+                () -> { throw new AssertionError("persist job is not used by this test"); },
+                () -> { throw new AssertionError("outbox job is not used by this test"); },
+                () -> dispatchJob,
+                () -> queryJob,
+                () -> { throw new AssertionError("notify worker is not used by this test"); },
+                () -> { throw new AssertionError("delta flush job is not used by this test"); },
+                () -> { throw new AssertionError("reconcile job is not used by this test"); },
+                () -> { throw new AssertionError("cache repair job is not used by this test"); },
+                () -> { throw new AssertionError("anomaly job is not used by this test"); });
+
+        handler.runSupplierDispatchFromXxlContext(
+                1, 0, 99L, "limit=10,workerId=xxl-worker-1,parallelism=4");
+        handler.runSupplierQueryFromXxlContext(
+                1, 0, 99L, "limit=10,workerId=xxl-worker-1,parallelism=2");
+
+        verify(dispatchJob).runOnce(1, 0, 10, "xxl-worker-1", 4);
+        verify(queryJob).runOnce(1, 0, 10, "xxl-worker-1", 2);
     }
 
     private static Class<?> xxlJobConfigurationClass() {

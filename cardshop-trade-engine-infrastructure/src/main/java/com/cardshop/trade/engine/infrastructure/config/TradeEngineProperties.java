@@ -1240,6 +1240,15 @@ public class TradeEngineProperties {
         private int frequencyRetryDelaySeconds = 30;
         private int frequencyLockTtlMinutes = 30;
         private int frequencySuccessMinimumHoldSeconds = 5;
+        /**
+         * 已 claim 履约事件的并行度。参见
+         * {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}。
+         */
+        private int outboxParallelism = 8;
+        /**
+         * due 扫描相对 limit 的放大倍数，用于公平过滤后仍凑满 limit。
+         */
+        private int outboxScanOverfetchFactor = 3;
 
         public int getOutboxClaimLeaseSeconds() {
             return outboxClaimLeaseSeconds;
@@ -1279,6 +1288,22 @@ public class TradeEngineProperties {
 
         public void setFrequencySuccessMinimumHoldSeconds(int frequencySuccessMinimumHoldSeconds) {
             this.frequencySuccessMinimumHoldSeconds = frequencySuccessMinimumHoldSeconds;
+        }
+
+        public int getOutboxParallelism() {
+            return outboxParallelism;
+        }
+
+        public void setOutboxParallelism(int outboxParallelism) {
+            this.outboxParallelism = outboxParallelism;
+        }
+
+        public int getOutboxScanOverfetchFactor() {
+            return outboxScanOverfetchFactor;
+        }
+
+        public void setOutboxScanOverfetchFactor(int outboxScanOverfetchFactor) {
+            this.outboxScanOverfetchFactor = outboxScanOverfetchFactor;
         }
     }
 
