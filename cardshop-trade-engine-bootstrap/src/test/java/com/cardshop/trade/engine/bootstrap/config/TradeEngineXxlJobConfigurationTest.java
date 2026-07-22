@@ -290,6 +290,26 @@ class TradeEngineXxlJobConfigurationTest {
         verify(queryJob).runOnce(1, 0, 10, "xxl-worker-1", 2);
     }
 
+    @Test
+    void outboxFinishedMessageFormatsParallelismAndEventTypesWithoutConversionError() {
+        TradeEngineXxlJobHandlers.OutboxXxlRunOptions options =
+                TradeEngineXxlJobHandlers.OutboxXxlRunOptions.parse(
+                        152L,
+                        "limit=1000,workerId=xxl-supplier-dispatch,parallelism=8",
+                        List.of(OutboxEventType.SUPPLIER_DISPATCH));
+        RechargeOutboxBatchResult result = new RechargeOutboxBatchResult(10, 8, 7, 0, 1, 2);
+
+        String message = TradeEngineXxlJobHandlers.formatOutboxFinishedMessage(
+                "rechargeSupplierDispatchJob", 1, 0, options, result);
+
+        assertThat(message)
+                .startsWith("rechargeSupplierDispatchJob finished")
+                .contains("parallelism=8")
+                .contains("eventTypes=SUPPLIER_DISPATCH")
+                .contains("deferred=2")
+                .contains("workerId=xxl-supplier-dispatch");
+    }
+
     private static Class<?> xxlJobConfigurationClass() {
         try {
             return Class.forName("com.cardshop.trade.engine.bootstrap.config.TradeEngineXxlJobConfiguration");
