@@ -145,7 +145,8 @@ public interface RechargeDispatchOutboxMapper extends BaseMapper<RechargeDispatc
               o.event_type,
               o.status,
               count(*) as count,
-              coalesce(timestampdiff(second, min(coalesce(o.created_at, o.updated_at, #{now})), #{now}), 0) as max_age_seconds
+              coalesce(timestampdiff(second, min(coalesce(o.created_at, o.updated_at, #{now})), #{now}), 0) as max_age_seconds,
+              coalesce(timestampdiff(second, min(case when o.next_retry_time <= #{now} then o.next_retry_time end), #{now}), 0) as max_age_since_due_seconds
             from recharge_dispatch_outbox o
             where o.status in ('INIT', 'PROCESSING', 'FAILED', 'MANUAL_REQUIRED')
               and exists (
@@ -171,10 +172,7 @@ public interface RechargeDispatchOutboxMapper extends BaseMapper<RechargeDispatc
                 shardTotal,
                 shardIndex,
                 limit,
-                List.of(
-                        OutboxEventType.SUPPLIER_DISPATCH.name(),
-                        OutboxEventType.SUPPLIER_QUERY.name(),
-                        OutboxEventType.INVALID_ORDER.name()));
+                List.of(OutboxEventType.SUPPLIER_DISPATCH.name()));
     }
 
     /**

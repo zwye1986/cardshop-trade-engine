@@ -474,7 +474,25 @@ public class TradeEngineObservabilityMetrics
                                 "trade.engine.dispatch.outbox.max.age.seconds",
                                 snapshotProvider,
                                 provider -> snapshot(provider).outboxMaxAgeSeconds(event, taskStatus))
-                        .description("派单 outbox 未完成事件最大滞留时间秒数")
+                        .description("派单 outbox 未完成事件最大滞留时间秒数（自 created_at，兼容旧指标）")
+                        .tag("environment", environment)
+                        .tag("event_type", event)
+                        .tag("status", taskStatus)
+                        .register(registry);
+                Gauge.builder(
+                                "trade.engine.dispatch.outbox.max.age.since.created.seconds",
+                                snapshotProvider,
+                                provider -> snapshot(provider).outboxMaxAgeSeconds(event, taskStatus))
+                        .description("派单 outbox 未完成事件最大年龄秒数（自 created_at）")
+                        .tag("environment", environment)
+                        .tag("event_type", event)
+                        .tag("status", taskStatus)
+                        .register(registry);
+                Gauge.builder(
+                                "trade.engine.dispatch.outbox.max.age.since.due.seconds",
+                                snapshotProvider,
+                                provider -> snapshot(provider).outboxMaxAgeSinceDueSeconds(event, taskStatus))
+                        .description("派单 outbox 未完成 due 事件最大到期年龄秒数（自 next_retry_time）")
                         .tag("environment", environment)
                         .tag("event_type", event)
                         .tag("status", taskStatus)
@@ -493,7 +511,7 @@ public class TradeEngineObservabilityMetrics
                                 "trade.engine.outbox.max.age.seconds",
                                 snapshotProvider,
                                 provider -> snapshot(provider).outboxMaxAgeSeconds(event, taskStatus))
-                        .description("派单 outbox 最大滞留秒数（兼容名，仅派单）")
+                        .description("派单 outbox 最大滞留秒数（兼容名，自 created_at）")
                         .tag("environment", environment)
                         .tag("event_type", event)
                         .tag("status", taskStatus)

@@ -27,6 +27,8 @@ import com.cardshop.trade.engine.job.recharge.RechargeBalanceReconcileJob;
 import com.cardshop.trade.engine.job.recharge.RechargeCacheRepairJob;
 import com.cardshop.trade.engine.job.recharge.RechargeOutboxPublishJob;
 import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
+import com.cardshop.trade.engine.job.recharge.RechargeSupplierDispatchJob;
+import com.cardshop.trade.engine.job.recharge.RechargeSupplierQueryJob;
 import java.time.Clock;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.ObjectProvider;
@@ -112,6 +114,32 @@ public class TradeEngineReliabilityConfiguration {
     public RechargeOutboxPublishJob rechargeOutboxPublishJob(
             com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService service) {
         return new RechargeOutboxPublishJob(service);
+    }
+
+    /**
+     * 供应商派单 outbox 调度门面。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}。
+     */
+    @Bean
+    @ConditionalOnBean(com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService.class)
+    @ConditionalOnMissingBean(RechargeSupplierDispatchJob.class)
+    public RechargeSupplierDispatchJob rechargeSupplierDispatchJob(
+            com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService service) {
+        return new RechargeSupplierDispatchJob(service);
+    }
+
+    /**
+     * 供应商查单/作废 outbox 调度门面。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}。
+     */
+    @Bean
+    @ConditionalOnBean(com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService.class)
+    @ConditionalOnMissingBean(RechargeSupplierQueryJob.class)
+    public RechargeSupplierQueryJob rechargeSupplierQueryJob(
+            com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService service) {
+        return new RechargeSupplierQueryJob(service);
     }
 
     @Bean

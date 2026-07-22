@@ -10,6 +10,8 @@ import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.job.recharge.AcceptAnomalyAutoCheckJob;
 import com.cardshop.trade.engine.job.recharge.RechargeOutboxPublishJob;
 import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
+import com.cardshop.trade.engine.job.recharge.RechargeSupplierDispatchJob;
+import com.cardshop.trade.engine.job.recharge.RechargeSupplierQueryJob;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -87,6 +89,26 @@ public class TradeEngineCompensationJobAutoConfiguration {
     @ConditionalOnMissingBean(RechargeOutboxPublishJob.class)
     public RechargeOutboxPublishJob rechargeOutboxPublishJob(RechargeOutboxWorkerService service) {
         return new RechargeOutboxPublishJob(service);
+    }
+
+    /**
+     * 创建供应商派单 outbox 的人工联调与调度共用 job facade。
+     */
+    @Bean
+    @ConditionalOnBean(RechargeOutboxWorkerService.class)
+    @ConditionalOnMissingBean(RechargeSupplierDispatchJob.class)
+    public RechargeSupplierDispatchJob rechargeSupplierDispatchJob(RechargeOutboxWorkerService service) {
+        return new RechargeSupplierDispatchJob(service);
+    }
+
+    /**
+     * 创建供应商查单/作废 outbox 的人工联调与调度共用 job facade。
+     */
+    @Bean
+    @ConditionalOnBean(RechargeOutboxWorkerService.class)
+    @ConditionalOnMissingBean(RechargeSupplierQueryJob.class)
+    public RechargeSupplierQueryJob rechargeSupplierQueryJob(RechargeOutboxWorkerService service) {
+        return new RechargeSupplierQueryJob(service);
     }
 
     /**

@@ -42,6 +42,10 @@ public record TradeEngineObservabilitySnapshot(
         return outbox.getOrDefault(new OutboxKey(eventType, status), CountAge.empty()).maxAgeSeconds();
     }
 
+    public double outboxMaxAgeSinceDueSeconds(String eventType, String status) {
+        return outbox.getOrDefault(new OutboxKey(eventType, status), CountAge.empty()).maxAgeSinceDueSeconds();
+    }
+
     public double balanceDeltaCount(String status) {
         return balanceDelta.getOrDefault(status, CountAge.empty()).count();
     }
@@ -75,16 +79,20 @@ public record TradeEngineObservabilitySnapshot(
 
     /**
      * 带最大滞留时间的计数。
+     *
+     * @param maxAgeSeconds 自创建以来的最大滞留秒数（兼容旧指标）
+     * @param maxAgeSinceDueSeconds 仅 due 行的最大到期年龄秒数
      */
-    public record CountAge(long count, long maxAgeSeconds) {
+    public record CountAge(long count, long maxAgeSeconds, long maxAgeSinceDueSeconds) {
 
         public CountAge {
             count = Math.max(0, count);
             maxAgeSeconds = Math.max(0, maxAgeSeconds);
+            maxAgeSinceDueSeconds = Math.max(0, maxAgeSinceDueSeconds);
         }
 
         public static CountAge empty() {
-            return new CountAge(0, 0);
+            return new CountAge(0, 0, 0);
         }
     }
 

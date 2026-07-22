@@ -97,7 +97,9 @@ public class TradeEngineFulfillmentAutoConfiguration {
                         Duration.ofSeconds(fulfillment.getOutboxRetryBackoffSeconds()),
                         Duration.ofSeconds(fulfillment.getFrequencyRetryDelaySeconds()),
                         Duration.ofMinutes(fulfillment.getFrequencyLockTtlMinutes()),
-                        Duration.ofSeconds(fulfillment.getFrequencySuccessMinimumHoldSeconds())));
+                        Duration.ofSeconds(fulfillment.getFrequencySuccessMinimumHoldSeconds()),
+                        fulfillment.getOutboxParallelism(),
+                        fulfillment.getOutboxScanOverfetchFactor()));
     }
 
     /**

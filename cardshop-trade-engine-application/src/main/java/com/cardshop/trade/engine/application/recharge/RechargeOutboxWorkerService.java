@@ -4,8 +4,18 @@ import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,6 +41,10 @@ public class RechargeOutboxWorkerService {
     private static final String DATA_STATUS_PROCESSED = "PROCESSED";
     private static final String DATA_STATUS_FREQUENCY_WAIT = "FREQUENCY_WAIT";
     private static final int DEFAULT_NOTIFY_MAX_RETRY_COUNT = 10;
+    private static final int MIN_PARALLELISM = 1;
+    private static final int MAX_PARALLELISM = 32;
+    private static final int MAX_SCAN_LIMIT = 1000;
+    private static final char ACCOUNT_KEY_SEPARATOR = '\0';
 
     private final RechargeOutboxPort outboxPort;
     private final RechargeFulfillmentOrderPort orderPort;
@@ -106,29 +120,179 @@ public class RechargeOutboxWorkerService {
     }
 
     /**
-     * 扫描并处理一个 outbox 分片。
+     * 扫描并处理一个 outbox 分片（默认仅 {@link OutboxEventType#SUPPLIER_DISPATCH}）。
      *
-     * <p>任何降级、重试或跳过都必须显式回写 outbox，避免事件长期停留在 PROCESSING。
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md} 与
+     * {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。任何降级、重试或跳过都必须显式回写 outbox，
+     * 避免事件长期停留在 PROCESSING。
      */
     public RechargeOutboxBatchResult processDue(int shardTotal, int shardIndex, int limit, String workerId) {
-        var events = outboxPort.selectDueForShard(shardTotal, shardIndex, limit);
+        return processDue(
+                shardTotal,
+                shardIndex,
+                limit,
+                workerId,
+                List.of(OutboxEventType.SUPPLIER_DISPATCH),
+                settings.outboxParallelism());
+    }
+
+    /**
+     * 按事件类型过滤扫描 outbox，并在 claim 后按配置并行履约。
+     *
+     * <p>流水线：overfetch 扫描 → 公平/频控预检（仅 DISPATCH）→ 串行 CAS claim → 线程池执行（同账号互斥）。
+     * 参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}「4. 处理流水线」与
+     * {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。
+     */
+    public RechargeOutboxBatchResult processDue(
+            int shardTotal,
+            int shardIndex,
+            int limit,
+            String workerId,
+            List<OutboxEventType> eventTypes,
+            int parallelism) {
+        List<OutboxEventType> normalizedEventTypes = normalizeEventTypes(eventTypes);
+        int normalizedParallelism = normalizeParallelism(parallelism);
+        int scanLimit = Math.min(limit * settings.outboxScanOverfetchFactor(), MAX_SCAN_LIMIT);
+
+        List<RechargeOutboxEvent> events =
+                outboxPort.selectDueForShard(shardTotal, shardIndex, scanLimit, normalizedEventTypes);
         RechargeOutboxBatchResult result = RechargeOutboxBatchResult.empty().scanned(events.size());
-        for (RechargeOutboxEvent event : events) {
+
+        FairSelectResult fairSelectResult = fairSelect(events, limit);
+        result = result.deferred(fairSelectResult.deferredCount());
+
+        List<RechargeOutboxEvent> claimedEvents = new ArrayList<>();
+        for (RechargeOutboxEvent event : fairSelectResult.selected()) {
             if (event.retryExhausted()) {
                 outboxPort.markManualRequired(event, retryExhaustedMessage(event));
                 result = result.add(RechargeOutboxBatchResult.Outcome.FAILED);
                 continue;
             }
-            var claimed = outboxPort.claim(event, workerId, settings.claimLease());
+            Optional<RechargeOutboxEvent> claimed = outboxPort.claim(event, workerId, settings.claimLease());
             if (claimed.isEmpty()) {
                 result = result.add(RechargeOutboxBatchResult.Outcome.SKIPPED);
                 continue;
             }
             result = result.claimedOne();
-            result = result.add(handleClaimed(claimed.get()));
+            claimedEvents.add(claimed.get());
+        }
+        return executeClaimed(claimedEvents, normalizedParallelism, result);
+    }
+
+    /**
+     * 公平挑选本批可 claim 的事件：DISPATCH 做同账号去重与 Redis 频控预检；QUERY/INVALID 按扫描顺序直接选取。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}「公平调度 F3」。
+     */
+    private FairSelectResult fairSelect(List<RechargeOutboxEvent> events, int limit) {
+        List<RechargeOutboxEvent> selected = new ArrayList<>();
+        Set<String> selectedAccountKeys = new HashSet<>();
+        int deferred = 0;
+
+        for (RechargeOutboxEvent event : events) {
+            if (selected.size() >= limit) {
+                break;
+            }
+            if (event.eventType() == OutboxEventType.SUPPLIER_DISPATCH) {
+                RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
+                String orgCode = order != null ? order.orgCode() : event.orgCode();
+                String account = order != null ? order.account() : null;
+                if (account != null && !account.isBlank()) {
+                    String accountKey = accountKey(orgCode, account);
+                    if (selectedAccountKeys.contains(accountKey)) {
+                        deferred++;
+                        continue;
+                    }
+                    Optional<String> frequencyOwner = frequencyPort.currentOwner(orgCode, account);
+                    if (frequencyOwner.isPresent() && !frequencyOwner.get().equals(event.orderId())) {
+                        deferred++;
+                        continue;
+                    }
+                    selectedAccountKeys.add(accountKey);
+                }
+            }
+            selected.add(event);
+        }
+        return new FairSelectResult(selected, deferred);
+    }
+
+    /**
+     * 执行已 claim 事件：parallelism &gt; 1 时用固定线程池，同 {@code org+account} 在批内串行。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}「7. 同账号并行语义」
+     * 与详细设计「9.1 派单 Outbox」。
+     */
+    private RechargeOutboxBatchResult executeClaimed(
+            List<RechargeOutboxEvent> claimedEvents, int parallelism, RechargeOutboxBatchResult result) {
+        if (claimedEvents.isEmpty()) {
+            return result;
+        }
+        if (parallelism <= MIN_PARALLELISM || claimedEvents.size() == 1) {
+            for (RechargeOutboxEvent event : claimedEvents) {
+                result = result.add(handleClaimed(event));
+            }
+            return result;
+        }
+
+        ExecutorService executor = Executors.newFixedThreadPool(parallelism);
+        ConcurrentHashMap<String, Object> accountLocks = new ConcurrentHashMap<>();
+        Object noAccountLock = new Object();
+        try {
+            List<Future<RechargeOutboxBatchResult.Outcome>> futures = new ArrayList<>(claimedEvents.size());
+            for (RechargeOutboxEvent event : claimedEvents) {
+                futures.add(executor.submit(() -> {
+                    Object lock = resolveAccountLock(event, accountLocks, noAccountLock);
+                    synchronized (lock) {
+                        return handleClaimed(event);
+                    }
+                }));
+            }
+            for (Future<RechargeOutboxBatchResult.Outcome> future : futures) {
+                result = result.add(future.get());
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("outbox parallel execution interrupted", ex);
+        } catch (ExecutionException ex) {
+            Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+            throw new IllegalStateException("outbox parallel execution failed", cause);
+        } finally {
+            executor.shutdown();
         }
         return result;
     }
+
+    private Object resolveAccountLock(
+            RechargeOutboxEvent event, ConcurrentHashMap<String, Object> accountLocks, Object noAccountLock) {
+        RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
+        if (order == null || order.account() == null || order.account().isBlank()) {
+            return noAccountLock;
+        }
+        return accountLocks.computeIfAbsent(accountKey(order.orgCode(), order.account()), ignored -> new Object());
+    }
+
+    private static String accountKey(String orgCode, String account) {
+        return orgCode + ACCOUNT_KEY_SEPARATOR + account;
+    }
+
+    private static List<OutboxEventType> normalizeEventTypes(List<OutboxEventType> eventTypes) {
+        if (eventTypes == null || eventTypes.isEmpty()) {
+            return List.of(OutboxEventType.SUPPLIER_DISPATCH);
+        }
+        return List.copyOf(eventTypes);
+    }
+
+    private int normalizeParallelism(int parallelism) {
+        if (parallelism <= 0) {
+            return settings.outboxParallelism();
+        }
+        if (parallelism > MAX_PARALLELISM) {
+            return MAX_PARALLELISM;
+        }
+        return parallelism;
+    }
+
+    private record FairSelectResult(List<RechargeOutboxEvent> selected, int deferredCount) {}
 
     private RechargeOutboxBatchResult.Outcome handleClaimed(RechargeOutboxEvent event) {
         try {

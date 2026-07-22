@@ -9,6 +9,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -190,7 +191,8 @@ class RechargeOutboxWorkerServiceTest {
                 CLOCK,
                 settings());
 
-        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+        RechargeOutboxBatchResult result =
+                service.processDue(1, 0, 10, "worker-A", List.of(OutboxEventType.SUPPLIER_QUERY), 1);
 
         assertThat(result.failed()).isEqualTo(1);
         assertThat(supplierGateway.queryRequests).singleElement().satisfies(request -> {
@@ -233,7 +235,8 @@ class RechargeOutboxWorkerServiceTest {
                 CLOCK,
                 settings());
 
-        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+        RechargeOutboxBatchResult result =
+                service.processDue(1, 0, 10, "worker-A", List.of(OutboxEventType.SUPPLIER_QUERY), 1);
 
         assertThat(result.succeeded()).isEqualTo(1);
         assertThat(outboxPort.successes).containsExactly("supplier-query-ORDER-1");
@@ -275,7 +278,8 @@ class RechargeOutboxWorkerServiceTest {
                 CLOCK,
                 settings());
 
-        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+        RechargeOutboxBatchResult result =
+                service.processDue(1, 0, 10, "worker-A", List.of(OutboxEventType.SUPPLIER_QUERY), 1);
 
         assertThat(result.succeeded()).isEqualTo(1);
         assertThat(supplierGateway.queryRequests).isEmpty();
@@ -311,7 +315,8 @@ class RechargeOutboxWorkerServiceTest {
                 CLOCK,
                 settings());
 
-        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+        RechargeOutboxBatchResult result =
+                service.processDue(1, 0, 10, "worker-A", List.of(OutboxEventType.SUPPLIER_QUERY), 1);
 
         assertThat(result.succeeded()).isEqualTo(1);
         assertThat(outboxPort.successes).containsExactly("supplier-query-ORDER-1");
@@ -356,7 +361,8 @@ class RechargeOutboxWorkerServiceTest {
                 CLOCK,
                 settings());
 
-        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+        RechargeOutboxBatchResult result =
+                service.processDue(1, 0, 10, "worker-A", List.of(OutboxEventType.INVALID_ORDER), 1);
 
         assertThat(result.succeeded()).isEqualTo(1);
         assertThat(supplierGateway.invalidRequests).hasSize(1);
@@ -406,7 +412,8 @@ class RechargeOutboxWorkerServiceTest {
                 CLOCK,
                 settings());
 
-        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+        RechargeOutboxBatchResult result =
+                service.processDue(1, 0, 10, "worker-A", List.of(OutboxEventType.INVALID_ORDER), 1);
 
         assertThat(result.succeeded()).isEqualTo(1);
         assertThat(outboxPort.successes).containsExactly("dispatch-ORDER-1");
@@ -624,6 +631,102 @@ class RechargeOutboxWorkerServiceTest {
                 .satisfies(failure -> assertThat(failure.errorMessage()).contains("direct recharge frequency wait"));
     }
 
+    @Test
+    void processDueDefersSecondDispatchForSameAccountInBatch() {
+        RechargeOutboxEvent first = dispatchOutbox("ORDER-1");
+        RechargeOutboxEvent second = dispatchOutbox("ORDER-2");
+        FakeOutboxPort outboxPort = new FakeOutboxPort(first, second);
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(Map.of(
+                "ORDER-1", dispatchableOrder("ORDER-1"),
+                "ORDER-2", dispatchableOrder("ORDER-2")));
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("SUP-1001", "0", "success", "{\"status\":\"SUCCESS\"}"));
+
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGateway,
+                new FakeFrequencyPort(true),
+                BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(),
+                new FakeNotifyTaskPort(),
+                new FixedNotifyPayloadSigner(),
+                CLOCK,
+                settings());
+
+        RechargeOutboxBatchResult result = service.processDue(1, 0, 2, "worker-A");
+
+        assertThat(result.deferred()).isGreaterThanOrEqualTo(1);
+        assertThat(result.claimed()).isEqualTo(1);
+        assertThat(result.succeeded()).isEqualTo(1);
+        assertThat(outboxPort.claimedOrderIds).containsExactly("ORDER-1");
+        assertThat(supplierGateway.dispatchRequests).hasSize(1);
+    }
+
+    @Test
+    void processDueDefersDispatchWhenFrequencyLockOwnedByOtherOrder() {
+        FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(dispatchableOrder());
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("unused", "0", "success", "{}"));
+        FakeFrequencyPort frequencyPort = new FakeFrequencyPort(true);
+        frequencyPort.setCurrentOwner("A36", "13800138000", "OTHER-ORDER");
+
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGateway,
+                frequencyPort,
+                BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(),
+                new FakeNotifyTaskPort(),
+                new FixedNotifyPayloadSigner(),
+                CLOCK,
+                settings());
+
+        RechargeOutboxBatchResult result = service.processDue(1, 0, 10, "worker-A");
+
+        assertThat(result.deferred()).isGreaterThanOrEqualTo(1);
+        assertThat(result.failed()).isZero();
+        assertThat(result.claimed()).isZero();
+        assertThat(outboxPort.claimedOrderIds).isEmpty();
+        assertThat(outboxPort.failures).isEmpty();
+        assertThat(supplierGateway.dispatchRequests).isEmpty();
+    }
+
+    @Test
+    void processDueWithQueryEventTypesOnlyProcessesSupplierQuery() {
+        RechargeOutboxEvent dispatch = outbox(OutboxEventType.SUPPLIER_DISPATCH);
+        RechargeOutboxEvent query = supplierQueryOutbox();
+        FakeOutboxPort outboxPort = new FakeOutboxPort(dispatch, query);
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(supplierAcceptedOrder());
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("unused", "0", "unused", "{}"),
+                SupplierGatewayResponse.processing("SUP-1002", "PENDING", "still processing", "{}"));
+
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGateway,
+                new FakeSupplierQueryOutboxPort(),
+                new FakeFrequencyPort(true),
+                BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(),
+                new FakeNotifyTaskPort(),
+                new FixedNotifyPayloadSigner(),
+                CLOCK,
+                settings());
+
+        RechargeOutboxBatchResult result =
+                service.processDue(1, 0, 10, "worker-A", List.of(OutboxEventType.SUPPLIER_QUERY), 1);
+
+        assertThat(result.claimed()).isEqualTo(1);
+        assertThat(result.failed()).isEqualTo(1);
+        assertThat(supplierGateway.dispatchRequests).isEmpty();
+        assertThat(supplierGateway.queryRequests).hasSize(1);
+        assertThat(outboxPort.claimedOrderIds).containsExactly("ORDER-1");
+    }
+
     private static RechargeOutboxWorkerSettings settings() {
         return new RechargeOutboxWorkerSettings(
                 Duration.ofMinutes(2),
@@ -631,6 +734,21 @@ class RechargeOutboxWorkerServiceTest {
                 Duration.ofSeconds(30),
                 Duration.ofMinutes(30),
                 Duration.ofSeconds(5));
+    }
+
+    private static RechargeOutboxEvent dispatchOutbox(String orderId) {
+        return new RechargeOutboxEvent(
+                "dispatch-" + orderId,
+                OutboxEventType.SUPPLIER_DISPATCH,
+                "A36",
+                orderId,
+                "OUT-" + orderId.substring(orderId.length() - 1),
+                "{\"order_id\":\"" + orderId + "\"}",
+                0,
+                10,
+                7L,
+                LocalDateTime.of(2026, 7, 8, 11, 20),
+                "");
     }
 
     private static RechargeOutboxEvent outbox(OutboxEventType eventType) {
@@ -694,13 +812,21 @@ class RechargeOutboxWorkerServiceTest {
     }
 
     private static RechargeFulfillmentOrder dispatchableOrder() {
-        return orderWithNotifyUrl("https://merchant.example/notify");
+        return dispatchableOrder("ORDER-1");
+    }
+
+    private static RechargeFulfillmentOrder dispatchableOrder(String orderId) {
+        return orderWithNotifyUrl("https://merchant.example/notify", orderId);
     }
 
     private static RechargeFulfillmentOrder orderWithNotifyUrl(String notifyUrl) {
+        return orderWithNotifyUrl(notifyUrl, "ORDER-1");
+    }
+
+    private static RechargeFulfillmentOrder orderWithNotifyUrl(String notifyUrl, String orderId) {
         return new RechargeFulfillmentOrder(
-                "ORDER-1",
-                "OUT-1",
+                orderId,
+                "OUT-" + orderId.substring(orderId.length() - 1),
                 "A36",
                 "13800138000",
                 "PARENT-1",
@@ -771,19 +897,28 @@ class RechargeOutboxWorkerServiceTest {
 
     private static final class FakeOutboxPort implements RechargeOutboxPort {
 
-        private final RechargeOutboxEvent event;
+        private final List<RechargeOutboxEvent> events;
         private final List<String> successes = new ArrayList<>();
         private final List<OutboxFailure> failures = new ArrayList<>();
         private final List<OutboxFailure> manualRequired = new ArrayList<>();
         private final List<String> claimedOrderIds = new ArrayList<>();
 
-        private FakeOutboxPort(RechargeOutboxEvent event) {
-            this.event = event;
+        private FakeOutboxPort(RechargeOutboxEvent... events) {
+            this.events = List.of(events);
         }
 
         @Override
         public List<RechargeOutboxEvent> selectDueForShard(int shardTotal, int shardIndex, int limit) {
-            return List.of(event);
+            return selectDueForShard(shardTotal, shardIndex, limit, List.of(OutboxEventType.SUPPLIER_DISPATCH));
+        }
+
+        @Override
+        public List<RechargeOutboxEvent> selectDueForShard(
+                int shardTotal, int shardIndex, int limit, List<OutboxEventType> eventTypes) {
+            return events.stream()
+                    .filter(event -> eventTypes.contains(event.eventType()))
+                    .limit(limit)
+                    .toList();
         }
 
         @Override
@@ -810,19 +945,23 @@ class RechargeOutboxWorkerServiceTest {
 
         private static final class FakeFulfillmentOrderPort implements RechargeFulfillmentOrderPort {
 
-        private final RechargeFulfillmentOrder order;
+        private final Map<String, RechargeFulfillmentOrder> ordersById;
         private final List<SupplierFlowStartCommand> flowStarts = new ArrayList<>();
         private final List<SupplierFlowUpdateCommand> flowUpdates = new ArrayList<>();
         private final List<OrderFulfillmentStatusUpdate> statusUpdates = new ArrayList<>();
         private final List<String> balanceReleasedOrderIds = new ArrayList<>();
 
         private FakeFulfillmentOrderPort(RechargeFulfillmentOrder order) {
-            this.order = order;
+            this(Map.of(order.orderId(), order));
+        }
+
+        private FakeFulfillmentOrderPort(Map<String, RechargeFulfillmentOrder> ordersById) {
+            this.ordersById = ordersById;
         }
 
         @Override
         public Optional<RechargeFulfillmentOrder> findByOrderId(String orderId) {
-            return Optional.of(order);
+            return Optional.ofNullable(ordersById.get(orderId));
         }
 
         @Override
@@ -912,10 +1051,15 @@ class RechargeOutboxWorkerServiceTest {
     private static final class FakeFrequencyPort implements DirectRechargeFrequencyPort {
 
         private final boolean acquired;
+        private final Map<String, String> currentOwners = new HashMap<>();
         private final List<String> releasedOrderIds = new ArrayList<>();
 
         private FakeFrequencyPort(boolean acquired) {
             this.acquired = acquired;
+        }
+
+        void setCurrentOwner(String orgCode, String account, String orderId) {
+            currentOwners.put(orgCode + '\0' + account, orderId);
         }
 
         @Override
@@ -926,6 +1070,11 @@ class RechargeOutboxWorkerServiceTest {
         @Override
         public void releaseIfOwned(String orgCode, String account, String orderId, Duration minimumHold) {
             releasedOrderIds.add(orderId);
+        }
+
+        @Override
+        public Optional<String> currentOwner(String orgCode, String account) {
+            return Optional.ofNullable(currentOwners.get(orgCode + '\0' + account));
         }
     }
 
