@@ -19,7 +19,6 @@ import com.cardshop.trade.engine.application.recharge.RechargePersistMqRepublish
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.domain.order.AcceptAnomalyType;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
-import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.job.recharge.AcceptAnomalyAutoCheckJob;
 import com.cardshop.trade.engine.job.recharge.RechargeBalanceDeltaFlushJob;
 import com.cardshop.trade.engine.job.recharge.RechargeBalanceReconcileJob;
@@ -260,7 +259,35 @@ class TradeEngineXxlJobConfigurationTest {
                         OutboxEventType.SUPPLIER_DISPATCH,
                         OutboxEventType.SUPPLIER_QUERY,
                         OutboxEventType.INVALID_ORDER),
-                4);
+                        4);
+    }
+
+    @Test
+    void supplierDispatchAndQueryHandlersParseParallelism() {
+        RechargeSupplierDispatchJob dispatchJob = mock(RechargeSupplierDispatchJob.class);
+        RechargeSupplierQueryJob queryJob = mock(RechargeSupplierQueryJob.class);
+        when(dispatchJob.runOnce(1, 0, 10, "xxl-worker-1", 4))
+                .thenReturn(new RechargeOutboxBatchResult(10, 2, 2, 0, 0, 1));
+        when(queryJob.runOnce(1, 0, 10, "xxl-worker-1", 2))
+                .thenReturn(new RechargeOutboxBatchResult(10, 2, 2, 0, 0, 0));
+        TradeEngineXxlJobHandlers handler = new TradeEngineXxlJobHandlers(
+                () -> { throw new AssertionError("persist job is not used by this test"); },
+                () -> { throw new AssertionError("outbox job is not used by this test"); },
+                () -> dispatchJob,
+                () -> queryJob,
+                () -> { throw new AssertionError("notify worker is not used by this test"); },
+                () -> { throw new AssertionError("delta flush job is not used by this test"); },
+                () -> { throw new AssertionError("reconcile job is not used by this test"); },
+                () -> { throw new AssertionError("cache repair job is not used by this test"); },
+                () -> { throw new AssertionError("anomaly job is not used by this test"); });
+
+        handler.runSupplierDispatchFromXxlContext(
+                1, 0, 99L, "limit=10,workerId=xxl-worker-1,parallelism=4");
+        handler.runSupplierQueryFromXxlContext(
+                1, 0, 99L, "limit=10,workerId=xxl-worker-1,parallelism=2");
+
+        verify(dispatchJob).runOnce(1, 0, 10, "xxl-worker-1", 4);
+        verify(queryJob).runOnce(1, 0, 10, "xxl-worker-1", 2);
     }
 
     private static Class<?> xxlJobConfigurationClass() {

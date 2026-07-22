@@ -13,6 +13,8 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -727,6 +729,86 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(outboxPort.claimedOrderIds).containsExactly("ORDER-1");
     }
 
+    @Test
+    void processDueSerializesSameAccountDispatchAndQueryUnderParallelism() throws Exception {
+        /*
+         * spec §9「并行同账号串行」：同账号 (A36, 13800138000) 的一条 DISPATCH 与一条 QUERY。
+         * fairSelect 只对 DISPATCH 去重，QUERY 不去重，故两者均被 claim 并提交到线程池；
+         * 线程池内按 orgCode+'\0'+account 同锁串行执行，gateway 不应观测到并发重叠。
+         */
+        RechargeOutboxEvent dispatch = outbox(OutboxEventType.SUPPLIER_DISPATCH);
+        RechargeOutboxEvent query = supplierQueryOutbox("ORDER-2");
+        FakeOutboxPort outboxPort = new FakeOutboxPort(dispatch, query);
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(Map.of(
+                "ORDER-1", dispatchableOrder("ORDER-1"),
+                "ORDER-2", supplierAcceptedOrder("ORDER-2")));
+        ConcurrencyDetectingSupplierGatewayPort supplierGateway = new ConcurrencyDetectingSupplierGatewayPort();
+
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGateway,
+                new FakeSupplierQueryOutboxPort(),
+                new FakeFrequencyPort(true),
+                BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(),
+                new FakeNotifyTaskPort(),
+                new FixedNotifyPayloadSigner(),
+                CLOCK,
+                settings());
+
+        RechargeOutboxBatchResult result = service.processDue(
+                1, 0, 10, "worker-A",
+                List.of(OutboxEventType.SUPPLIER_DISPATCH, OutboxEventType.SUPPLIER_QUERY),
+                4);
+
+        assertThat(result.succeeded()).isEqualTo(2);
+        assertThat(supplierGateway.overlap()).isFalse();
+        assertThat(supplierGateway.dispatchRequests()).hasSize(1);
+        assertThat(supplierGateway.queryRequests()).hasSize(1);
+    }
+
+    @Test
+    void processDueOverfetchFillsLimitAfterAccountDedup() {
+        /*
+         * spec §4 overfetch：4 条 DISPATCH 中 D1/D2 同账号、D3/D4 不同账号。limit=2 + overfetch=3
+         * → scanLimit=6 扫到全部 4 条；fairSelect 选 D1、D3（D2 同账号 deferred），claim 2 条。
+         * 若 overfetch=1 则 scanLimit=2 只扫到 D1/D2，D2 同账号 deferred，仅 claim 1 条——
+         * 故 claimed=2 直接证明 overfetch 是填满 limit 的必要手段。
+         */
+        RechargeOutboxEvent d1 = dispatchOutbox("ORDER-1");
+        RechargeOutboxEvent d2 = dispatchOutbox("ORDER-2");
+        RechargeOutboxEvent d3 = dispatchOutbox("ORDER-3");
+        RechargeOutboxEvent d4 = dispatchOutbox("ORDER-4");
+        FakeOutboxPort outboxPort = new FakeOutboxPort(d1, d2, d3, d4);
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(Map.of(
+                "ORDER-1", dispatchableOrderWithAccount("ORDER-1", "13800138000"),
+                "ORDER-2", dispatchableOrderWithAccount("ORDER-2", "13800138000"),
+                "ORDER-3", dispatchableOrderWithAccount("ORDER-3", "13900139000"),
+                "ORDER-4", dispatchableOrderWithAccount("ORDER-4", "14000140000")));
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("SUP-1001", "0", "success", "{\"status\":\"SUCCESS\"}"));
+
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort,
+                orderPort,
+                supplierGateway,
+                new FakeFrequencyPort(true),
+                BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(),
+                new FakeNotifyTaskPort(),
+                new FixedNotifyPayloadSigner(),
+                CLOCK,
+                settings(1, 3));
+
+        RechargeOutboxBatchResult result = service.processDue(1, 0, 2, "worker-A");
+
+        assertThat(result.claimed()).isEqualTo(2);
+        assertThat(result.deferred()).isGreaterThanOrEqualTo(1);
+        assertThat(result.succeeded()).isEqualTo(2);
+        assertThat(outboxPort.claimedOrderIds).containsExactly("ORDER-1", "ORDER-3");
+    }
+
     private static RechargeOutboxWorkerSettings settings() {
         return new RechargeOutboxWorkerSettings(
                 Duration.ofMinutes(2),
@@ -734,6 +816,17 @@ class RechargeOutboxWorkerServiceTest {
                 Duration.ofSeconds(30),
                 Duration.ofMinutes(30),
                 Duration.ofSeconds(5));
+    }
+
+    private static RechargeOutboxWorkerSettings settings(int parallelism, int overfetchFactor) {
+        return new RechargeOutboxWorkerSettings(
+                Duration.ofMinutes(2),
+                Duration.ofSeconds(5),
+                Duration.ofSeconds(30),
+                Duration.ofMinutes(30),
+                Duration.ofSeconds(5),
+                parallelism,
+                overfetchFactor);
     }
 
     private static RechargeOutboxEvent dispatchOutbox(String orderId) {
@@ -781,6 +874,21 @@ class RechargeOutboxWorkerServiceTest {
                 "");
     }
 
+    private static RechargeOutboxEvent supplierQueryOutbox(String orderId) {
+        return new RechargeOutboxEvent(
+                "supplier-query-" + orderId,
+                OutboxEventType.SUPPLIER_QUERY,
+                "A36",
+                orderId,
+                "OUT-" + orderId.substring(orderId.length() - 1),
+                "{\"order_id\":\"" + orderId + "\"}",
+                0,
+                10,
+                7L,
+                LocalDateTime.of(2026, 7, 8, 11, 20),
+                "");
+    }
+
     private static RechargeOutboxEvent exhaustedOutbox(OutboxEventType eventType) {
         return new RechargeOutboxEvent(
                 "dispatch-ORDER-1",
@@ -819,6 +927,24 @@ class RechargeOutboxWorkerServiceTest {
         return orderWithNotifyUrl("https://merchant.example/notify", orderId);
     }
 
+    private static RechargeFulfillmentOrder dispatchableOrderWithAccount(String orderId, String account) {
+        return new RechargeFulfillmentOrder(
+                orderId,
+                "OUT-" + orderId.substring(orderId.length() - 1),
+                "A36",
+                account,
+                "PARENT-1",
+                "SKU-1",
+                "FNK_CGS_BX",
+                5200L,
+                "https://merchant.example/notify",
+                2,
+                "DB_PERSISTED",
+                "PASSED",
+                true,
+                true);
+    }
+
     private static RechargeFulfillmentOrder orderWithNotifyUrl(String notifyUrl) {
         return orderWithNotifyUrl(notifyUrl, "ORDER-1");
     }
@@ -845,6 +971,24 @@ class RechargeOutboxWorkerServiceTest {
         return new RechargeFulfillmentOrder(
                 "ORDER-1",
                 "OUT-1",
+                "A36",
+                "13800138000",
+                "PARENT-1",
+                "SKU-1",
+                "FNK_CGS_BX",
+                5200L,
+                "https://merchant.example/notify",
+                13,
+                "DB_PERSISTED",
+                "PASSED",
+                true,
+                true);
+    }
+
+    private static RechargeFulfillmentOrder supplierAcceptedOrder(String orderId) {
+        return new RechargeFulfillmentOrder(
+                orderId,
+                "OUT-" + orderId.substring(orderId.length() - 1),
                 "A36",
                 "13800138000",
                 "PARENT-1",
@@ -1035,6 +1179,62 @@ class RechargeOutboxWorkerServiceTest {
         public SupplierGatewayResponse invalid(SupplierInvalidGatewayRequest request) {
             invalidRequests.add(request);
             return dispatchResponses.getFirst();
+        }
+    }
+
+    /**
+     * 检测 dispatch/query 是否并发重叠的假 gateway：进入时自增在途计数，>1 则置 overlap，
+     * 休眠扩大并发窗口，退出时自减。配合 {@code executeClaimed} 的同账号锁，正确实现下 overlap 恒为 false。
+     */
+    private static final class ConcurrencyDetectingSupplierGatewayPort implements RechargeSupplierGatewayPort {
+
+        private final AtomicInteger inFlight = new AtomicInteger(0);
+        private final AtomicBoolean overlap = new AtomicBoolean(false);
+        private final List<SupplierDispatchGatewayRequest> dispatchRequests = new ArrayList<>();
+        private final List<SupplierQueryGatewayRequest> queryRequests = new ArrayList<>();
+
+        @Override
+        public SupplierGatewayResponse dispatch(SupplierDispatchGatewayRequest request) {
+            dispatchRequests.add(request);
+            return detectConcurrency(SupplierGatewayResponse.success("SUP-DISPATCH", "0", "success", "{}"));
+        }
+
+        @Override
+        public SupplierGatewayResponse query(SupplierQueryGatewayRequest request) {
+            queryRequests.add(request);
+            return detectConcurrency(SupplierGatewayResponse.success("SUP-QUERY", "0", "success", "{}"));
+        }
+
+        @Override
+        public SupplierGatewayResponse invalid(SupplierInvalidGatewayRequest request) {
+            return SupplierGatewayResponse.success("SUP-INVALID", "0", "success", "{}");
+        }
+
+        boolean overlap() {
+            return overlap.get();
+        }
+
+        List<SupplierDispatchGatewayRequest> dispatchRequests() {
+            return dispatchRequests;
+        }
+
+        List<SupplierQueryGatewayRequest> queryRequests() {
+            return queryRequests;
+        }
+
+        private SupplierGatewayResponse detectConcurrency(SupplierGatewayResponse response) {
+            if (inFlight.incrementAndGet() > 1) {
+                overlap.set(true);
+            }
+            try {
+                Thread.sleep(80);
+                return response;
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                return response;
+            } finally {
+                inFlight.decrementAndGet();
+            }
         }
     }
 

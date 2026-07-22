@@ -229,7 +229,7 @@ public class RechargeOutboxWorkerService {
         }
         if (parallelism <= MIN_PARALLELISM || claimedEvents.size() == 1) {
             for (RechargeOutboxEvent event : claimedEvents) {
-                result = result.add(handleClaimed(event));
+                result = result.add(handleClaimed(event, loadOrder(event)));
             }
             return result;
         }
@@ -241,9 +241,10 @@ public class RechargeOutboxWorkerService {
             List<Future<RechargeOutboxBatchResult.Outcome>> futures = new ArrayList<>(claimedEvents.size());
             for (RechargeOutboxEvent event : claimedEvents) {
                 futures.add(executor.submit(() -> {
-                    Object lock = resolveAccountLock(event, accountLocks, noAccountLock);
+                    RechargeFulfillmentOrder order = loadOrder(event);
+                    Object lock = accountLock(order, accountLocks, noAccountLock);
                     synchronized (lock) {
-                        return handleClaimed(event);
+                        return handleClaimed(event, order);
                     }
                 }));
             }
@@ -262,9 +263,17 @@ public class RechargeOutboxWorkerService {
         return result;
     }
 
-    private Object resolveAccountLock(
-            RechargeOutboxEvent event, ConcurrentHashMap<String, Object> accountLocks, Object noAccountLock) {
-        RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
+    /**
+     * 加载已 claim 事件的订单快照，供账号锁键计算与履约决策共用，避免执行期重复查询。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}「7. 同账号并行语义」。
+     */
+    private RechargeFulfillmentOrder loadOrder(RechargeOutboxEvent event) {
+        return orderPort.findByOrderId(event.orderId()).orElse(null);
+    }
+
+    private Object accountLock(
+            RechargeFulfillmentOrder order, ConcurrentHashMap<String, Object> accountLocks, Object noAccountLock) {
         if (order == null || order.account() == null || order.account().isBlank()) {
             return noAccountLock;
         }
@@ -294,12 +303,12 @@ public class RechargeOutboxWorkerService {
 
     private record FairSelectResult(List<RechargeOutboxEvent> selected, int deferredCount) {}
 
-    private RechargeOutboxBatchResult.Outcome handleClaimed(RechargeOutboxEvent event) {
+    private RechargeOutboxBatchResult.Outcome handleClaimed(RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
         try {
             return switch (event.eventType()) {
-                case SUPPLIER_DISPATCH -> handleSupplierDispatch(event);
-                case SUPPLIER_QUERY -> handleSupplierQuery(event);
-                case INVALID_ORDER -> handleInvalidOrder(event);
+                case SUPPLIER_DISPATCH -> handleSupplierDispatch(event, order);
+                case SUPPLIER_QUERY -> handleSupplierQuery(event, order);
+                case INVALID_ORDER -> handleInvalidOrder(event, order);
                 default -> {
                     String reason = "unsupported outbox event type: " + event.eventType();
                     markFailedOrManualRequired(event, reason, settings.retryBackoff());
@@ -314,8 +323,8 @@ public class RechargeOutboxWorkerService {
         }
     }
 
-    private RechargeOutboxBatchResult.Outcome handleSupplierDispatch(RechargeOutboxEvent event) {
-        RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
+    private RechargeOutboxBatchResult.Outcome handleSupplierDispatch(
+            RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
         if (order == null) {
             markFailedOrManualRequired(event, "order not found for dispatch", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
@@ -468,8 +477,8 @@ public class RechargeOutboxWorkerService {
      * {@code docs/交行直充业务系统高可用方案设计.md}「17.1 任务清单」。查单仍返回处理中或传输层不可确认
      * 结果时只退避当前查单事件；只有供应商明确给出成功/失败，才复用派单终态副作用，包括回调、频控释放和余额释放。
      */
-    private RechargeOutboxBatchResult.Outcome handleSupplierQuery(RechargeOutboxEvent event) {
-        RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
+    private RechargeOutboxBatchResult.Outcome handleSupplierQuery(
+            RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
         if (order == null) {
             markFailedOrManualRequired(event, "order not found for supplier query", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
@@ -577,8 +586,8 @@ public class RechargeOutboxWorkerService {
         }
     }
 
-    private RechargeOutboxBatchResult.Outcome handleInvalidOrder(RechargeOutboxEvent event) {
-        RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
+    private RechargeOutboxBatchResult.Outcome handleInvalidOrder(
+            RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
         if (order == null) {
             markFailedOrManualRequired(event, "order not found for invalid", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
