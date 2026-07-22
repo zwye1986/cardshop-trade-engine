@@ -23,7 +23,7 @@
 2. 正常路径不依赖 XXL-Job 高频扫描数据库；XXL-Job 降级为人工入口、低频恢复和灰度回退手段。
 3. 自定义 Timer 基于 `java.util.concurrent.ScheduledThreadPoolExecutor`，参考 jain-sip `SipTimer` / `ScheduledExecutorSipTimer` 的 start、stop、schedule、cancel、future 持有和异常隔离模型。
 4. `recharge_dispatch_outbox` 继续作为持久事实源。Timer 只做内存唤醒，不做事实源，不绕过 DB CAS。
-5. 派单失败只对传输层不可确认或可重试失败重试，默认每 10 秒重试，最多 3 次；供应商明确业务失败直接推进失败终态。
+5. 派单失败只对传输层不可确认或可重试失败重试，默认每 10 秒重试，最多 3 次；对 MINISO 这类可按本地订单号查单的供应商，重试前必须优先用同一订单号查单确认，避免盲目重复发券；供应商明确业务失败直接推进失败终态。
 6. 派单返回处理中后转供应商查单 Timer，查单延迟序列为 2、4、6、8、16、64 秒，之后按 64 秒继续低频查单，直到供应商明确成功或失败，或达到配置的自动查单上限后转人工。
 7. 多节点、重启、中断、Timer 调度失败、执行中宕机都不能丢事件，最多产生重复唤醒；重复业务执行由 outbox CAS、供应商幂等号和恢复前查单规则兜底。
 8. 减少数据库开销：正常路径避免大范围 due 扫描、避免 claim 前 N+1 订单读取、减少 QUERY 中间态重复订单状态写。
@@ -36,7 +36,76 @@
 4. 本设计不移除 XXL-Job 模块；它仍作为低频恢复、人工 runOnce 和紧急回退入口。
 5. 本设计不把 Timer 内存任务当成持久任务表；持久化仍只落在 MySQL outbox 行的 `status/retry_count/next_retry_time/locked_*` 字段。
 
-## 3. 核心结论
+## 3. 旧卡管语义对齐：不可确认失败
+
+“不可确认失败”是供应商履约领域术语，指本地已经进入或可能进入供应商调用窗口，但没有拿到可证明订单成功、处理中或明确失败的供应商业务语义。它不能等同于供应商明确失败，不能释放预扣、不能创建失败回调，也不能切换供应商或商品；只能保持订单处理中，通过幂等号查单、退避重试或转人工核实。
+
+旧卡管系统里存在两种历史风格：
+
+1. 旧通用直充入口 `McOrderServiceImpl#doThirdPartyDelivery` 会把 `SupplierApiResponse == null`、`response.getSuccess=false`、`response.data == null` 和 catch 异常都折叠成“第三方渠道发货失败”字符串，再由上层重试或最终失败处理。这是实现上的粗粒度失败收敛，不能作为新引擎“供应商明确失败”的领域定义。
+2. 较新的滴滴开放券链路已经把语义拆开：`DidiApiResult` 区分传输是否成功、HTTP 状态、JSON 是否可解析和协议业务响应；`DidiErrorPolicy` 明确把网络超时、HTTP 5xx、响应非 JSON、缺少错误码、未识别错误码、重复请求但本地无成功明细等归为 UNKNOWN/TRANSPORT_UNKNOWN/REMOTE_UNKNOWN，并同步主订单为 `SUCCESS_HD(13)`，避免进入通用 retryOrder 或误判失败。
+
+因此新交易引擎采用滴滴链路的语义作为统一标准，对旧通用直充类中的“空响应/异常 buildFailed”做安全纠偏。
+
+### 3.1 归为不可确认失败
+
+| 场景 | 判定 | 后续动作 |
+| --- | --- | --- |
+| HTTP 连接异常、读超时、连接重置、TLS/DNS/IO 异常、客户端线程中断后无法确认响应 | 不可确认失败 | DISPATCH 按 10 秒退避重试；若已有供应商幂等流水，优先查单。 |
+| HTTP 5xx、502/503/504、网关错误、供应商临时不可用 | 不可确认失败 | 不退款、不失败回调；退避重试或查单。 |
+| HTTP 2xx 但响应体不是合法 JSON，或无法按渠道协议解析 | 不可确认失败 | 保持处理中；记录原始响应摘要，按策略重试或查单。 |
+| HTTP 2xx 且业务码缺失、状态字段缺失、返回码未识别 | 不可确认失败，除非渠道白名单明确该码是业务失败 | 保持处理中；告警并进入查单/人工。 |
+| 供应商返回成功业务码，但缺少完成履约所必需的数据，例如供应商订单号、卡券明细或充值凭证，导致本地无法闭环 | 不可确认失败 | 保持处理中；补查单或人工核实。 |
+| 供应商返回重复请求/幂等冲突，但本地没有成功流水、成功卡券明细或已受理状态 | 不可确认失败 | 不能重新盲派；用同一幂等号查单。 |
+| 派单请求已经写入本地供应商流水为 `new/processing`，应用在收到响应或 outbox 标记成功前宕机 | 不可确认失败 | 恢复后先查本地流水和供应商状态；必要时补写 QUERY。 |
+| 供应商查单接口自身超时、5xx、非 JSON、返回不可识别 | 查单不可确认失败 | 不改变主订单终态；按查单退避继续查。 |
+
+### 3.2 不归为不可确认失败
+
+| 场景 | 判定 | 后续动作 |
+| --- | --- | --- |
+| 本地参数校验失败、渠道配置缺失、商品快照缺失、签名材料缺失，且确认没有发出供应商请求 | 本地确定失败或配置错误 | 不走供应商查单；按配置错误转失败或人工，具体由实现策略决定。 |
+| 供应商返回已识别的明确成功码，且必要履约数据完整 | 成功 | 写成功终态。 |
+| 供应商返回已识别的处理中/受理码，例如旧状态 `SUCCESS_HD(13)` 对应的等待结果 | 中间态 | 写 `SUPPLIER_ACCEPTED` 并安排 QUERY。 |
+| 供应商返回渠道文档中列明的明确业务失败码，例如订单不存在、库存不足、余额不足、账号不符合规则、充值失败终态 | 明确失败 | 释放预扣、写失败回调、关闭 outbox。 |
+| 供应商返回重复请求，且本地已有成功流水或成功卡券明细 | 幂等成功 | 修复本地主订单为成功。 |
+| 查单返回明确订单不存在，但该订单曾经有已发送派单流水 | 不直接等同失败 | 先按渠道规则确认“订单不存在”是否表示未受理终态；不确定时转人工，避免误退款。 |
+
+### 3.3 适配器实现要求
+
+1. `SupplierGatewayStatus.FAILED` 只能由“已识别的供应商业务失败语义”产生，不能由 HTTP 异常、5xx、解析异常、未知码、空响应直接产生。
+2. `SupplierGatewayStatus.RETRYABLE_FAILED` 应覆盖传输层不可确认、远端结果未知和查单不可确认。名称保留为 `RETRYABLE_FAILED`，领域含义是“不可确认，需要靠同一幂等号继续确认”，不是“供应商失败”。
+3. 每个真实供应商 adapter 必须维护渠道响应码分类白名单：success、processing、business_failed、remote_unknown。没有被白名单识别的业务码默认按 `remote_unknown`，不能默认失败。
+4. 只有在确认请求未发出时，本地前置失败才可以不查供应商；一旦请求可能已经发出，就必须按不可确认失败处理。
+5. DISPATCH 达到 3 次不可确认自动重试上限后转 `MANUAL_REQUIRED`，订单保持处理中，不自动退款；人工或专用查单链路确认终态后再释放资金或成功回调。
+
+### 3.4 MINISO 名创专项结论
+
+旧卡管中 MINISO 有明确的供应商适配器和一段更老的直充方法，结论如下：
+
+1. 旧 `MINISOSupplierTradeServiceImpl#createOrder` 会先插入 `mc_order_supplier_flow(new)`，再调用 `MCUtils.batchGrandCoupon(account, batchList, orderId)`；旧 `McOrderServiceImpl#extProductRechargeMc` 也是把本地 `orderId` 作为名创 `orderNo` 传入。
+2. 名创成功口径是响应能解析为 JSON、`code == "200"`，且 `data` 中能取得券码明细。旧系统随后把 `mc_order.data` 写成 `couponKey/couponCode/validTime` 列表，将主单置为 `SUCCESS(12)`，并写 `mc_batch_record(state_type=3,state=1,channel=MINISO)`。
+3. 名创查单使用同一个本地 `orderId` 调 `MCUtils.queryGrand(orderId)`。这说明 `orderId/orderNo` 是新系统恢复确认时最重要的幂等查询键；只要派单请求可能已经发出，就不能把空响应或异常直接当失败。
+4. 旧系统把 `res == null`、外层异常、非 `200` 响应直接收敛为失败或返回失败码，这是历史实现的粗粒度处理，不应继承为新交易引擎的领域语义。
+5. 新仓库 dev/test 供应商 mock 在 MINISO 兼容路径上会先返回 `PROCESSING`，再由查单返回终态；这是压测模拟行为，不代表旧卡管真实 MINISO 必然异步。真实 MINISO adapter 必须以名创协议和旧卡管证据为准。
+6. 当前通用 `HttpRechargeSupplierGatewayAdapter` 会把 `code=200` 归为成功，适合 mock 或简单协议，不足以承载 MINISO 真实语义。MINISO 需要专属 response normalizer：成功必须同时校验 `code=200`、券码明细完整、数量匹配和本地成功凭据可落库。
+
+MINISO 的结果分类：
+
+| 场景 | 新系统判定 | 后续动作 |
+| --- | --- | --- |
+| `batchGrandCoupon` 连接异常、读超时、调用返回 `null`、线程中断后不知道响应是否已到达本地 | 不可确认失败 | 主单保持处理中；按 `orderId` 先调用 `queryGrand`，查不到明确终态再按派单退避策略处理。 |
+| HTTP 2xx 但响应不是合法 JSON，或缺少 `code` / `data` / `message` 等协议字段 | 不可确认失败 | 记录响应摘要和告警；优先 `queryGrand(orderId)`，不直接释放预扣。 |
+| `code == "200"` 但 `data` 为空、不是数组、券码数量少于购买数量、缺少 `couponCode` 或 `endTime` | 不可确认失败或本地闭环不完整 | 不能给商户成功，也不能失败退款；优先查单补齐券码，仍不完整则转人工。 |
+| `code != "200"` 且返回码没有被 MINISO 专属白名单证明为业务终态失败 | 远端未知 | 默认不可确认；用 `queryGrand(orderId)` 确认，不能按旧代码“一切非 200 失败”处理。 |
+| `code != "200"` 且 MINISO 协议白名单确认是确定业务失败，例如请求未受理、批次不可用、库存不足、账号规则不符等 | 明确失败 | 执行失败终态、副作用和退款释放；该白名单需要按供应商文档或生产对账证据维护，旧仓库未沉淀完整码表。 |
+| `queryGrand(orderId)` 返回成功且券码明细完整 | 成功 | 写成功终态、券码明细、批次记录和商户成功回调。 |
+| `queryGrand(orderId)` 超时、5xx、非 JSON、未知码或返回内容不完整 | 查单不可确认失败 | 按查单退避继续查；达到自动上限转人工，不自动失败。 |
+| `queryGrand(orderId)` 返回订单不存在 | 不直接等同失败 | 只有 MINISO 协议明确“订单不存在=该 orderNo 未被受理且可重派/可失败”时才进入对应动作；否则转人工。 |
+
+因此对 MINISO 需要把用户初稿中的“派单失败每 10 秒重试 3 次”细化为“可确认请求未发出时可以重派；请求可能发出时先查单确认”。如果后续拿到名创文档证明 `orderNo` 完全幂等，才允许用同一 `orderNo` 直接重派，否则默认查单优先。
+
+## 4. 核心结论
 
 采用“持久 outbox + 内存 Timer 唤醒 + DB CAS 执行”的方案：
 
@@ -69,9 +138,9 @@ Timer 的职责只有三个：
 4. 记录任务重试次数、最大次数和最后错误。
 5. 在多节点和重启恢复时提供唯一可信状态。
 
-## 4. 模块设计
+## 5. 模块设计
 
-### 4.1 `FulfillmentTimer`
+### 5.1 `FulfillmentTimer`
 
 位置：application 定义 interface，infrastructure/bootstrap 提供基于 `ScheduledThreadPoolExecutor` 的 adapter。
 
@@ -115,7 +184,7 @@ public record FulfillmentTimerTask(
 5. Timer 线程只做轻量唤醒和投递，不在 Timer 线程里执行供应商 HTTP。实际 DB claim 和供应商 I/O 交给独立的 fulfillment executor，避免少数慢供应商调用拖住后续定时触发。
 6. Timer 队列默认设置内存保护阈值，例如 `trade.engine.fulfillment.timer.max-pending-tasks=200000`。达到阈值时拒绝新增内存任务，记录限流指标，依赖 recovery scan 补漏。
 
-### 4.2 `FulfillmentTimerCoordinator`
+### 5.2 `FulfillmentTimerCoordinator`
 
 位置：application。
 
@@ -148,7 +217,7 @@ public interface FulfillmentTimerCoordinator {
 6. Worker 在可重试失败并成功回写 `next_retry_time` 后，调用 Coordinator 按新的 dueAt 重新安排同一个 eventId。
 7. Worker 在终态副作用完成且 outbox 标记 `SUCCESS` 后，调用 Coordinator cancel 当前 eventId。
 
-### 4.3 `FulfillmentTaskExecutor`
+### 5.3 `FulfillmentTaskExecutor`
 
 位置：application。
 
@@ -191,12 +260,12 @@ public record FulfillmentExecutionResult(
 2. claim 成功后才加载订单当前状态。正常路径不再有“扫描 1000 行，再 claim 前读取 1000 次订单”的 N+1 读。
 3. DISPATCH 事件执行前先检查本地订单状态和最近供应商流水。若发现订单已是 `SUPPLIER_ACCEPTED` 或已有同 `supplier_request_id` 的已发送流水，不能盲目重复派单；应幂等补写 `SUPPLIER_QUERY` 事件并关闭 DISPATCH。
 4. DISPATCH 明确业务失败直接推进失败终态、释放 Redis reservation、写 `recharge_balance_delta_outbox(RELEASE)`、生成失败回调，然后把 DISPATCH outbox 标为 `SUCCESS`。明确业务失败不再占用派单重试次数。
-5. DISPATCH 的 `RETRYABLE_FAILED` 使用固定 10 秒退避，最多 3 次。第 3 次仍不可确认时，事件进入 `MANUAL_REQUIRED`，订单保持 `DISPATCHING/PROCESSING` 或当前可审计状态，不自动退款。
+5. DISPATCH 的 `RETRYABLE_FAILED` 使用固定 10 秒退避，最多 3 次。对已经可能发出供应商请求且支持按本地幂等号查单的渠道，下一次自动动作应先查单再决定是否重派；第 3 次仍不可确认时，事件进入 `MANUAL_REQUIRED`，订单保持 `DISPATCHING/PROCESSING` 或当前可审计状态，不自动退款。
 6. QUERY 返回 `PROCESSING` 时，订单已经是 `SUPPLIER_ACCEPTED` 的情况下不重复写订单状态；只更新供应商流水必要审计信息和 outbox 的 `retry_count/next_retry_time/last_error`。返回码、返回描述没有变化时可以不插入新的处理中流水，以降低中间态查单写放大。
 7. QUERY 明确成功或失败时执行终态副作用，副作用全部完成后才标记 QUERY outbox `SUCCESS`。
 8. 执行过程中所有异常都转换为 retryable failure 或明确 manual required；高频路径日志使用 `LogStormGuard` 采样，指标保持全量计数。
 
-### 4.4 `FulfillmentRecoveryService`
+### 5.4 `FulfillmentRecoveryService`
 
 位置：application，bootstrap/infrastructure 提供启动和周期调用。
 
@@ -209,9 +278,9 @@ Recovery 不是主触发器，只负责补漏：
 5. recovery scan 的 SQL 继续使用 `status + next_retry_time + id` 和 `status + locked_until + id` 索引，不做高频全表扫描。
 6. XXL-Job 的 `rechargeSupplierDispatchJob` / `rechargeSupplierQueryJob` 保留为人工 runOnce 和紧急回退；Timer 启用后生产默认不再高频触发它们。
 
-## 5. 数据持久化规则
+## 6. 数据持久化规则
 
-### 5.1 `SUPPLIER_DISPATCH` 插入
+### 6.1 `SUPPLIER_DISPATCH` 插入
 
 落库事务继续写 `recharge_dispatch_outbox`，但插入规则调整为：
 
@@ -228,7 +297,7 @@ Recovery 不是主触发器，只负责补漏：
 
 `next_retry_time` 与 Timer dueAt 使用同一时间。这样 Timer 丢失时，recovery scan 可以按同一字段补漏；Timer 提前触发时，claim SQL 会因未到期拒绝。
 
-### 5.2 `SUPPLIER_QUERY` 插入
+### 6.2 `SUPPLIER_QUERY` 插入
 
 派单返回 `PROCESSING` 后写入独立查单事件：
 
@@ -244,7 +313,7 @@ Recovery 不是主触发器，只负责补漏：
 
 查单退避使用配置序列 `2,4,6,8,16,64` 秒。第 7 次及以后继续使用最后一个间隔 64 秒，直到终态或自动查单上限。
 
-### 5.3 状态回写返回值
+### 6.3 状态回写返回值
 
 现有 `markSuccess/markFailed/markManualRequired` 返回 `void`，Timer 方案中需要更明确的持久化结果：
 
@@ -254,9 +323,9 @@ Recovery 不是主触发器，只负责补漏：
 
 推荐把端口调整为结果对象，而不是让业务层根据本地 delay 推测数据库已成功写入。
 
-## 6. 运行流程
+## 7. 运行流程
 
-### 6.1 新订单派单
+### 7.1 新订单派单
 
 ```text
 PersistRechargeOrderConsumerService.persist(message)
@@ -269,14 +338,18 @@ PersistRechargeOrderConsumerService.persist(message)
 
 设计选择：Timer 调度放在 MySQL commit 之后、Redis `markDbPersisted` 之前。原因是供应商履约只依赖 DB_PERSISTED 事实和 Redis reservation，不依赖 Redis 查询态已经标记完成；若 Timer 调度失败，也不会影响 MySQL 事实和 RabbitMQ ack，recovery 会补漏。
 
-### 6.2 派单可重试失败
+### 7.2 派单可重试失败
 
 ```text
 Timer fires dispatch-{orderId}
   -> claimDueByEventId
   -> supplier dispatch timeout / 5xx / connection error
-  -> markRetryableFailure(next_retry_time=now+10s, retry_count+1)
-  -> schedule dispatch-{orderId} at next_retry_time
+  -> if request may have reached supplier and supplier supports query:
+       query by the same idempotency key first
+       terminal query result: close dispatch and apply terminal side effects
+       unknown query result: markRetryableFailure(next_retry_time=now+10s, retry_count+1)
+  -> otherwise markRetryableFailure(next_retry_time=now+10s, retry_count+1)
+  -> schedule next due event from persisted next_retry_time
 ```
 
 第 3 次可重试失败后：
@@ -289,7 +362,7 @@ metric + alert
 
 不释放余额、不生成失败回调，避免把未知调用窗口误判为供应商业务失败。
 
-### 6.3 派单明确失败
+### 7.3 派单明确失败
 
 ```text
 Timer fires dispatch-{orderId}
@@ -305,7 +378,7 @@ Timer fires dispatch-{orderId}
 
 明确业务失败不进行 10 秒重试。
 
-### 6.4 派单处理中与查单
+### 7.4 派单处理中与查单
 
 ```text
 supplier dispatch returns PROCESSING
@@ -335,11 +408,11 @@ no refund
 alert operations
 ```
 
-### 6.5 作废事件
+### 7.5 作废事件
 
 `INVALID_ORDER` 仍共用 `recharge_dispatch_outbox` 的持久化、claim 和 recovery 能力。本轮 Timer 方案优先覆盖 `SUPPLIER_DISPATCH` 与 `SUPPLIER_QUERY`；作废事件可在同一个 Coordinator 中按 `eventId=invalid-{orderId}` 安排。若作废入口没有同步安排 Timer，低频 recovery 和人工 XXL runOnce 仍会处理。
 
-## 7. 数据库开销削减策略
+## 8. 数据库开销削减策略
 
 1. 正常路径从“每轮扫 due 集合”改为“按 eventId 触发 claim”，将数据库读从批量扫描变成单事件精准读写。
 2. 去掉正常派单路径上的 claim 前公平 N+1 订单读取；同账号串行和频控判断在 claim 成功后做。
@@ -350,7 +423,7 @@ alert operations
 7. Timer 执行并发与落库 Consumer DB pool 隔离配置。供应商 I/O 使用独立 executor；DB claim/update 使用受控并发，避免派单再次打满 Hikari。
 8. 旧 XXL 高频任务默认暂停或降频，仅在 Timer 关闭、恢复排障或人工补偿时使用。
 
-## 8. 多节点与故障边界
+## 9. 多节点与故障边界
 
 | 场景 | 处理规则 |
 | --- | --- |
@@ -366,7 +439,7 @@ alert operations
 | MySQL 短暂不可用 | Timer 触发 claim 失败时采样 warn/error，不在内存无限忙重试；按短延迟重排少量事件，其余由 recovery 接管。 |
 | Redis 不可用 | 下单入口仍按现有 fail closed；已落库派单可继续，失败退款释放 Redis reservation 时失败则当前 outbox 保持 retry。 |
 
-## 9. 配置
+## 10. 配置
 
 新增或调整 `trade.engine.fulfillment`：
 
@@ -389,7 +462,7 @@ alert operations
 
 现有 `outbox-claim-lease-seconds`、`frequency-*`、`outbox-parallelism` 可保留。Timer 启用后，`outbox-parallelism` 只服务人工/恢复批处理路径；事件级执行的供应商 I/O 并发应使用独立配置或复用 `thread-pool.supplier-io-size`。
 
-## 10. 可观测性
+## 11. 可观测性
 
 新增指标：
 
@@ -416,7 +489,7 @@ alert operations
 3. MySQL/Rabbit/Redis/供应商异常按仓库规则记录异常栈；高频路径必须通过 `LogStormGuard` 采样或汇总，避免压测和生产故障时日志本身打爆磁盘或采集链路。
 4. 日志上下文包含 `eventId/eventType/orderId/outOrderSn/orgCode/workerId/source/retryCount`，不打印密钥、token、完整供应商敏感 payload。
 
-## 11. 灰度与回退
+## 12. 灰度与回退
 
 阶段 1：文档与配置准备。
 
@@ -448,7 +521,7 @@ alert operations
 2. XXL 仅保留低频补偿、人工 runOnce 和紧急回退。
 3. 若 Timer 指标异常，关闭 `timer-enabled` 并恢复原 XXL 调度参数。
 
-## 12. 需要修改的现有设计文档
+## 13. 需要修改的现有设计文档
 
 按仓库规则，实施前必须同步以下文档：
 
@@ -467,7 +540,7 @@ alert operations
 4. `docs/集成测试.md`
    - 下一轮 pro143 对照压测记录 Timer 启用前后的落库、派单成功数、Hikari、Timer lag 和 outbox 年龄。
 
-## 13. 测试策略
+## 14. 测试策略
 
 Application 单元测试：
 
@@ -519,7 +592,7 @@ Bootstrap/配置测试：
 3. 对比 Hikari active/pending、批落库 phase duration、Timer lag、outbox since_due 年龄。
 4. 成功口径：在 MySQL 环境负载相近时，Timer 启用后供应商派单成功数明显高于“不到 5000”的基线；Hikari pending 不因派单/查单扫描而持续打满；DISPATCH since_due 最大年龄能持续回落。
 
-## 14. 方案取舍
+## 15. 方案取舍
 
 本文选择 Timer 唤醒而不是直接在落库 Consumer 中同步调用供应商，原因是：
 
@@ -539,10 +612,10 @@ Bootstrap/配置测试：
 2. 新增 timer 表会引入双事实源，恢复时反而需要解决 outbox 与 timer 表一致性。
 3. 内存 Timer 丢失后用低频 recovery scan 从 outbox 重建即可。
 
-## 15. 实施边界
+## 16. 实施边界
 
 正式实现前先完成三件事：
 
 1. 更新两份权威设计文档和部署/Nacos 文档。
-2. 为 Timer/Coordinator/Executor/Mapper 写单元测试，先锁住重试、查单退避和多节点 CAS 行为。
+2. 为 Timer/Coordinator/Executor/Mapper 写单元测试，先锁住重试、查单退避和多节点 CAS 行为；为 MINISO normalizer 增加 code=200 但券码缺失、非 200 未知码、查单订单不存在、查单成功补齐券码等分类测试。
 3. 以灰度开关接入，不一次性停掉 XXL；Timer 指标稳定后再调整生产 XXL 高频调度。
