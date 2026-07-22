@@ -5,6 +5,7 @@ import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
 import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
@@ -65,6 +66,29 @@ public class RedisDirectRechargeFrequencyAdapter implements DirectRechargeFreque
                         ex);
             }
             return true;
+        }
+    }
+
+    @Override
+    public Optional<String> currentOwner(String orgCode, String account) {
+        String key = key(orgCode, account);
+        if (!StringUtils.hasText(key)) {
+            return Optional.empty();
+        }
+        try {
+            String owner = redisTemplate.opsForValue().get(key).block(timeout());
+            return StringUtils.hasText(owner) ? Optional.of(owner) : Optional.empty();
+        } catch (Exception ex) {
+            LogDecision decision = logStormGuard.shouldLog(LOG_EVENT_ACQUIRE_FAILED);
+            if (decision.shouldLog()) {
+                log.error("直充限频锁查询异常 key={}, occurrence={}, sampled={}",
+                        key,
+                        decision.occurrence(),
+                        decision.sampledOccurrence(),
+                        ex);
+            }
+            // 预检失败时不阻塞调度，交给后续 acquire 路径处理。
+            return Optional.empty();
         }
     }
 

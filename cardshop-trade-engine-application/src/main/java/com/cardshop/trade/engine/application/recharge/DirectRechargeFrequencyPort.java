@@ -1,6 +1,7 @@
 package com.cardshop.trade.engine.application.recharge;
 
 import java.time.Duration;
+import java.util.Optional;
 
 /**
  * 同账号直充限频端口。
@@ -13,4 +14,12 @@ public interface DirectRechargeFrequencyPort {
     boolean acquire(String orgCode, String account, String orderId, Duration ttl);
 
     void releaseIfOwned(String orgCode, String account, String orderId, Duration minimumHold);
+
+    /**
+     * 只读查询当前限频锁持有者 orderId；无锁时返回 empty。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}：
+     * 公平调度预检用，禁止在此处抢锁。
+     */
+    Optional<String> currentOwner(String orgCode, String account);
 }

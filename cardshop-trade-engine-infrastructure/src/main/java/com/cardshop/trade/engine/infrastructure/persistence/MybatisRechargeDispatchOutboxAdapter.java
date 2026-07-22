@@ -69,7 +69,16 @@ public class MybatisRechargeDispatchOutboxAdapter
 
     @Override
     public List<RechargeOutboxEvent> selectDueForShard(int shardTotal, int shardIndex, int limit) {
-        return requireMapper().selectDueForShard(shardTotal, shardIndex, limit)
+        return selectDueForShard(shardTotal, shardIndex, limit, List.of(OutboxEventType.SUPPLIER_DISPATCH));
+    }
+
+    @Override
+    public List<RechargeOutboxEvent> selectDueForShard(
+            int shardTotal, int shardIndex, int limit, List<OutboxEventType> eventTypes) {
+        List<String> types = eventTypes == null || eventTypes.isEmpty()
+                ? List.of(OutboxEventType.SUPPLIER_DISPATCH.name())
+                : eventTypes.stream().map(Enum::name).toList();
+        return requireMapper().selectDueForShardByEventTypes(shardTotal, shardIndex, limit, types)
                 .stream()
                 .map(this::toEvent)
                 .toList();

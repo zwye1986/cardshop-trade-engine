@@ -233,7 +233,8 @@ public class RedisMysqlTradeEngineObservabilitySnapshotProvider implements Trade
                         new TradeEngineObservabilitySnapshot.OutboxKey(eventType, status),
                         new TradeEngineObservabilitySnapshot.CountAge(
                                 longValue(row.get("count")),
-                                longValue(row.get("max_age_seconds"))));
+                                longValue(row.get("max_age_seconds")),
+                                longValue(row.get("max_age_since_due_seconds"))));
             }
             return result;
         }
@@ -252,7 +253,8 @@ public class RedisMysqlTradeEngineObservabilitySnapshotProvider implements Trade
                         status,
                         new TradeEngineObservabilitySnapshot.CountAge(
                                 longValue(row.get("count")),
-                                longValue(row.get("max_age_seconds"))));
+                                longValue(row.get("max_age_seconds")),
+                                0L));
             }
             return result;
         }
