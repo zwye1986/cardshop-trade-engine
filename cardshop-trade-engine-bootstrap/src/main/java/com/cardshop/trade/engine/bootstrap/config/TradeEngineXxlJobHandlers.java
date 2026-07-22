@@ -593,12 +593,27 @@ public class TradeEngineXxlJobHandlers {
         List<OutboxEventType> defaultEventTypes = defaultEventTypesForHandler(handlerName);
         OutboxXxlRunOptions options = OutboxXxlRunOptions.parse(
                 context.jobId(), context.jobParam(), defaultEventTypes);
-        return "%s finished shardTotal=%d, shardIndex=%d, limit=%d, workerId=%s, batchId=%s, parallelism=%d, "
-                        + "eventTypes=%s, scanned=%d, claimed=%d, succeeded=%d, failed=%d, skipped=%d, deferred=%d"
+        return formatOutboxFinishedMessage(
+                handlerName, context.shardTotal(), context.shardIndex(), options, result);
+    }
+
+    /**
+     * 组装 XXL 成功回执文案。单独抽出便于单测覆盖字符串拼接与 {@code .formatted} 优先级问题。
+     */
+    static String formatOutboxFinishedMessage(
+            String handlerName,
+            int shardTotal,
+            int shardIndex,
+            OutboxXxlRunOptions options,
+            RechargeOutboxBatchResult result) {
+        // 必须把拼接后的整段模板放进括号再 .formatted：否则 + 优先级低于方法调用，
+        // 只会格式化后半段，导致 %d 吃到 workerId 等 String 并抛 IllegalFormatConversionException。
+        return ("%s finished shardTotal=%d, shardIndex=%d, limit=%d, workerId=%s, batchId=%s, parallelism=%d, "
+                        + "eventTypes=%s, scanned=%d, claimed=%d, succeeded=%d, failed=%d, skipped=%d, deferred=%d")
                 .formatted(
                         handlerName,
-                        context.shardTotal(),
-                        context.shardIndex(),
+                        shardTotal,
+                        shardIndex,
                         options.limit(),
                         options.workerId(),
                         options.batchId(),
