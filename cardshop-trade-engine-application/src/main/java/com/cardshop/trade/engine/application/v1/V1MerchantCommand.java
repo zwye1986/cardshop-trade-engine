@@ -10,6 +10,20 @@ package com.cardshop.trade.engine.application.v1;
  * @param appId 从 token 或认证上下文解析出的商户 appId
  * @param orgCode 从 token 或认证上下文解析出的商户编码，不信任请求体自带值
  * @param rawBody 原始请求体，用于协议预校验、解密和验签
+ * @param loadTestHeader 请求头 {@code X-Load-Test} 原值；空白表示未启用压测旁路
  */
-public record V1MerchantCommand(String appId, String orgCode, String rawBody) {
+public record V1MerchantCommand(String appId, String orgCode, String rawBody, String loadTestHeader) {
+
+    /**
+     * 兼容既有三参构造；未携带压测头时视为未启用旁路。
+     *
+     * <p>参见详细设计「3. API/V1 接入层」。
+     */
+    public V1MerchantCommand(String appId, String orgCode, String rawBody) {
+        this(appId, orgCode, rawBody, "");
+    }
+
+    public V1MerchantCommand {
+        loadTestHeader = loadTestHeader == null ? "" : loadTestHeader;
+    }
 }
