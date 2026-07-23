@@ -24,6 +24,15 @@ public interface RechargeOutboxPort {
     List<RechargeOutboxEvent> selectDueForShard(
             int shardTotal, int shardIndex, int limit, List<OutboxEventType> eventTypes);
 
+    /**
+     * 按事件号读取单个已到期或租约过期的履约事件。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。该入口供进程内 timer
+     * 直接唤醒指定事件，必须与分片扫描使用相同的 due 条件和 {@code recharge_order_ext} 归属哨兵，
+     * 只是省去范围扫描成本。
+     */
+    Optional<RechargeOutboxEvent> findDueByEventId(String eventId, OutboxEventType eventType);
+
     Optional<RechargeOutboxEvent> claim(RechargeOutboxEvent event, String workerId, Duration lease);
 
     void markSuccess(RechargeOutboxEvent event);

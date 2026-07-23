@@ -3,6 +3,7 @@ package com.cardshop.trade.engine.bootstrap.config;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
+import com.cardshop.trade.engine.application.recharge.RechargeDispatchTimerPort;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
@@ -39,6 +40,7 @@ public class TradeEngineConsumerAutoConfiguration {
             ObjectProvider<PersistOrderSnapshotPort> snapshotPortProvider,
             ObjectProvider<RechargeOrderBatchPersistencePort> batchPersistencePortProvider,
             ObjectProvider<PersistedOrderStatePort> persistedOrderStatePortProvider,
+            ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
             RechargeOrderPersistencePort persistencePort,
             RechargeAcceptReliabilityPort reliabilityPort,
             Clock clock) {
@@ -48,6 +50,7 @@ public class TradeEngineConsumerAutoConfiguration {
                 batchPersistencePortProvider.getIfAvailable(),
                 persistedOrderStatePortProvider.getIfAvailable(PersistedOrderStatePort::noop),
                 reliabilityPort,
+                dispatchTimerPortProvider.getIfAvailable(RechargeDispatchTimerPort::noop),
                 clock);
     }
 }

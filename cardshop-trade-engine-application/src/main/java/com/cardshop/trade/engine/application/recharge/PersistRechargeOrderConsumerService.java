@@ -2,6 +2,7 @@ package com.cardshop.trade.engine.application.recharge;
 
 import com.cardshop.trade.engine.application.logging.LogStormGuard;
 import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
+import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -41,6 +42,7 @@ public class PersistRechargeOrderConsumerService {
     private static final String LOG_EVENT_REDIS_MARK_FAILED_INTERRUPTED = "persist-consumer.redis-mark-failed.interrupted";
     private static final String LOG_EVENT_REDIS_MARK_FAILED_EXCEPTION = "persist-consumer.redis-mark-failed.exception";
     private static final String LOG_EVENT_PERSISTED_STATE_LOOKUP_FAILED = "persist-consumer.persisted-state.lookup.failed";
+    private static final String LOG_EVENT_DISPATCH_TIMER_SCHEDULE_FAILED = "persist-consumer.dispatch-timer.schedule.failed";
     private static final long RETRY_DELAY_MILLIS = 60_000L;
     private static final Duration DEFAULT_REDIS_MARK_TIMEOUT = Duration.ofSeconds(3);
     private static final int MAX_FAIL_REASON_LENGTH = 500;
@@ -52,8 +54,10 @@ public class PersistRechargeOrderConsumerService {
     private final RechargeOrderBatchPersistencePort batchPersistencePort;
     private final PersistedOrderStatePort persistedOrderStatePort;
     private final RechargeAcceptReliabilityPort reliabilityPort;
+    private final RechargeDispatchTimerPort dispatchTimerPort;
     private final Clock clock;
     private final Duration redisMarkTimeout;
+    private final Duration dispatchInitialDelay;
     private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
     public PersistRechargeOrderConsumerService(
@@ -83,8 +87,10 @@ public class PersistRechargeOrderConsumerService {
                 batchPersistencePort,
                 PersistedOrderStatePort.noop(),
                 reliabilityPort,
+                RechargeDispatchTimerPort.noop(),
                 clock,
-                DEFAULT_REDIS_MARK_TIMEOUT);
+                DEFAULT_REDIS_MARK_TIMEOUT,
+                RechargeDispatchEventIds.dispatchInitialDelay());
     }
 
     public PersistRechargeOrderConsumerService(
@@ -100,8 +106,30 @@ public class PersistRechargeOrderConsumerService {
                 batchPersistencePort,
                 persistedOrderStatePort,
                 reliabilityPort,
+                RechargeDispatchTimerPort.noop(),
                 clock,
-                DEFAULT_REDIS_MARK_TIMEOUT);
+                DEFAULT_REDIS_MARK_TIMEOUT,
+                RechargeDispatchEventIds.dispatchInitialDelay());
+    }
+
+    public PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeOrderBatchPersistencePort batchPersistencePort,
+            PersistedOrderStatePort persistedOrderStatePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock) {
+        this(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedOrderStatePort,
+                reliabilityPort,
+                dispatchTimerPort,
+                clock,
+                DEFAULT_REDIS_MARK_TIMEOUT,
+                RechargeDispatchEventIds.dispatchInitialDelay());
     }
 
     /**
@@ -124,8 +152,10 @@ public class PersistRechargeOrderConsumerService {
                 null,
                 PersistedOrderStatePort.noop(),
                 reliabilityPort,
+                RechargeDispatchTimerPort.noop(),
                 clock,
-                redisMarkTimeout);
+                redisMarkTimeout,
+                RechargeDispatchEventIds.dispatchInitialDelay());
     }
 
     PersistRechargeOrderConsumerService(
@@ -136,6 +166,48 @@ public class PersistRechargeOrderConsumerService {
             RechargeAcceptReliabilityPort reliabilityPort,
             Clock clock,
             Duration redisMarkTimeout) {
+        this(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedOrderStatePort,
+                reliabilityPort,
+                RechargeDispatchTimerPort.noop(),
+                clock,
+                redisMarkTimeout);
+    }
+
+    PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeOrderBatchPersistencePort batchPersistencePort,
+            PersistedOrderStatePort persistedOrderStatePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock,
+            Duration redisMarkTimeout) {
+        this(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedOrderStatePort,
+                reliabilityPort,
+                dispatchTimerPort,
+                clock,
+                redisMarkTimeout,
+                RechargeDispatchEventIds.dispatchInitialDelay());
+    }
+
+    PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeOrderBatchPersistencePort batchPersistencePort,
+            PersistedOrderStatePort persistedOrderStatePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock,
+            Duration redisMarkTimeout,
+            Duration dispatchInitialDelay) {
         this.snapshotPort = Objects.requireNonNull(snapshotPort, "snapshotPort must not be null");
         this.persistencePort = Objects.requireNonNull(persistencePort, "persistencePort must not be null");
         this.batchPersistencePort = batchPersistencePort;
@@ -143,8 +215,10 @@ public class PersistRechargeOrderConsumerService {
                 persistedOrderStatePort,
                 "persistedOrderStatePort must not be null");
         this.reliabilityPort = Objects.requireNonNull(reliabilityPort, "reliabilityPort must not be null");
+        this.dispatchTimerPort = Objects.requireNonNull(dispatchTimerPort, "dispatchTimerPort must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.redisMarkTimeout = positiveTimeout(redisMarkTimeout);
+        this.dispatchInitialDelay = positiveTimeout(dispatchInitialDelay);
     }
 
     /**
@@ -185,6 +259,7 @@ public class PersistRechargeOrderConsumerService {
                     failReason);
         }
 
+        scheduleDispatchAfterMysqlCommit(aggregate);
         if (!redisOrderWritten) {
             return PersistRechargeOrderResult.persisted(selected.persistSource());
         }
@@ -281,6 +356,7 @@ public class PersistRechargeOrderConsumerService {
                     failReason);
         }
 
+        persistedCandidates.forEach(selectedMessage -> scheduleDispatchAfterMysqlCommit(selectedMessage.aggregate()));
         int redisMarkFailedCount = 0;
         for (SelectedBatchMessage selectedMessage : selectedMessages) {
             if (!selectedMessage.redisOrderWritten()) {
@@ -331,6 +407,31 @@ public class PersistRechargeOrderConsumerService {
                     decision.sampledOccurrence(),
                     ex));
             return Set.of();
+        }
+    }
+
+    private void scheduleDispatchAfterMysqlCommit(OrderPersistAggregate aggregate) {
+        /*
+         * 参见 docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」。
+         * timer 只是热路径唤醒，真正任务事实已随 MySQL 事务写入 recharge_dispatch_outbox。调度失败不能影响
+         * 已提交订单的 MQ ack 语义，低频 XXL-Job 扫描会按 next_retry_time 恢复。
+         */
+        if (!aggregate.dispatchOutboxRequired() || !aggregate.snapshot().balanceReserved()) {
+            return;
+        }
+        String eventId = RechargeDispatchEventIds.dispatchEventId(aggregate.snapshot().orderId());
+        try {
+            dispatchTimerPort.schedule(eventId, OutboxEventType.SUPPLIER_DISPATCH, dispatchInitialDelay);
+        } catch (RuntimeException ex) {
+            logSampledError(LOG_EVENT_DISPATCH_TIMER_SCHEDULE_FAILED, decision -> log.error(
+                    "订单落库后调度供应商派单timer失败 orgCode={}, outOrderSn={}, orderId={}, eventId={}, occurrence={}, sampled={}",
+                    aggregate.snapshot().orgCode(),
+                    aggregate.snapshot().outOrderSn(),
+                    aggregate.snapshot().orderId(),
+                    eventId,
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
         }
     }
 

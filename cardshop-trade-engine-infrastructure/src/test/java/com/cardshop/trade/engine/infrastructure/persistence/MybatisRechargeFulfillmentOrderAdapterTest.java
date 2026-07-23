@@ -1,9 +1,11 @@
 package com.cardshop.trade.engine.infrastructure.persistence;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
@@ -11,6 +13,7 @@ import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.cardshop.trade.engine.application.recharge.FulfillmentDispatchStatus;
 import com.cardshop.trade.engine.application.recharge.OrderFulfillmentStatusUpdate;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderSupplierFlowDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
@@ -37,6 +40,7 @@ class MybatisRechargeFulfillmentOrderAdapterTest {
         MybatisConfiguration configuration = new MybatisConfiguration();
         TableInfoHelper.initTableInfo(new MapperBuilderAssistant(configuration, ""), McOrderDO.class);
         TableInfoHelper.initTableInfo(new MapperBuilderAssistant(configuration, ""), RechargeOrderExtDO.class);
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(configuration, ""), McOrderSupplierFlowDO.class);
     }
 
     @Test
@@ -60,11 +64,35 @@ class MybatisRechargeFulfillmentOrderAdapterTest {
         assertThat(wrapperCaptor.getValue().getSqlSet()).contains("flow_id");
     }
 
+    @Test
+    void findLatestSupplierFlowByOrderIdReturnsFlowSnapshot() {
+        McOrderSupplierFlowMapper flowMapper = mock(McOrderSupplierFlowMapper.class);
+        McOrderSupplierFlowDO flow = new McOrderSupplierFlowDO();
+        flow.setId(88L);
+        flow.setStatus("new");
+        when(flowMapper.selectOne(any())).thenReturn(flow);
+        MybatisRechargeFulfillmentOrderAdapter adapter = adapter(mock(McOrderMapper.class), flowMapper);
+
+        var snapshot = adapter.findLatestSupplierFlowByOrderId("ORDER-1001");
+
+        assertThat(snapshot).hasValueSatisfying(value -> {
+            assertThat(value.flowId()).isEqualTo(88L);
+            assertThat(value.status()).isEqualTo("new");
+        });
+        verify(flowMapper).selectOne(any());
+    }
+
     private static MybatisRechargeFulfillmentOrderAdapter adapter(McOrderMapper orderMapper) {
+        return adapter(orderMapper, mock(McOrderSupplierFlowMapper.class));
+    }
+
+    private static MybatisRechargeFulfillmentOrderAdapter adapter(
+            McOrderMapper orderMapper,
+            McOrderSupplierFlowMapper flowMapper) {
         return new MybatisRechargeFulfillmentOrderAdapter(
                 orderMapper,
                 mock(RechargeOrderExtMapper.class),
-                mock(McOrderSupplierFlowMapper.class),
+                flowMapper,
                 new ObjectMapper(),
                 Clock.fixed(Instant.parse("2026-07-07T01:30:00Z"), ZoneOffset.UTC));
     }

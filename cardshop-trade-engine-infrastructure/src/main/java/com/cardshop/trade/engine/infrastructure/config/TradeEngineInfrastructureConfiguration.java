@@ -18,6 +18,7 @@ import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.PersistTradeOrderMessage;
+import com.cardshop.trade.engine.application.recharge.RechargeDispatchTimerPort;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerService;
@@ -26,7 +27,6 @@ import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPo
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
-import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerSettings;
 import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
 import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
@@ -755,6 +755,7 @@ public class TradeEngineInfrastructureConfiguration {
             BalanceReservationReleasePort balanceReservationReleasePort,
             RechargeNotifyTaskPort notifyTaskPort,
             ObjectProvider<MerchantNotifyPayloadSigner> payloadSignerProvider,
+            ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
             V1MerchantProfilePort merchantProfilePort,
             Clock clock,
             TradeEngineProperties properties) {
@@ -771,15 +772,25 @@ public class TradeEngineInfrastructureConfiguration {
                 balanceReservationReleasePort,
                 notifyTaskPort,
                 payloadSigner,
+                RechargeFulfillmentConfigurationSupport.deferredRechargeDispatchTimerPort(dispatchTimerPortProvider),
                 clock,
-                new RechargeOutboxWorkerSettings(
-                        Duration.ofSeconds(fulfillment.getOutboxClaimLeaseSeconds()),
-                        Duration.ofSeconds(fulfillment.getOutboxRetryBackoffSeconds()),
-                        Duration.ofSeconds(fulfillment.getFrequencyRetryDelaySeconds()),
-                        Duration.ofMinutes(fulfillment.getFrequencyLockTtlMinutes()),
-                        Duration.ofSeconds(fulfillment.getFrequencySuccessMinimumHoldSeconds()),
-                        fulfillment.getOutboxParallelism(),
-                        fulfillment.getOutboxScanOverfetchFactor()));
+                RechargeFulfillmentConfigurationSupport.workerSettings(fulfillment));
+    }
+
+    /**
+     * 创建供应商履约热路径 timer。
+     *
+     * <p>参见详细设计「9.1 派单 Outbox」。兼容直接加载本配置类的测试/本地上下文；生产自动配置中也有同名语义
+     * Bean，{@link ConditionalOnMissingBean} 会保证只保留一个实现。
+     */
+    @Bean(destroyMethod = "close")
+    @ConditionalOnBean(RechargeOutboxWorkerService.class)
+    @ConditionalOnMissingBean(RechargeDispatchTimerPort.class)
+    @ConditionalOnProperty(prefix = "trade.engine.fulfillment", name = "timer-enabled", havingValue = "true")
+    public RechargeDispatchTimerPort rechargeDispatchTimer(
+            RechargeOutboxWorkerService workerService,
+            TradeEngineProperties properties) {
+        return RechargeFulfillmentConfigurationSupport.rechargeDispatchTimer(workerService, properties);
     }
 
     @Bean

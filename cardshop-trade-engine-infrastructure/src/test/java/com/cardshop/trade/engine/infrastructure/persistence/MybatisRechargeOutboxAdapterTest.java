@@ -1,14 +1,19 @@
 package com.cardshop.trade.engine.infrastructure.persistence;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxCommand;
 import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxCommand;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.domain.order.TaskStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeDispatchOutboxDO;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
@@ -64,7 +69,9 @@ class MybatisRechargeOutboxAdapterTest {
                 "OUT-1",
                 "13800138000",
                 "FNK_CGS_BX",
-                "{\"selected_product_id\":\"SKU-1\"}"));
+                "{\"selected_product_id\":\"SKU-1\"}",
+                Duration.ofSeconds(2),
+                6));
 
         assertThat(writer.outbox.getEventId()).isEqualTo("supplier-query-ORDER-1");
         assertThat(writer.outbox.getEventType()).isEqualTo(OutboxEventType.SUPPLIER_QUERY.name());
@@ -72,11 +79,39 @@ class MybatisRechargeOutboxAdapterTest {
         assertThat(writer.outbox.getOrderId()).isEqualTo("ORDER-1");
         assertThat(writer.outbox.getOutOrderSn()).isEqualTo("OUT-1");
         assertThat(writer.outbox.getStatus()).isEqualTo(TaskStatus.INIT.name());
+        assertThat(writer.outbox.getMaxRetryCount()).isEqualTo(6);
+        assertThat(writer.outbox.getNextRetryTime()).isEqualTo(LocalDateTime.of(2026, 7, 8, 11, 20, 2));
         assertThat(writer.outbox.getShardKey()).isEqualTo("supplier-query-ORDER-1");
         assertThat(writer.outbox.getPayload())
                 .contains("\"account\":\"13800138000\"")
                 .contains("\"supplier_channel\":\"FNK_CGS_BX\"")
                 .contains("selected_product_id");
+    }
+
+    @Test
+    void selectDueForShardUsesAdapterClockForScanDueTime() {
+        RechargeDispatchOutboxMapper mapper = mock(RechargeDispatchOutboxMapper.class);
+        LocalDateTime expectedNow = LocalDateTime.of(2026, 7, 8, 11, 20);
+        when(mapper.selectDueForShardByEventTypes(
+                8,
+                3,
+                20,
+                java.util.List.of(OutboxEventType.SUPPLIER_DISPATCH.name()),
+                expectedNow))
+                .thenReturn(java.util.List.of());
+        MybatisRechargeDispatchOutboxAdapter adapter = new MybatisRechargeDispatchOutboxAdapter(
+                mapper,
+                new ObjectMapper(),
+                Clock.fixed(Instant.parse("2026-07-08T03:20:00Z"), ZoneOffset.UTC));
+
+        assertThat(adapter.selectDueForShard(8, 3, 20)).isEmpty();
+
+        verify(mapper).selectDueForShardByEventTypes(
+                8,
+                3,
+                20,
+                java.util.List.of(OutboxEventType.SUPPLIER_DISPATCH.name()),
+                expectedNow);
     }
 
     private static final class RecordingDispatchWriter implements RechargeDispatchOutboxPersistWriter {

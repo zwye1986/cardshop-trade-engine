@@ -3,6 +3,7 @@ package com.cardshop.trade.engine.infrastructure.persistence;
 import com.cardshop.trade.engine.application.recharge.FulfillmentDispatchStatus;
 import com.cardshop.trade.engine.application.recharge.OrderPersistAggregate;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshot;
+import com.cardshop.trade.engine.application.recharge.RechargeDispatchEventIds;
 import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.domain.order.PersistStatus;
@@ -36,7 +37,8 @@ final class RechargeOrderPersistenceRowConverter {
     private static final String DATA_STATUS_PROCESSED = "PROCESSED";
     private static final String PRE_DEDUCT_RECORD_TYPE = "1";
     private static final String BALANCE_DELTA_TYPE_PRE_DEDUCT = "PRE_DEDUCT";
-    private static final int DEFAULT_MAX_RETRY_COUNT = 10;
+    private static final int DISPATCH_MAX_RETRY_COUNT = 3;
+    private static final int BALANCE_DELTA_MAX_RETRY_COUNT = 10;
     private static final ZoneId LEGACY_CARDSHOP_DB_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final ObjectMapper objectMapper;
@@ -141,7 +143,7 @@ final class RechargeOrderPersistenceRowConverter {
     RechargeDispatchOutboxDO toDispatchOutbox(OrderPersistAggregate aggregate) {
         PersistOrderSnapshot snapshot = aggregate.snapshot();
         LocalDateTime persistedAt = persistedAt(aggregate);
-        String eventId = "dispatch-" + snapshot.orderId();
+        String eventId = RechargeDispatchEventIds.dispatchEventId(snapshot.orderId());
         RechargeDispatchOutboxDO outbox = new RechargeDispatchOutboxDO();
         outbox.setEventId(eventId);
         outbox.setEventType(OutboxEventType.SUPPLIER_DISPATCH.name());
@@ -151,8 +153,9 @@ final class RechargeOrderPersistenceRowConverter {
         outbox.setPayload(dispatchPayload(aggregate));
         outbox.setStatus(TaskStatus.INIT.name());
         outbox.setRetryCount(0);
-        outbox.setMaxRetryCount(DEFAULT_MAX_RETRY_COUNT);
-        outbox.setNextRetryTime(persistedAt);
+        outbox.setMaxRetryCount(DISPATCH_MAX_RETRY_COUNT);
+        // 详细设计「9.1 派单 Outbox」：派单 timer 默认落库后 1 秒唤醒，恢复扫描也读取同一个 due 时间。
+        outbox.setNextRetryTime(persistedAt.plus(RechargeDispatchEventIds.dispatchInitialDelay()));
         outbox.setLockedBy(null);
         outbox.setLockedUntil(null);
         outbox.setVersion(0L);
@@ -185,7 +188,7 @@ final class RechargeOrderPersistenceRowConverter {
         outbox.setDeltaAmount(-snapshot.orderPrice());
         outbox.setStatus(TaskStatus.INIT.name());
         outbox.setRetryCount(0);
-        outbox.setMaxRetryCount(DEFAULT_MAX_RETRY_COUNT);
+        outbox.setMaxRetryCount(BALANCE_DELTA_MAX_RETRY_COUNT);
         outbox.setNextRetryTime(persistedAt);
         outbox.setLockedBy(null);
         outbox.setLockedUntil(null);

@@ -264,6 +264,54 @@ public interface RechargeDispatchOutboxMapper extends BaseMapper<RechargeDispatc
             @Param("now") LocalDateTime now);
 
     /**
+     * 按事件号读取一个已到期或租约过期的履约事件。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。timer 热路径只知道
+     * {@code event_id}，但仍必须复用扫描路径的 due 条件和 {@code recharge_order_ext} 归属哨兵。
+     */
+    @Select("""
+            select
+              o.id,
+              o.event_id,
+              o.event_type,
+              o.org_code,
+              o.order_id,
+              o.out_order_sn,
+              o.payload,
+              o.status,
+              o.retry_count,
+              o.max_retry_count,
+              o.next_retry_time,
+              o.locked_by,
+              o.locked_until,
+              o.version,
+              o.last_error,
+              o.shard_key,
+              o.created_at,
+              o.updated_at
+            from recharge_dispatch_outbox o
+            where o.event_id = #{eventId}
+              and o.event_type = #{eventType}
+              and (
+                (o.status in ('INIT', 'FAILED') and o.next_retry_time <= #{now})
+                or (o.status = 'PROCESSING' and (o.locked_until < #{now} or o.locked_until is null))
+              )
+              and exists (
+                select 1
+                from recharge_order_ext ext
+                where ext.order_id = o.order_id
+                  and ext.org_code = o.org_code
+                  and ext.out_order_sn = o.out_order_sn
+                  and ext.persist_status = 'DB_PERSISTED'
+              )
+            limit 1
+            """)
+    RechargeDispatchOutboxDO selectDueByEventId(
+            @Param("eventId") String eventId,
+            @Param("eventType") String eventType,
+            @Param("now") LocalDateTime now);
+
+    /**
      * 基于事件 ID 和版本号抢占履约事件。
      */
     default int claimProcessing(String eventId, long currentVersion, String workerId, LocalDateTime lockedUntil) {

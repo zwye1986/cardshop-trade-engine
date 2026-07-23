@@ -2,6 +2,7 @@ package com.cardshop.trade.engine.application.recharge;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -48,6 +49,34 @@ class PersistRechargeOrderConsumerServiceTest {
         // 对应详细设计「8.3 异步落库 Consumer」：Redis 快照缺失时，MQ initialOrderSnapshot 的版本就是已落库版本。
         assertThat(reliabilityPort.lastPersistedVersion).isEqualTo(1L);
         assertThat(reliabilityPort.markPersistFailedCalls).isZero();
+        assertThat(persistencePort.events).containsExactly("persist");
+        assertThat(reliabilityPort.events).containsExactly("markDbPersisted");
+    }
+
+    @Test
+    void schedulesDispatchTimerAfterMysqlCommitForDispatchablePersistedOrder() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingDispatchTimerPort dispatchTimerPort = new RecordingDispatchTimerPort();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                null,
+                PersistedOrderStatePort.noop(),
+                reliabilityPort,
+                dispatchTimerPort,
+                CLOCK,
+                Duration.ofSeconds(3));
+
+        PersistRechargeOrderResult result = service.persist(message(1L));
+
+        assertThat(result.status()).isEqualTo(PersistRechargeOrderStatus.PERSISTED);
+        assertThat(dispatchTimerPort.calls)
+                .containsExactly(new TimerCall(
+                        "dispatch-ORDER-1001",
+                        OutboxEventType.SUPPLIER_DISPATCH,
+                        Duration.ofSeconds(1)));
         assertThat(persistencePort.events).containsExactly("persist");
         assertThat(reliabilityPort.events).containsExactly("markDbPersisted");
     }
@@ -708,6 +737,18 @@ class PersistRechargeOrderConsumerServiceTest {
             markPersistFailedCalls++;
             lastPersistFailedReason = failReason;
             return markPersistFailedFuture;
+        }
+    }
+
+    private record TimerCall(String eventId, OutboxEventType eventType, Duration delay) {}
+
+    private static final class RecordingDispatchTimerPort implements RechargeDispatchTimerPort {
+
+        private final List<TimerCall> calls = new ArrayList<>();
+
+        @Override
+        public void schedule(String eventId, OutboxEventType eventType, Duration delay) {
+            calls.add(new TimerCall(eventId, eventType, delay));
         }
     }
 }

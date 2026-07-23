@@ -5,6 +5,7 @@ import com.cardshop.trade.engine.application.recharge.BalanceReservationReleaseP
 import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
 import com.cardshop.trade.engine.application.recharge.MerchantNotifyClientPort;
 import com.cardshop.trade.engine.application.recharge.MerchantNotifyPayloadSigner;
+import com.cardshop.trade.engine.application.recharge.RechargeDispatchTimerPort;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerService;
@@ -12,7 +13,6 @@ import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerSettin
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
-import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerSettings;
 import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
 import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.recharge.V1MerchantNotifyPayloadSigner;
@@ -23,6 +23,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 
 /**
@@ -75,6 +76,7 @@ public class TradeEngineFulfillmentAutoConfiguration {
             BalanceReservationReleasePort balanceReservationReleasePort,
             RechargeNotifyTaskPort notifyTaskPort,
             ObjectProvider<MerchantNotifyPayloadSigner> payloadSignerProvider,
+            ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
             V1MerchantProfilePort merchantProfilePort,
             Clock clock,
             TradeEngineProperties properties) {
@@ -91,15 +93,25 @@ public class TradeEngineFulfillmentAutoConfiguration {
                 balanceReservationReleasePort,
                 notifyTaskPort,
                 payloadSigner,
+                RechargeFulfillmentConfigurationSupport.deferredRechargeDispatchTimerPort(dispatchTimerPortProvider),
                 clock,
-                new RechargeOutboxWorkerSettings(
-                        Duration.ofSeconds(fulfillment.getOutboxClaimLeaseSeconds()),
-                        Duration.ofSeconds(fulfillment.getOutboxRetryBackoffSeconds()),
-                        Duration.ofSeconds(fulfillment.getFrequencyRetryDelaySeconds()),
-                        Duration.ofMinutes(fulfillment.getFrequencyLockTtlMinutes()),
-                        Duration.ofSeconds(fulfillment.getFrequencySuccessMinimumHoldSeconds()),
-                        fulfillment.getOutboxParallelism(),
-                        fulfillment.getOutboxScanOverfetchFactor()));
+                RechargeFulfillmentConfigurationSupport.workerSettings(fulfillment));
+    }
+
+    /**
+     * 创建供应商履约热路径 timer。
+     *
+     * <p>参见详细设计「9.1 派单 Outbox」。该 Bean 只在真实 outbox worker 存在后启用；timer 线程池大小复用
+     * outbox 并行度，实际多节点互斥仍由 {@code recharge_dispatch_outbox} 的 CAS claim 完成。
+     */
+    @Bean(destroyMethod = "close")
+    @ConditionalOnBean(RechargeOutboxWorkerService.class)
+    @ConditionalOnMissingBean(RechargeDispatchTimerPort.class)
+    @ConditionalOnProperty(prefix = "trade.engine.fulfillment", name = "timer-enabled", havingValue = "true")
+    public RechargeDispatchTimerPort rechargeDispatchTimer(
+            RechargeOutboxWorkerService workerService,
+            TradeEngineProperties properties) {
+        return RechargeFulfillmentConfigurationSupport.rechargeDispatchTimer(workerService, properties);
     }
 
     /**
@@ -124,4 +136,5 @@ public class TradeEngineFulfillmentAutoConfiguration {
                         Duration.ofSeconds(properties.getNotify().getClaimLeaseSeconds()),
                         Duration.ofSeconds(properties.getNotify().getRetryBackoffSeconds())));
     }
+
 }

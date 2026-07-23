@@ -23,8 +23,8 @@
 2. 正常路径不依赖 XXL-Job 高频扫描数据库；XXL-Job 降级为人工入口、低频恢复和灰度回退手段。
 3. 自定义 Timer 基于 `java.util.concurrent.ScheduledThreadPoolExecutor`，参考 jain-sip `SipTimer` / `ScheduledExecutorSipTimer` 的 start、stop、schedule、cancel、future 持有和异常隔离模型。
 4. `recharge_dispatch_outbox` 继续作为持久事实源。Timer 只做内存唤醒，不做事实源，不绕过 DB CAS。
-5. 派单失败只对传输层不可确认或可重试失败重试，默认每 10 秒重试，最多 3 次；对 MINISO 这类可按本地订单号查单的供应商，重试前必须优先用同一订单号查单确认，避免盲目重复发券；供应商明确业务失败直接推进失败终态。
-6. 派单返回处理中后转供应商查单 Timer，查单延迟序列为 2、4、6、8、16、64 秒，之后按 64 秒继续低频查单，直到供应商明确成功或失败，或达到配置的自动查单上限后转人工。
+5. 派单失败只对确认请求未发出的本地前置失败保留 DISPATCH 退避重试；对 MINISO 这类可按本地订单号查单的供应商，传输层不可确认、HTTP 5xx/超时或已有供应商流水时必须补写 QUERY 并先查单确认，避免盲目重复发券；供应商明确业务失败直接推进失败终态。
+6. 派单返回处理中后转供应商查单 Timer，查单延迟序列为 2、4、6、8、16、32 秒；自动查单次数默认等于该序列长度，耗尽后转人工，直到供应商明确成功或失败前不得自动释放预扣。
 7. 多节点、重启、中断、Timer 调度失败、执行中宕机都不能丢事件，最多产生重复唤醒；重复业务执行由 outbox CAS、供应商幂等号和恢复前查单规则兜底。
 8. 减少数据库开销：正常路径避免大范围 due 扫描、避免 claim 前 N+1 订单读取、减少 QUERY 中间态重复订单状态写。
 
@@ -51,8 +51,8 @@
 
 | 场景 | 判定 | 后续动作 |
 | --- | --- | --- |
-| HTTP 连接异常、读超时、连接重置、TLS/DNS/IO 异常、客户端线程中断后无法确认响应 | 不可确认失败 | DISPATCH 按 10 秒退避重试；若已有供应商幂等流水，优先查单。 |
-| HTTP 5xx、502/503/504、网关错误、供应商临时不可用 | 不可确认失败 | 不退款、不失败回调；退避重试或查单。 |
+| HTTP 连接异常、读超时、连接重置、TLS/DNS/IO 异常、客户端线程中断后无法确认响应 | 不可确认失败 | 若请求已经可能发出或已有供应商流水，补写 QUERY 并关闭 DISPATCH；确认请求未发出时才允许按 outbox 退避重试。 |
+| HTTP 5xx、502/503/504、网关错误、供应商临时不可用 | 不可确认失败 | 不退款、不失败回调；对 MINISO 等可按订单号查单的渠道，优先补写 QUERY。 |
 | HTTP 2xx 但响应体不是合法 JSON，或无法按渠道协议解析 | 不可确认失败 | 保持处理中；记录原始响应摘要，按策略重试或查单。 |
 | HTTP 2xx 且业务码缺失、状态字段缺失、返回码未识别 | 不可确认失败，除非渠道白名单明确该码是业务失败 | 保持处理中；告警并进入查单/人工。 |
 | 供应商返回成功业务码，但缺少完成履约所必需的数据，例如供应商订单号、卡券明细或充值凭证，导致本地无法闭环 | 不可确认失败 | 保持处理中；补查单或人工核实。 |
@@ -94,7 +94,7 @@ MINISO 的结果分类：
 
 | 场景 | 新系统判定 | 后续动作 |
 | --- | --- | --- |
-| `batchGrandCoupon` 连接异常、读超时、调用返回 `null`、线程中断后不知道响应是否已到达本地 | 不可确认失败 | 主单保持处理中；按 `orderId` 先调用 `queryGrand`，查不到明确终态再按派单退避策略处理。 |
+| `batchGrandCoupon` 连接异常、读超时、调用返回 `null`、线程中断后不知道响应是否已到达本地 | 不可确认失败 | 主单保持处理中；按 `orderId` 先调用 `queryGrand`，查不到明确终态则继续查单或转人工，只有协议证明请求未受理时才允许重派。 |
 | HTTP 2xx 但响应不是合法 JSON，或缺少 `code` / `data` / `message` 等协议字段 | 不可确认失败 | 记录响应摘要和告警；优先 `queryGrand(orderId)`，不直接释放预扣。 |
 | `code == "200"` 但 `data` 为空、不是数组、券码数量少于购买数量、缺少 `couponCode` 或 `endTime` | 不可确认失败或本地闭环不完整 | 不能给商户成功，也不能失败退款；优先查单补齐券码，仍不完整则转人工。 |
 | `code != "200"` 且返回码没有被 MINISO 专属白名单证明为业务终态失败 | 远端未知 | 默认不可确认；用 `queryGrand(orderId)` 确认，不能按旧代码“一切非 200 失败”处理。 |
@@ -119,7 +119,7 @@ flowchart LR
     F --> G{"供应商结果"}
     G -->|SUCCESS| H["写订单成功 / 回调任务 / outbox SUCCESS / cancel"]
     G -->|FAILED 明确终态| I["写订单失败 / 释放预扣 / 回调任务 / outbox SUCCESS / cancel"]
-    G -->|RETRYABLE_FAILED| J["outbox FAILED + next_retry_time + reschedule"]
+    G -->|RETRYABLE_FAILED| J["写 SUPPLIER_QUERY outbox + close DISPATCH"]
     G -->|PROCESSING| K["写 SUPPLIER_QUERY outbox + schedule query"]
     L["低频 Recovery Scan"] --> C
 ```
@@ -213,8 +213,8 @@ public interface FulfillmentTimerCoordinator {
 2. `scheduleAfterPersist` 只对 `aggregate.dispatchOutboxRequired()` 的订单生效，eventId 固定为 `dispatch-{orderId}`。
 3. schedule 失败不影响 RabbitMQ ack 决策。因为 outbox 已经持久化，失败只记录 warn 和指标，等待 recovery scan 重新安排。
 4. 对批落库，Coordinator 接收本批真正进入 `persistBatch` 的 aggregates，批量注册 Timer；已经被 `persisted_version` 判定为无需重写 MySQL 的重复消息，不重复安排派单。
-5. Worker 在派单返回 `PROCESSING` 并成功幂等写入 `SUPPLIER_QUERY` outbox 后，调用 Coordinator 安排 `supplier-query-{orderId}`。
-6. Worker 在可重试失败并成功回写 `next_retry_time` 后，调用 Coordinator 按新的 dueAt 重新安排同一个 eventId。
+5. Worker 在派单返回 `PROCESSING` 或派单结果不可确认并成功幂等写入 `SUPPLIER_QUERY` outbox 后，调用 Coordinator 安排 `supplier-query-{orderId}`。
+6. Worker 只有在确认供应商请求未发出的本地前置失败并成功回写 `next_retry_time` 后，才调用 Coordinator 按新的 dueAt 重新安排同一个 DISPATCH eventId。
 7. Worker 在终态副作用完成且 outbox 标记 `SUCCESS` 后，调用 Coordinator cancel 当前 eventId。
 
 ### 5.3 `FulfillmentTaskExecutor`
@@ -260,7 +260,7 @@ public record FulfillmentExecutionResult(
 2. claim 成功后才加载订单当前状态。正常路径不再有“扫描 1000 行，再 claim 前读取 1000 次订单”的 N+1 读。
 3. DISPATCH 事件执行前先检查本地订单状态和最近供应商流水。若发现订单已是 `SUPPLIER_ACCEPTED` 或已有同 `supplier_request_id` 的已发送流水，不能盲目重复派单；应幂等补写 `SUPPLIER_QUERY` 事件并关闭 DISPATCH。
 4. DISPATCH 明确业务失败直接推进失败终态、释放 Redis reservation、写 `recharge_balance_delta_outbox(RELEASE)`、生成失败回调，然后把 DISPATCH outbox 标为 `SUCCESS`。明确业务失败不再占用派单重试次数。
-5. DISPATCH 的 `RETRYABLE_FAILED` 使用固定 10 秒退避，最多 3 次。对已经可能发出供应商请求且支持按本地幂等号查单的渠道，下一次自动动作应先查单再决定是否重派；第 3 次仍不可确认时，事件进入 `MANUAL_REQUIRED`，订单保持 `DISPATCHING/PROCESSING` 或当前可审计状态，不自动退款。
+5. DISPATCH 的 `RETRYABLE_FAILED` 表示派单结果不可确认。对 MINISO 等已经支持按本地订单号查单的渠道，当前实现直接把订单推进 `SUPPLIER_ACCEPTED`、补写 `SUPPLIER_QUERY` 并关闭 DISPATCH；只有能证明供应商请求未发出时，才允许按固定 10 秒退避重排 DISPATCH。查单耗尽后进入 `MANUAL_REQUIRED`，订单保持处理中或当前可审计状态，不自动退款。
 6. QUERY 返回 `PROCESSING` 时，订单已经是 `SUPPLIER_ACCEPTED` 的情况下不重复写订单状态；只更新供应商流水必要审计信息和 outbox 的 `retry_count/next_retry_time/last_error`。返回码、返回描述没有变化时可以不插入新的处理中流水，以降低中间态查单写放大。
 7. QUERY 明确成功或失败时执行终态副作用，副作用全部完成后才标记 QUERY outbox `SUCCESS`。
 8. 执行过程中所有异常都转换为 retryable failure 或明确 manual required；高频路径日志使用 `LogStormGuard` 采样，指标保持全量计数。
@@ -299,7 +299,7 @@ Recovery 不是主触发器，只负责补漏：
 
 ### 6.2 `SUPPLIER_QUERY` 插入
 
-派单返回 `PROCESSING` 后写入独立查单事件：
+派单返回 `PROCESSING`，或派单结果不可确认且请求已经可能发出时，写入独立查单事件：
 
 | 字段 | 新规则 |
 | --- | --- |
@@ -308,10 +308,10 @@ Recovery 不是主触发器，只负责补漏：
 | `payload` | 包含 `order_id/out_order_sn/org_code/account/supplier_channel/supplier_request_id` 和必要源 payload。 |
 | `status` | `INIT`。 |
 | `retry_count` | 0。 |
-| `max_retry_count` | 默认 30，可配置。达到上限后转 `MANUAL_REQUIRED`，不自动失败、不自动退款。 |
+| `max_retry_count` | 默认等于查单退避序列长度，当前为 6。达到上限后转 `MANUAL_REQUIRED`，不自动失败、不自动退款。 |
 | `next_retry_time` | `now + 2s`。 |
 
-查单退避使用配置序列 `2,4,6,8,16,64` 秒。第 7 次及以后继续使用最后一个间隔 64 秒，直到终态或自动查单上限。
+查单退避使用配置序列 `2,4,6,8,16,32` 秒。自动查单次数默认等于该序列长度，耗尽后转 `MANUAL_REQUIRED`，订单继续保持处理中等待人工或专用查单链路确认终态。
 
 ### 6.3 状态回写返回值
 
@@ -396,7 +396,7 @@ Timer fires supplier-query-{orderId}
   -> supplier query
   -> SUCCESS: update order success + notify + release frequency + mark query SUCCESS
   -> FAILED: update order failed + release reservation + balance delta + notify + mark query SUCCESS
-  -> PROCESSING: markRetryableFailure(next delay from 2,4,6,8,16,64,64...)
+  -> PROCESSING: markRetryableFailure(next delay from 2,4,6,8,16,32)
 ```
 
 达到查单自动上限后：
@@ -450,10 +450,10 @@ alert operations
 | `timer-max-pending-tasks` | `200000` | 本地未触发 Timer 上限，保护堆内存。 |
 | `timer-purge-period-seconds` | `60` | 取消任务清理周期；Java 21 remove-on-cancel 已开启，purge 作为防御。 |
 | `dispatch-initial-delay-seconds` | `1` | 落库后首次派单延迟。 |
-| `dispatch-retry-delay-seconds` | `10` | DISPATCH 可重试失败退避。 |
-| `dispatch-max-retry-count` | `3` | DISPATCH 可重试失败自动重试次数。 |
-| `query-backoff-seconds` | `2,4,6,8,16,64` | QUERY 中间态退避序列，序列耗尽后复用最后一个值。 |
-| `query-max-auto-attempts` | `30` | 查单自动尝试上限；达到后转人工，订单保持处理中。 |
+| `dispatch-retry-delay-seconds` | `10` | 确认供应商请求未发出的 DISPATCH 本地前置失败退避。 |
+| `dispatch-max-retry-count` | `3` | 确认供应商请求未发出的 DISPATCH 自动重试次数；请求可能发出时优先 QUERY。 |
+| `query-backoff-seconds` | `2,4,6,8,16,32` | QUERY 中间态退避序列；自动查单上限默认等于序列长度，耗尽后转人工。 |
+| `query-max-auto-attempts` | `6` | 查单自动尝试上限；达到后转人工，订单保持处理中。 |
 | `recovery-enabled` | `true` | Timer 补漏扫描开关。 |
 | `recovery-interval-seconds` | `30` | 低频恢复扫描间隔。 |
 | `recovery-look-ahead-seconds` | `120` | 扫描未来即将到期事件并安排 Timer。 |
@@ -505,7 +505,7 @@ alert operations
 
 阶段 3：DISPATCH Timer 灰度。
 
-1. `timer-enabled=true`，只启用 `SUPPLIER_DISPATCH`。
+1. `timer-enabled=true`，先观察 `SUPPLIER_DISPATCH` 热唤醒收益；当前实现已具备 `SUPPLIER_QUERY` 热唤醒能力，灰度时仍保留 query job 兜底。
 2. 降低或暂停 `rechargeSupplierDispatchJob` 高频触发。
 3. 保留 `rechargeSupplierQueryJob`，观察派单成功增长、Hikari active/pending、Timer lag。
 
@@ -513,7 +513,7 @@ alert operations
 
 1. 启用 `SUPPLIER_QUERY` Timer。
 2. 将 `rechargeSupplierQueryJob` 降为低频 recovery 或人工入口。
-3. 验证处理中订单按 2/4/6/8/16/64 秒曲线推进，终态副作用幂等。
+3. 验证处理中订单按 2/4/6/8/16/32 秒曲线推进，终态副作用幂等。
 
 阶段 5：生产常态。
 
@@ -552,9 +552,9 @@ Application 单元测试：
 2. `FulfillmentTaskExecutorTest`
    - DISPATCH 成功关闭 outbox 并 cancel。
    - DISPATCH 明确失败不重试，执行释放预扣和失败回调。
-   - DISPATCH retryable failure 按 10 秒重排，第三次后 `MANUAL_REQUIRED`。
-   - DISPATCH 恢复时发现订单已 `SUPPLIER_ACCEPTED`，补写 QUERY 而不重复派单。
-   - QUERY 按 2/4/6/8/16/64/64 秒退避。
+   - DISPATCH retryable failure 对 MINISO/current 支持查单渠道补写 QUERY 并关闭 DISPATCH。
+   - DISPATCH 恢复时发现订单已 `SUPPLIER_ACCEPTED` 或已有同订单供应商流水，补写 QUERY 而不重复派单。
+   - QUERY 按 2/4/6/8/16/32 秒退避，耗尽后转人工。
    - QUERY 中间态不重复写订单状态。
    - QUERY 终态成功/失败副作用幂等。
 3. `RechargeOutboxWorkerServiceTest`

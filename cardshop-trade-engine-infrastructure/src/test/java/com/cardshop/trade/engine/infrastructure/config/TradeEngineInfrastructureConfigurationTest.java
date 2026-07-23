@@ -13,6 +13,7 @@ import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsum
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
+import com.cardshop.trade.engine.application.recharge.RechargeDispatchTimerPort;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
@@ -64,6 +65,7 @@ import com.cardshop.trade.engine.infrastructure.redis.RedisV1ProductConfigPrehea
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1ProductSelectionCacheAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1TokenStoreAdapter;
 import com.cardshop.trade.engine.infrastructure.redis.SpringDataRechargeRedisScriptExecutor;
+import com.cardshop.trade.engine.infrastructure.timer.ScheduledExecutorRechargeDispatchTimer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Clock;
 import java.lang.reflect.Proxy;
@@ -558,6 +560,45 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
                 .withBean(V1MerchantProfilePort.class, () -> interfaceProxy(V1MerchantProfilePort.class))
                 .run(context -> assertThat(context).hasSingleBean(RechargeOutboxWorkerService.class));
+    }
+
+    @Test
+    void doesNotCreateDispatchTimerWhenTimerSwitchIsDisabledByDefault() {
+        contextRunner
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(RechargeOutboxPort.class, () -> interfaceProxy(RechargeOutboxPort.class))
+                .withBean(RechargeFulfillmentOrderPort.class, () -> interfaceProxy(RechargeFulfillmentOrderPort.class))
+                .withBean(RechargeSupplierGatewayPort.class, () -> interfaceProxy(RechargeSupplierGatewayPort.class))
+                .withBean(SupplierQueryOutboxPort.class, () -> interfaceProxy(SupplierQueryOutboxPort.class))
+                .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
+                .withBean(BalanceDeltaFlushOutboxPort.class, BalanceDeltaFlushOutboxPort::noop)
+                .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
+                .withBean(V1MerchantProfilePort.class, () -> interfaceProxy(V1MerchantProfilePort.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargeOutboxWorkerService.class);
+                    assertThat(context).doesNotHaveBean(RechargeDispatchTimerPort.class);
+                });
+    }
+
+    @Test
+    void createsDispatchTimerOnlyWhenTimerSwitchIsEnabled() {
+        contextRunner
+                .withPropertyValues("trade.engine.fulfillment.timer-enabled=true")
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(RechargeOutboxPort.class, () -> interfaceProxy(RechargeOutboxPort.class))
+                .withBean(RechargeFulfillmentOrderPort.class, () -> interfaceProxy(RechargeFulfillmentOrderPort.class))
+                .withBean(RechargeSupplierGatewayPort.class, () -> interfaceProxy(RechargeSupplierGatewayPort.class))
+                .withBean(SupplierQueryOutboxPort.class, () -> interfaceProxy(SupplierQueryOutboxPort.class))
+                .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
+                .withBean(BalanceDeltaFlushOutboxPort.class, BalanceDeltaFlushOutboxPort::noop)
+                .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
+                .withBean(V1MerchantProfilePort.class, () -> interfaceProxy(V1MerchantProfilePort.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargeOutboxWorkerService.class);
+                    assertThat(context).hasSingleBean(RechargeDispatchTimerPort.class);
+                    assertThat(context.getBean(RechargeDispatchTimerPort.class))
+                            .isInstanceOf(ScheduledExecutorRechargeDispatchTimer.class);
+                });
     }
 
     private static <T> T mapperProxy(Class<T> mapperType) {

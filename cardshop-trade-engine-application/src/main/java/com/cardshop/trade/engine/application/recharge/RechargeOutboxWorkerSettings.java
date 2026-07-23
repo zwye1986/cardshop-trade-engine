@@ -1,6 +1,7 @@
 package com.cardshop.trade.engine.application.recharge;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 
 /**
@@ -16,6 +17,7 @@ import java.util.Objects;
  * @param frequencySuccessMinimumHold 订单进入终态后保留限频锁的最短时间
  * @param outboxParallelism 已 claim 事件的并行执行度（1～32）
  * @param outboxScanOverfetchFactor due 扫描相对 limit 的放大倍数（≥1）
+ * @param supplierQueryRetryDelays 供应商处理中后的查单延迟序列
  */
 public record RechargeOutboxWorkerSettings(
         Duration claimLease,
@@ -24,10 +26,18 @@ public record RechargeOutboxWorkerSettings(
         Duration frequencyLockTtl,
         Duration frequencySuccessMinimumHold,
         int outboxParallelism,
-        int outboxScanOverfetchFactor) {
+        int outboxScanOverfetchFactor,
+        List<Duration> supplierQueryRetryDelays) {
 
     private static final int MIN_PARALLELISM = 1;
     private static final int MAX_PARALLELISM = 32;
+    private static final List<Duration> DEFAULT_SUPPLIER_QUERY_RETRY_DELAYS = List.of(
+            Duration.ofSeconds(2),
+            Duration.ofSeconds(4),
+            Duration.ofSeconds(6),
+            Duration.ofSeconds(8),
+            Duration.ofSeconds(16),
+            Duration.ofSeconds(32));
 
     public RechargeOutboxWorkerSettings {
         claimLease = positive(claimLease, "claimLease");
@@ -35,6 +45,7 @@ public record RechargeOutboxWorkerSettings(
         frequencyRetryDelay = positive(frequencyRetryDelay, "frequencyRetryDelay");
         frequencyLockTtl = positive(frequencyLockTtl, "frequencyLockTtl");
         frequencySuccessMinimumHold = positive(frequencySuccessMinimumHold, "frequencySuccessMinimumHold");
+        supplierQueryRetryDelays = positiveList(supplierQueryRetryDelays, "supplierQueryRetryDelays");
         if (outboxParallelism < MIN_PARALLELISM || outboxParallelism > MAX_PARALLELISM) {
             throw new IllegalArgumentException(
                     "outboxParallelism must be between " + MIN_PARALLELISM + " and " + MAX_PARALLELISM);
@@ -60,7 +71,31 @@ public record RechargeOutboxWorkerSettings(
                 frequencyLockTtl,
                 frequencySuccessMinimumHold,
                 1,
-                1);
+                1,
+                DEFAULT_SUPPLIER_QUERY_RETRY_DELAYS);
+    }
+
+    public RechargeOutboxWorkerSettings(
+            Duration claimLease,
+            Duration retryBackoff,
+            Duration frequencyRetryDelay,
+            Duration frequencyLockTtl,
+            Duration frequencySuccessMinimumHold,
+            int outboxParallelism,
+            int outboxScanOverfetchFactor) {
+        this(
+                claimLease,
+                retryBackoff,
+                frequencyRetryDelay,
+                frequencyLockTtl,
+                frequencySuccessMinimumHold,
+                outboxParallelism,
+                outboxScanOverfetchFactor,
+                DEFAULT_SUPPLIER_QUERY_RETRY_DELAYS);
+    }
+
+    public static List<Duration> defaultSupplierQueryRetryDelays() {
+        return DEFAULT_SUPPLIER_QUERY_RETRY_DELAYS;
     }
 
     private static Duration positive(Duration value, String field) {
@@ -69,5 +104,16 @@ public record RechargeOutboxWorkerSettings(
             throw new IllegalArgumentException(field + " must be positive");
         }
         return value;
+    }
+
+    private static List<Duration> positiveList(List<Duration> values, String field) {
+        Objects.requireNonNull(values, field + " must not be null");
+        if (values.isEmpty()) {
+            throw new IllegalArgumentException(field + " must not be empty");
+        }
+        for (Duration value : values) {
+            positive(value, field + " item");
+        }
+        return List.copyOf(values);
     }
 }

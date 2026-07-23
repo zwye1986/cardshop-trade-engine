@@ -7,6 +7,7 @@ import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
+import com.cardshop.trade.engine.application.recharge.RechargeDispatchTimerPort;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushService;
@@ -223,6 +224,7 @@ public class TradeEngineReliabilityConfiguration {
             org.springframework.beans.factory.ObjectProvider<PersistOrderSnapshotPort> snapshotPortProvider,
             ObjectProvider<RechargeOrderBatchPersistencePort> batchPersistencePortProvider,
             ObjectProvider<PersistedOrderStatePort> persistedOrderStatePortProvider,
+            ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
             RechargeOrderPersistencePort persistencePort,
             RechargeAcceptReliabilityPort reliabilityPort,
             Clock clock) {
@@ -232,6 +234,7 @@ public class TradeEngineReliabilityConfiguration {
                 batchPersistencePortProvider.getIfAvailable(),
                 persistedOrderStatePortProvider.getIfAvailable(PersistedOrderStatePort::noop),
                 reliabilityPort,
+                dispatchTimerPortProvider.getIfAvailable(RechargeDispatchTimerPort::noop),
                 clock);
     }
 
