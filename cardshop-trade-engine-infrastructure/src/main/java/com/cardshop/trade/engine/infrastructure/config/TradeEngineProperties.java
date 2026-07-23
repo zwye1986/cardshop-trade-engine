@@ -841,6 +841,12 @@ public class TradeEngineProperties {
         private boolean requestSm4Enabled = true;
 
         /**
+         * JMeter 压测签名结果旁路口令。空字符串表示旁路关闭。
+         * 敏感配置，禁止写入日志。参见详细设计「3. API/V1 接入层」。
+         */
+        private String loadTestToken = "";
+
+        /**
          * 请求时间戳允许的前后偏差秒数。
          */
         private int timestampAllowedSkewSeconds = 300;
@@ -906,6 +912,14 @@ public class TradeEngineProperties {
 
         public void setRequestSm4Enabled(boolean requestSm4Enabled) {
             this.requestSm4Enabled = requestSm4Enabled;
+        }
+
+        public String getLoadTestToken() {
+            return loadTestToken;
+        }
+
+        public void setLoadTestToken(String loadTestToken) {
+            this.loadTestToken = loadTestToken == null ? "" : loadTestToken;
         }
 
         public int getTimestampAllowedSkewSeconds() {

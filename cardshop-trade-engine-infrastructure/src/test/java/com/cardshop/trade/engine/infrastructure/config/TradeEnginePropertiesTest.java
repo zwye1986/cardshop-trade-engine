@@ -189,6 +189,16 @@ class TradeEnginePropertiesTest {
     }
 
     @Test
+    void bindsV1LoadTestToken() {
+        contextRunner
+                .withPropertyValues("trade.engine.v1.load-test-token=load-secret")
+                .run(context -> {
+                    var properties = context.getBean(TradeEngineProperties.class);
+                    assertThat(properties.getV1().getLoadTestToken()).isEqualTo("load-secret");
+                });
+    }
+
+    @Test
     void outboxBackoffUsesDesignDefaultWhenBlank() {
         contextRunner
                 .withPropertyValues("trade.engine.outbox.balance-delta-retry-backoff-seconds=  ,  ,")
