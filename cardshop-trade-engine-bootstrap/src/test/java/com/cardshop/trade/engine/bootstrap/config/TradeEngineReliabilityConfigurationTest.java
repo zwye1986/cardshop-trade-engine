@@ -302,6 +302,12 @@ class TradeEngineReliabilityConfigurationTest {
                     }
 
                     @Override
+                    public Optional<com.cardshop.trade.engine.application.recharge.SupplierFlowSnapshot> findLatestSupplierFlowByOrderId(
+                            String orderId) {
+                        return Optional.empty();
+                    }
+
+                    @Override
                     public long insertSupplierFlowStart(
                             com.cardshop.trade.engine.application.recharge.SupplierFlowStartCommand command) {
                         return 0L;
