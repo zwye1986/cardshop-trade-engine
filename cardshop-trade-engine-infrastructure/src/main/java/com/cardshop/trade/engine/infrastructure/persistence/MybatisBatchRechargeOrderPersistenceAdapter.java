@@ -64,20 +64,33 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
     public MybatisBatchRechargeOrderPersistenceAdapter(
             SqlSessionFactory sqlSessionFactory,
             ObjectMapper objectMapper) {
-        this(sqlSessionFactory, objectMapper, TradeEngineObservabilityMetrics.noop());
+        this(sqlSessionFactory, objectMapper, TradeEngineObservabilityMetrics.noop(), Duration.ofSeconds(1));
     }
 
     public MybatisBatchRechargeOrderPersistenceAdapter(
             SqlSessionFactory sqlSessionFactory,
             ObjectMapper objectMapper,
             TradeEngineObservabilityMetrics observabilityMetrics) {
-        this(batchMappers(sqlSessionFactory), objectMapper, observabilityMetrics);
+        this(sqlSessionFactory, objectMapper, observabilityMetrics, Duration.ofSeconds(1));
+    }
+
+    /**
+     * @param dispatchInitialDelay 落库后首次派单延迟，对应
+     *     {@code trade.engine.fulfillment.dispatch-initial-delay-seconds}
+     */
+    public MybatisBatchRechargeOrderPersistenceAdapter(
+            SqlSessionFactory sqlSessionFactory,
+            ObjectMapper objectMapper,
+            TradeEngineObservabilityMetrics observabilityMetrics,
+            Duration dispatchInitialDelay) {
+        this(batchMappers(sqlSessionFactory), objectMapper, observabilityMetrics, dispatchInitialDelay);
     }
 
     private MybatisBatchRechargeOrderPersistenceAdapter(
             BatchMapperBundle mappers,
             ObjectMapper objectMapper,
-            TradeEngineObservabilityMetrics observabilityMetrics) {
+            TradeEngineObservabilityMetrics observabilityMetrics,
+            Duration dispatchInitialDelay) {
         this(
                 mappers.orderMapper()::insertOrderBatchIfAbsent,
                 mappers.extMapper()::insertExtBatchOrUpdatePersistState,
@@ -85,7 +98,8 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
                 mappers.balanceDeltaOutboxMapper()::insertBalanceDeltaBatchIfAbsent,
                 mappers.departRecordMapper()::insertDepartRecordBatchIfAbsent,
                 objectMapper,
-                observabilityMetrics);
+                observabilityMetrics,
+                dispatchInitialDelay);
     }
 
     MybatisBatchRechargeOrderPersistenceAdapter(
@@ -102,7 +116,8 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
                 balanceDeltaOutboxWriter,
                 departRecordWriter,
                 objectMapper,
-                TradeEngineObservabilityMetrics.noop());
+                TradeEngineObservabilityMetrics.noop(),
+                Duration.ofSeconds(1));
     }
 
     MybatisBatchRechargeOrderPersistenceAdapter(
@@ -113,6 +128,26 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
             McDepartRecordBatchPersistWriter departRecordWriter,
             ObjectMapper objectMapper,
             TradeEngineObservabilityMetrics observabilityMetrics) {
+        this(
+                orderWriter,
+                extWriter,
+                dispatchOutboxWriter,
+                balanceDeltaOutboxWriter,
+                departRecordWriter,
+                objectMapper,
+                observabilityMetrics,
+                Duration.ofSeconds(1));
+    }
+
+    MybatisBatchRechargeOrderPersistenceAdapter(
+            McOrderBatchPersistWriter orderWriter,
+            RechargeOrderExtBatchPersistWriter extWriter,
+            RechargeDispatchOutboxBatchPersistWriter dispatchOutboxWriter,
+            RechargeBalanceDeltaOutboxBatchPersistWriter balanceDeltaOutboxWriter,
+            McDepartRecordBatchPersistWriter departRecordWriter,
+            ObjectMapper objectMapper,
+            TradeEngineObservabilityMetrics observabilityMetrics,
+            Duration dispatchInitialDelay) {
         this.orderWriter = Objects.requireNonNull(orderWriter, "orderWriter must not be null");
         this.extWriter = Objects.requireNonNull(extWriter, "extWriter must not be null");
         this.dispatchOutboxWriter = Objects.requireNonNull(
@@ -120,7 +155,7 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
         this.balanceDeltaOutboxWriter = Objects.requireNonNull(
                 balanceDeltaOutboxWriter, "balanceDeltaOutboxWriter must not be null");
         this.departRecordWriter = Objects.requireNonNull(departRecordWriter, "departRecordWriter must not be null");
-        this.rowConverter = new RechargeOrderPersistenceRowConverter(objectMapper);
+        this.rowConverter = new RechargeOrderPersistenceRowConverter(objectMapper, dispatchInitialDelay);
         this.observabilityMetrics = observabilityMetrics == null
                 ? TradeEngineObservabilityMetrics.noop()
                 : observabilityMetrics;

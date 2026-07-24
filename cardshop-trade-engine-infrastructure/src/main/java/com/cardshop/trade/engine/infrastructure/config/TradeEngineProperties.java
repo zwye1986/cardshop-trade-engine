@@ -1265,6 +1265,13 @@ public class TradeEngineProperties {
         private int frequencyLockTtlMinutes = 30;
         private int frequencySuccessMinimumHoldSeconds = 5;
         /**
+         * 落库后首次派单延迟，单位秒。
+         *
+         * <p>参见详细设计「9.1 派单 Outbox」。写入 {@code recharge_dispatch_outbox.next_retry_time}
+         * 与落库后 timer 热唤醒必须共用该值，默认 1 秒；非法值（&lt;=0）在读取时 fail-fast。
+         */
+        private int dispatchInitialDelaySeconds = 1;
+        /**
          * 是否启用进程内履约 timer 热唤醒。
          *
          * <p>参见详细设计「9.1 派单 Outbox」。生产默认关闭，必须经过压测灰度后由 Nacos 显式打开；关闭时
@@ -1332,6 +1339,32 @@ public class TradeEngineProperties {
 
         public void setFrequencySuccessMinimumHoldSeconds(int frequencySuccessMinimumHoldSeconds) {
             this.frequencySuccessMinimumHoldSeconds = frequencySuccessMinimumHoldSeconds;
+        }
+
+        public int getDispatchInitialDelaySeconds() {
+            return dispatchInitialDelaySeconds;
+        }
+
+        public void setDispatchInitialDelaySeconds(int dispatchInitialDelaySeconds) {
+            this.dispatchInitialDelaySeconds = dispatchInitialDelaySeconds;
+        }
+
+        /**
+         * 解析落库后首次派单延迟。
+         *
+         * <p>参见详细设计「9.1 派单 Outbox」「11. 配置中心」。非法值（&lt;=0）fail-fast，避免
+         * {@code next_retry_time} 与 timer 热唤醒静默退回硬编码节奏。
+         */
+        public Duration dispatchInitialDelay() {
+            if (dispatchInitialDelaySeconds <= 0) {
+                log.error(
+                        "trade.engine.fulfillment.dispatch-initial-delay-seconds 非法，拒绝静默降级 value={}",
+                        dispatchInitialDelaySeconds);
+                throw new IllegalArgumentException(
+                        "trade.engine.fulfillment.dispatch-initial-delay-seconds must be a positive integer, value="
+                                + dispatchInitialDelaySeconds);
+            }
+            return Duration.ofSeconds(dispatchInitialDelaySeconds);
         }
 
         public boolean isTimerEnabled() {

@@ -31,6 +31,7 @@ import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
 import com.cardshop.trade.engine.job.recharge.RechargeSupplierDispatchJob;
 import com.cardshop.trade.engine.job.recharge.RechargeSupplierQueryJob;
 import java.time.Clock;
+import java.time.Duration;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -227,7 +228,8 @@ public class TradeEngineReliabilityConfiguration {
             ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
             RechargeOrderPersistencePort persistencePort,
             RechargeAcceptReliabilityPort reliabilityPort,
-            Clock clock) {
+            Clock clock,
+            TradeEngineProperties properties) {
         return new PersistRechargeOrderConsumerService(
                 snapshotPortProvider.getIfAvailable(PersistOrderSnapshotPort::noop),
                 persistencePort,
@@ -235,7 +237,9 @@ public class TradeEngineReliabilityConfiguration {
                 persistedOrderStatePortProvider.getIfAvailable(PersistedOrderStatePort::noop),
                 reliabilityPort,
                 dispatchTimerPortProvider.getIfAvailable(RechargeDispatchTimerPort::noop),
-                clock);
+                clock,
+                Duration.ofSeconds(3),
+                properties.getFulfillment().dispatchInitialDelay());
     }
 
     /**

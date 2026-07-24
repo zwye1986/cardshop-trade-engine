@@ -89,14 +89,16 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
             RechargeDispatchOutboxMapper dispatchOutboxMapper,
             RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
             McDepartRecordMapper departRecordMapper,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            TradeEngineProperties properties) {
         return new MybatisRechargeOrderPersistenceAdapter(
                 orderMapper,
                 extMapper,
                 dispatchOutboxMapper,
                 balanceDeltaOutboxMapper,
                 departRecordMapper,
-                objectMapper);
+                objectMapper,
+                properties.getFulfillment().dispatchInitialDelay());
     }
 
     /**
@@ -113,11 +115,13 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     public RechargeOrderBatchPersistencePort rechargeOrderBatchPersistencePort(
             SqlSessionFactory sqlSessionFactory,
             ObjectMapper objectMapper,
-            ObjectProvider<TradeEngineObservabilityMetrics> observabilityMetricsProvider) {
+            ObjectProvider<TradeEngineObservabilityMetrics> observabilityMetricsProvider,
+            TradeEngineProperties properties) {
         return new MybatisBatchRechargeOrderPersistenceAdapter(
                 sqlSessionFactory,
                 objectMapper,
-                observabilityMetricsProvider.getIfAvailable(TradeEngineObservabilityMetrics::noop));
+                observabilityMetricsProvider.getIfAvailable(TradeEngineObservabilityMetrics::noop),
+                properties.getFulfillment().dispatchInitialDelay());
     }
 
     @Bean

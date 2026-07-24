@@ -7,7 +7,9 @@ import com.cardshop.trade.engine.application.recharge.RechargeDispatchTimerPort;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
+import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import java.time.Clock;
+import java.time.Duration;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -43,7 +45,8 @@ public class TradeEngineConsumerAutoConfiguration {
             ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
             RechargeOrderPersistencePort persistencePort,
             RechargeAcceptReliabilityPort reliabilityPort,
-            Clock clock) {
+            Clock clock,
+            TradeEngineProperties properties) {
         return new PersistRechargeOrderConsumerService(
                 snapshotPortProvider.getIfAvailable(PersistOrderSnapshotPort::noop),
                 persistencePort,
@@ -51,6 +54,8 @@ public class TradeEngineConsumerAutoConfiguration {
                 persistedOrderStatePortProvider.getIfAvailable(PersistedOrderStatePort::noop),
                 reliabilityPort,
                 dispatchTimerPortProvider.getIfAvailable(RechargeDispatchTimerPort::noop),
-                clock);
+                clock,
+                Duration.ofSeconds(3),
+                properties.getFulfillment().dispatchInitialDelay());
     }
 }

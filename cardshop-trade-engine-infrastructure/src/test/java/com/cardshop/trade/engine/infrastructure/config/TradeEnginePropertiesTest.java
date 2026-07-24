@@ -76,6 +76,8 @@ class TradeEnginePropertiesTest {
                             Duration.ofSeconds(600));
             assertThat(properties.getFulfillment().getSupplierQueryRetryDelaySeconds()).isEqualTo("2,4,6,8,16,32");
             assertThat(properties.getFulfillment().getOutboxRetryBackoffSeconds()).isEqualTo(10);
+            assertThat(properties.getFulfillment().getDispatchInitialDelaySeconds()).isEqualTo(1);
+            assertThat(properties.getFulfillment().dispatchInitialDelay()).isEqualTo(Duration.ofSeconds(1));
             assertThat(properties.getFulfillment().isTimerEnabled()).isFalse();
             assertThat(properties.getFulfillment().getTimerMaxPendingTasks()).isEqualTo(200000);
             assertThat(properties.getFulfillment().supplierQueryRetryDelays())
@@ -126,6 +128,7 @@ class TradeEnginePropertiesTest {
                         "trade.engine.v1.merchant-config-preheat.fail-on-error=false",
                         "trade.engine.supplier.channels.fake.query-url=http://127.0.0.1:18082/supplier/query",
                         "trade.engine.fulfillment.timer-enabled=true",
+                        "trade.engine.fulfillment.dispatch-initial-delay-seconds=5",
                         "trade.engine.fulfillment.supplier-query-retry-delay-seconds=3,9",
                         "trade.engine.fulfillment.timer-max-pending-tasks=1234",
                         "trade.engine.outbox.balance-delta-flush-batch-size=200",
@@ -178,6 +181,8 @@ class TradeEnginePropertiesTest {
                                     Duration.ofSeconds(60),
                                     Duration.ofSeconds(300));
                     assertThat(properties.getFulfillment().getSupplierQueryRetryDelaySeconds()).isEqualTo("3,9");
+                    assertThat(properties.getFulfillment().getDispatchInitialDelaySeconds()).isEqualTo(5);
+                    assertThat(properties.getFulfillment().dispatchInitialDelay()).isEqualTo(Duration.ofSeconds(5));
                     assertThat(properties.getFulfillment().isTimerEnabled()).isTrue();
                     assertThat(properties.getFulfillment().supplierQueryRetryDelays())
                             .containsExactly(Duration.ofSeconds(3), Duration.ofSeconds(9));
@@ -236,6 +241,18 @@ class TradeEnginePropertiesTest {
                             .isInstanceOf(IllegalArgumentException.class)
                             .hasMessageContaining("supplier-query-retry-delay-seconds")
                             .hasMessageContaining("abc");
+                });
+    }
+
+    @Test
+    void fulfillmentDispatchInitialDelayRejectsNonPositiveConfigWithoutSilentFallback() {
+        contextRunner
+                .withPropertyValues("trade.engine.fulfillment.dispatch-initial-delay-seconds=0")
+                .run(context -> {
+                    var properties = context.getBean(TradeEngineProperties.class);
+                    assertThatThrownBy(() -> properties.getFulfillment().dispatchInitialDelay())
+                            .isInstanceOf(IllegalArgumentException.class)
+                            .hasMessageContaining("dispatch-initial-delay-seconds");
                 });
     }
 

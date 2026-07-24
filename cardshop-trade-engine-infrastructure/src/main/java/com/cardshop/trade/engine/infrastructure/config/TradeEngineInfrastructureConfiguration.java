@@ -598,14 +598,16 @@ public class TradeEngineInfrastructureConfiguration {
             RechargeDispatchOutboxMapper dispatchOutboxMapper,
             RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
             McDepartRecordMapper departRecordMapper,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            TradeEngineProperties properties) {
         return new MybatisRechargeOrderPersistenceAdapter(
                 orderMapper,
                 extMapper,
                 dispatchOutboxMapper,
                 balanceDeltaOutboxMapper,
                 departRecordMapper,
-                objectMapper);
+                objectMapper,
+                properties.getFulfillment().dispatchInitialDelay());
     }
 
     @Bean

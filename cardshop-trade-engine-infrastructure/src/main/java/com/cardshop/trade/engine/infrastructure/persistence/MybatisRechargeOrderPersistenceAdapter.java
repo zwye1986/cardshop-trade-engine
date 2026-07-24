@@ -13,6 +13,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalan
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
 import java.util.Objects;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -43,12 +44,35 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
             McDepartRecordMapper departRecordMapper,
             ObjectMapper objectMapper) {
         this(
+                orderMapper,
+                extMapper,
+                dispatchOutboxMapper,
+                balanceDeltaOutboxMapper,
+                departRecordMapper,
+                objectMapper,
+                Duration.ofSeconds(1));
+    }
+
+    /**
+     * @param dispatchInitialDelay 落库后首次派单延迟，对应
+     *     {@code trade.engine.fulfillment.dispatch-initial-delay-seconds}
+     */
+    public MybatisRechargeOrderPersistenceAdapter(
+            McOrderMapper orderMapper,
+            RechargeOrderExtMapper extMapper,
+            RechargeDispatchOutboxMapper dispatchOutboxMapper,
+            RechargeBalanceDeltaOutboxMapper balanceDeltaOutboxMapper,
+            McDepartRecordMapper departRecordMapper,
+            ObjectMapper objectMapper,
+            Duration dispatchInitialDelay) {
+        this(
                 orderMapper::insertIfAbsent,
                 extMapper::insertOrUpdatePersistState,
                 dispatchOutboxMapper::insertIfAbsent,
                 balanceDeltaOutboxMapper::insertIfAbsent,
                 departRecordMapper::insertIfAbsent,
-                objectMapper);
+                objectMapper,
+                dispatchInitialDelay);
     }
 
     MybatisRechargeOrderPersistenceAdapter(
@@ -58,6 +82,24 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
             RechargeBalanceDeltaOutboxPersistWriter balanceDeltaOutboxWriter,
             McDepartRecordPersistWriter departRecordWriter,
             ObjectMapper objectMapper) {
+        this(
+                orderWriter,
+                extWriter,
+                dispatchOutboxWriter,
+                balanceDeltaOutboxWriter,
+                departRecordWriter,
+                objectMapper,
+                Duration.ofSeconds(1));
+    }
+
+    MybatisRechargeOrderPersistenceAdapter(
+            McOrderPersistWriter orderWriter,
+            RechargeOrderExtPersistWriter extWriter,
+            RechargeDispatchOutboxPersistWriter dispatchOutboxWriter,
+            RechargeBalanceDeltaOutboxPersistWriter balanceDeltaOutboxWriter,
+            McDepartRecordPersistWriter departRecordWriter,
+            ObjectMapper objectMapper,
+            Duration dispatchInitialDelay) {
         this.orderWriter = Objects.requireNonNull(orderWriter, "orderWriter must not be null");
         this.extWriter = Objects.requireNonNull(extWriter, "extWriter must not be null");
         this.dispatchOutboxWriter = Objects.requireNonNull(
@@ -65,7 +107,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
         this.balanceDeltaOutboxWriter = Objects.requireNonNull(
                 balanceDeltaOutboxWriter, "balanceDeltaOutboxWriter must not be null");
         this.departRecordWriter = Objects.requireNonNull(departRecordWriter, "departRecordWriter must not be null");
-        this.rowConverter = new RechargeOrderPersistenceRowConverter(objectMapper);
+        this.rowConverter = new RechargeOrderPersistenceRowConverter(objectMapper, dispatchInitialDelay);
     }
 
     /**

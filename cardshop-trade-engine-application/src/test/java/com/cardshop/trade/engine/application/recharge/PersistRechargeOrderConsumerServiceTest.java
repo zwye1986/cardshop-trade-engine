@@ -67,7 +67,8 @@ class PersistRechargeOrderConsumerServiceTest {
                 reliabilityPort,
                 dispatchTimerPort,
                 CLOCK,
-                Duration.ofSeconds(3));
+                Duration.ofSeconds(3),
+                Duration.ofSeconds(5));
 
         PersistRechargeOrderResult result = service.persist(message(1L));
 
@@ -76,7 +77,7 @@ class PersistRechargeOrderConsumerServiceTest {
                 .containsExactly(new TimerCall(
                         "dispatch-ORDER-1001",
                         OutboxEventType.SUPPLIER_DISPATCH,
-                        Duration.ofSeconds(1)));
+                        Duration.ofSeconds(5)));
         assertThat(persistencePort.events).containsExactly("persist");
         assertThat(reliabilityPort.events).containsExactly("markDbPersisted");
     }

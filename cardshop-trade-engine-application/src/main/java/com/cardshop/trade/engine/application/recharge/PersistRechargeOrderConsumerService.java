@@ -45,6 +45,12 @@ public class PersistRechargeOrderConsumerService {
     private static final String LOG_EVENT_DISPATCH_TIMER_SCHEDULE_FAILED = "persist-consumer.dispatch-timer.schedule.failed";
     private static final long RETRY_DELAY_MILLIS = 60_000L;
     private static final Duration DEFAULT_REDIS_MARK_TIMEOUT = Duration.ofSeconds(3);
+    /**
+     * 测试/轻量构造默认首次派单延迟；生产路径必须注入
+     * {@code trade.engine.fulfillment.dispatch-initial-delay-seconds}，与落库
+     * {@code next_retry_time} 保持一致。参见详细设计「9.1 派单 Outbox」。
+     */
+    private static final Duration DEFAULT_DISPATCH_INITIAL_DELAY = Duration.ofSeconds(1);
     private static final int MAX_FAIL_REASON_LENGTH = 500;
     private static final String FIELD_REDIS_ORDER_WRITTEN = "redis_order_written";
     private static final String REDIS_FALSE = "0";
@@ -90,7 +96,7 @@ public class PersistRechargeOrderConsumerService {
                 RechargeDispatchTimerPort.noop(),
                 clock,
                 DEFAULT_REDIS_MARK_TIMEOUT,
-                RechargeDispatchEventIds.dispatchInitialDelay());
+                DEFAULT_DISPATCH_INITIAL_DELAY);
     }
 
     public PersistRechargeOrderConsumerService(
@@ -109,7 +115,7 @@ public class PersistRechargeOrderConsumerService {
                 RechargeDispatchTimerPort.noop(),
                 clock,
                 DEFAULT_REDIS_MARK_TIMEOUT,
-                RechargeDispatchEventIds.dispatchInitialDelay());
+                DEFAULT_DISPATCH_INITIAL_DELAY);
     }
 
     public PersistRechargeOrderConsumerService(
@@ -129,7 +135,7 @@ public class PersistRechargeOrderConsumerService {
                 dispatchTimerPort,
                 clock,
                 DEFAULT_REDIS_MARK_TIMEOUT,
-                RechargeDispatchEventIds.dispatchInitialDelay());
+                DEFAULT_DISPATCH_INITIAL_DELAY);
     }
 
     /**
@@ -139,66 +145,11 @@ public class PersistRechargeOrderConsumerService {
      * `redisMarkTimeout` 只约束 MySQL 事务之后的 Redis 状态推进调用，避免 RabbitMQ consumer 线程因
      * Redis 客户端 hang 住而无限阻塞；MySQL 已提交后的 `markDbPersisted` 超时会 ack 当前消息并交给补偿修复，
      * MySQL 失败后的 `markPersistFailed` 超时则保持当前消息可重试。
+     *
+     * <p>`dispatchInitialDelay` 对应 {@code trade.engine.fulfillment.dispatch-initial-delay-seconds}，
+     * 必须与落库写入的 {@code recharge_dispatch_outbox.next_retry_time} 使用同一配置值。
      */
-    PersistRechargeOrderConsumerService(
-            PersistOrderSnapshotPort snapshotPort,
-            RechargeOrderPersistencePort persistencePort,
-            RechargeAcceptReliabilityPort reliabilityPort,
-            Clock clock,
-            Duration redisMarkTimeout) {
-        this(
-                snapshotPort,
-                persistencePort,
-                null,
-                PersistedOrderStatePort.noop(),
-                reliabilityPort,
-                RechargeDispatchTimerPort.noop(),
-                clock,
-                redisMarkTimeout,
-                RechargeDispatchEventIds.dispatchInitialDelay());
-    }
-
-    PersistRechargeOrderConsumerService(
-            PersistOrderSnapshotPort snapshotPort,
-            RechargeOrderPersistencePort persistencePort,
-            RechargeOrderBatchPersistencePort batchPersistencePort,
-            PersistedOrderStatePort persistedOrderStatePort,
-            RechargeAcceptReliabilityPort reliabilityPort,
-            Clock clock,
-            Duration redisMarkTimeout) {
-        this(
-                snapshotPort,
-                persistencePort,
-                batchPersistencePort,
-                persistedOrderStatePort,
-                reliabilityPort,
-                RechargeDispatchTimerPort.noop(),
-                clock,
-                redisMarkTimeout);
-    }
-
-    PersistRechargeOrderConsumerService(
-            PersistOrderSnapshotPort snapshotPort,
-            RechargeOrderPersistencePort persistencePort,
-            RechargeOrderBatchPersistencePort batchPersistencePort,
-            PersistedOrderStatePort persistedOrderStatePort,
-            RechargeAcceptReliabilityPort reliabilityPort,
-            RechargeDispatchTimerPort dispatchTimerPort,
-            Clock clock,
-            Duration redisMarkTimeout) {
-        this(
-                snapshotPort,
-                persistencePort,
-                batchPersistencePort,
-                persistedOrderStatePort,
-                reliabilityPort,
-                dispatchTimerPort,
-                clock,
-                redisMarkTimeout,
-                RechargeDispatchEventIds.dispatchInitialDelay());
-    }
-
-    PersistRechargeOrderConsumerService(
+    public PersistRechargeOrderConsumerService(
             PersistOrderSnapshotPort snapshotPort,
             RechargeOrderPersistencePort persistencePort,
             RechargeOrderBatchPersistencePort batchPersistencePort,
@@ -219,6 +170,65 @@ public class PersistRechargeOrderConsumerService {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.redisMarkTimeout = positiveTimeout(redisMarkTimeout);
         this.dispatchInitialDelay = positiveTimeout(dispatchInitialDelay);
+    }
+
+    PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            Clock clock,
+            Duration redisMarkTimeout) {
+        this(
+                snapshotPort,
+                persistencePort,
+                null,
+                PersistedOrderStatePort.noop(),
+                reliabilityPort,
+                RechargeDispatchTimerPort.noop(),
+                clock,
+                redisMarkTimeout,
+                DEFAULT_DISPATCH_INITIAL_DELAY);
+    }
+
+    PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeOrderBatchPersistencePort batchPersistencePort,
+            PersistedOrderStatePort persistedOrderStatePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            Clock clock,
+            Duration redisMarkTimeout) {
+        this(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedOrderStatePort,
+                reliabilityPort,
+                RechargeDispatchTimerPort.noop(),
+                clock,
+                redisMarkTimeout,
+                DEFAULT_DISPATCH_INITIAL_DELAY);
+    }
+
+    PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeOrderBatchPersistencePort batchPersistencePort,
+            PersistedOrderStatePort persistedOrderStatePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock,
+            Duration redisMarkTimeout) {
+        this(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedOrderStatePort,
+                reliabilityPort,
+                dispatchTimerPort,
+                clock,
+                redisMarkTimeout,
+                DEFAULT_DISPATCH_INITIAL_DELAY);
     }
 
     /**

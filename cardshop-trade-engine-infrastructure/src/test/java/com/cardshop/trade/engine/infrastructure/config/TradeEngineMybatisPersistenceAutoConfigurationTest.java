@@ -66,6 +66,7 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         new ApplicationContextRunner()
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(Clock.class, Clock::systemUTC)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
                 .withConfiguration(AutoConfigurations.of(
                         TestMapperAutoConfiguration.class,
                         TradeEngineMybatisPersistenceAutoConfiguration.class))
@@ -81,6 +82,7 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         new ApplicationContextRunner()
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(Clock.class, Clock::systemUTC)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
                 .withConfiguration(AutoConfigurations.of(
                         TestMapperAutoConfiguration.class,
                         TradeEngineMybatisPersistenceAutoConfiguration.class))
@@ -92,6 +94,7 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         new ApplicationContextRunner()
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(Clock.class, Clock::systemUTC)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
                 .withPropertyValues("trade.engine.mq.persist-batch-enabled=true")
                 .withConfiguration(AutoConfigurations.of(
                         TestMapperAutoConfiguration.class,
@@ -108,6 +111,7 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         new ApplicationContextRunner()
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(Clock.class, Clock::systemUTC)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
                 .withConfiguration(AutoConfigurations.of(
                         TestMapperAutoConfiguration.class,
                         TradeEngineMybatisPersistenceAutoConfiguration.class))
@@ -131,6 +135,7 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         new ApplicationContextRunner()
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(Clock.class, Clock::systemUTC)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
                 .withConfiguration(AutoConfigurations.of(
                         TestMapperAutoConfiguration.class,
                         TradeEngineMybatisPersistenceAutoConfiguration.class))

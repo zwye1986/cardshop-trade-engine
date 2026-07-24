@@ -3,7 +3,6 @@ package com.cardshop.trade.engine.application.recharge;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -18,8 +17,8 @@ class RechargeDispatchEventIdsTest {
     void buildsDispatchEventIdFromSharedContract() {
         assertThat(RechargeDispatchEventIds.dispatchEventId("ORDER-1"))
                 .isEqualTo("dispatch-ORDER-1");
-        assertThat(RechargeDispatchEventIds.dispatchInitialDelay())
-                .isEqualTo(Duration.ofSeconds(1));
+        assertThat(RechargeDispatchEventIds.supplierQueryEventId("ORDER-1"))
+                .isEqualTo("supplier-query-ORDER-1");
     }
 
     @Test

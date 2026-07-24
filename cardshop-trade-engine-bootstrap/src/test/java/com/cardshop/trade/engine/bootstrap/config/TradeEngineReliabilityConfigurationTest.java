@@ -39,6 +39,7 @@ import com.cardshop.trade.engine.job.recharge.RechargeCacheRepairJob;
 import com.cardshop.trade.engine.job.recharge.RechargeOutboxPublishJob;
 import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineInfrastructureConfiguration;
+import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
 import java.lang.reflect.Proxy;
 import java.time.Clock;
@@ -55,8 +56,10 @@ import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.rabbit.listener.MessageListenerContainer;
 import org.springframework.amqp.rabbit.listener.RabbitListenerContainerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
 import org.springframework.test.util.ReflectionTestUtils;
 
 /**
@@ -68,7 +71,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 class TradeEngineReliabilityConfigurationTest {
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
-            .withUserConfiguration(TradeEngineReliabilityConfiguration.class);
+            .withUserConfiguration(TradeEngineReliabilityConfiguration.class, PropertiesConfiguration.class);
 
     @Test
     void registersAcceptAnomalyAutoCheckServiceWhenPortsArePresent() {
@@ -514,5 +517,10 @@ class TradeEngineReliabilityConfigurationTest {
                     return null;
                 });
         return type.cast(proxy);
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @EnableConfigurationProperties(TradeEngineProperties.class)
+    static class PropertiesConfiguration {
     }
 }

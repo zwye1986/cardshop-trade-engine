@@ -12,12 +12,14 @@ import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
+import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import java.time.Clock;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -59,6 +61,7 @@ class TradeEngineConsumerAutoConfigurationTest {
     }
 
     @AutoConfiguration(before = TradeEngineConsumerAutoConfiguration.class)
+    @EnableConfigurationProperties(TradeEngineProperties.class)
     static class TestConsumerDependencyAutoConfiguration {
 
         @Bean

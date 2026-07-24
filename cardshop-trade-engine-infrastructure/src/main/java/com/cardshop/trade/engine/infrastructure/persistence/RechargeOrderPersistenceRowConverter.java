@@ -16,6 +16,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeDispa
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.Map;
@@ -42,9 +43,23 @@ final class RechargeOrderPersistenceRowConverter {
     private static final ZoneId LEGACY_CARDSHOP_DB_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final ObjectMapper objectMapper;
+    private final Duration dispatchInitialDelay;
 
     RechargeOrderPersistenceRowConverter(ObjectMapper objectMapper) {
+        this(objectMapper, Duration.ofSeconds(1));
+    }
+
+    /**
+     * @param dispatchInitialDelay 落库后首次派单延迟，对应
+     *     {@code trade.engine.fulfillment.dispatch-initial-delay-seconds}；与 timer 热唤醒共用。
+     */
+    RechargeOrderPersistenceRowConverter(ObjectMapper objectMapper, Duration dispatchInitialDelay) {
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
+        Objects.requireNonNull(dispatchInitialDelay, "dispatchInitialDelay must not be null");
+        if (dispatchInitialDelay.isZero() || dispatchInitialDelay.isNegative()) {
+            throw new IllegalArgumentException("dispatchInitialDelay must be positive");
+        }
+        this.dispatchInitialDelay = dispatchInitialDelay;
     }
 
     McOrderDO toMcOrder(OrderPersistAggregate aggregate) {
@@ -154,8 +169,9 @@ final class RechargeOrderPersistenceRowConverter {
         outbox.setStatus(TaskStatus.INIT.name());
         outbox.setRetryCount(0);
         outbox.setMaxRetryCount(DISPATCH_MAX_RETRY_COUNT);
-        // 详细设计「9.1 派单 Outbox」：派单 timer 默认落库后 1 秒唤醒，恢复扫描也读取同一个 due 时间。
-        outbox.setNextRetryTime(persistedAt.plus(RechargeDispatchEventIds.dispatchInitialDelay()));
+        // 详细设计「9.1 派单 Outbox」：next_retry_time 与 timer 热唤醒共用
+        // trade.engine.fulfillment.dispatch-initial-delay-seconds（默认 1 秒）。
+        outbox.setNextRetryTime(persistedAt.plus(dispatchInitialDelay));
         outbox.setLockedBy(null);
         outbox.setLockedUntil(null);
         outbox.setVersion(0L);

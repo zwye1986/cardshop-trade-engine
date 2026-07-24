@@ -150,6 +150,10 @@ trade:
     balance:
       owner-mode: NEW
       reconcile-diff-threshold-cent: 100
+    # 派单履约 outbox；参见详细设计「9.1 派单 Outbox」「11. 配置中心」。
+    fulfillment:
+      dispatch-initial-delay-seconds: ${TRADE_ENGINE_FULFILLMENT_DISPATCH_INITIAL_DELAY_SECONDS:1}
+      timer-enabled: ${TRADE_ENGINE_FULFILLMENT_TIMER_ENABLED:false}
     # 余额 Delta 刷账 outbox；参见详细设计「9.2 余额 Delta 刷账 Outbox」「11. 配置中心」。
     # 派单履约租约仍使用 trade.engine.fulfillment.*，本配置族只服务 recharge_balance_delta_outbox。
     outbox:
