@@ -17,6 +17,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
 import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairService;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
+import com.cardshop.trade.engine.application.recharge.RechargePersistOutboxAsyncWriter;
 import com.cardshop.trade.engine.application.recharge.RechargePersistMqRepublishService;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
@@ -226,6 +227,7 @@ public class TradeEngineReliabilityConfiguration {
             ObjectProvider<RechargeOrderBatchPersistencePort> batchPersistencePortProvider,
             ObjectProvider<PersistedOrderStatePort> persistedOrderStatePortProvider,
             ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
+            ObjectProvider<RechargePersistOutboxAsyncWriter> outboxAsyncWriterProvider,
             RechargeOrderPersistencePort persistencePort,
             RechargeAcceptReliabilityPort reliabilityPort,
             Clock clock,
@@ -239,7 +241,9 @@ public class TradeEngineReliabilityConfiguration {
                 dispatchTimerPortProvider.getIfAvailable(RechargeDispatchTimerPort::noop),
                 clock,
                 Duration.ofSeconds(3),
-                properties.getFulfillment().dispatchInitialDelay());
+                properties.getFulfillment().dispatchInitialDelay(),
+                outboxAsyncWriterProvider.getIfAvailable(),
+                properties.getPersist().isOutboxAsyncEnabled());
     }
 
     /**

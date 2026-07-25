@@ -37,6 +37,11 @@ public class TradeEngineProperties {
     private final Mq mq = new Mq();
 
     /**
+     * MySQL persist 批路径扩展配置；参见详细设计「8.3 异步落库 Consumer」。
+     */
+    private final Persist persist = new Persist();
+
+    /**
      * 订单缓存 TTL、请求幂等哈希和配置变更重试配置；参见详细设计「4. Application 用例编排层」。
      */
     private final Order order = new Order();
@@ -119,6 +124,10 @@ public class TradeEngineProperties {
 
     public Mq getMq() {
         return mq;
+    }
+
+    public Persist getPersist() {
+        return persist;
     }
 
     public Order getOrder() {
@@ -633,6 +642,54 @@ public class TradeEngineProperties {
             public void setHalfOpenPermits(int halfOpenPermits) {
                 this.halfOpenPermits = halfOpenPermits;
             }
+        }
+    }
+
+    /**
+     * MySQL persist 批路径配置。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer · Outbox 异步落库模式」。
+     * 该配置族控制事实事务与 outbox 写入拆分，默认关闭，确保灰度失败时可回到五表单事务路径。
+     */
+    public static class Persist {
+
+        /**
+         * 是否启用批路径 outbox 异步写入。默认关闭，保留五表单事务回滚路径。
+         */
+        private boolean outboxAsyncEnabled = false;
+
+        /**
+         * outbox writer 独立 Hikari 连接池上限；必须大于 0。
+         */
+        private int outboxWriterHikariMax = 8;
+
+        /**
+         * writer 是否使用 multi-row ODKU；关闭时退化逐条写入，仅用于排障。
+         */
+        private boolean outboxWriterBatchEnabled = true;
+
+        public boolean isOutboxAsyncEnabled() {
+            return outboxAsyncEnabled;
+        }
+
+        public void setOutboxAsyncEnabled(boolean outboxAsyncEnabled) {
+            this.outboxAsyncEnabled = outboxAsyncEnabled;
+        }
+
+        public int getOutboxWriterHikariMax() {
+            return outboxWriterHikariMax;
+        }
+
+        public void setOutboxWriterHikariMax(int outboxWriterHikariMax) {
+            this.outboxWriterHikariMax = outboxWriterHikariMax;
+        }
+
+        public boolean isOutboxWriterBatchEnabled() {
+            return outboxWriterBatchEnabled;
+        }
+
+        public void setOutboxWriterBatchEnabled(boolean outboxWriterBatchEnabled) {
+            this.outboxWriterBatchEnabled = outboxWriterBatchEnabled;
         }
     }
 

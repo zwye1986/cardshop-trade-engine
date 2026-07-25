@@ -171,7 +171,24 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
      */
     @Override
     @Transactional
-    public void persistBatch(List<OrderPersistAggregate> aggregates) {
+    public void persistBatchWithOutbox(List<OrderPersistAggregate> aggregates) {
+        persistBatchInternal(aggregates, true);
+    }
+
+    /**
+     * 在一个 MySQL 事务内只批量写入订单事实表，不写两张 outbox。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer · Outbox 异步落库模式」。
+     * 本方法是 outbox 异步落库的第一段事实事务；事务提交后由
+     * {@link MybatisRechargePersistOutboxAsyncWriter} 使用独立连接池补写 outbox。
+     */
+    @Override
+    @Transactional
+    public void persistBatchFactsOnly(List<OrderPersistAggregate> aggregates) {
+        persistBatchInternal(aggregates, false);
+    }
+
+    private void persistBatchInternal(List<OrderPersistAggregate> aggregates, boolean includeOutbox) {
         Objects.requireNonNull(aggregates, "aggregates must not be null");
         if (aggregates.isEmpty()) {
             return;
@@ -211,23 +228,25 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
                         departRecordWriter.insertPreDeductBatchIfAbsent(departRecordRows));
             }
 
-            List<RechargeDispatchOutboxDO> dispatchRows = new ArrayList<>(sorted.size());
-            List<RechargeBalanceDeltaOutboxDO> balanceRows = new ArrayList<>(sorted.size());
-            for (OrderPersistAggregate aggregate : sorted) {
-                if (aggregate.dispatchOutboxRequired()) {
-                    dispatchRows.add(rowConverter.toDispatchOutbox(aggregate));
+            if (includeOutbox) {
+                List<RechargeDispatchOutboxDO> dispatchRows = new ArrayList<>(sorted.size());
+                List<RechargeBalanceDeltaOutboxDO> balanceRows = new ArrayList<>(sorted.size());
+                for (OrderPersistAggregate aggregate : sorted) {
+                    if (aggregate.dispatchOutboxRequired()) {
+                        dispatchRows.add(rowConverter.toDispatchOutbox(aggregate));
+                    }
+                    if (aggregate.snapshot().balanceReserved()) {
+                        balanceRows.add(rowConverter.toBalanceDeltaFlushOutbox(aggregate));
+                    }
                 }
-                if (aggregate.snapshot().balanceReserved()) {
-                    balanceRows.add(rowConverter.toBalanceDeltaFlushOutbox(aggregate));
+                if (!dispatchRows.isEmpty()) {
+                    recordPhase(PHASE_RECHARGE_DISPATCH_OUTBOX, () ->
+                            dispatchOutboxWriter.insertDispatchOutboxBatchIfAbsent(dispatchRows));
                 }
-            }
-            if (!dispatchRows.isEmpty()) {
-                recordPhase(PHASE_RECHARGE_DISPATCH_OUTBOX, () ->
-                        dispatchOutboxWriter.insertDispatchOutboxBatchIfAbsent(dispatchRows));
-            }
-            if (!balanceRows.isEmpty()) {
-                recordPhase(PHASE_RECHARGE_BALANCE_DELTA_OUTBOX, () ->
-                        balanceDeltaOutboxWriter.insertBalanceDeltaBatchIfAbsent(balanceRows));
+                if (!balanceRows.isEmpty()) {
+                    recordPhase(PHASE_RECHARGE_BALANCE_DELTA_OUTBOX, () ->
+                            balanceDeltaOutboxWriter.insertBalanceDeltaBatchIfAbsent(balanceRows));
+                }
             }
         } finally {
             long finishedAtNanos = System.nanoTime();

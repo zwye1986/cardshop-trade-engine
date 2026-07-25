@@ -44,6 +44,9 @@ class TradeEnginePropertiesTest {
             assertThat(properties.getMq().getPersistBatchSize()).isEqualTo(10);
             assertThat(properties.getMq().getPersistBatchReceiveTimeoutMs()).isEqualTo(200);
             assertThat(properties.getMq().getBreaker().isEnabled()).isTrue();
+            assertThat(properties.getPersist().isOutboxAsyncEnabled()).isFalse();
+            assertThat(properties.getPersist().getOutboxWriterHikariMax()).isEqualTo(8);
+            assertThat(properties.getPersist().isOutboxWriterBatchEnabled()).isTrue();
             assertThat(properties.getOrder().getPendingTtlDays()).isEqualTo(7);
             assertThat(properties.getOrder().getTerminalTtlHours()).isEqualTo(72);
             assertThat(properties.getRouting().getSupportedPaths())
@@ -113,6 +116,9 @@ class TradeEnginePropertiesTest {
                         "trade.engine.mq.persist-batch-receive-timeout-ms=250",
                         "trade.engine.mq.persist-batch-poll-timeout-ms=120",
                         "trade.engine.mq.breaker.failure-threshold=9",
+                        "trade.engine.persist.outbox-async-enabled=true",
+                        "trade.engine.persist.outbox-writer-hikari-max=3",
+                        "trade.engine.persist.outbox-writer-batch-enabled=false",
                         "trade.engine.routing.gray-org-codes[0]=A11",
                         "trade.engine.routing.supported-paths[0]=/v1/cardapi/order/getRechargeOrder",
                         "trade.engine.v1.crypto.key-rotation-previous-enabled=false",
@@ -156,6 +162,9 @@ class TradeEnginePropertiesTest {
                     assertThat(properties.getMq().getPersistBatchReceiveTimeoutMs()).isEqualTo(250);
                     assertThat(properties.getMq().getPersistBatchPollTimeoutMs()).isEqualTo(120);
                     assertThat(properties.getMq().getBreaker().getFailureThreshold()).isEqualTo(9);
+                    assertThat(properties.getPersist().isOutboxAsyncEnabled()).isTrue();
+                    assertThat(properties.getPersist().getOutboxWriterHikariMax()).isEqualTo(3);
+                    assertThat(properties.getPersist().isOutboxWriterBatchEnabled()).isFalse();
                     assertThat(properties.getRouting().getGrayOrgCodes()).containsExactly("A11");
                     assertThat(properties.getRouting().getSupportedPaths())
                             .containsExactly("/v1/cardapi/order/getRechargeOrder");

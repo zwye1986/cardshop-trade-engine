@@ -1,6 +1,10 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
 import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.config.GlobalConfig;
+import com.baomidou.mybatisplus.core.injector.DefaultSqlInjector;
+import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
@@ -10,6 +14,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
+import com.cardshop.trade.engine.application.recharge.RechargePersistOutboxAsyncWriter;
 import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisBalanceDeltaOutboxWriteAdapter;
@@ -20,6 +25,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeDispa
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargePersistOutboxAsyncWriter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
@@ -30,6 +36,8 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispa
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zaxxer.hikari.HikariDataSource;
+import javax.sql.DataSource;
 import java.time.Clock;
 import java.time.Duration;
 import org.apache.ibatis.session.SqlSessionFactory;
@@ -39,9 +47,13 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceProperties;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
 import org.springframework.boot.autoconfigure.transaction.TransactionAutoConfiguration;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.jdbc.datasource.DataSourceTransactionManager;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /**
@@ -113,7 +125,7 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     @ConditionalOnMissingBean(RechargeOrderBatchPersistencePort.class)
     @ConditionalOnProperty(name = "trade.engine.mq.persist-batch-enabled", havingValue = "true")
     public RechargeOrderBatchPersistencePort rechargeOrderBatchPersistencePort(
-            SqlSessionFactory sqlSessionFactory,
+            @Qualifier("sqlSessionFactory") SqlSessionFactory sqlSessionFactory,
             ObjectMapper objectMapper,
             ObjectProvider<TradeEngineObservabilityMetrics> observabilityMetricsProvider,
             TradeEngineProperties properties) {
@@ -122,6 +134,104 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
                 objectMapper,
                 observabilityMetricsProvider.getIfAvailable(TradeEngineObservabilityMetrics::noop),
                 properties.getFulfillment().dispatchInitialDelay());
+    }
+
+    /**
+     * 创建 persist outbox 异步 writer 的独立连接池。
+     *
+     * <p>参见详细设计「8.3 异步落库 Consumer · Outbox 异步落库模式」。该连接池复用主数据源连接参数，
+     * 但必须是独立 {@link HikariDataSource} 实例，避免 outbox INSERT/ODKU 与 timer claim 的锁等待回压到
+     * 订单事实事务的连接获取。池大小由 {@code trade.engine.persist.outbox-writer-hikari-max} 独立控制；
+     * 连接超时/生命周期调优继承主池（例如 Nacos 中 {@code spring.datasource.hikari.connection-timeout=2000}），
+     * 防止 writer 池静默回退 Hikari 默认值，导致故障窗口行为与事实事务主池不一致。
+     */
+    @Bean(name = "persistOutboxWriterDataSource")
+    @ConditionalOnBean(DataSourceProperties.class)
+    @ConditionalOnMissingBean(name = "persistOutboxWriterDataSource")
+    @ConditionalOnProperty(
+            name = {
+                    "trade.engine.mq.persist-batch-enabled",
+                    "trade.engine.persist.outbox-async-enabled"
+            },
+            havingValue = "true")
+    public HikariDataSource persistOutboxWriterDataSource(
+            DataSourceProperties dataSourceProperties,
+            @Qualifier("dataSource") DataSource dataSource,
+            TradeEngineProperties properties) {
+        int maximumPoolSize = properties.getPersist().getOutboxWriterHikariMax();
+        if (maximumPoolSize <= 0) {
+            throw new IllegalStateException("trade.engine.persist.outbox-writer-hikari-max must be > 0");
+        }
+        HikariDataSource writerDataSource = dataSourceProperties
+                .initializeDataSourceBuilder()
+                .type(HikariDataSource.class)
+                .build();
+        writerDataSource.setPoolName("persist-outbox-writer");
+        writerDataSource.setMaximumPoolSize(maximumPoolSize);
+        if (dataSource instanceof HikariDataSource primaryHikari) {
+            writerDataSource.setConnectionTimeout(primaryHikari.getConnectionTimeout());
+            writerDataSource.setValidationTimeout(primaryHikari.getValidationTimeout());
+            writerDataSource.setIdleTimeout(primaryHikari.getIdleTimeout());
+            writerDataSource.setMaxLifetime(primaryHikari.getMaxLifetime());
+            writerDataSource.setKeepaliveTime(primaryHikari.getKeepaliveTime());
+            if (primaryHikari.getConnectionTestQuery() != null) {
+                writerDataSource.setConnectionTestQuery(primaryHikari.getConnectionTestQuery());
+            }
+        }
+        if (writerDataSource == dataSource) {
+            throw new IllegalStateException("persist outbox writer DataSource must be independent from primary DataSource");
+        }
+        return writerDataSource;
+    }
+
+    /**
+     * 创建 writer 专用 SqlSessionFactory，只注册两张 outbox Mapper。
+     */
+    @Bean(name = "persistOutboxWriterSqlSessionFactory", autowireCandidate = false)
+    @ConditionalOnBean(name = "persistOutboxWriterDataSource")
+    @ConditionalOnMissingBean(name = "persistOutboxWriterSqlSessionFactory")
+    public SqlSessionFactory persistOutboxWriterSqlSessionFactory(
+            ApplicationContext applicationContext) throws Exception {
+        DataSource dataSource = applicationContext.getBean("persistOutboxWriterDataSource", DataSource.class);
+        MybatisConfiguration configuration = new MybatisConfiguration();
+        configuration.addMapper(RechargeDispatchOutboxMapper.class);
+        configuration.addMapper(RechargeBalanceDeltaOutboxMapper.class);
+        GlobalConfig globalConfig = new GlobalConfig();
+        globalConfig.setSqlInjector(new DefaultSqlInjector());
+
+        MybatisSqlSessionFactoryBean factoryBean = new MybatisSqlSessionFactoryBean();
+        factoryBean.setDataSource(dataSource);
+        factoryBean.setConfiguration(configuration);
+        factoryBean.setGlobalConfig(globalConfig);
+        return factoryBean.getObject();
+    }
+
+    /**
+     * 创建 outbox 异步 writer。
+     */
+    @Bean
+    @ConditionalOnBean(name = {
+            "persistOutboxWriterDataSource",
+            "persistOutboxWriterSqlSessionFactory"
+    })
+    @ConditionalOnMissingBean(RechargePersistOutboxAsyncWriter.class)
+    public RechargePersistOutboxAsyncWriter rechargePersistOutboxAsyncWriter(
+            ApplicationContext applicationContext,
+            ObjectMapper objectMapper,
+            ObjectProvider<TradeEngineObservabilityMetrics> observabilityMetricsProvider,
+            TradeEngineProperties properties) {
+        SqlSessionFactory sqlSessionFactory = applicationContext.getBean(
+                "persistOutboxWriterSqlSessionFactory",
+                SqlSessionFactory.class);
+        DataSource dataSource = applicationContext.getBean("persistOutboxWriterDataSource", DataSource.class);
+        PlatformTransactionManager transactionManager = new DataSourceTransactionManager(dataSource);
+        return new MybatisRechargePersistOutboxAsyncWriter(
+                sqlSessionFactory,
+                objectMapper,
+                observabilityMetricsProvider.getIfAvailable(TradeEngineObservabilityMetrics::noop),
+                properties.getFulfillment().dispatchInitialDelay(),
+                properties.getPersist().isOutboxWriterBatchEnabled(),
+                transactionManager);
     }
 
     @Bean
@@ -238,7 +348,7 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
             McExtDepartMapper extDepartMapper,
             Clock clock,
             TradeEngineProperties properties,
-            PlatformTransactionManager transactionManager) {
+            @Qualifier("transactionManager") PlatformTransactionManager transactionManager) {
         // 余额刷账租约/退避/批大小读 trade.engine.outbox.*；参见详细设计「9.2 余额 Delta 刷账 Outbox」。
         var outbox = properties.getOutbox();
         return new MybatisRechargeBalanceDeltaFlushAdapter(

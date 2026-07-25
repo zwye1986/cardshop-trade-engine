@@ -73,6 +73,7 @@ public class TradeEngineObservabilityMetrics
     private volatile Counter productCacheMysqlLoadCounter;
     private volatile DistributionSummary persistBatchSizeSummary;
     private volatile Timer persistBatchMysqlTimer;
+    private volatile Timer persistOutboxWriterTimer;
     private volatile MeterRegistry registry;
 
     public TradeEngineObservabilityMetrics(
@@ -377,6 +378,35 @@ public class TradeEngineObservabilityMetrics
                         .tag("phase", safePhase)
                         .register(current))
                 .record(safeDuration);
+    }
+
+    /**
+     * 记录 persist 批路径 outbox 异步 writer 端到端耗时。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer · Outbox 异步落库模式」。
+     * 该耗时覆盖 writer 独立事务、连接获取和两张 outbox 的幂等写入；连接池水位使用 Spring Boot 标准
+     * {@code hikaricp.connections.*} 指标，不在这里增加自定义高基数字段。
+     */
+    public void recordPersistOutboxWriterDuration(Duration duration) {
+        MeterRegistry current = registry;
+        if (current == null) {
+            return;
+        }
+        Duration safeDuration = duration == null || duration.isNegative() ? Duration.ZERO : duration;
+        Timer timer = persistOutboxWriterTimer;
+        if (timer == null) {
+            synchronized (this) {
+                timer = persistOutboxWriterTimer;
+                if (timer == null) {
+                    timer = Timer.builder("trade.engine.persist.outbox.writer.duration")
+                            .description("persist批路径outbox异步writer端到端耗时")
+                            .tag("environment", environment)
+                            .register(current);
+                    persistOutboxWriterTimer = timer;
+                }
+            }
+        }
+        timer.record(safeDuration);
     }
 
     /**

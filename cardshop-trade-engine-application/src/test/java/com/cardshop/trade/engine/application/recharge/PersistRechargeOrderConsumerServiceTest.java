@@ -300,10 +300,11 @@ class PersistRechargeOrderConsumerServiceTest {
         assertThat(result.persistedCount()).isEqualTo(2);
         assertThat(result.redisMarkFailedCount()).isZero();
         assertThat(persistencePort.events).isEmpty();
-        assertThat(batchPersistencePort.batchCalls).hasSize(1);
-        assertThat(batchPersistencePort.batchCalls.getFirst())
+        assertThat(batchPersistencePort.withOutboxCalls).hasSize(1);
+        assertThat(batchPersistencePort.withOutboxCalls.getFirst())
                 .extracting(aggregate -> aggregate.snapshot().orderId())
                 .containsExactly("ORDER-1001", "ORDER-1002");
+        assertThat(batchPersistencePort.factsOnlyCalls).isEmpty();
         assertThat(reliabilityPort.markDbPersistedCalls).isEqualTo(2);
         assertThat(reliabilityPort.markPersistFailedCalls).isZero();
     }
@@ -378,7 +379,7 @@ class PersistRechargeOrderConsumerServiceTest {
         assertThat(result.persistedCount()).isEqualTo(2);
         assertThat(reliabilityPort.markDbPersistedCalls).isEqualTo(1);
         assertThat(reliabilityPort.markPersistFailedCalls).isZero();
-        assertThat(batchPersistencePort.batchCalls.getFirst())
+        assertThat(batchPersistencePort.withOutboxCalls.getFirst())
                 .extracting(aggregate -> aggregate.snapshot().failCode())
                 .containsExactly("", "MERCHANT_CONFIG_STALE");
     }
@@ -408,8 +409,8 @@ class PersistRechargeOrderConsumerServiceTest {
         assertThat(result.persistedCount()).isEqualTo(1);
         assertThat(result.skippedAlreadyPersistedCount()).isEqualTo(1);
         assertThat(persistedStatePort.batchLookupCalls).isEqualTo(1);
-        assertThat(batchPersistencePort.batchCalls).hasSize(1);
-        assertThat(batchPersistencePort.batchCalls.getFirst())
+        assertThat(batchPersistencePort.withOutboxCalls).hasSize(1);
+        assertThat(batchPersistencePort.withOutboxCalls.getFirst())
                 .extracting(aggregate -> aggregate.snapshot().orderId())
                 .containsExactly("ORDER-1002");
         assertThat(reliabilityPort.markDbPersistedOrderIds)
@@ -440,7 +441,7 @@ class PersistRechargeOrderConsumerServiceTest {
         assertThat(result.shouldAck()).isTrue();
         assertThat(result.persistedCount()).isZero();
         assertThat(result.skippedAlreadyPersistedCount()).isEqualTo(2);
-        assertThat(batchPersistencePort.batchCalls).isEmpty();
+        assertThat(batchPersistencePort.withOutboxCalls).isEmpty();
         assertThat(reliabilityPort.markDbPersistedOrderIds).containsExactly("ORDER-1001", "ORDER-1001");
     }
 
@@ -468,9 +469,95 @@ class PersistRechargeOrderConsumerServiceTest {
         assertThat(result.skippedAlreadyPersistedCount()).isZero();
         assertThat(persistedStatePort.probes)
                 .containsExactly(new PersistedOrderProbe("A36", "OUT-1001", "ORDER-1001", 2L));
-        assertThat(batchPersistencePort.batchCalls).hasSize(1);
-        assertThat(batchPersistencePort.batchCalls.getFirst().getFirst().snapshot().orderVersion()).isEqualTo(2L);
+        assertThat(batchPersistencePort.withOutboxCalls).hasSize(1);
+        assertThat(batchPersistencePort.withOutboxCalls.getFirst().getFirst().snapshot().orderVersion()).isEqualTo(2L);
         assertThat(reliabilityPort.lastPersistedVersion).isEqualTo(2L);
+    }
+
+    @Test
+    void persistBatchAsyncWritesFactsOnlyForCandidatesButOutboxAndTimerForAllSelectedMessages() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingBatchPersistencePort batchPersistencePort = new RecordingBatchPersistencePort();
+        RecordingPersistedOrderStatePort persistedStatePort = new RecordingPersistedOrderStatePort();
+        persistedStatePort.alreadyPersisted("A36", "OUT-1001", "ORDER-1001", 1L);
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingDispatchTimerPort dispatchTimerPort = new RecordingDispatchTimerPort();
+        RecordingOutboxAsyncWriter outboxAsyncWriter = new RecordingOutboxAsyncWriter();
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedStatePort,
+                reliabilityPort,
+                dispatchTimerPort,
+                CLOCK,
+                Duration.ofSeconds(3),
+                Duration.ofSeconds(5),
+                outboxAsyncWriter,
+                true);
+
+        PersistRechargeOrderBatchResult result = service.persistBatch(List.of(
+                message(1L),
+                message("persist-ORDER-1002-01", "ORDER-1002", "OUT-1002", 1L)));
+
+        assertThat(result.shouldAck()).isTrue();
+        assertThat(result.persistedCount()).isEqualTo(1);
+        assertThat(result.skippedAlreadyPersistedCount()).isEqualTo(1);
+        assertThat(batchPersistencePort.withOutboxCalls).isEmpty();
+        assertThat(batchPersistencePort.factsOnlyCalls).hasSize(1);
+        assertThat(batchPersistencePort.factsOnlyCalls.getFirst())
+                .extracting(aggregate -> aggregate.snapshot().orderId())
+                .containsExactly("ORDER-1002");
+        assertThat(outboxAsyncWriter.batchCalls).hasSize(1);
+        assertThat(outboxAsyncWriter.batchCalls.getFirst())
+                .extracting(aggregate -> aggregate.snapshot().orderId())
+                .containsExactly("ORDER-1001", "ORDER-1002");
+        assertThat(dispatchTimerPort.calls).containsExactly(
+                new TimerCall("dispatch-ORDER-1001", OutboxEventType.SUPPLIER_DISPATCH, Duration.ofSeconds(5)),
+                new TimerCall("dispatch-ORDER-1002", OutboxEventType.SUPPLIER_DISPATCH, Duration.ofSeconds(5)));
+        assertThat(reliabilityPort.markDbPersistedOrderIds)
+                .containsExactly("ORDER-1001", "ORDER-1002");
+        assertThat(reliabilityPort.markPersistFailedCalls).isZero();
+    }
+
+    @Test
+    void persistBatchAsyncWriterFailureKeepsWholeBatchRetryableAndDoesNotMarkDbPersisted() {
+        RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
+        RecordingPersistencePort persistencePort = new RecordingPersistencePort();
+        RecordingBatchPersistencePort batchPersistencePort = new RecordingBatchPersistencePort();
+        RecordingPersistedOrderStatePort persistedStatePort = new RecordingPersistedOrderStatePort();
+        persistedStatePort.alreadyPersisted("A36", "OUT-1001", "ORDER-1001", 1L);
+        RecordingReliabilityPort reliabilityPort = new RecordingReliabilityPort();
+        RecordingDispatchTimerPort dispatchTimerPort = new RecordingDispatchTimerPort();
+        RecordingOutboxAsyncWriter outboxAsyncWriter = new RecordingOutboxAsyncWriter();
+        outboxAsyncWriter.failure = new IllegalStateException("writer unavailable");
+        PersistRechargeOrderConsumerService service = new PersistRechargeOrderConsumerService(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedStatePort,
+                reliabilityPort,
+                dispatchTimerPort,
+                CLOCK,
+                Duration.ofSeconds(3),
+                Duration.ofSeconds(5),
+                outboxAsyncWriter,
+                true);
+
+        PersistRechargeOrderBatchResult result = service.persistBatch(List.of(
+                message(1L),
+                message("persist-ORDER-1002-01", "ORDER-1002", "OUT-1002", 1L)));
+
+        assertThat(result.shouldAck()).isFalse();
+        assertThat(result.failCode()).isEqualTo("MYSQL_PERSIST_FAILED");
+        assertThat(result.failReason()).contains("writer unavailable");
+        assertThat(batchPersistencePort.factsOnlyCalls).hasSize(1);
+        assertThat(outboxAsyncWriter.batchCalls).hasSize(1);
+        assertThat(reliabilityPort.markDbPersistedCalls).isZero();
+        assertThat(reliabilityPort.markPersistFailedOrderIds)
+                .containsExactly("ORDER-1001", "ORDER-1002");
+        assertThat(dispatchTimerPort.calls).isEmpty();
     }
 
     private static PersistTradeOrderMessage message(long orderVersion) {
@@ -636,11 +723,34 @@ class PersistRechargeOrderConsumerServiceTest {
 
     private static final class RecordingBatchPersistencePort implements RechargeOrderBatchPersistencePort {
 
+        private final List<List<OrderPersistAggregate>> withOutboxCalls = new ArrayList<>();
+        private final List<List<OrderPersistAggregate>> factsOnlyCalls = new ArrayList<>();
+        private RuntimeException failure;
+
+        @Override
+        public void persistBatchWithOutbox(List<OrderPersistAggregate> aggregates) {
+            withOutboxCalls.add(List.copyOf(aggregates));
+            if (failure != null) {
+                throw failure;
+            }
+        }
+
+        @Override
+        public void persistBatchFactsOnly(List<OrderPersistAggregate> aggregates) {
+            factsOnlyCalls.add(List.copyOf(aggregates));
+            if (failure != null) {
+                throw failure;
+            }
+        }
+    }
+
+    private static final class RecordingOutboxAsyncWriter implements RechargePersistOutboxAsyncWriter {
+
         private final List<List<OrderPersistAggregate>> batchCalls = new ArrayList<>();
         private RuntimeException failure;
 
         @Override
-        public void persistBatch(List<OrderPersistAggregate> aggregates) {
+        public void writeBatch(List<OrderPersistAggregate> aggregates) {
             batchCalls.add(List.copyOf(aggregates));
             if (failure != null) {
                 throw failure;
@@ -679,6 +789,7 @@ class PersistRechargeOrderConsumerServiceTest {
 
         private final List<String> events = new ArrayList<>();
         private final List<String> markDbPersistedOrderIds = new ArrayList<>();
+        private final List<String> markPersistFailedOrderIds = new ArrayList<>();
         private int markDbPersistedCalls;
         private int markPersistFailedCalls;
         private long lastPersistedVersion = -1L;
@@ -736,6 +847,7 @@ class PersistRechargeOrderConsumerServiceTest {
                 long nowEpochMillis) {
             events.add("markPersistFailed");
             markPersistFailedCalls++;
+            markPersistFailedOrderIds.add(acceptResult.orderId());
             lastPersistFailedReason = failReason;
             return markPersistFailedFuture;
         }

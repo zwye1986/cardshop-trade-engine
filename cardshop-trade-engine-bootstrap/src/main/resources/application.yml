@@ -85,6 +85,11 @@ trade:
         rolling-window-seconds: 30
         open-seconds: 30
         half-open-permits: 3
+    # 批落库 outbox 两段事务灰度开关；参见详细设计「8.3 异步落库 Consumer · Outbox 异步落库模式」。
+    persist:
+      outbox-async-enabled: ${TRADE_ENGINE_PERSIST_OUTBOX_ASYNC_ENABLED:false}
+      outbox-writer-hikari-max: ${TRADE_ENGINE_PERSIST_OUTBOX_WRITER_HIKARI_MAX:8}
+      outbox-writer-batch-enabled: ${TRADE_ENGINE_PERSIST_OUTBOX_WRITER_BATCH_ENABLED:true}
     order:
       pending-ttl-days: 7
       terminal-ttl-hours: 72

@@ -12,6 +12,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPo
 import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
+import com.cardshop.trade.engine.application.recharge.RechargePersistOutboxAsyncWriter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisBatchRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
@@ -19,6 +20,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeDispa
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargePersistOutboxAsyncWriter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartProductMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
@@ -35,6 +37,7 @@ import java.lang.reflect.Proxy;
 import java.sql.Connection;
 import java.time.Clock;
 import javax.sql.DataSource;
+import com.zaxxer.hikari.HikariDataSource;
 import org.apache.ibatis.mapping.Environment;
 import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.session.SqlSessionFactory;
@@ -45,6 +48,7 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
@@ -104,6 +108,96 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                     assertThat(context.getBean(RechargeOrderBatchPersistencePort.class))
                             .isInstanceOf(MybatisBatchRechargeOrderPersistenceAdapter.class);
                 });
+    }
+
+    @Test
+    void registersOutboxAsyncWriterWithIndependentDataSourceWhenBothSwitchesAreEnabled() {
+        new ApplicationContextRunner()
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withPropertyValues(
+                        "spring.datasource.url=jdbc:mysql://127.0.0.1:3306/cardshop_trade_engine_test",
+                        "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver",
+                        "trade.engine.mq.persist-batch-enabled=true",
+                        "trade.engine.persist.outbox-async-enabled=true",
+                        "trade.engine.persist.outbox-writer-hikari-max=3")
+                .withConfiguration(AutoConfigurations.of(
+                        DataSourceAutoConfiguration.class,
+                        DataSourceTransactionManagerAutoConfiguration.class,
+                        TestMapperAutoConfiguration.class,
+                        TradeEngineMybatisPersistenceAutoConfiguration.class))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(RechargePersistOutboxAsyncWriter.class);
+                    assertThat(context.getBean(RechargePersistOutboxAsyncWriter.class))
+                            .isInstanceOf(MybatisRechargePersistOutboxAsyncWriter.class);
+                    HikariDataSource writerDataSource =
+                            context.getBean("persistOutboxWriterDataSource", HikariDataSource.class);
+                    assertThat(writerDataSource).isNotSameAs(context.getBean("dataSource", DataSource.class));
+                    assertThat(writerDataSource.getMaximumPoolSize()).isEqualTo(3);
+                    assertThat(writerDataSource.getPoolName()).isEqualTo("persist-outbox-writer");
+                });
+    }
+
+    /**
+     * writer 独立连接池必须继承主池 {@code spring.datasource.hikari.*} 的超时/生命周期调优，
+     * 池大小仍由 {@code outbox-writer-hikari-max} 独立控制，防止 writer 静默回退 Hikari 默认值。
+     */
+    @Test
+    void outboxWriterDataSourceInheritsPrimaryHikariTimeoutTuning() {
+        new ApplicationContextRunner()
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withPropertyValues(
+                        "spring.datasource.url=jdbc:mysql://127.0.0.1:3306/cardshop_trade_engine_test",
+                        "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver",
+                        "spring.datasource.hikari.connection-timeout=2500",
+                        "spring.datasource.hikari.max-lifetime=600000",
+                        "trade.engine.mq.persist-batch-enabled=true",
+                        "trade.engine.persist.outbox-async-enabled=true",
+                        "trade.engine.persist.outbox-writer-hikari-max=3")
+                .withConfiguration(AutoConfigurations.of(
+                        DataSourceAutoConfiguration.class,
+                        DataSourceTransactionManagerAutoConfiguration.class,
+                        TestMapperAutoConfiguration.class,
+                        TradeEngineMybatisPersistenceAutoConfiguration.class))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    HikariDataSource primaryDataSource = context.getBean("dataSource", HikariDataSource.class);
+                    HikariDataSource writerDataSource =
+                            context.getBean("persistOutboxWriterDataSource", HikariDataSource.class);
+                    assertThat(primaryDataSource.getConnectionTimeout()).isEqualTo(2500);
+                    assertThat(writerDataSource.getConnectionTimeout()).isEqualTo(2500);
+                    assertThat(writerDataSource.getMaxLifetime()).isEqualTo(600000);
+                    assertThat(writerDataSource.getMaximumPoolSize()).isEqualTo(3);
+                    assertThat(writerDataSource.getMaximumPoolSize())
+                            .isNotEqualTo(primaryDataSource.getMaximumPoolSize());
+                });
+    }
+
+    @Test
+    void failsFastWhenOutboxAsyncWriterHikariMaxIsNotPositive() {
+        new ApplicationContextRunner()
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withPropertyValues(
+                        "spring.datasource.url=jdbc:mysql://127.0.0.1:3306/cardshop_trade_engine_test",
+                        "spring.datasource.driver-class-name=com.mysql.cj.jdbc.Driver",
+                        "trade.engine.mq.persist-batch-enabled=true",
+                        "trade.engine.persist.outbox-async-enabled=true",
+                        "trade.engine.persist.outbox-writer-hikari-max=0")
+                .withConfiguration(AutoConfigurations.of(
+                        DataSourceAutoConfiguration.class,
+                        DataSourceTransactionManagerAutoConfiguration.class,
+                        TestMapperAutoConfiguration.class,
+                        TradeEngineMybatisPersistenceAutoConfiguration.class))
+                .run(context -> assertThat(context)
+                        .hasFailed()
+                        .getFailure()
+                        .hasMessageContaining("trade.engine.persist.outbox-writer-hikari-max must be > 0"));
     }
 
     @Test

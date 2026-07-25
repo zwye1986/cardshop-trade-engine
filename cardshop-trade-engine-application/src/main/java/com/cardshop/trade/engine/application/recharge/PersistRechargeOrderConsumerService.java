@@ -64,6 +64,12 @@ public class PersistRechargeOrderConsumerService {
     private final Clock clock;
     private final Duration redisMarkTimeout;
     private final Duration dispatchInitialDelay;
+    /**
+     * outbox 异步写入端口；仅在 {@code outboxAsyncEnabled=true} 时必填，
+     * 同步落库模式（默认）为 {@code null}。参见详细设计「8.3 异步落库 Consumer · Outbox 异步落库模式」。
+     */
+    private final RechargePersistOutboxAsyncWriter outboxAsyncWriter;
+    private final boolean outboxAsyncEnabled;
     private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
     public PersistRechargeOrderConsumerService(
@@ -159,6 +165,42 @@ public class PersistRechargeOrderConsumerService {
             Clock clock,
             Duration redisMarkTimeout,
             Duration dispatchInitialDelay) {
+        this(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedOrderStatePort,
+                reliabilityPort,
+                dispatchTimerPort,
+                clock,
+                redisMarkTimeout,
+                dispatchInitialDelay,
+                null,
+                false);
+    }
+
+    /**
+     * 创建支持 outbox 异步落库模式的异步落库 Consumer 核心服务。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer · Outbox 异步落库模式」。
+     * {@code outboxAsyncEnabled=true} 时批路径改为两段事务：先调
+     * {@link RechargeOrderBatchPersistencePort#persistBatchFactsOnly(List)} 提交三张事实表，
+     * 再调 {@code outboxAsyncWriter.writeBatch} 对本批全部 selected 聚合（含二次确认跳过的消息）
+     * 无条件幂等补写两张 outbox，outbox 写成功后才允许 timer 调度与 MQ ack。
+     * {@code outboxAsyncEnabled=false} 时 {@code outboxAsyncWriter} 传 {@code null}，行为与原五表单事务完全一致。
+     */
+    public PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeOrderBatchPersistencePort batchPersistencePort,
+            PersistedOrderStatePort persistedOrderStatePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock,
+            Duration redisMarkTimeout,
+            Duration dispatchInitialDelay,
+            RechargePersistOutboxAsyncWriter outboxAsyncWriter,
+            boolean outboxAsyncEnabled) {
         this.snapshotPort = Objects.requireNonNull(snapshotPort, "snapshotPort must not be null");
         this.persistencePort = Objects.requireNonNull(persistencePort, "persistencePort must not be null");
         this.batchPersistencePort = batchPersistencePort;
@@ -170,6 +212,14 @@ public class PersistRechargeOrderConsumerService {
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.redisMarkTimeout = positiveTimeout(redisMarkTimeout);
         this.dispatchInitialDelay = positiveTimeout(dispatchInitialDelay);
+        if (outboxAsyncEnabled) {
+            this.outboxAsyncWriter = Objects.requireNonNull(
+                    outboxAsyncWriter,
+                    "outboxAsyncWriter must not be null when outboxAsyncEnabled=true");
+        } else {
+            this.outboxAsyncWriter = outboxAsyncWriter;
+        }
+        this.outboxAsyncEnabled = outboxAsyncEnabled;
     }
 
     PersistRechargeOrderConsumerService(
@@ -337,22 +387,42 @@ public class PersistRechargeOrderConsumerService {
         List<OrderPersistAggregate> aggregates = persistedCandidates.stream()
                 .map(SelectedBatchMessage::aggregate)
                 .toList();
+        /*
+         * outbox 异步落库模式的一致性不变量（参见详细设计「8.3 异步落库 Consumer · Outbox 异步落库模式」）：
+         * writer 入参必须是本批全部 selected 聚合，不能随二次确认跳过收缩。
+         * 崩溃窗口「事实已提交、outbox 未写」的订单重投后会被 alreadyPersistedProbes 跳过事实事务，
+         * 若 writer 也跳过它们，outbox 行将永久缺失、派单永远不会发生；这里靠 event_id 唯一键 ODKU 去重。
+         */
+        List<OrderPersistAggregate> allSelectedAggregates = selectedMessages.stream()
+                .map(SelectedBatchMessage::aggregate)
+                .toList();
 
+        List<SelectedBatchMessage> failedMessagesToMark = persistedCandidates;
         try {
             if (!aggregates.isEmpty()) {
-                batchPersistencePort.persistBatch(aggregates);
+                if (outboxAsyncEnabled) {
+                    batchPersistencePort.persistBatchFactsOnly(aggregates);
+                } else {
+                    batchPersistencePort.persistBatchWithOutbox(aggregates);
+                }
+            }
+            if (outboxAsyncEnabled) {
+                // ack 必在 outbox 写成功之后：写失败抛异常即整批不 ack，走下方统一失败处理
+                failedMessagesToMark = selectedMessages;
+                outboxAsyncWriter.writeBatch(allSelectedAggregates);
             }
         } catch (RuntimeException ex) {
             logSampledError(LOG_EVENT_MYSQL_PERSIST_FAILED, decision -> log.error(
-                    "Redis订单批量异步落MySQL失败 batchSize={}, firstMessageId={}, lastMessageId={}, occurrence={}, sampled={}",
+                    "Redis订单批量异步落MySQL失败 batchSize={}, firstMessageId={}, lastMessageId={}, outboxAsyncEnabled={}, occurrence={}, sampled={}",
                     messages.size(),
                     messages.getFirst().messageId(),
                     messages.getLast().messageId(),
+                    outboxAsyncEnabled,
                     decision.occurrence(),
                     decision.sampledOccurrence(),
                     ex));
             String failReason = truncateFailReason(ex.getMessage());
-            for (SelectedBatchMessage selectedMessage : persistedCandidates) {
+            for (SelectedBatchMessage selectedMessage : failedMessagesToMark) {
                 if (selectedMessage.redisOrderWritten()) {
                     markPersistFailed(
                             selectedMessage.message(),
@@ -366,7 +436,15 @@ public class PersistRechargeOrderConsumerService {
                     failReason);
         }
 
-        persistedCandidates.forEach(selectedMessage -> scheduleDispatchAfterMysqlCommit(selectedMessage.aggregate()));
+        if (outboxAsyncEnabled) {
+            /*
+             * 异步模式下 timer 调度同样覆盖全部 selected 聚合：崩溃窗口重投的订单首次调度可能从未发生，
+             * 且此时 outbox 行已可见，调度语义安全；重复调度由 timer 端口幂等兜底。
+             */
+            selectedMessages.forEach(selectedMessage -> scheduleDispatchAfterMysqlCommit(selectedMessage.aggregate()));
+        } else {
+            persistedCandidates.forEach(selectedMessage -> scheduleDispatchAfterMysqlCommit(selectedMessage.aggregate()));
+        }
         int redisMarkFailedCount = 0;
         for (SelectedBatchMessage selectedMessage : selectedMessages) {
             if (!selectedMessage.redisOrderWritten()) {
