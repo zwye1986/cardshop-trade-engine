@@ -44,6 +44,9 @@ class TradeEnginePropertiesTest {
             assertThat(properties.getMq().getPersistBatchSize()).isEqualTo(10);
             assertThat(properties.getMq().getPersistBatchReceiveTimeoutMs()).isEqualTo(200);
             assertThat(properties.getMq().getBreaker().isEnabled()).isTrue();
+            assertThat(properties.getPersist().isOutboxAsyncEnabled()).isFalse();
+            assertThat(properties.getPersist().getOutboxWriterHikariMax()).isEqualTo(8);
+            assertThat(properties.getPersist().isOutboxWriterBatchEnabled()).isTrue();
             assertThat(properties.getOrder().getPendingTtlDays()).isEqualTo(7);
             assertThat(properties.getOrder().getTerminalTtlHours()).isEqualTo(72);
             assertThat(properties.getRouting().getSupportedPaths())
@@ -74,6 +77,20 @@ class TradeEnginePropertiesTest {
                             Duration.ofSeconds(30),
                             Duration.ofSeconds(120),
                             Duration.ofSeconds(600));
+            assertThat(properties.getFulfillment().getSupplierQueryRetryDelaySeconds()).isEqualTo("2,4,6,8,16,32");
+            assertThat(properties.getFulfillment().getOutboxRetryBackoffSeconds()).isEqualTo(10);
+            assertThat(properties.getFulfillment().getDispatchInitialDelaySeconds()).isEqualTo(1);
+            assertThat(properties.getFulfillment().dispatchInitialDelay()).isEqualTo(Duration.ofSeconds(1));
+            assertThat(properties.getFulfillment().isTimerEnabled()).isFalse();
+            assertThat(properties.getFulfillment().getTimerMaxPendingTasks()).isEqualTo(200000);
+            assertThat(properties.getFulfillment().supplierQueryRetryDelays())
+                    .containsExactly(
+                            Duration.ofSeconds(2),
+                            Duration.ofSeconds(4),
+                            Duration.ofSeconds(6),
+                            Duration.ofSeconds(8),
+                            Duration.ofSeconds(16),
+                            Duration.ofSeconds(32));
             assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(16);
             assertThat(properties.getThreadPool().getDbMaxSize()).isEqualTo(32);
             assertThat(properties.getIntegration().getManualJobTimeoutMs()).isEqualTo(30000);
@@ -99,6 +116,9 @@ class TradeEnginePropertiesTest {
                         "trade.engine.mq.persist-batch-receive-timeout-ms=250",
                         "trade.engine.mq.persist-batch-poll-timeout-ms=120",
                         "trade.engine.mq.breaker.failure-threshold=9",
+                        "trade.engine.persist.outbox-async-enabled=true",
+                        "trade.engine.persist.outbox-writer-hikari-max=3",
+                        "trade.engine.persist.outbox-writer-batch-enabled=false",
                         "trade.engine.routing.gray-org-codes[0]=A11",
                         "trade.engine.routing.supported-paths[0]=/v1/cardapi/order/getRechargeOrder",
                         "trade.engine.v1.crypto.key-rotation-previous-enabled=false",
@@ -113,6 +133,10 @@ class TradeEnginePropertiesTest {
                         "trade.engine.v1.merchant-config-preheat.org-codes[1]=B01",
                         "trade.engine.v1.merchant-config-preheat.fail-on-error=false",
                         "trade.engine.supplier.channels.fake.query-url=http://127.0.0.1:18082/supplier/query",
+                        "trade.engine.fulfillment.timer-enabled=true",
+                        "trade.engine.fulfillment.dispatch-initial-delay-seconds=5",
+                        "trade.engine.fulfillment.supplier-query-retry-delay-seconds=3,9",
+                        "trade.engine.fulfillment.timer-max-pending-tasks=1234",
                         "trade.engine.outbox.balance-delta-flush-batch-size=200",
                         "trade.engine.outbox.balance-delta-claim-lease-seconds=90",
                         "trade.engine.outbox.balance-delta-retry-backoff-seconds=10,60,300",
@@ -138,6 +162,9 @@ class TradeEnginePropertiesTest {
                     assertThat(properties.getMq().getPersistBatchReceiveTimeoutMs()).isEqualTo(250);
                     assertThat(properties.getMq().getPersistBatchPollTimeoutMs()).isEqualTo(120);
                     assertThat(properties.getMq().getBreaker().getFailureThreshold()).isEqualTo(9);
+                    assertThat(properties.getPersist().isOutboxAsyncEnabled()).isTrue();
+                    assertThat(properties.getPersist().getOutboxWriterHikariMax()).isEqualTo(3);
+                    assertThat(properties.getPersist().isOutboxWriterBatchEnabled()).isFalse();
                     assertThat(properties.getRouting().getGrayOrgCodes()).containsExactly("A11");
                     assertThat(properties.getRouting().getSupportedPaths())
                             .containsExactly("/v1/cardapi/order/getRechargeOrder");
@@ -162,9 +189,26 @@ class TradeEnginePropertiesTest {
                                     Duration.ofSeconds(10),
                                     Duration.ofSeconds(60),
                                     Duration.ofSeconds(300));
+                    assertThat(properties.getFulfillment().getSupplierQueryRetryDelaySeconds()).isEqualTo("3,9");
+                    assertThat(properties.getFulfillment().getDispatchInitialDelaySeconds()).isEqualTo(5);
+                    assertThat(properties.getFulfillment().dispatchInitialDelay()).isEqualTo(Duration.ofSeconds(5));
+                    assertThat(properties.getFulfillment().isTimerEnabled()).isTrue();
+                    assertThat(properties.getFulfillment().supplierQueryRetryDelays())
+                            .containsExactly(Duration.ofSeconds(3), Duration.ofSeconds(9));
+                    assertThat(properties.getFulfillment().getTimerMaxPendingTasks()).isEqualTo(1234);
                     assertThat(properties.getThreadPool().getDbCoreSize()).isEqualTo(4);
                     assertThat(properties.getThreadPool().getDbMaxSize()).isEqualTo(8);
                     assertThat(properties.getIntegration().getManualJobTimeoutMs()).isEqualTo(12345);
+                });
+    }
+
+    @Test
+    void bindsV1LoadTestToken() {
+        contextRunner
+                .withPropertyValues("trade.engine.v1.load-test-token=load-secret")
+                .run(context -> {
+                    var properties = context.getBean(TradeEngineProperties.class);
+                    assertThat(properties.getV1().getLoadTestToken()).isEqualTo("load-secret");
                 });
     }
 
@@ -193,6 +237,31 @@ class TradeEnginePropertiesTest {
                             .isInstanceOf(IllegalArgumentException.class)
                             .hasMessageContaining("balance-delta-retry-backoff-seconds")
                             .hasMessageContaining("abc");
+                });
+    }
+
+    @Test
+    void fulfillmentSupplierQueryBackoffRejectsInvalidConfigWithoutSilentFallback() {
+        contextRunner
+                .withPropertyValues("trade.engine.fulfillment.supplier-query-retry-delay-seconds=2,0,abc")
+                .run(context -> {
+                    var properties = context.getBean(TradeEngineProperties.class);
+                    assertThatThrownBy(() -> properties.getFulfillment().supplierQueryRetryDelays())
+                            .isInstanceOf(IllegalArgumentException.class)
+                            .hasMessageContaining("supplier-query-retry-delay-seconds")
+                            .hasMessageContaining("abc");
+                });
+    }
+
+    @Test
+    void fulfillmentDispatchInitialDelayRejectsNonPositiveConfigWithoutSilentFallback() {
+        contextRunner
+                .withPropertyValues("trade.engine.fulfillment.dispatch-initial-delay-seconds=0")
+                .run(context -> {
+                    var properties = context.getBean(TradeEngineProperties.class);
+                    assertThatThrownBy(() -> properties.getFulfillment().dispatchInitialDelay())
+                            .isInstanceOf(IllegalArgumentException.class)
+                            .hasMessageContaining("dispatch-initial-delay-seconds");
                 });
     }
 

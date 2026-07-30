@@ -24,6 +24,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeNotifyBatchResult;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerService;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerSettings;
+import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxBatchResult;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
@@ -308,7 +309,7 @@ class ManualRechargeJobControllerTest {
     @Test
     void runsOutboxPublishJobForLoopbackRequest() {
         RecordingOutboxWorkerService outboxWorkerService = new RecordingOutboxWorkerService(
-                new RechargeOutboxBatchResult(2, 2, 1, 1, 0));
+                new RechargeOutboxBatchResult(2, 2, 1, 1, 0, 0));
         ManualRechargeJobController controller = controllerWithCompensationJobs(
                 new RechargeOutboxPublishJob(outboxWorkerService),
                 new RecordingNotifyWorkerService(new RechargeNotifyBatchResult(0, 0, 0, 0, 0)),
@@ -408,7 +409,7 @@ class ManualRechargeJobControllerTest {
     @Test
     void rejectsNonLoopbackOutboxRequestBeforeJobRuns() {
         RecordingOutboxWorkerService outboxWorkerService = new RecordingOutboxWorkerService(
-                new RechargeOutboxBatchResult(1, 1, 1, 0, 0));
+                new RechargeOutboxBatchResult(1, 1, 1, 0, 0, 0));
         ManualRechargeJobController controller = controllerWithCompensationJobs(
                 new RechargeOutboxPublishJob(outboxWorkerService),
                 new RecordingNotifyWorkerService(new RechargeNotifyBatchResult(0, 0, 0, 0, 0)),
@@ -708,6 +709,18 @@ class ManualRechargeJobControllerTest {
 
         @Override
         public RechargeOutboxBatchResult processDue(int shardTotal, int shardIndex, int limit, String workerId) {
+            calls.add(shardTotal + ":" + shardIndex + ":" + limit + ":" + workerId);
+            return result;
+        }
+
+        @Override
+        public RechargeOutboxBatchResult processDue(
+                int shardTotal,
+                int shardIndex,
+                int limit,
+                String workerId,
+                List<OutboxEventType> eventTypes,
+                int parallelism) {
             calls.add(shardTotal + ":" + shardIndex + ":" + limit + ":" + workerId);
             return result;
         }

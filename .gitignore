@@ -13,4 +13,5 @@ deploy/config/.*.env
 deploy/config/a39-simulator.env
 !deploy/config/env.example
 .worktrees/
+.superpowers/
 /.superpowers/

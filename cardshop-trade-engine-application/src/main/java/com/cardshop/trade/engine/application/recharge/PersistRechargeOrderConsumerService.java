@@ -2,6 +2,7 @@ package com.cardshop.trade.engine.application.recharge;
 
 import com.cardshop.trade.engine.application.logging.LogStormGuard;
 import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
+import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import java.time.Clock;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -41,8 +42,15 @@ public class PersistRechargeOrderConsumerService {
     private static final String LOG_EVENT_REDIS_MARK_FAILED_INTERRUPTED = "persist-consumer.redis-mark-failed.interrupted";
     private static final String LOG_EVENT_REDIS_MARK_FAILED_EXCEPTION = "persist-consumer.redis-mark-failed.exception";
     private static final String LOG_EVENT_PERSISTED_STATE_LOOKUP_FAILED = "persist-consumer.persisted-state.lookup.failed";
+    private static final String LOG_EVENT_DISPATCH_TIMER_SCHEDULE_FAILED = "persist-consumer.dispatch-timer.schedule.failed";
     private static final long RETRY_DELAY_MILLIS = 60_000L;
     private static final Duration DEFAULT_REDIS_MARK_TIMEOUT = Duration.ofSeconds(3);
+    /**
+     * 测试/轻量构造默认首次派单延迟；生产路径必须注入
+     * {@code trade.engine.fulfillment.dispatch-initial-delay-seconds}，与落库
+     * {@code next_retry_time} 保持一致。参见详细设计「9.1 派单 Outbox」。
+     */
+    private static final Duration DEFAULT_DISPATCH_INITIAL_DELAY = Duration.ofSeconds(1);
     private static final int MAX_FAIL_REASON_LENGTH = 500;
     private static final String FIELD_REDIS_ORDER_WRITTEN = "redis_order_written";
     private static final String REDIS_FALSE = "0";
@@ -52,8 +60,16 @@ public class PersistRechargeOrderConsumerService {
     private final RechargeOrderBatchPersistencePort batchPersistencePort;
     private final PersistedOrderStatePort persistedOrderStatePort;
     private final RechargeAcceptReliabilityPort reliabilityPort;
+    private final RechargeDispatchTimerPort dispatchTimerPort;
     private final Clock clock;
     private final Duration redisMarkTimeout;
+    private final Duration dispatchInitialDelay;
+    /**
+     * outbox 异步写入端口；仅在 {@code outboxAsyncEnabled=true} 时必填，
+     * 同步落库模式（默认）为 {@code null}。参见详细设计「8.3 异步落库 Consumer · Outbox 异步落库模式」。
+     */
+    private final RechargePersistOutboxAsyncWriter outboxAsyncWriter;
+    private final boolean outboxAsyncEnabled;
     private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
     public PersistRechargeOrderConsumerService(
@@ -83,8 +99,10 @@ public class PersistRechargeOrderConsumerService {
                 batchPersistencePort,
                 PersistedOrderStatePort.noop(),
                 reliabilityPort,
+                RechargeDispatchTimerPort.noop(),
                 clock,
-                DEFAULT_REDIS_MARK_TIMEOUT);
+                DEFAULT_REDIS_MARK_TIMEOUT,
+                DEFAULT_DISPATCH_INITIAL_DELAY);
     }
 
     public PersistRechargeOrderConsumerService(
@@ -100,8 +118,30 @@ public class PersistRechargeOrderConsumerService {
                 batchPersistencePort,
                 persistedOrderStatePort,
                 reliabilityPort,
+                RechargeDispatchTimerPort.noop(),
                 clock,
-                DEFAULT_REDIS_MARK_TIMEOUT);
+                DEFAULT_REDIS_MARK_TIMEOUT,
+                DEFAULT_DISPATCH_INITIAL_DELAY);
+    }
+
+    public PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeOrderBatchPersistencePort batchPersistencePort,
+            PersistedOrderStatePort persistedOrderStatePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock) {
+        this(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedOrderStatePort,
+                reliabilityPort,
+                dispatchTimerPort,
+                clock,
+                DEFAULT_REDIS_MARK_TIMEOUT,
+                DEFAULT_DISPATCH_INITIAL_DELAY);
     }
 
     /**
@@ -111,7 +151,77 @@ public class PersistRechargeOrderConsumerService {
      * `redisMarkTimeout` 只约束 MySQL 事务之后的 Redis 状态推进调用，避免 RabbitMQ consumer 线程因
      * Redis 客户端 hang 住而无限阻塞；MySQL 已提交后的 `markDbPersisted` 超时会 ack 当前消息并交给补偿修复，
      * MySQL 失败后的 `markPersistFailed` 超时则保持当前消息可重试。
+     *
+     * <p>`dispatchInitialDelay` 对应 {@code trade.engine.fulfillment.dispatch-initial-delay-seconds}，
+     * 必须与落库写入的 {@code recharge_dispatch_outbox.next_retry_time} 使用同一配置值。
      */
+    public PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeOrderBatchPersistencePort batchPersistencePort,
+            PersistedOrderStatePort persistedOrderStatePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock,
+            Duration redisMarkTimeout,
+            Duration dispatchInitialDelay) {
+        this(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedOrderStatePort,
+                reliabilityPort,
+                dispatchTimerPort,
+                clock,
+                redisMarkTimeout,
+                dispatchInitialDelay,
+                null,
+                false);
+    }
+
+    /**
+     * 创建支持 outbox 异步落库模式的异步落库 Consumer 核心服务。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer · Outbox 异步落库模式」。
+     * {@code outboxAsyncEnabled=true} 时批路径改为两段事务：先调
+     * {@link RechargeOrderBatchPersistencePort#persistBatchFactsOnly(List)} 提交三张事实表，
+     * 再调 {@code outboxAsyncWriter.writeBatch} 对本批全部 selected 聚合（含二次确认跳过的消息）
+     * 无条件幂等补写两张 outbox，outbox 写成功后才允许 timer 调度与 MQ ack。
+     * {@code outboxAsyncEnabled=false} 时 {@code outboxAsyncWriter} 传 {@code null}，行为与原五表单事务完全一致。
+     */
+    public PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeOrderBatchPersistencePort batchPersistencePort,
+            PersistedOrderStatePort persistedOrderStatePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock,
+            Duration redisMarkTimeout,
+            Duration dispatchInitialDelay,
+            RechargePersistOutboxAsyncWriter outboxAsyncWriter,
+            boolean outboxAsyncEnabled) {
+        this.snapshotPort = Objects.requireNonNull(snapshotPort, "snapshotPort must not be null");
+        this.persistencePort = Objects.requireNonNull(persistencePort, "persistencePort must not be null");
+        this.batchPersistencePort = batchPersistencePort;
+        this.persistedOrderStatePort = Objects.requireNonNull(
+                persistedOrderStatePort,
+                "persistedOrderStatePort must not be null");
+        this.reliabilityPort = Objects.requireNonNull(reliabilityPort, "reliabilityPort must not be null");
+        this.dispatchTimerPort = Objects.requireNonNull(dispatchTimerPort, "dispatchTimerPort must not be null");
+        this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.redisMarkTimeout = positiveTimeout(redisMarkTimeout);
+        this.dispatchInitialDelay = positiveTimeout(dispatchInitialDelay);
+        if (outboxAsyncEnabled) {
+            this.outboxAsyncWriter = Objects.requireNonNull(
+                    outboxAsyncWriter,
+                    "outboxAsyncWriter must not be null when outboxAsyncEnabled=true");
+        } else {
+            this.outboxAsyncWriter = outboxAsyncWriter;
+        }
+        this.outboxAsyncEnabled = outboxAsyncEnabled;
+    }
+
     PersistRechargeOrderConsumerService(
             PersistOrderSnapshotPort snapshotPort,
             RechargeOrderPersistencePort persistencePort,
@@ -124,8 +234,10 @@ public class PersistRechargeOrderConsumerService {
                 null,
                 PersistedOrderStatePort.noop(),
                 reliabilityPort,
+                RechargeDispatchTimerPort.noop(),
                 clock,
-                redisMarkTimeout);
+                redisMarkTimeout,
+                DEFAULT_DISPATCH_INITIAL_DELAY);
     }
 
     PersistRechargeOrderConsumerService(
@@ -136,15 +248,37 @@ public class PersistRechargeOrderConsumerService {
             RechargeAcceptReliabilityPort reliabilityPort,
             Clock clock,
             Duration redisMarkTimeout) {
-        this.snapshotPort = Objects.requireNonNull(snapshotPort, "snapshotPort must not be null");
-        this.persistencePort = Objects.requireNonNull(persistencePort, "persistencePort must not be null");
-        this.batchPersistencePort = batchPersistencePort;
-        this.persistedOrderStatePort = Objects.requireNonNull(
+        this(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
                 persistedOrderStatePort,
-                "persistedOrderStatePort must not be null");
-        this.reliabilityPort = Objects.requireNonNull(reliabilityPort, "reliabilityPort must not be null");
-        this.clock = Objects.requireNonNull(clock, "clock must not be null");
-        this.redisMarkTimeout = positiveTimeout(redisMarkTimeout);
+                reliabilityPort,
+                RechargeDispatchTimerPort.noop(),
+                clock,
+                redisMarkTimeout,
+                DEFAULT_DISPATCH_INITIAL_DELAY);
+    }
+
+    PersistRechargeOrderConsumerService(
+            PersistOrderSnapshotPort snapshotPort,
+            RechargeOrderPersistencePort persistencePort,
+            RechargeOrderBatchPersistencePort batchPersistencePort,
+            PersistedOrderStatePort persistedOrderStatePort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock,
+            Duration redisMarkTimeout) {
+        this(
+                snapshotPort,
+                persistencePort,
+                batchPersistencePort,
+                persistedOrderStatePort,
+                reliabilityPort,
+                dispatchTimerPort,
+                clock,
+                redisMarkTimeout,
+                DEFAULT_DISPATCH_INITIAL_DELAY);
     }
 
     /**
@@ -185,6 +319,7 @@ public class PersistRechargeOrderConsumerService {
                     failReason);
         }
 
+        scheduleDispatchAfterMysqlCommit(aggregate);
         if (!redisOrderWritten) {
             return PersistRechargeOrderResult.persisted(selected.persistSource());
         }
@@ -252,22 +387,42 @@ public class PersistRechargeOrderConsumerService {
         List<OrderPersistAggregate> aggregates = persistedCandidates.stream()
                 .map(SelectedBatchMessage::aggregate)
                 .toList();
+        /*
+         * outbox 异步落库模式的一致性不变量（参见详细设计「8.3 异步落库 Consumer · Outbox 异步落库模式」）：
+         * writer 入参必须是本批全部 selected 聚合，不能随二次确认跳过收缩。
+         * 崩溃窗口「事实已提交、outbox 未写」的订单重投后会被 alreadyPersistedProbes 跳过事实事务，
+         * 若 writer 也跳过它们，outbox 行将永久缺失、派单永远不会发生；这里靠 event_id 唯一键 ODKU 去重。
+         */
+        List<OrderPersistAggregate> allSelectedAggregates = selectedMessages.stream()
+                .map(SelectedBatchMessage::aggregate)
+                .toList();
 
+        List<SelectedBatchMessage> failedMessagesToMark = persistedCandidates;
         try {
             if (!aggregates.isEmpty()) {
-                batchPersistencePort.persistBatch(aggregates);
+                if (outboxAsyncEnabled) {
+                    batchPersistencePort.persistBatchFactsOnly(aggregates);
+                } else {
+                    batchPersistencePort.persistBatchWithOutbox(aggregates);
+                }
+            }
+            if (outboxAsyncEnabled) {
+                // ack 必在 outbox 写成功之后：写失败抛异常即整批不 ack，走下方统一失败处理
+                failedMessagesToMark = selectedMessages;
+                outboxAsyncWriter.writeBatch(allSelectedAggregates);
             }
         } catch (RuntimeException ex) {
             logSampledError(LOG_EVENT_MYSQL_PERSIST_FAILED, decision -> log.error(
-                    "Redis订单批量异步落MySQL失败 batchSize={}, firstMessageId={}, lastMessageId={}, occurrence={}, sampled={}",
+                    "Redis订单批量异步落MySQL失败 batchSize={}, firstMessageId={}, lastMessageId={}, outboxAsyncEnabled={}, occurrence={}, sampled={}",
                     messages.size(),
                     messages.getFirst().messageId(),
                     messages.getLast().messageId(),
+                    outboxAsyncEnabled,
                     decision.occurrence(),
                     decision.sampledOccurrence(),
                     ex));
             String failReason = truncateFailReason(ex.getMessage());
-            for (SelectedBatchMessage selectedMessage : persistedCandidates) {
+            for (SelectedBatchMessage selectedMessage : failedMessagesToMark) {
                 if (selectedMessage.redisOrderWritten()) {
                     markPersistFailed(
                             selectedMessage.message(),
@@ -281,6 +436,15 @@ public class PersistRechargeOrderConsumerService {
                     failReason);
         }
 
+        if (outboxAsyncEnabled) {
+            /*
+             * 异步模式下 timer 调度同样覆盖全部 selected 聚合：崩溃窗口重投的订单首次调度可能从未发生，
+             * 且此时 outbox 行已可见，调度语义安全；重复调度由 timer 端口幂等兜底。
+             */
+            selectedMessages.forEach(selectedMessage -> scheduleDispatchAfterMysqlCommit(selectedMessage.aggregate()));
+        } else {
+            persistedCandidates.forEach(selectedMessage -> scheduleDispatchAfterMysqlCommit(selectedMessage.aggregate()));
+        }
         int redisMarkFailedCount = 0;
         for (SelectedBatchMessage selectedMessage : selectedMessages) {
             if (!selectedMessage.redisOrderWritten()) {
@@ -331,6 +495,31 @@ public class PersistRechargeOrderConsumerService {
                     decision.sampledOccurrence(),
                     ex));
             return Set.of();
+        }
+    }
+
+    private void scheduleDispatchAfterMysqlCommit(OrderPersistAggregate aggregate) {
+        /*
+         * 参见 docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」。
+         * timer 只是热路径唤醒，真正任务事实已随 MySQL 事务写入 recharge_dispatch_outbox。调度失败不能影响
+         * 已提交订单的 MQ ack 语义，低频 XXL-Job 扫描会按 next_retry_time 恢复。
+         */
+        if (!aggregate.dispatchOutboxRequired() || !aggregate.snapshot().balanceReserved()) {
+            return;
+        }
+        String eventId = RechargeDispatchEventIds.dispatchEventId(aggregate.snapshot().orderId());
+        try {
+            dispatchTimerPort.schedule(eventId, OutboxEventType.SUPPLIER_DISPATCH, dispatchInitialDelay);
+        } catch (RuntimeException ex) {
+            logSampledError(LOG_EVENT_DISPATCH_TIMER_SCHEDULE_FAILED, decision -> log.error(
+                    "订单落库后调度供应商派单timer失败 orgCode={}, outOrderSn={}, orderId={}, eventId={}, occurrence={}, sampled={}",
+                    aggregate.snapshot().orgCode(),
+                    aggregate.snapshot().outOrderSn(),
+                    aggregate.snapshot().orderId(),
+                    eventId,
+                    decision.occurrence(),
+                    decision.sampledOccurrence(),
+                    ex));
         }
     }
 

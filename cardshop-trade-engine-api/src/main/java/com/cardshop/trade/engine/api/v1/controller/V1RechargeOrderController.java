@@ -42,6 +42,13 @@ public class V1RechargeOrderController {
 
     private static final Logger log = LoggerFactory.getLogger(V1RechargeOrderController.class);
 
+    /**
+     * 压测旁路请求头；原值经 {@link V1MerchantCommand} 传入创建用例预检。
+     *
+     * <p>参见详细设计「3. API/V1 接入层」。
+     */
+    private static final String LOAD_TEST_HEADER = "X-Load-Test";
+
     private final V1RouteDecisionService routeDecisionService;
     private final V1TokenAuthenticator tokenAuthenticator;
     private final LegacyCardApiClient legacyCardApiClient;
@@ -124,7 +131,11 @@ public class V1RechargeOrderController {
         }
         AuthenticatedMerchant principal = merchant.orElse(new AuthenticatedMerchant("", ""));
         return Mono.fromCallable(() -> newRouteHandler.apply(
-                        new V1MerchantCommand(principal.appId(), principal.orgCode(), rawBody)))
+                        new V1MerchantCommand(
+                                principal.appId(),
+                                principal.orgCode(),
+                                rawBody,
+                                request.getHeaders().getFirst(LOAD_TEST_HEADER))))
                 .subscribeOn(Schedulers.boundedElastic())
                 .map(V1RechargeOrderController::ok);
     }
@@ -141,7 +152,11 @@ public class V1RechargeOrderController {
         }
         AuthenticatedMerchant principal = merchant.orElse(new AuthenticatedMerchant("", ""));
         return Mono.fromCompletionStage(newRouteHandler.apply(
-                new V1MerchantCommand(principal.appId(), principal.orgCode(), rawBody)))
+                new V1MerchantCommand(
+                        principal.appId(),
+                        principal.orgCode(),
+                        rawBody,
+                        request.getHeaders().getFirst(LOAD_TEST_HEADER))))
                 .map(V1RechargeOrderController::ok);
     }
 

@@ -7,6 +7,7 @@ import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderMessagePublisher;
+import com.cardshop.trade.engine.application.recharge.RechargeDispatchTimerPort;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushService;
@@ -16,6 +17,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
 import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairService;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
+import com.cardshop.trade.engine.application.recharge.RechargePersistOutboxAsyncWriter;
 import com.cardshop.trade.engine.application.recharge.RechargePersistMqRepublishService;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
@@ -27,7 +29,10 @@ import com.cardshop.trade.engine.job.recharge.RechargeBalanceReconcileJob;
 import com.cardshop.trade.engine.job.recharge.RechargeCacheRepairJob;
 import com.cardshop.trade.engine.job.recharge.RechargeOutboxPublishJob;
 import com.cardshop.trade.engine.job.recharge.RechargePersistMqRepublishJob;
+import com.cardshop.trade.engine.job.recharge.RechargeSupplierDispatchJob;
+import com.cardshop.trade.engine.job.recharge.RechargeSupplierQueryJob;
 import java.time.Clock;
+import java.time.Duration;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -114,6 +119,32 @@ public class TradeEngineReliabilityConfiguration {
         return new RechargeOutboxPublishJob(service);
     }
 
+    /**
+     * 供应商派单 outbox 调度门面。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}。
+     */
+    @Bean
+    @ConditionalOnBean(com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService.class)
+    @ConditionalOnMissingBean(RechargeSupplierDispatchJob.class)
+    public RechargeSupplierDispatchJob rechargeSupplierDispatchJob(
+            com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService service) {
+        return new RechargeSupplierDispatchJob(service);
+    }
+
+    /**
+     * 供应商查单/作废 outbox 调度门面。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}。
+     */
+    @Bean
+    @ConditionalOnBean(com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService.class)
+    @ConditionalOnMissingBean(RechargeSupplierQueryJob.class)
+    public RechargeSupplierQueryJob rechargeSupplierQueryJob(
+            com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService service) {
+        return new RechargeSupplierQueryJob(service);
+    }
+
     @Bean
     @ConditionalOnMissingBean(RechargeBalanceDeltaFlushService.class)
     public RechargeBalanceDeltaFlushService rechargeBalanceDeltaFlushService(
@@ -195,16 +226,24 @@ public class TradeEngineReliabilityConfiguration {
             org.springframework.beans.factory.ObjectProvider<PersistOrderSnapshotPort> snapshotPortProvider,
             ObjectProvider<RechargeOrderBatchPersistencePort> batchPersistencePortProvider,
             ObjectProvider<PersistedOrderStatePort> persistedOrderStatePortProvider,
+            ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
+            ObjectProvider<RechargePersistOutboxAsyncWriter> outboxAsyncWriterProvider,
             RechargeOrderPersistencePort persistencePort,
             RechargeAcceptReliabilityPort reliabilityPort,
-            Clock clock) {
+            Clock clock,
+            TradeEngineProperties properties) {
         return new PersistRechargeOrderConsumerService(
                 snapshotPortProvider.getIfAvailable(PersistOrderSnapshotPort::noop),
                 persistencePort,
                 batchPersistencePortProvider.getIfAvailable(),
                 persistedOrderStatePortProvider.getIfAvailable(PersistedOrderStatePort::noop),
                 reliabilityPort,
-                clock);
+                dispatchTimerPortProvider.getIfAvailable(RechargeDispatchTimerPort::noop),
+                clock,
+                Duration.ofSeconds(3),
+                properties.getFulfillment().dispatchInitialDelay(),
+                outboxAsyncWriterProvider.getIfAvailable(),
+                properties.getPersist().isOutboxAsyncEnabled());
     }
 
     /**

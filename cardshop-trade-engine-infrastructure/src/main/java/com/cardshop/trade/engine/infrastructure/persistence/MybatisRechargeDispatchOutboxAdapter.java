@@ -20,6 +20,7 @@ import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 /**
  * 基于 {@code recharge_dispatch_outbox} 的派单履约 outbox 适配器。
@@ -69,17 +70,33 @@ public class MybatisRechargeDispatchOutboxAdapter
 
     @Override
     public List<RechargeOutboxEvent> selectDueForShard(int shardTotal, int shardIndex, int limit) {
-        return requireMapper().selectDueForShard(shardTotal, shardIndex, limit)
+        return selectDueForShard(shardTotal, shardIndex, limit, List.of(OutboxEventType.SUPPLIER_DISPATCH));
+    }
+
+    @Override
+    public List<RechargeOutboxEvent> selectDueForShard(
+            int shardTotal, int shardIndex, int limit, List<OutboxEventType> eventTypes) {
+        List<String> types = eventTypes == null || eventTypes.isEmpty()
+                ? List.of(OutboxEventType.SUPPLIER_DISPATCH.name())
+                : eventTypes.stream().map(Enum::name).toList();
+        return requireMapper().selectDueForShardByEventTypes(shardTotal, shardIndex, limit, types, now())
                 .stream()
                 .map(this::toEvent)
                 .toList();
     }
 
     @Override
-    public java.util.Optional<RechargeOutboxEvent> claim(RechargeOutboxEvent event, String workerId, Duration lease) {
+    public Optional<RechargeOutboxEvent> findDueByEventId(String eventId, OutboxEventType eventType) {
+        Objects.requireNonNull(eventType, "eventType must not be null");
+        return Optional.ofNullable(requireMapper().selectDueByEventId(eventId, eventType.name(), now()))
+                .map(this::toEvent);
+    }
+
+    @Override
+    public Optional<RechargeOutboxEvent> claim(RechargeOutboxEvent event, String workerId, Duration lease) {
         LocalDateTime lockedUntil = now().plusNanos(lease.toNanos());
         int updated = requireMapper().claimProcessing(event.eventId(), event.version(), workerId, lockedUntil);
-        return updated == 1 ? java.util.Optional.of(event.claimedCopy()) : java.util.Optional.empty();
+        return updated == 1 ? Optional.of(event.claimedCopy()) : Optional.empty();
     }
 
     @Override
@@ -179,8 +196,8 @@ public class MybatisRechargeDispatchOutboxAdapter
         outbox.setPayload(supplierQueryPayload(command));
         outbox.setStatus(TaskStatus.INIT.name());
         outbox.setRetryCount(0);
-        outbox.setMaxRetryCount(DEFAULT_MAX_RETRY_COUNT);
-        outbox.setNextRetryTime(now);
+        outbox.setMaxRetryCount(command.maxRetryCount());
+        outbox.setNextRetryTime(now.plusNanos(command.initialDelay().toNanos()));
         outbox.setLockedBy(null);
         outbox.setLockedUntil(null);
         outbox.setVersion(0L);

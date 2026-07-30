@@ -145,7 +145,8 @@ public interface RechargeDispatchOutboxMapper extends BaseMapper<RechargeDispatc
               o.event_type,
               o.status,
               count(*) as count,
-              coalesce(timestampdiff(second, min(coalesce(o.created_at, o.updated_at, #{now})), #{now}), 0) as max_age_seconds
+              coalesce(timestampdiff(second, min(coalesce(o.created_at, o.updated_at, #{now})), #{now}), 0) as max_age_seconds,
+              coalesce(timestampdiff(second, min(case when o.next_retry_time <= #{now} then o.next_retry_time end), #{now}), 0) as max_age_since_due_seconds
             from recharge_dispatch_outbox o
             where o.status in ('INIT', 'PROCESSING', 'FAILED', 'MANUAL_REQUIRED')
               and exists (
@@ -171,10 +172,7 @@ public interface RechargeDispatchOutboxMapper extends BaseMapper<RechargeDispatc
                 shardTotal,
                 shardIndex,
                 limit,
-                List.of(
-                        OutboxEventType.SUPPLIER_DISPATCH.name(),
-                        OutboxEventType.SUPPLIER_QUERY.name(),
-                        OutboxEventType.INVALID_ORDER.name()));
+                List.of(OutboxEventType.SUPPLIER_DISPATCH.name()));
     }
 
     /**
@@ -263,6 +261,54 @@ public interface RechargeDispatchOutboxMapper extends BaseMapper<RechargeDispatc
             @Param("shardIndex") int shardIndex,
             @Param("limit") int limit,
             @Param("eventTypes") List<String> eventTypes,
+            @Param("now") LocalDateTime now);
+
+    /**
+     * 按事件号读取一个已到期或租约过期的履约事件。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。timer 热路径只知道
+     * {@code event_id}，但仍必须复用扫描路径的 due 条件和 {@code recharge_order_ext} 归属哨兵。
+     */
+    @Select("""
+            select
+              o.id,
+              o.event_id,
+              o.event_type,
+              o.org_code,
+              o.order_id,
+              o.out_order_sn,
+              o.payload,
+              o.status,
+              o.retry_count,
+              o.max_retry_count,
+              o.next_retry_time,
+              o.locked_by,
+              o.locked_until,
+              o.version,
+              o.last_error,
+              o.shard_key,
+              o.created_at,
+              o.updated_at
+            from recharge_dispatch_outbox o
+            where o.event_id = #{eventId}
+              and o.event_type = #{eventType}
+              and (
+                (o.status in ('INIT', 'FAILED') and o.next_retry_time <= #{now})
+                or (o.status = 'PROCESSING' and (o.locked_until < #{now} or o.locked_until is null))
+              )
+              and exists (
+                select 1
+                from recharge_order_ext ext
+                where ext.order_id = o.order_id
+                  and ext.org_code = o.org_code
+                  and ext.out_order_sn = o.out_order_sn
+                  and ext.persist_status = 'DB_PERSISTED'
+              )
+            limit 1
+            """)
+    RechargeDispatchOutboxDO selectDueByEventId(
+            @Param("eventId") String eventId,
+            @Param("eventType") String eventType,
             @Param("now") LocalDateTime now);
 
     /**

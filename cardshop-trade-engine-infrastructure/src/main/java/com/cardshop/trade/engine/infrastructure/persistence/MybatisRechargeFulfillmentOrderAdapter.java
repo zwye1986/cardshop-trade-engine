@@ -1,9 +1,11 @@
 package com.cardshop.trade.engine.infrastructure.persistence;
 
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.cardshop.trade.engine.application.recharge.OrderFulfillmentStatusUpdate;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrder;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
+import com.cardshop.trade.engine.application.recharge.SupplierFlowSnapshot;
 import com.cardshop.trade.engine.application.recharge.SupplierFlowStartCommand;
 import com.cardshop.trade.engine.application.recharge.SupplierFlowUpdateCommand;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
@@ -73,6 +75,18 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
                 ext.getValidationStatus(),
                 Boolean.TRUE.equals(ext.getDispatchAllowed()),
                 Boolean.TRUE.equals(ext.getBalanceReserved())));
+    }
+
+    @Override
+    public Optional<SupplierFlowSnapshot> findLatestSupplierFlowByOrderId(String orderId) {
+        McOrderSupplierFlowDO flow = flowMapper.selectOne(new LambdaQueryWrapper<McOrderSupplierFlowDO>()
+                .eq(McOrderSupplierFlowDO::getOrderId, orderId)
+                .orderByDesc(McOrderSupplierFlowDO::getId)
+                .last("LIMIT 1"));
+        if (flow == null || flow.getId() == null) {
+            return Optional.empty();
+        }
+        return Optional.of(new SupplierFlowSnapshot(flow.getId(), flow.getStatus()));
     }
 
     @Override

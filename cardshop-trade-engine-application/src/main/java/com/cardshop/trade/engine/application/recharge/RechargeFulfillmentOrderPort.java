@@ -12,6 +12,14 @@ public interface RechargeFulfillmentOrderPort {
 
     Optional<RechargeFulfillmentOrder> findByOrderId(String orderId);
 
+    /**
+     * 读取同订单最近一条供应商调用流水。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。DISPATCH 恢复时如果已存在
+     * {@code mc_order_supplier_flow}，说明请求已经可能发出；后续动作必须先查单确认，不能再盲目派单。
+     */
+    Optional<SupplierFlowSnapshot> findLatestSupplierFlowByOrderId(String orderId);
+
     long insertSupplierFlowStart(SupplierFlowStartCommand command);
 
     void updateSupplierFlow(SupplierFlowUpdateCommand command);

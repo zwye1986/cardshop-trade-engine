@@ -2,6 +2,7 @@ package com.cardshop.trade.engine.bootstrap.config;
 
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
+import com.cardshop.trade.engine.application.recharge.RechargePersistOutboxAsyncWriter;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderBatchMessageListener;
 import com.cardshop.trade.engine.infrastructure.mq.RabbitPersistRechargeOrderMessageListener;
@@ -81,6 +82,26 @@ public class TradeEngineRabbitListenerAutoConfiguration {
     @ConditionalOnMissingBean(RechargeOrderBatchPersistencePort.class)
     public SmartLifecycle persistBatchRequiresBatchPersistencePort() {
         return new MissingBatchPersistencePortLifecycle();
+    }
+
+    /**
+     * outbox 异步落库模式缺少 writer 时启动失败。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer · Outbox 异步落库模式」。
+     * 批消费开启且 {@code trade.engine.persist.outbox-async-enabled=true} 时，MQ ack 必须等待
+     * {@link RechargePersistOutboxAsyncWriter} 成功写入两张 outbox；缺少 writer 会破坏「Redis pending 已清的订单必有
+     * outbox 行」不变量，必须在启动期暴露，而不能回退为静默跳过。
+     */
+    @Bean
+    @ConditionalOnProperty(
+            name = {
+                    "trade.engine.mq.persist-batch-enabled",
+                    "trade.engine.persist.outbox-async-enabled"
+            },
+            havingValue = "true")
+    @ConditionalOnMissingBean(RechargePersistOutboxAsyncWriter.class)
+    public SmartLifecycle persistBatchOutboxAsyncRequiresWriter() {
+        return new MissingOutboxAsyncWriterLifecycle();
     }
 
     /**
@@ -242,6 +263,24 @@ public class TradeEngineRabbitListenerAutoConfiguration {
         public void start() {
             throw new IllegalStateException(
                     "trade.engine.mq.persist-batch-enabled=true requires RechargeOrderBatchPersistencePort");
+        }
+
+        @Override
+        public void stop() {
+        }
+
+        @Override
+        public boolean isRunning() {
+            return false;
+        }
+    }
+
+    private static final class MissingOutboxAsyncWriterLifecycle implements SmartLifecycle {
+
+        @Override
+        public void start() {
+            throw new IllegalStateException(
+                    "trade.engine.persist.outbox-async-enabled=true requires RechargePersistOutboxAsyncWriter");
         }
 
         @Override

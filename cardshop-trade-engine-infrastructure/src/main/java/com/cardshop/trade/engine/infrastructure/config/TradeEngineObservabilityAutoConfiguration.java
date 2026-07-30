@@ -1,5 +1,6 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
+import com.cardshop.trade.engine.application.recharge.RechargeDispatchTimerPort;
 import com.cardshop.trade.engine.infrastructure.observability.RedisMysqlTradeEngineObservabilitySnapshotProvider;
 import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
 import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilitySnapshotProvider;
@@ -10,6 +11,9 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAccep
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
+import com.cardshop.trade.engine.infrastructure.timer.ScheduledExecutorRechargeDispatchTimer;
+import io.micrometer.core.instrument.FunctionCounter;
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import java.time.Clock;
 import java.time.Duration;
@@ -32,7 +36,8 @@ import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 @AutoConfiguration(after = {
         TradeEngineInfrastructureConfiguration.class,
         TradeEngineMybatisPersistenceAutoConfiguration.class,
-        TradeEngineRedisPendingAutoConfiguration.class
+        TradeEngineRedisPendingAutoConfiguration.class,
+        TradeEngineFulfillmentAutoConfiguration.class
 })
 @ConditionalOnClass(MeterRegistry.class)
 @EnableConfigurationProperties(TradeEngineProperties.class)
@@ -84,6 +89,55 @@ public class TradeEngineObservabilityAutoConfiguration {
     }
 
     /**
+     * 注册进程内供应商履约 timer 指标。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。timer 是热路径唤醒器，
+     * 不承载持久业务事实；这里仅暴露低基数本地队列指标，用于压测时判断 timer 是否因为 pending 上限或拒绝
+     * 调度成为新瓶颈。订单号、eventId 和供应商请求号均不得进入指标标签。
+     */
+    @Bean
+    @ConditionalOnBean({MeterRegistry.class, RechargeDispatchTimerPort.class})
+    @ConditionalOnMissingBean(RechargeDispatchTimerMetricsRegistration.class)
+    public RechargeDispatchTimerMetricsRegistration rechargeDispatchTimerMetricsRegistration(
+            MeterRegistry meterRegistry,
+            TradeEngineProperties properties,
+            RechargeDispatchTimerPort dispatchTimerPort) {
+        if (!(dispatchTimerPort instanceof ScheduledExecutorRechargeDispatchTimer timer)) {
+            return RechargeDispatchTimerMetricsRegistration.noop();
+        }
+        String environment = metricEnvironment(properties);
+        Gauge.builder(
+                        "trade.engine.dispatch.timer.pending",
+                        timer,
+                        ScheduledExecutorRechargeDispatchTimer::pendingCount)
+                .description("进程内供应商履约 timer 当前待触发事件数")
+                .tag("environment", environment)
+                .register(meterRegistry);
+        Gauge.builder(
+                        "trade.engine.dispatch.timer.max.pending",
+                        timer,
+                        ScheduledExecutorRechargeDispatchTimer::maxPendingTasks)
+                .description("进程内供应商履约 timer 待触发事件上限")
+                .tag("environment", environment)
+                .register(meterRegistry);
+        FunctionCounter.builder(
+                        "trade.engine.dispatch.timer.rejected.total",
+                        timer,
+                        ScheduledExecutorRechargeDispatchTimer::rejectedScheduleCount)
+                .description("进程内供应商履约 timer 拒绝新增热唤醒的累计次数")
+                .tag("environment", environment)
+                .register(meterRegistry);
+        FunctionCounter.builder(
+                        "trade.engine.dispatch.timer.worker.rejected.total",
+                        timer,
+                        ScheduledExecutorRechargeDispatchTimer::rejectedWorkerExecutionCount)
+                .description("进程内供应商履约 worker executor 拒绝执行的累计次数")
+                .tag("environment", environment)
+                .register(meterRegistry);
+        return RechargeDispatchTimerMetricsRegistration.ofRegistered();
+    }
+
+    /**
      * 将业务指标 Bean 显式暴露为商户资料缓存观测端口，供
      * {@code V1MerchantProfilePort} 装配时注入 hit/miss 计数。
      */
@@ -104,5 +158,24 @@ public class TradeEngineObservabilityAutoConfiguration {
     public V1CreateOrderStageObserver v1CreateOrderStageObserver(
             TradeEngineObservabilityMetrics metrics) {
         return metrics;
+    }
+
+    private static String metricEnvironment(TradeEngineProperties properties) {
+        String environment = properties == null ? null : properties.getEnvironment();
+        return environment == null || environment.isBlank() ? "unknown" : environment;
+    }
+
+    /**
+     * timer 指标注册哨兵 Bean，避免同一上下文重复注册 Micrometer meter。
+     */
+    public record RechargeDispatchTimerMetricsRegistration(boolean registered) {
+
+        private static RechargeDispatchTimerMetricsRegistration ofRegistered() {
+            return new RechargeDispatchTimerMetricsRegistration(true);
+        }
+
+        private static RechargeDispatchTimerMetricsRegistration noop() {
+            return new RechargeDispatchTimerMetricsRegistration(false);
+        }
     }
 }

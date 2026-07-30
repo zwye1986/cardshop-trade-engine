@@ -133,7 +133,11 @@ class RechargeCompensationJobsTest {
                 int shardTotal,
                 int shardIndex,
                 int limit,
-                String workerId) {
+                String workerId,
+                List<com.cardshop.trade.engine.domain.order.OutboxEventType> eventTypes,
+                int parallelism) {
+            // 2e95a956 起 RechargeOutboxPublishJob.runOnce(4 参) 经 6 参 runOnce 调用 6 参 processDue，
+            // 故在此覆盖 6 参入口以录制调用并短路真实扫描，避免接口代理返回 null 触发 NPE。
             calls.add(shardTotal + ":" + shardIndex + ":" + limit + ":" + workerId);
             return com.cardshop.trade.engine.application.recharge.RechargeOutboxBatchResult.empty();
         }

@@ -82,9 +82,9 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(dispatchOutbox.getEventType()).isEqualTo(OutboxEventType.SUPPLIER_DISPATCH.name());
         assertThat(dispatchOutbox.getStatus()).isEqualTo(TaskStatus.INIT.name());
         assertThat(dispatchOutbox.getRetryCount()).isZero();
-        assertThat(dispatchOutbox.getMaxRetryCount()).isEqualTo(10);
+        assertThat(dispatchOutbox.getMaxRetryCount()).isEqualTo(3);
         assertThat(dispatchOutbox.getShardKey()).isEqualTo("dispatch-ORDER-1001");
-        assertThat(dispatchOutbox.getNextRetryTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
+        assertThat(dispatchOutbox.getNextRetryTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30, 1));
         assertThat(dispatchOutbox.getPayload())
                 .contains("\"order_id\":\"ORDER-1001\"")
                 .contains("\"supplier_channel\":\"BOCOM\"");

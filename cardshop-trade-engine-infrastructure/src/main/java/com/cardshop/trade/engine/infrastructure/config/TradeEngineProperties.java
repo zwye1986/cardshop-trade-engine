@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerSettings;
+import com.cardshop.trade.engine.infrastructure.timer.ScheduledExecutorRechargeDispatchTimer;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -33,6 +35,11 @@ public class TradeEngineProperties {
      * RabbitMQ 持久化消息和 Confirm 保护配置；参见详细设计「7. RabbitMQ 持久化消息层」。
      */
     private final Mq mq = new Mq();
+
+    /**
+     * MySQL persist 批路径扩展配置；参见详细设计「8.3 异步落库 Consumer」。
+     */
+    private final Persist persist = new Persist();
 
     /**
      * 订单缓存 TTL、请求幂等哈希和配置变更重试配置；参见详细设计「4. Application 用例编排层」。
@@ -117,6 +124,10 @@ public class TradeEngineProperties {
 
     public Mq getMq() {
         return mq;
+    }
+
+    public Persist getPersist() {
+        return persist;
     }
 
     public Order getOrder() {
@@ -635,6 +646,54 @@ public class TradeEngineProperties {
     }
 
     /**
+     * MySQL persist 批路径配置。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer · Outbox 异步落库模式」。
+     * 该配置族控制事实事务与 outbox 写入拆分，默认关闭，确保灰度失败时可回到五表单事务路径。
+     */
+    public static class Persist {
+
+        /**
+         * 是否启用批路径 outbox 异步写入。默认关闭，保留五表单事务回滚路径。
+         */
+        private boolean outboxAsyncEnabled = false;
+
+        /**
+         * outbox writer 独立 Hikari 连接池上限；必须大于 0。
+         */
+        private int outboxWriterHikariMax = 8;
+
+        /**
+         * writer 是否使用 multi-row ODKU；关闭时退化逐条写入，仅用于排障。
+         */
+        private boolean outboxWriterBatchEnabled = true;
+
+        public boolean isOutboxAsyncEnabled() {
+            return outboxAsyncEnabled;
+        }
+
+        public void setOutboxAsyncEnabled(boolean outboxAsyncEnabled) {
+            this.outboxAsyncEnabled = outboxAsyncEnabled;
+        }
+
+        public int getOutboxWriterHikariMax() {
+            return outboxWriterHikariMax;
+        }
+
+        public void setOutboxWriterHikariMax(int outboxWriterHikariMax) {
+            this.outboxWriterHikariMax = outboxWriterHikariMax;
+        }
+
+        public boolean isOutboxWriterBatchEnabled() {
+            return outboxWriterBatchEnabled;
+        }
+
+        public void setOutboxWriterBatchEnabled(boolean outboxWriterBatchEnabled) {
+            this.outboxWriterBatchEnabled = outboxWriterBatchEnabled;
+        }
+    }
+
+    /**
      * 订单生命周期与幂等控制配置。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md} 的「4. Application 用例编排层」和
@@ -839,6 +898,12 @@ public class TradeEngineProperties {
         private boolean requestSm4Enabled = true;
 
         /**
+         * JMeter 压测签名结果旁路口令。空字符串表示旁路关闭。
+         * 敏感配置，禁止写入日志。参见详细设计「3. API/V1 接入层」。
+         */
+        private String loadTestToken = "";
+
+        /**
          * 请求时间戳允许的前后偏差秒数。
          */
         private int timestampAllowedSkewSeconds = 300;
@@ -904,6 +969,14 @@ public class TradeEngineProperties {
 
         public void setRequestSm4Enabled(boolean requestSm4Enabled) {
             this.requestSm4Enabled = requestSm4Enabled;
+        }
+
+        public String getLoadTestToken() {
+            return loadTestToken;
+        }
+
+        public void setLoadTestToken(String loadTestToken) {
+            this.loadTestToken = loadTestToken == null ? "" : loadTestToken;
         }
 
         public int getTimestampAllowedSkewSeconds() {
@@ -1235,11 +1308,55 @@ public class TradeEngineProperties {
      */
     public static class Fulfillment {
 
+        private static final Logger log = LoggerFactory.getLogger(Fulfillment.class);
+        private static final List<Duration> DEFAULT_SUPPLIER_QUERY_RETRY_DELAYS =
+                RechargeOutboxWorkerSettings.defaultSupplierQueryRetryDelays();
+        private static final String DEFAULT_SUPPLIER_QUERY_RETRY_DELAY_SECONDS =
+                toSecondCsv(DEFAULT_SUPPLIER_QUERY_RETRY_DELAYS);
+        private static final int DEFAULT_TIMER_MAX_PENDING_TASKS =
+                ScheduledExecutorRechargeDispatchTimer.DEFAULT_MAX_PENDING_TASKS;
+
         private int outboxClaimLeaseSeconds = 120;
-        private int outboxRetryBackoffSeconds = 5;
+        private int outboxRetryBackoffSeconds = 10;
         private int frequencyRetryDelaySeconds = 30;
         private int frequencyLockTtlMinutes = 30;
         private int frequencySuccessMinimumHoldSeconds = 5;
+        /**
+         * 落库后首次派单延迟，单位秒。
+         *
+         * <p>参见详细设计「9.1 派单 Outbox」。写入 {@code recharge_dispatch_outbox.next_retry_time}
+         * 与落库后 timer 热唤醒必须共用该值，默认 1 秒；非法值（&lt;=0）在读取时 fail-fast。
+         */
+        private int dispatchInitialDelaySeconds = 1;
+        /**
+         * 是否启用进程内履约 timer 热唤醒。
+         *
+         * <p>参见详细设计「9.1 派单 Outbox」。生产默认关闭，必须经过压测灰度后由 Nacos 显式打开；关闭时
+         * outbox 仍按 {@code next_retry_time} 由低频 XXL-Job/人工入口恢复，不影响持久任务事实。
+         */
+        private boolean timerEnabled = false;
+        /**
+         * 供应商返回处理中后的查单延迟序列，单位秒。
+         *
+         * <p>参见详细设计「9.1 派单 Outbox」；默认按 2、4、6、8、16、32 秒逐次查单。
+         */
+        private String supplierQueryRetryDelaySeconds = DEFAULT_SUPPLIER_QUERY_RETRY_DELAY_SECONDS;
+        /**
+         * 进程内履约 timer 最大待触发任务数。
+         *
+         * <p>参见详细设计「9.1 派单 Outbox」。timer 不是持久任务事实，超过本地内存上限时拒绝新增热唤醒，
+         * 保留 outbox 的 {@code next_retry_time} 交由低频恢复扫描补漏，避免压测或故障时堆内存无界增长。
+         */
+        private int timerMaxPendingTasks = DEFAULT_TIMER_MAX_PENDING_TASKS;
+        /**
+         * 已 claim 履约事件的并行度。参见
+         * {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}。
+         */
+        private int outboxParallelism = 8;
+        /**
+         * due 扫描相对 limit 的放大倍数，用于公平过滤后仍凑满 limit。
+         */
+        private int outboxScanOverfetchFactor = 3;
 
         public int getOutboxClaimLeaseSeconds() {
             return outboxClaimLeaseSeconds;
@@ -1279,6 +1396,133 @@ public class TradeEngineProperties {
 
         public void setFrequencySuccessMinimumHoldSeconds(int frequencySuccessMinimumHoldSeconds) {
             this.frequencySuccessMinimumHoldSeconds = frequencySuccessMinimumHoldSeconds;
+        }
+
+        public int getDispatchInitialDelaySeconds() {
+            return dispatchInitialDelaySeconds;
+        }
+
+        public void setDispatchInitialDelaySeconds(int dispatchInitialDelaySeconds) {
+            this.dispatchInitialDelaySeconds = dispatchInitialDelaySeconds;
+        }
+
+        /**
+         * 解析落库后首次派单延迟。
+         *
+         * <p>参见详细设计「9.1 派单 Outbox」「11. 配置中心」。非法值（&lt;=0）fail-fast，避免
+         * {@code next_retry_time} 与 timer 热唤醒静默退回硬编码节奏。
+         */
+        public Duration dispatchInitialDelay() {
+            if (dispatchInitialDelaySeconds <= 0) {
+                log.error(
+                        "trade.engine.fulfillment.dispatch-initial-delay-seconds 非法，拒绝静默降级 value={}",
+                        dispatchInitialDelaySeconds);
+                throw new IllegalArgumentException(
+                        "trade.engine.fulfillment.dispatch-initial-delay-seconds must be a positive integer, value="
+                                + dispatchInitialDelaySeconds);
+            }
+            return Duration.ofSeconds(dispatchInitialDelaySeconds);
+        }
+
+        public boolean isTimerEnabled() {
+            return timerEnabled;
+        }
+
+        public void setTimerEnabled(boolean timerEnabled) {
+            this.timerEnabled = timerEnabled;
+        }
+
+        public String getSupplierQueryRetryDelaySeconds() {
+            return supplierQueryRetryDelaySeconds;
+        }
+
+        public void setSupplierQueryRetryDelaySeconds(String supplierQueryRetryDelaySeconds) {
+            this.supplierQueryRetryDelaySeconds = supplierQueryRetryDelaySeconds;
+        }
+
+        public int getTimerMaxPendingTasks() {
+            return timerMaxPendingTasks;
+        }
+
+        public void setTimerMaxPendingTasks(int timerMaxPendingTasks) {
+            this.timerMaxPendingTasks = timerMaxPendingTasks;
+        }
+
+        /**
+         * 解析供应商查单退避秒数。
+         *
+         * <p>参见详细设计「9.1 派单 Outbox」「11. 配置中心」。非空但含非法片段时 fail-fast，避免 Nacos
+         * 配错后静默退回默认节奏，造成压测或生产查单压力与预期不一致。
+         */
+        public List<Duration> supplierQueryRetryDelays() {
+            if (supplierQueryRetryDelaySeconds == null || supplierQueryRetryDelaySeconds.isBlank()) {
+                return DEFAULT_SUPPLIER_QUERY_RETRY_DELAYS;
+            }
+            List<Duration> parsed = new ArrayList<>();
+            List<String> invalidTokens = new ArrayList<>();
+            for (String token : supplierQueryRetryDelaySeconds.split(",")) {
+                String trimmed = token == null ? "" : token.strip();
+                if (trimmed.isEmpty()) {
+                    continue;
+                }
+                try {
+                    long seconds = Long.parseLong(trimmed);
+                    if (seconds > 0L) {
+                        parsed.add(Duration.ofSeconds(seconds));
+                    } else {
+                        invalidTokens.add(trimmed);
+                    }
+                } catch (NumberFormatException ex) {
+                    invalidTokens.add(trimmed);
+                    log.error(
+                            "解析 trade.engine.fulfillment.supplier-query-retry-delay-seconds 片段失败 rawConfig={}, token={}",
+                            supplierQueryRetryDelaySeconds,
+                            trimmed,
+                            ex);
+                }
+            }
+            if (parsed.isEmpty() && invalidTokens.isEmpty()) {
+                return DEFAULT_SUPPLIER_QUERY_RETRY_DELAYS;
+            }
+            if (!invalidTokens.isEmpty()) {
+                log.error(
+                        "trade.engine.fulfillment.supplier-query-retry-delay-seconds 非法，拒绝静默降级 rawConfig={}, invalidTokens={}",
+                        supplierQueryRetryDelaySeconds,
+                        invalidTokens);
+                throw new IllegalArgumentException(
+                        "trade.engine.fulfillment.supplier-query-retry-delay-seconds must be a comma-separated list of positive seconds, raw="
+                                + supplierQueryRetryDelaySeconds
+                                + ", invalidTokens="
+                                + invalidTokens);
+            }
+            return List.copyOf(parsed);
+        }
+
+        private static String toSecondCsv(List<Duration> delays) {
+            StringBuilder builder = new StringBuilder();
+            for (Duration delay : delays) {
+                if (!builder.isEmpty()) {
+                    builder.append(',');
+                }
+                builder.append(delay.toSeconds());
+            }
+            return builder.toString();
+        }
+
+        public int getOutboxParallelism() {
+            return outboxParallelism;
+        }
+
+        public void setOutboxParallelism(int outboxParallelism) {
+            this.outboxParallelism = outboxParallelism;
+        }
+
+        public int getOutboxScanOverfetchFactor() {
+            return outboxScanOverfetchFactor;
+        }
+
+        public void setOutboxScanOverfetchFactor(int outboxScanOverfetchFactor) {
+            this.outboxScanOverfetchFactor = outboxScanOverfetchFactor;
         }
     }
 
@@ -1388,7 +1632,7 @@ public class TradeEngineProperties {
                 // 仅逗号/空白，等价于未配置，回退设计默认序列。
                 return DEFAULT_BALANCE_DELTA_RETRY_BACKOFF_DURATIONS;
             }
-            if (!invalidTokens.isEmpty() || parsed.isEmpty()) {
+            if (!invalidTokens.isEmpty()) {
                 log.error(
                         "trade.engine.outbox.balance-delta-retry-backoff-seconds 非法，拒绝静默降级 rawConfig={}, invalidTokens={}",
                         balanceDeltaRetryBackoffSeconds,

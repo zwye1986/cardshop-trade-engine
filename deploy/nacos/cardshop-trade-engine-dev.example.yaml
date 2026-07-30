@@ -45,6 +45,11 @@ trade:
       balance-delta-retry-backoff-seconds: ${TRADE_ENGINE_OUTBOX_BALANCE_DELTA_RETRY_BACKOFF_SECONDS:5,30,120,600}
     mq:
       publish-confirm-timeout-ms: 1000
+    # 批落库 outbox 两段事务灰度开关；默认关闭，开启前必须同时开启批消费并确认 writer 指标。
+    persist:
+      outbox-async-enabled: false
+      outbox-writer-hikari-max: 8
+      outbox-writer-batch-enabled: true
     fault-injection:
       enabled: false
     v1:

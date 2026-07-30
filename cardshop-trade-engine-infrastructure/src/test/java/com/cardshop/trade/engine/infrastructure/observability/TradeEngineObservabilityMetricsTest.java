@@ -36,10 +36,10 @@ class TradeEngineObservabilityMetricsTest {
                 Map.of(
                         new TradeEngineObservabilitySnapshot.OutboxKey(
                                 OutboxEventType.SUPPLIER_DISPATCH.name(), TaskStatus.INIT.name()),
-                        new TradeEngineObservabilitySnapshot.CountAge(3, 120)),
+                        new TradeEngineObservabilitySnapshot.CountAge(3, 120, 45)),
                 Map.of(
                         TaskStatus.MANUAL_REQUIRED.name(),
-                        new TradeEngineObservabilitySnapshot.CountAge(1, 600)),
+                        new TradeEngineObservabilitySnapshot.CountAge(1, 600, 0)),
                 Map.of(
                         new TradeEngineObservabilitySnapshot.AcceptAnomalyKey(
                                 AcceptAnomalyType.LUA_TIMEOUT.name(), AcceptAnomalyStatus.MANUAL_REQUIRED.name()),
@@ -61,6 +61,20 @@ class TradeEngineObservabilityMetricsTest {
                         .gauge()
                         .value())
                 .isEqualTo(3.0);
+        assertThat(registry.get("trade.engine.dispatch.outbox.max.age.since.created.seconds")
+                        .tag("environment", "test")
+                        .tag("event_type", OutboxEventType.SUPPLIER_DISPATCH.name())
+                        .tag("status", TaskStatus.INIT.name())
+                        .gauge()
+                        .value())
+                .isEqualTo(120.0);
+        assertThat(registry.get("trade.engine.dispatch.outbox.max.age.since.due.seconds")
+                        .tag("environment", "test")
+                        .tag("event_type", OutboxEventType.SUPPLIER_DISPATCH.name())
+                        .tag("status", TaskStatus.INIT.name())
+                        .gauge()
+                        .value())
+                .isEqualTo(45.0);
         assertThat(registry.get("trade.engine.outbox.pending")
                         .tag("environment", "test")
                         .tag("event_type", OutboxEventType.SUPPLIER_DISPATCH.name())

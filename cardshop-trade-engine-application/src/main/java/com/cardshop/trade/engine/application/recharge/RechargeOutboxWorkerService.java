@@ -3,9 +3,20 @@ package com.cardshop.trade.engine.application.recharge;
 import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import java.time.Clock;
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,6 +42,10 @@ public class RechargeOutboxWorkerService {
     private static final String DATA_STATUS_PROCESSED = "PROCESSED";
     private static final String DATA_STATUS_FREQUENCY_WAIT = "FREQUENCY_WAIT";
     private static final int DEFAULT_NOTIFY_MAX_RETRY_COUNT = 10;
+    private static final int MIN_PARALLELISM = 1;
+    private static final int MAX_PARALLELISM = 32;
+    private static final int MAX_SCAN_LIMIT = 1000;
+    private static final char ACCOUNT_KEY_SEPARATOR = '\0';
 
     private final RechargeOutboxPort outboxPort;
     private final RechargeFulfillmentOrderPort orderPort;
@@ -41,6 +56,7 @@ public class RechargeOutboxWorkerService {
     private final BalanceReservationReleasePort balanceReservationReleasePort;
     private final RechargeNotifyTaskPort notifyTaskPort;
     private final MerchantNotifyPayloadSigner notifyPayloadSigner;
+    private final RechargeDispatchTimerPort dispatchTimerPort;
     private final Clock clock;
     private final RechargeOutboxWorkerSettings settings;
 
@@ -73,6 +89,36 @@ public class RechargeOutboxWorkerService {
                 balanceReservationReleasePort,
                 notifyTaskPort,
                 notifyPayloadSigner,
+                RechargeDispatchTimerPort.noop(),
+                clock,
+                settings);
+    }
+
+    public RechargeOutboxWorkerService(
+            RechargeOutboxPort outboxPort,
+            RechargeFulfillmentOrderPort orderPort,
+            RechargeSupplierGatewayPort supplierGatewayPort,
+            DirectRechargeFrequencyPort frequencyPort,
+            BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
+            BalanceReservationReleasePort balanceReservationReleasePort,
+            RechargeNotifyTaskPort notifyTaskPort,
+            MerchantNotifyPayloadSigner notifyPayloadSigner,
+            Clock clock,
+            RechargeOutboxWorkerSettings settings,
+            RechargeDispatchTimerPort dispatchTimerPort) {
+        this(
+                outboxPort,
+                orderPort,
+                supplierGatewayPort,
+                command -> {
+                    throw new IllegalStateException("SupplierQueryOutboxPort is required for processing orders");
+                },
+                frequencyPort,
+                balanceDeltaFlushOutboxPort,
+                balanceReservationReleasePort,
+                notifyTaskPort,
+                notifyPayloadSigner,
+                dispatchTimerPort,
                 clock,
                 settings);
     }
@@ -89,6 +135,34 @@ public class RechargeOutboxWorkerService {
             MerchantNotifyPayloadSigner notifyPayloadSigner,
             Clock clock,
             RechargeOutboxWorkerSettings settings) {
+        this(
+                outboxPort,
+                orderPort,
+                supplierGatewayPort,
+                supplierQueryOutboxPort,
+                frequencyPort,
+                balanceDeltaFlushOutboxPort,
+                balanceReservationReleasePort,
+                notifyTaskPort,
+                notifyPayloadSigner,
+                RechargeDispatchTimerPort.noop(),
+                clock,
+                settings);
+    }
+
+    public RechargeOutboxWorkerService(
+            RechargeOutboxPort outboxPort,
+            RechargeFulfillmentOrderPort orderPort,
+            RechargeSupplierGatewayPort supplierGatewayPort,
+            SupplierQueryOutboxPort supplierQueryOutboxPort,
+            DirectRechargeFrequencyPort frequencyPort,
+            BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
+            BalanceReservationReleasePort balanceReservationReleasePort,
+            RechargeNotifyTaskPort notifyTaskPort,
+            MerchantNotifyPayloadSigner notifyPayloadSigner,
+            RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock,
+            RechargeOutboxWorkerSettings settings) {
         this.outboxPort = Objects.requireNonNull(outboxPort, "outboxPort must not be null");
         this.orderPort = Objects.requireNonNull(orderPort, "orderPort must not be null");
         this.supplierGatewayPort = Objects.requireNonNull(supplierGatewayPort, "supplierGatewayPort must not be null");
@@ -101,41 +175,288 @@ public class RechargeOutboxWorkerService {
                 balanceReservationReleasePort, "balanceReservationReleasePort must not be null");
         this.notifyTaskPort = Objects.requireNonNull(notifyTaskPort, "notifyTaskPort must not be null");
         this.notifyPayloadSigner = Objects.requireNonNull(notifyPayloadSigner, "notifyPayloadSigner must not be null");
+        this.dispatchTimerPort = Objects.requireNonNull(dispatchTimerPort, "dispatchTimerPort must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.settings = Objects.requireNonNull(settings, "settings must not be null");
     }
 
+    public RechargeOutboxWorkerService(
+            RechargeOutboxPort outboxPort,
+            RechargeFulfillmentOrderPort orderPort,
+            RechargeSupplierGatewayPort supplierGatewayPort,
+            SupplierQueryOutboxPort supplierQueryOutboxPort,
+            DirectRechargeFrequencyPort frequencyPort,
+            BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
+            BalanceReservationReleasePort balanceReservationReleasePort,
+            RechargeNotifyTaskPort notifyTaskPort,
+            MerchantNotifyPayloadSigner notifyPayloadSigner,
+            Clock clock,
+            RechargeOutboxWorkerSettings settings,
+            RechargeDispatchTimerPort dispatchTimerPort) {
+        this(
+                outboxPort,
+                orderPort,
+                supplierGatewayPort,
+                supplierQueryOutboxPort,
+                frequencyPort,
+                balanceDeltaFlushOutboxPort,
+                balanceReservationReleasePort,
+                notifyTaskPort,
+                notifyPayloadSigner,
+                dispatchTimerPort,
+                clock,
+                settings);
+    }
+
     /**
-     * 扫描并处理一个 outbox 分片。
+     * 扫描并处理一个 outbox 分片（默认仅 {@link OutboxEventType#SUPPLIER_DISPATCH}）。
      *
-     * <p>任何降级、重试或跳过都必须显式回写 outbox，避免事件长期停留在 PROCESSING。
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md} 与
+     * {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。任何降级、重试或跳过都必须显式回写 outbox，
+     * 避免事件长期停留在 PROCESSING。
      */
     public RechargeOutboxBatchResult processDue(int shardTotal, int shardIndex, int limit, String workerId) {
-        var events = outboxPort.selectDueForShard(shardTotal, shardIndex, limit);
+        return processDue(
+                shardTotal,
+                shardIndex,
+                limit,
+                workerId,
+                List.of(OutboxEventType.SUPPLIER_DISPATCH),
+                settings.outboxParallelism());
+    }
+
+    /**
+     * 按事件类型过滤扫描 outbox，并在 claim 后按配置并行履约。
+     *
+     * <p>流水线：overfetch 扫描 → 公平/频控预检（仅 DISPATCH）→ 串行 CAS claim → 线程池执行（同账号互斥）。
+     * 参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}「4. 处理流水线」与
+     * {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。
+     */
+    public RechargeOutboxBatchResult processDue(
+            int shardTotal,
+            int shardIndex,
+            int limit,
+            String workerId,
+            List<OutboxEventType> eventTypes,
+            int parallelism) {
+        List<OutboxEventType> normalizedEventTypes = normalizeEventTypes(eventTypes);
+        int normalizedParallelism = normalizeParallelism(parallelism);
+        int scanLimit = Math.min(limit * settings.outboxScanOverfetchFactor(), MAX_SCAN_LIMIT);
+
+        List<RechargeOutboxEvent> events =
+                outboxPort.selectDueForShard(shardTotal, shardIndex, scanLimit, normalizedEventTypes);
         RechargeOutboxBatchResult result = RechargeOutboxBatchResult.empty().scanned(events.size());
-        for (RechargeOutboxEvent event : events) {
+
+        FairSelectResult fairSelectResult = fairSelect(events, limit);
+        result = result.deferred(fairSelectResult.deferredCount());
+
+        List<RechargeOutboxEvent> claimedEvents = new ArrayList<>();
+        for (RechargeOutboxEvent event : fairSelectResult.selected()) {
             if (event.retryExhausted()) {
                 outboxPort.markManualRequired(event, retryExhaustedMessage(event));
                 result = result.add(RechargeOutboxBatchResult.Outcome.FAILED);
                 continue;
             }
-            var claimed = outboxPort.claim(event, workerId, settings.claimLease());
+            Optional<RechargeOutboxEvent> claimed = outboxPort.claim(event, workerId, settings.claimLease());
             if (claimed.isEmpty()) {
                 result = result.add(RechargeOutboxBatchResult.Outcome.SKIPPED);
                 continue;
             }
             result = result.claimedOne();
-            result = result.add(handleClaimed(claimed.get()));
+            claimedEvents.add(claimed.get());
+        }
+        return executeClaimed(claimedEvents, normalizedParallelism, result);
+    }
+
+    /**
+     * 处理 timer 直接唤醒的单个 outbox 事件。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。该入口不扫描
+     * {@code recharge_dispatch_outbox}，只按稳定 {@code event_id} 查询 due 事件并复用同一套 CAS 抢占和履约
+     * 状态机；多节点重复调度时只有抢占成功的一方会真实调用供应商。
+     */
+    public RechargeOutboxBatchResult.Outcome processEvent(
+            String eventId,
+            OutboxEventType eventType,
+            String workerId) {
+        Objects.requireNonNull(eventType, "eventType must not be null");
+        Optional<RechargeOutboxEvent> maybeEvent = outboxPort.findDueByEventId(eventId, eventType);
+        if (maybeEvent.isEmpty()) {
+            return RechargeOutboxBatchResult.Outcome.SKIPPED;
+        }
+        RechargeOutboxEvent event = maybeEvent.get();
+        if (event.retryExhausted()) {
+            outboxPort.markManualRequired(event, retryExhaustedMessage(event));
+            return RechargeOutboxBatchResult.Outcome.FAILED;
+        }
+        RechargeFulfillmentOrder preloadedOrder = event.eventType() == OutboxEventType.SUPPLIER_DISPATCH
+                ? loadOrder(event)
+                : null;
+        if (dispatchOwnedByAnotherSameAccount(event, preloadedOrder)) {
+            /*
+             * 参见 docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」。timer 单事件热路径必须保持
+             * 与扫描路径相同的同账号限频语义：当前账号被其他订单持有时不抢占、不消耗 retry_count，
+             * 只重新安排一次本地唤醒；进程中断时仍由 outbox due 扫描兜底。
+             */
+            scheduleOutboxTimer(event.eventId(), event.eventType(), settings.frequencyRetryDelay());
+            return RechargeOutboxBatchResult.Outcome.DEFERRED;
+        }
+        Optional<RechargeOutboxEvent> claimed = outboxPort.claim(event, workerId, settings.claimLease());
+        if (claimed.isEmpty()) {
+            return RechargeOutboxBatchResult.Outcome.SKIPPED;
+        }
+        RechargeOutboxEvent claimedEvent = claimed.get();
+        /*
+         * 参见 docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」。DISPATCH 的预 claim 订单读取只用于
+         * 同账号限频预检；claim 成功后必须重新读取订单事实，避免订单在预检和抢占之间已由查单、人工或重复
+         * worker 推进终态时继续使用旧快照调用供应商。
+         */
+        return handleClaimed(claimedEvent, loadOrder(claimedEvent));
+    }
+
+    /**
+     * 公平挑选本批可 claim 的事件：DISPATCH 做同账号去重与 Redis 频控预检；QUERY/INVALID 按扫描顺序直接选取。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}「公平调度 F3」。
+     */
+    private FairSelectResult fairSelect(List<RechargeOutboxEvent> events, int limit) {
+        List<RechargeOutboxEvent> selected = new ArrayList<>();
+        Set<String> selectedAccountKeys = new HashSet<>();
+        int deferred = 0;
+
+        for (RechargeOutboxEvent event : events) {
+            if (selected.size() >= limit) {
+                break;
+            }
+            if (event.eventType() == OutboxEventType.SUPPLIER_DISPATCH) {
+                RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
+                String orgCode = order != null ? order.orgCode() : event.orgCode();
+                String account = order != null ? order.account() : null;
+                if (account != null && !account.isBlank()) {
+                    String accountKey = accountKey(orgCode, account);
+                    if (selectedAccountKeys.contains(accountKey)) {
+                        deferred++;
+                        continue;
+                    }
+                    Optional<String> frequencyOwner = frequencyPort.currentOwner(orgCode, account);
+                    if (frequencyOwner.isPresent() && !frequencyOwner.get().equals(event.orderId())) {
+                        deferred++;
+                        continue;
+                    }
+                    selectedAccountKeys.add(accountKey);
+                }
+            }
+            selected.add(event);
+        }
+        return new FairSelectResult(selected, deferred);
+    }
+
+    /**
+     * 执行已 claim 事件：parallelism &gt; 1 时用固定线程池，同 {@code org+account} 在批内串行。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}「7. 同账号并行语义」
+     * 与详细设计「9.1 派单 Outbox」。
+     */
+    private RechargeOutboxBatchResult executeClaimed(
+            List<RechargeOutboxEvent> claimedEvents, int parallelism, RechargeOutboxBatchResult result) {
+        if (claimedEvents.isEmpty()) {
+            return result;
+        }
+        if (parallelism <= MIN_PARALLELISM || claimedEvents.size() == 1) {
+            for (RechargeOutboxEvent event : claimedEvents) {
+                result = result.add(handleClaimed(event, loadOrder(event)));
+            }
+            return result;
+        }
+
+        ExecutorService executor = Executors.newFixedThreadPool(parallelism);
+        ConcurrentHashMap<String, Object> accountLocks = new ConcurrentHashMap<>();
+        Object noAccountLock = new Object();
+        try {
+            List<Future<RechargeOutboxBatchResult.Outcome>> futures = new ArrayList<>(claimedEvents.size());
+            for (RechargeOutboxEvent event : claimedEvents) {
+                futures.add(executor.submit(() -> {
+                    RechargeFulfillmentOrder order = loadOrder(event);
+                    Object lock = accountLock(order, accountLocks, noAccountLock);
+                    synchronized (lock) {
+                        return handleClaimed(event, order);
+                    }
+                }));
+            }
+            for (Future<RechargeOutboxBatchResult.Outcome> future : futures) {
+                result = result.add(future.get());
+            }
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("outbox parallel execution interrupted", ex);
+        } catch (ExecutionException ex) {
+            Throwable cause = ex.getCause() == null ? ex : ex.getCause();
+            throw new IllegalStateException("outbox parallel execution failed", cause);
+        } finally {
+            executor.shutdown();
         }
         return result;
     }
 
-    private RechargeOutboxBatchResult.Outcome handleClaimed(RechargeOutboxEvent event) {
+    /**
+     * 加载已 claim 事件的订单快照，供账号锁键计算与履约决策共用，避免执行期重复查询。
+     *
+     * <p>参见 {@code docs/superpowers/specs/2026-07-22-outbox-dispatch-parallel-fair-design.md}「7. 同账号并行语义」。
+     */
+    private RechargeFulfillmentOrder loadOrder(RechargeOutboxEvent event) {
+        return orderPort.findByOrderId(event.orderId()).orElse(null);
+    }
+
+    private Object accountLock(
+            RechargeFulfillmentOrder order, ConcurrentHashMap<String, Object> accountLocks, Object noAccountLock) {
+        if (order == null || order.account() == null || order.account().isBlank()) {
+            return noAccountLock;
+        }
+        return accountLocks.computeIfAbsent(accountKey(order.orgCode(), order.account()), ignored -> new Object());
+    }
+
+    private boolean dispatchOwnedByAnotherSameAccount(RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
+        if (event.eventType() != OutboxEventType.SUPPLIER_DISPATCH
+                || order == null
+                || !order.dispatchable()
+                || order.account() == null
+                || order.account().isBlank()) {
+            return false;
+        }
+        return frequencyPort.currentOwner(order.orgCode(), order.account())
+                .filter(ownerOrderId -> !ownerOrderId.equals(order.orderId()))
+                .isPresent();
+    }
+
+    private static String accountKey(String orgCode, String account) {
+        return orgCode + ACCOUNT_KEY_SEPARATOR + account;
+    }
+
+    private static List<OutboxEventType> normalizeEventTypes(List<OutboxEventType> eventTypes) {
+        if (eventTypes == null || eventTypes.isEmpty()) {
+            return List.of(OutboxEventType.SUPPLIER_DISPATCH);
+        }
+        return List.copyOf(eventTypes);
+    }
+
+    private int normalizeParallelism(int parallelism) {
+        if (parallelism <= 0) {
+            return settings.outboxParallelism();
+        }
+        if (parallelism > MAX_PARALLELISM) {
+            return MAX_PARALLELISM;
+        }
+        return parallelism;
+    }
+
+    private record FairSelectResult(List<RechargeOutboxEvent> selected, int deferredCount) {}
+
+    private RechargeOutboxBatchResult.Outcome handleClaimed(RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
         try {
             return switch (event.eventType()) {
-                case SUPPLIER_DISPATCH -> handleSupplierDispatch(event);
-                case SUPPLIER_QUERY -> handleSupplierQuery(event);
-                case INVALID_ORDER -> handleInvalidOrder(event);
+                case SUPPLIER_DISPATCH -> handleSupplierDispatch(event, order);
+                case SUPPLIER_QUERY -> handleSupplierQuery(event, order);
+                case INVALID_ORDER -> handleInvalidOrder(event, order);
                 default -> {
                     String reason = "unsupported outbox event type: " + event.eventType();
                     markFailedOrManualRequired(event, reason, settings.retryBackoff());
@@ -145,13 +466,17 @@ public class RechargeOutboxWorkerService {
         } catch (Exception ex) {
             log.error("outbox事件处理异常 eventId={}, eventType={}, orderId={}",
                     event.eventId(), event.eventType(), event.orderId(), ex);
+            if (event.eventType() == OutboxEventType.SUPPLIER_DISPATCH
+                    && recoverDispatchExceptionByQuery(event, order, ex)) {
+                return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+            }
             markFailedOrManualRequired(event, ex.getMessage(), settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
     }
 
-    private RechargeOutboxBatchResult.Outcome handleSupplierDispatch(RechargeOutboxEvent event) {
-        RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
+    private RechargeOutboxBatchResult.Outcome handleSupplierDispatch(
+            RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
         if (order == null) {
             markFailedOrManualRequired(event, "order not found for dispatch", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
@@ -169,6 +494,19 @@ public class RechargeOutboxWorkerService {
             }
             outboxPort.markSuccess(event);
             return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+        }
+        Optional<SupplierFlowSnapshot> latestFlow = orderPort.findLatestSupplierFlowByOrderId(order.orderId());
+        if (latestFlow.isPresent()) {
+            /*
+             * 参见 docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」。
+             * DISPATCH 恢复时只要已经存在同订单供应商流水，就说明请求已经可能发出；不能继续调用 dispatch
+             * 制造重复履约，必须先写 supplier-query-{orderId} 让查单链路用同一订单号确认终态。
+             */
+            return recoverDispatchUnknownByQuery(
+                    event,
+                    order,
+                    latestFlow.get(),
+                    "供应商派单恢复发现已有调用流水，转查单确认");
         }
         if (!frequencyPort.acquire(order.orgCode(), order.account(), order.orderId(), settings.frequencyLockTtl())) {
             orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
@@ -210,6 +548,54 @@ public class RechargeOutboxWorkerService {
         SupplierGatewayResponse response = supplierGatewayPort.dispatch(request);
         orderPort.updateSupplierFlow(flowUpdate(flowId, response));
         return finishDispatch(event, order, flowId, response);
+    }
+
+    private boolean recoverDispatchExceptionByQuery(
+            RechargeOutboxEvent event,
+            RechargeFulfillmentOrder order,
+            Exception originalException) {
+        if (order == null) {
+            return false;
+        }
+        try {
+            Optional<SupplierFlowSnapshot> latestFlow = orderPort.findLatestSupplierFlowByOrderId(order.orderId());
+            if (latestFlow.isEmpty()) {
+                return false;
+            }
+            recoverDispatchUnknownByQuery(
+                    event,
+                    order,
+                    latestFlow.get(),
+                    "供应商派单异常后发现已有调用流水，转查单确认");
+            return true;
+        } catch (Exception recoveryException) {
+            log.error(
+                    "派单异常后转查单恢复判断失败 eventId={}, orderId={}, originalError={}",
+                    event.eventId(),
+                    order.orderId(),
+                    originalException.getMessage(),
+                    recoveryException);
+            return false;
+        }
+    }
+
+    private RechargeOutboxBatchResult.Outcome recoverDispatchUnknownByQuery(
+            RechargeOutboxEvent event,
+            RechargeFulfillmentOrder order,
+            SupplierFlowSnapshot latestFlow,
+            String remark) {
+        orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
+                order.orderId(),
+                FulfillmentDispatchStatus.SUPPLIER_ACCEPTED,
+                ORDER_STATUS_SUPPLIER_ACCEPTED,
+                DATA_STATUS_PROCESSING,
+                latestFlow.flowId(),
+                null,
+                null,
+                remark));
+        enqueueSupplierQuery(event, order);
+        outboxPort.markSuccess(event);
+        return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
     }
 
     private RechargeOutboxBatchResult.Outcome finishDispatch(
@@ -258,13 +644,22 @@ public class RechargeOutboxWorkerService {
             }
             case RETRYABLE_FAILED -> {
                 /*
-                 * docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」要求供应商派单具备退避重试。
-                 * HTTP 5xx、超时、连接异常属于“本次调用不可确认”，不是供应商明确拒绝；这里不能释放
-                 * Redis reservation、不能生成失败回调，也不能把 outbox 标成 SUCCESS。保持订单处于
-                 * DISPATCHING/PROCESSING，由 outbox 下次重试用同一 event_id 幂等号继续推进。
+                 * 参见 docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」。HTTP 5xx、超时、连接异常属于
+                 * “派单结果不可确认”，不能按供应商明确失败释放预扣，也不能盲目重派同一订单；对 MINISO 这类可
+                 * 按本地幂等号查单的渠道，下一步必须转 SUPPLIER_QUERY，用同一订单事实确认终态。
                  */
-                markFailedOrManualRequired(event, response.responseMessage(), settings.retryBackoff());
-                return RechargeOutboxBatchResult.Outcome.FAILED;
+                orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
+                        order.orderId(),
+                        FulfillmentDispatchStatus.SUPPLIER_ACCEPTED,
+                        ORDER_STATUS_SUPPLIER_ACCEPTED,
+                        DATA_STATUS_PROCESSING,
+                        flowId,
+                        response.responseCode(),
+                        response.responseMessage(),
+                        "供应商派单结果不可确认，转查单确认"));
+                enqueueSupplierQuery(event, order);
+                outboxPort.markSuccess(event);
+                return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
             }
             default -> throw new IllegalStateException("unsupported supplier status: " + response.status());
         }
@@ -304,8 +699,8 @@ public class RechargeOutboxWorkerService {
      * {@code docs/交行直充业务系统高可用方案设计.md}「17.1 任务清单」。查单仍返回处理中或传输层不可确认
      * 结果时只退避当前查单事件；只有供应商明确给出成功/失败，才复用派单终态副作用，包括回调、频控释放和余额释放。
      */
-    private RechargeOutboxBatchResult.Outcome handleSupplierQuery(RechargeOutboxEvent event) {
-        RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
+    private RechargeOutboxBatchResult.Outcome handleSupplierQuery(
+            RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
         if (order == null) {
             markFailedOrManualRequired(event, "order not found for supplier query", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
@@ -402,19 +797,19 @@ public class RechargeOutboxWorkerService {
                         response.responseCode(),
                         response.responseMessage(),
                         "供应商仍在处理中"));
-                markFailedOrManualRequired(event, response.responseMessage(), settings.retryBackoff());
+                markSupplierQueryFailedOrManualRequired(event, response.responseMessage());
                 return RechargeOutboxBatchResult.Outcome.FAILED;
             }
             case RETRYABLE_FAILED -> {
-                markFailedOrManualRequired(event, response.responseMessage(), settings.retryBackoff());
+                markSupplierQueryFailedOrManualRequired(event, response.responseMessage());
                 return RechargeOutboxBatchResult.Outcome.FAILED;
             }
             default -> throw new IllegalStateException("unsupported supplier query status: " + response.status());
         }
     }
 
-    private RechargeOutboxBatchResult.Outcome handleInvalidOrder(RechargeOutboxEvent event) {
-        RechargeFulfillmentOrder order = orderPort.findByOrderId(event.orderId()).orElse(null);
+    private RechargeOutboxBatchResult.Outcome handleInvalidOrder(
+            RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
         if (order == null) {
             markFailedOrManualRequired(event, "order not found for invalid", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
@@ -514,6 +909,37 @@ public class RechargeOutboxWorkerService {
             return;
         }
         outboxPort.markFailed(event, errorMessage, nextRetryDelay);
+    }
+
+    /**
+     * 按供应商查单专用退避序列处理非终态查单结果。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。查单处理中、HTTP 超时、
+     * 5xx 或不可识别响应都不能释放预扣或回写失败终态，只能推进同一个 {@code SUPPLIER_QUERY} 事件的
+     * retry_count/next_retry_time，并重新安排 timer 热唤醒；耗尽序列后转人工。
+     */
+    private void markSupplierQueryFailedOrManualRequired(RechargeOutboxEvent event, String errorMessage) {
+        if (event.nextFailureReachesMaxRetry()) {
+            outboxPort.markManualRequired(event, errorMessage);
+            return;
+        }
+        Duration nextRetryDelay = nextSupplierQueryRetryDelay(event);
+        outboxPort.markFailed(event, errorMessage, nextRetryDelay);
+        scheduleOutboxTimer(event.eventId(), OutboxEventType.SUPPLIER_QUERY, nextRetryDelay);
+    }
+
+    /**
+     * 计算下一次查单退避时间。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」。event 当前 retry_count
+     * 代表已失败次数，本次失败写库后会 +1，因此按 {@code retryCount + 1} 取下一档；超过配置序列时复用最后一档，
+     * 但默认 max_retry_count 等于序列长度，正常路径会先进入人工。
+     */
+    private Duration nextSupplierQueryRetryDelay(RechargeOutboxEvent event) {
+        List<Duration> delays = settings.supplierQueryRetryDelays();
+        int retryCountAfterCurrentFailure = event.retryCount() + 1;
+        int index = Math.min(retryCountAfterCurrentFailure, delays.size() - 1);
+        return delays.get(index);
     }
 
     private static String retryExhaustedMessage(RechargeOutboxEvent event) {
@@ -617,18 +1043,32 @@ public class RechargeOutboxWorkerService {
     }
 
     private void enqueueSupplierQuery(RechargeOutboxEvent dispatchEvent, RechargeFulfillmentOrder order) {
+        String eventId = RechargeDispatchEventIds.supplierQueryEventId(order.orderId());
+        Duration initialDelay = settings.supplierQueryRetryDelays().getFirst();
         supplierQueryOutboxPort.enqueueSupplierQuery(new SupplierQueryOutboxCommand(
-                supplierQueryEventId(order.orderId()),
+                eventId,
                 order.orgCode(),
                 order.orderId(),
                 order.outOrderSn(),
                 order.account(),
                 order.supplierChannel(),
-                dispatchEvent.payload()));
+                dispatchEvent.payload(),
+                initialDelay,
+                settings.supplierQueryRetryDelays().size()));
+        scheduleOutboxTimer(eventId, OutboxEventType.SUPPLIER_QUERY, initialDelay);
     }
 
-    private static String supplierQueryEventId(String orderId) {
-        return "supplier-query-" + orderId;
+    private void scheduleOutboxTimer(String eventId, OutboxEventType eventType, Duration delay) {
+        try {
+            dispatchTimerPort.schedule(eventId, eventType, delay);
+        } catch (RuntimeException ex) {
+            /*
+             * 参见 docs/交行直充业务系统详细设计.md「9.1 派单 Outbox」。
+             * timer 只是热路径唤醒，失败时保留 outbox due 时间交给低频 XXL-Job 恢复；该分支位于高频履约路径，
+             * 使用 warn 并携带堆栈，避免 timer 后端异常时把日志放大成新的故障源。
+             */
+            log.warn("供应商履约timer调度失败 eventId={}, eventType={}, delay={}", eventId, eventType, delay, ex);
+        }
     }
 
     private static Map<String, Object> requestPayload(SupplierDispatchGatewayRequest request) {

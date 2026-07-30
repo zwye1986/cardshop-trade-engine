@@ -64,20 +64,33 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
     public MybatisBatchRechargeOrderPersistenceAdapter(
             SqlSessionFactory sqlSessionFactory,
             ObjectMapper objectMapper) {
-        this(sqlSessionFactory, objectMapper, TradeEngineObservabilityMetrics.noop());
+        this(sqlSessionFactory, objectMapper, TradeEngineObservabilityMetrics.noop(), Duration.ofSeconds(1));
     }
 
     public MybatisBatchRechargeOrderPersistenceAdapter(
             SqlSessionFactory sqlSessionFactory,
             ObjectMapper objectMapper,
             TradeEngineObservabilityMetrics observabilityMetrics) {
-        this(batchMappers(sqlSessionFactory), objectMapper, observabilityMetrics);
+        this(sqlSessionFactory, objectMapper, observabilityMetrics, Duration.ofSeconds(1));
+    }
+
+    /**
+     * @param dispatchInitialDelay 落库后首次派单延迟，对应
+     *     {@code trade.engine.fulfillment.dispatch-initial-delay-seconds}
+     */
+    public MybatisBatchRechargeOrderPersistenceAdapter(
+            SqlSessionFactory sqlSessionFactory,
+            ObjectMapper objectMapper,
+            TradeEngineObservabilityMetrics observabilityMetrics,
+            Duration dispatchInitialDelay) {
+        this(batchMappers(sqlSessionFactory), objectMapper, observabilityMetrics, dispatchInitialDelay);
     }
 
     private MybatisBatchRechargeOrderPersistenceAdapter(
             BatchMapperBundle mappers,
             ObjectMapper objectMapper,
-            TradeEngineObservabilityMetrics observabilityMetrics) {
+            TradeEngineObservabilityMetrics observabilityMetrics,
+            Duration dispatchInitialDelay) {
         this(
                 mappers.orderMapper()::insertOrderBatchIfAbsent,
                 mappers.extMapper()::insertExtBatchOrUpdatePersistState,
@@ -85,7 +98,8 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
                 mappers.balanceDeltaOutboxMapper()::insertBalanceDeltaBatchIfAbsent,
                 mappers.departRecordMapper()::insertDepartRecordBatchIfAbsent,
                 objectMapper,
-                observabilityMetrics);
+                observabilityMetrics,
+                dispatchInitialDelay);
     }
 
     MybatisBatchRechargeOrderPersistenceAdapter(
@@ -102,7 +116,8 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
                 balanceDeltaOutboxWriter,
                 departRecordWriter,
                 objectMapper,
-                TradeEngineObservabilityMetrics.noop());
+                TradeEngineObservabilityMetrics.noop(),
+                Duration.ofSeconds(1));
     }
 
     MybatisBatchRechargeOrderPersistenceAdapter(
@@ -113,6 +128,26 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
             McDepartRecordBatchPersistWriter departRecordWriter,
             ObjectMapper objectMapper,
             TradeEngineObservabilityMetrics observabilityMetrics) {
+        this(
+                orderWriter,
+                extWriter,
+                dispatchOutboxWriter,
+                balanceDeltaOutboxWriter,
+                departRecordWriter,
+                objectMapper,
+                observabilityMetrics,
+                Duration.ofSeconds(1));
+    }
+
+    MybatisBatchRechargeOrderPersistenceAdapter(
+            McOrderBatchPersistWriter orderWriter,
+            RechargeOrderExtBatchPersistWriter extWriter,
+            RechargeDispatchOutboxBatchPersistWriter dispatchOutboxWriter,
+            RechargeBalanceDeltaOutboxBatchPersistWriter balanceDeltaOutboxWriter,
+            McDepartRecordBatchPersistWriter departRecordWriter,
+            ObjectMapper objectMapper,
+            TradeEngineObservabilityMetrics observabilityMetrics,
+            Duration dispatchInitialDelay) {
         this.orderWriter = Objects.requireNonNull(orderWriter, "orderWriter must not be null");
         this.extWriter = Objects.requireNonNull(extWriter, "extWriter must not be null");
         this.dispatchOutboxWriter = Objects.requireNonNull(
@@ -120,7 +155,7 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
         this.balanceDeltaOutboxWriter = Objects.requireNonNull(
                 balanceDeltaOutboxWriter, "balanceDeltaOutboxWriter must not be null");
         this.departRecordWriter = Objects.requireNonNull(departRecordWriter, "departRecordWriter must not be null");
-        this.rowConverter = new RechargeOrderPersistenceRowConverter(objectMapper);
+        this.rowConverter = new RechargeOrderPersistenceRowConverter(objectMapper, dispatchInitialDelay);
         this.observabilityMetrics = observabilityMetrics == null
                 ? TradeEngineObservabilityMetrics.noop()
                 : observabilityMetrics;
@@ -136,7 +171,24 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
      */
     @Override
     @Transactional
-    public void persistBatch(List<OrderPersistAggregate> aggregates) {
+    public void persistBatchWithOutbox(List<OrderPersistAggregate> aggregates) {
+        persistBatchInternal(aggregates, true);
+    }
+
+    /**
+     * 在一个 MySQL 事务内只批量写入订单事实表，不写两张 outbox。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer · Outbox 异步落库模式」。
+     * 本方法是 outbox 异步落库的第一段事实事务；事务提交后由
+     * {@link MybatisRechargePersistOutboxAsyncWriter} 使用独立连接池补写 outbox。
+     */
+    @Override
+    @Transactional
+    public void persistBatchFactsOnly(List<OrderPersistAggregate> aggregates) {
+        persistBatchInternal(aggregates, false);
+    }
+
+    private void persistBatchInternal(List<OrderPersistAggregate> aggregates, boolean includeOutbox) {
         Objects.requireNonNull(aggregates, "aggregates must not be null");
         if (aggregates.isEmpty()) {
             return;
@@ -176,23 +228,25 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
                         departRecordWriter.insertPreDeductBatchIfAbsent(departRecordRows));
             }
 
-            List<RechargeDispatchOutboxDO> dispatchRows = new ArrayList<>(sorted.size());
-            List<RechargeBalanceDeltaOutboxDO> balanceRows = new ArrayList<>(sorted.size());
-            for (OrderPersistAggregate aggregate : sorted) {
-                if (aggregate.dispatchOutboxRequired()) {
-                    dispatchRows.add(rowConverter.toDispatchOutbox(aggregate));
+            if (includeOutbox) {
+                List<RechargeDispatchOutboxDO> dispatchRows = new ArrayList<>(sorted.size());
+                List<RechargeBalanceDeltaOutboxDO> balanceRows = new ArrayList<>(sorted.size());
+                for (OrderPersistAggregate aggregate : sorted) {
+                    if (aggregate.dispatchOutboxRequired()) {
+                        dispatchRows.add(rowConverter.toDispatchOutbox(aggregate));
+                    }
+                    if (aggregate.snapshot().balanceReserved()) {
+                        balanceRows.add(rowConverter.toBalanceDeltaFlushOutbox(aggregate));
+                    }
                 }
-                if (aggregate.snapshot().balanceReserved()) {
-                    balanceRows.add(rowConverter.toBalanceDeltaFlushOutbox(aggregate));
+                if (!dispatchRows.isEmpty()) {
+                    recordPhase(PHASE_RECHARGE_DISPATCH_OUTBOX, () ->
+                            dispatchOutboxWriter.insertDispatchOutboxBatchIfAbsent(dispatchRows));
                 }
-            }
-            if (!dispatchRows.isEmpty()) {
-                recordPhase(PHASE_RECHARGE_DISPATCH_OUTBOX, () ->
-                        dispatchOutboxWriter.insertDispatchOutboxBatchIfAbsent(dispatchRows));
-            }
-            if (!balanceRows.isEmpty()) {
-                recordPhase(PHASE_RECHARGE_BALANCE_DELTA_OUTBOX, () ->
-                        balanceDeltaOutboxWriter.insertBalanceDeltaBatchIfAbsent(balanceRows));
+                if (!balanceRows.isEmpty()) {
+                    recordPhase(PHASE_RECHARGE_BALANCE_DELTA_OUTBOX, () ->
+                            balanceDeltaOutboxWriter.insertBalanceDeltaBatchIfAbsent(balanceRows));
+                }
             }
         } finally {
             long finishedAtNanos = System.nanoTime();

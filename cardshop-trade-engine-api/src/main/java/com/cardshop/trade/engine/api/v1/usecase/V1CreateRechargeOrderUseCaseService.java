@@ -565,9 +565,14 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         }
 
         V1MerchantProfile merchant = maybeMerchant.get();
+        /*
+         * 创建用例将 Controller 传入的 X-Load-Test 原值交给三参预检；查询/作废等用例仍走两参预检，不启用压测旁路。
+         * 参见详细设计「3. API/V1 接入层」。
+         */
         V1ProtocolPrecheckResult<V1RechargeCreateOrderRequest> precheck = precheckService.precheckCreate(
                 command.rawBody(),
-                new V1MerchantSecurityProfile(merchant.appId(), merchant.orgCode(), merchant.aesKey()));
+                new V1MerchantSecurityProfile(merchant.appId(), merchant.orgCode(), merchant.aesKey()),
+                command.loadTestHeader());
         if (!precheck.valid()) {
             return Preparation.error(protocolFailure(precheck.reason()));
         }

@@ -73,6 +73,7 @@ public class TradeEngineObservabilityMetrics
     private volatile Counter productCacheMysqlLoadCounter;
     private volatile DistributionSummary persistBatchSizeSummary;
     private volatile Timer persistBatchMysqlTimer;
+    private volatile Timer persistOutboxWriterTimer;
     private volatile MeterRegistry registry;
 
     public TradeEngineObservabilityMetrics(
@@ -380,6 +381,35 @@ public class TradeEngineObservabilityMetrics
     }
 
     /**
+     * 记录 persist 批路径 outbox 异步 writer 端到端耗时。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer · Outbox 异步落库模式」。
+     * 该耗时覆盖 writer 独立事务、连接获取和两张 outbox 的幂等写入；连接池水位使用 Spring Boot 标准
+     * {@code hikaricp.connections.*} 指标，不在这里增加自定义高基数字段。
+     */
+    public void recordPersistOutboxWriterDuration(Duration duration) {
+        MeterRegistry current = registry;
+        if (current == null) {
+            return;
+        }
+        Duration safeDuration = duration == null || duration.isNegative() ? Duration.ZERO : duration;
+        Timer timer = persistOutboxWriterTimer;
+        if (timer == null) {
+            synchronized (this) {
+                timer = persistOutboxWriterTimer;
+                if (timer == null) {
+                    timer = Timer.builder("trade.engine.persist.outbox.writer.duration")
+                            .description("persist批路径outbox异步writer端到端耗时")
+                            .tag("environment", environment)
+                            .register(current);
+                    persistOutboxWriterTimer = timer;
+                }
+            }
+        }
+        timer.record(safeDuration);
+    }
+
+    /**
      * 记录异步落库批内订单结果计数。
      *
      * <p>result 仅允许 {@code success}/{@code failed}/{@code skipped_already_persisted} 等低基数取值，禁止订单号进标签。
@@ -474,7 +504,25 @@ public class TradeEngineObservabilityMetrics
                                 "trade.engine.dispatch.outbox.max.age.seconds",
                                 snapshotProvider,
                                 provider -> snapshot(provider).outboxMaxAgeSeconds(event, taskStatus))
-                        .description("派单 outbox 未完成事件最大滞留时间秒数")
+                        .description("派单 outbox 未完成事件最大滞留时间秒数（自 created_at，兼容旧指标）")
+                        .tag("environment", environment)
+                        .tag("event_type", event)
+                        .tag("status", taskStatus)
+                        .register(registry);
+                Gauge.builder(
+                                "trade.engine.dispatch.outbox.max.age.since.created.seconds",
+                                snapshotProvider,
+                                provider -> snapshot(provider).outboxMaxAgeSeconds(event, taskStatus))
+                        .description("派单 outbox 未完成事件最大年龄秒数（自 created_at）")
+                        .tag("environment", environment)
+                        .tag("event_type", event)
+                        .tag("status", taskStatus)
+                        .register(registry);
+                Gauge.builder(
+                                "trade.engine.dispatch.outbox.max.age.since.due.seconds",
+                                snapshotProvider,
+                                provider -> snapshot(provider).outboxMaxAgeSinceDueSeconds(event, taskStatus))
+                        .description("派单 outbox 未完成 due 事件最大到期年龄秒数（自 next_retry_time）")
                         .tag("environment", environment)
                         .tag("event_type", event)
                         .tag("status", taskStatus)
@@ -493,7 +541,7 @@ public class TradeEngineObservabilityMetrics
                                 "trade.engine.outbox.max.age.seconds",
                                 snapshotProvider,
                                 provider -> snapshot(provider).outboxMaxAgeSeconds(event, taskStatus))
-                        .description("派单 outbox 最大滞留秒数（兼容名，仅派单）")
+                        .description("派单 outbox 最大滞留秒数（兼容名，自 created_at）")
                         .tag("environment", environment)
                         .tag("event_type", event)
                         .tag("status", taskStatus)

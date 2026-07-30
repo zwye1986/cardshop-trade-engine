@@ -88,7 +88,9 @@ public class V1CardApiConfiguration {
 
     @Bean
     public V1ProtocolSettings v1ProtocolSettings(TradeEngineProperties properties) {
-        return new V1ProtocolSettings(properties.getV1().isRequestSm4Enabled());
+        return new V1ProtocolSettings(
+                properties.getV1().isRequestSm4Enabled(),
+                properties.getV1().getLoadTestToken());
     }
 
     @Bean

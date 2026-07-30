@@ -1,10 +1,15 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
 import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilitySnapshotProvider;
+import com.cardshop.trade.engine.infrastructure.timer.ScheduledExecutorRechargeDispatchTimer;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Duration;
+import java.util.concurrent.RejectedExecutionException;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
@@ -38,5 +43,52 @@ class TradeEngineObservabilityAutoConfigurationTest {
         new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(TradeEngineObservabilityAutoConfiguration.class))
                 .run(context -> assertThat(context).doesNotHaveBean(TradeEngineObservabilityMetrics.class));
+    }
+
+    @Test
+    void registersDispatchTimerPendingAndRejectedMetricsWhenTimerIsAvailable() {
+        new ApplicationContextRunner()
+                .withBean(SimpleMeterRegistry.class, SimpleMeterRegistry::new)
+                .withBean(TradeEngineObservabilitySnapshotProvider.class, TradeEngineObservabilitySnapshotProvider::empty)
+                .withBean(ScheduledExecutorRechargeDispatchTimer.class, () -> new ScheduledExecutorRechargeDispatchTimer(
+                        (eventId, eventType, workerId) -> {
+                        },
+                        "timer-node-A",
+                        1,
+                        1))
+                .withConfiguration(AutoConfigurations.of(TradeEngineObservabilityAutoConfiguration.class))
+                .run(context -> {
+                    SimpleMeterRegistry registry = context.getBean(SimpleMeterRegistry.class);
+                    ScheduledExecutorRechargeDispatchTimer timer =
+                            context.getBean(ScheduledExecutorRechargeDispatchTimer.class);
+
+                    timer.schedule("dispatch-ORDER-1", OutboxEventType.SUPPLIER_DISPATCH, Duration.ofSeconds(60));
+                    assertThatThrownBy(() -> timer.schedule(
+                            "dispatch-ORDER-2",
+                            OutboxEventType.SUPPLIER_DISPATCH,
+                            Duration.ofSeconds(60)))
+                            .isInstanceOf(RejectedExecutionException.class);
+
+                    assertThat(registry.find("trade.engine.dispatch.timer.pending")
+                                    .tag("environment", "dev")
+                                    .gauge()
+                                    .value())
+                            .isEqualTo(1.0);
+                    assertThat(registry.find("trade.engine.dispatch.timer.max.pending")
+                                    .tag("environment", "dev")
+                                    .gauge()
+                                    .value())
+                            .isEqualTo(1.0);
+                    assertThat(registry.find("trade.engine.dispatch.timer.rejected.total")
+                                    .tag("environment", "dev")
+                                    .functionCounter()
+                                    .count())
+                            .isEqualTo(1.0);
+                    assertThat(registry.find("trade.engine.dispatch.timer.worker.rejected.total")
+                                    .tag("environment", "dev")
+                                    .functionCounter()
+                                    .count())
+                            .isZero();
+                });
     }
 }

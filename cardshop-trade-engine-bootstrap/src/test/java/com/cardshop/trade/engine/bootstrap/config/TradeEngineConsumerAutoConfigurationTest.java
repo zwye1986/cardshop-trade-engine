@@ -7,17 +7,23 @@ import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderResult;
 import com.cardshop.trade.engine.application.recharge.CancelUnconfirmedAcceptResult;
 import com.cardshop.trade.engine.application.recharge.MarkPersistQueuedResult;
 import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
+import com.cardshop.trade.engine.application.recharge.OrderPersistAggregate;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
+import com.cardshop.trade.engine.application.recharge.RechargePersistOutboxAsyncWriter;
 import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
+import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import java.time.Clock;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.context.annotation.Bean;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -58,7 +64,50 @@ class TradeEngineConsumerAutoConfigurationTest {
                         .isSameAs(persistedOrderStatePort));
     }
 
+    @Test
+    void wiresOutboxAsyncWriterIntoConsumerServiceWhenSwitchIsEnabled() {
+        RechargePersistOutboxAsyncWriter outboxAsyncWriter = ignored -> {
+        };
+
+        new ApplicationContextRunner()
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(RechargeOrderBatchPersistencePort.class, StubBatchPersistencePort::new)
+                .withBean(RechargePersistOutboxAsyncWriter.class, () -> outboxAsyncWriter)
+                .withPropertyValues("trade.engine.persist.outbox-async-enabled=true")
+                .withConfiguration(AutoConfigurations.of(
+                        TestConsumerDependencyAutoConfiguration.class,
+                        TradeEngineConsumerAutoConfiguration.class))
+                .run(context -> {
+                    PersistRechargeOrderConsumerService consumerService =
+                            context.getBean(PersistRechargeOrderConsumerService.class);
+                    assertThat(ReflectionTestUtils.getField(consumerService, "outboxAsyncWriter"))
+                            .isSameAs(outboxAsyncWriter);
+                    assertThat(ReflectionTestUtils.getField(consumerService, "outboxAsyncEnabled"))
+                            .isEqualTo(true);
+                });
+    }
+
+    /**
+     * 仅开 {@code outbox-async-enabled} 而未开批消费时，装配层必须 fail-fast 并指明配置矛盾，
+     * 不能退化为构造器 NPE。对应详细设计「8.3 异步落库 Consumer · Outbox 异步落库模式」的开关前提。
+     */
+    @Test
+    void failsWithClearMessageWhenOutboxAsyncEnabledWithoutBatchPersistWriter() {
+        new ApplicationContextRunner()
+                .withBean(Clock.class, Clock::systemUTC)
+                .withPropertyValues("trade.engine.persist.outbox-async-enabled=true")
+                .withConfiguration(AutoConfigurations.of(
+                        TestConsumerDependencyAutoConfiguration.class,
+                        TradeEngineConsumerAutoConfiguration.class))
+                .run(context -> assertThat(context)
+                        .hasFailed()
+                        .getFailure()
+                        .hasMessageContaining("trade.engine.persist.outbox-async-enabled=true")
+                        .hasMessageContaining("trade.engine.mq.persist-batch-enabled=true"));
+    }
+
     @AutoConfiguration(before = TradeEngineConsumerAutoConfiguration.class)
+    @EnableConfigurationProperties(TradeEngineProperties.class)
     static class TestConsumerDependencyAutoConfiguration {
 
         @Bean
@@ -70,6 +119,19 @@ class TradeEngineConsumerAutoConfigurationTest {
         @Bean
         RechargeAcceptReliabilityPort rechargeAcceptReliabilityPort() {
             return new StubReliabilityPort();
+        }
+    }
+
+    private static final class StubBatchPersistencePort implements RechargeOrderBatchPersistencePort {
+
+        @Override
+        public void persistBatchWithOutbox(List<OrderPersistAggregate> aggregates) {
+            throw new AssertionError("configuration test should not persist batch");
+        }
+
+        @Override
+        public void persistBatchFactsOnly(List<OrderPersistAggregate> aggregates) {
+            throw new AssertionError("configuration test should not persist batch facts only");
         }
     }
 

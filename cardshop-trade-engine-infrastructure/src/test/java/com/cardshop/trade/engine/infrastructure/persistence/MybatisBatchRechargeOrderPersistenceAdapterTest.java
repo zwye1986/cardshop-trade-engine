@@ -45,7 +45,7 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
                 store,
                 new ObjectMapper());
 
-        adapter.persistBatch(List.of(aggregate("ORDER-1001", "OUT-1001")));
+        adapter.persistBatchWithOutbox(List.of(aggregate("ORDER-1001", "OUT-1001")));
 
         assertThat(store.events).contains(
                 "orderBatch:ORDER-1001",
@@ -70,7 +70,7 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
                 store,
                 new ObjectMapper());
 
-        adapter.persistBatch(List.of(
+        adapter.persistBatchWithOutbox(List.of(
                 aggregate("ORDER-1002", "OUT-1002"),
                 aggregate("ORDER-1001", "OUT-1001")));
 
@@ -102,7 +102,7 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
 
         TransactionSynchronizationManager.initSynchronization();
         try {
-            adapter.persistBatch(List.of(aggregate("ORDER-1003", "OUT-1003")));
+            adapter.persistBatchWithOutbox(List.of(aggregate("ORDER-1003", "OUT-1003")));
 
             assertThat(registry.find("trade.engine.persist.batch.mysql.duration").timer()).isNull();
             assertThat(registry.get("trade.engine.persist.batch.mysql.phase.duration")
@@ -161,6 +161,46 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
         } finally {
             TransactionSynchronizationManager.clearSynchronization();
         }
+    }
+
+    @Test
+    void factsOnlyBatchDoesNotWriteOutboxRowsOrOutboxPhases() {
+        var registry = new SimpleMeterRegistry();
+        var metrics = new TradeEngineObservabilityMetrics(
+                TradeEngineObservabilitySnapshotProvider.empty(),
+                "test",
+                Duration.ofMillis(30));
+        metrics.bindTo(registry);
+        RecordingStore store = new RecordingStore();
+        MybatisBatchRechargeOrderPersistenceAdapter adapter = new MybatisBatchRechargeOrderPersistenceAdapter(
+                store,
+                store,
+                store,
+                store,
+                store,
+                new ObjectMapper(),
+                metrics);
+
+        adapter.persistBatchFactsOnly(List.of(
+                aggregate("ORDER-1002", "OUT-1002"),
+                aggregate("ORDER-1001", "OUT-1001")));
+
+        assertThat(store.events).containsExactly(
+                "orderBatch:ORDER-1001,ORDER-1002",
+                "extBatch:ORDER-1001,ORDER-1002",
+                "departBatch:ORDER-1001,ORDER-1002");
+        assertThat(store.dispatchByEventId).isEmpty();
+        assertThat(store.balanceByEventId).isEmpty();
+        assertThat(registry.find("trade.engine.persist.batch.mysql.phase.duration")
+                        .tag("environment", "test")
+                        .tag("phase", "recharge_dispatch_outbox")
+                        .timer())
+                .isNull();
+        assertThat(registry.find("trade.engine.persist.batch.mysql.phase.duration")
+                        .tag("environment", "test")
+                        .tag("phase", "recharge_balance_delta_outbox")
+                        .timer())
+                .isNull();
     }
 
     private static OrderPersistAggregate aggregate(String orderId, String outOrderSn) {

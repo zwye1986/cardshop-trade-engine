@@ -3,10 +3,14 @@ package com.cardshop.trade.engine.bootstrap.config;
 import com.cardshop.trade.engine.application.recharge.PersistOrderSnapshotPort;
 import com.cardshop.trade.engine.application.recharge.PersistRechargeOrderConsumerService;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
+import com.cardshop.trade.engine.application.recharge.RechargeDispatchTimerPort;
 import com.cardshop.trade.engine.application.recharge.RechargeAcceptReliabilityPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
+import com.cardshop.trade.engine.application.recharge.RechargePersistOutboxAsyncWriter;
+import com.cardshop.trade.engine.infrastructure.config.TradeEngineProperties;
 import java.time.Clock;
+import java.time.Duration;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -39,15 +43,36 @@ public class TradeEngineConsumerAutoConfiguration {
             ObjectProvider<PersistOrderSnapshotPort> snapshotPortProvider,
             ObjectProvider<RechargeOrderBatchPersistencePort> batchPersistencePortProvider,
             ObjectProvider<PersistedOrderStatePort> persistedOrderStatePortProvider,
+            ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
+            ObjectProvider<RechargePersistOutboxAsyncWriter> outboxAsyncWriterProvider,
             RechargeOrderPersistencePort persistencePort,
             RechargeAcceptReliabilityPort reliabilityPort,
-            Clock clock) {
+            Clock clock,
+            TradeEngineProperties properties) {
+        boolean outboxAsyncEnabled = properties.getPersist().isOutboxAsyncEnabled();
+        RechargePersistOutboxAsyncWriter outboxAsyncWriter = outboxAsyncWriterProvider.getIfAvailable();
+        if (outboxAsyncEnabled && outboxAsyncWriter == null) {
+            /*
+             * 参见详细设计「8.3 异步落库 Consumer · Outbox 异步落库模式」。writer 数据源与 writer Bean 以
+             * persist-batch-enabled=true 为装配前提；仅开 outbox-async-enabled 而未开批消费时，
+             * 此处必须 fail-fast 并指明配置矛盾，避免下游退化为构造器 NPE、无法定位到具体配置键。
+             */
+            throw new IllegalStateException(
+                    "trade.engine.persist.outbox-async-enabled=true requires RechargePersistOutboxAsyncWriter, "
+                            + "but the writer beans are only created when trade.engine.mq.persist-batch-enabled=true; "
+                            + "enable both switches or turn off outbox async mode");
+        }
         return new PersistRechargeOrderConsumerService(
                 snapshotPortProvider.getIfAvailable(PersistOrderSnapshotPort::noop),
                 persistencePort,
                 batchPersistencePortProvider.getIfAvailable(),
                 persistedOrderStatePortProvider.getIfAvailable(PersistedOrderStatePort::noop),
                 reliabilityPort,
-                clock);
+                dispatchTimerPortProvider.getIfAvailable(RechargeDispatchTimerPort::noop),
+                clock,
+                Duration.ofSeconds(3),
+                properties.getFulfillment().dispatchInitialDelay(),
+                outboxAsyncWriter,
+                outboxAsyncEnabled);
     }
 }

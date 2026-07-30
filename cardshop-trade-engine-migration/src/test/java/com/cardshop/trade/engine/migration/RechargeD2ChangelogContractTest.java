@@ -53,6 +53,8 @@ class RechargeD2ChangelogContractTest {
                 .contains("unique key uk_ext_order_id (order_id)")
                 .contains("unique key uk_ext_org_out_order (org_code, out_order_sn)")
                 .contains("key idx_ext_persist_status (persist_status, updated_at)")
+                .contains("0016-d2-drop-recharge-order-ext-persist-status-index")
+                .contains("DROP INDEX idx_ext_persist_status")
                 .contains("unique key uk_outbox_event_id (event_id)")
                 .contains("key idx_outbox_status_retry (status, next_retry_time)")
                 .contains("key idx_outbox_locked_until (status, locked_until)")
@@ -103,7 +105,8 @@ class RechargeD2ChangelogContractTest {
                         "0012-d7-add-mc-depart-record-trade-engine-key-unique",
                         "0013-d9-add-recharge-order-ext-dispatch-status",
                         "0014-d2-create-recharge-dispatch-outbox",
-                        "0015-d2-create-recharge-balance-delta-outbox");
+                        "0015-d2-create-recharge-balance-delta-outbox",
+                        "0016-d2-drop-recharge-order-ext-persist-status-index");
     }
 
     /**
