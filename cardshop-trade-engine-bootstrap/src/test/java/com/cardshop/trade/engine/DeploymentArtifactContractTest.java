@@ -109,7 +109,7 @@ class DeploymentArtifactContractTest {
         assertThat(guideText)
                 .contains("cardshop-trade-engine-dev.yaml")
                 .contains("cardshop_test")
-                .contains("legacy cardshop dev Redis settings")
+                .contains("开发与测试环境部署说明")
                 .contains("config/.<profile>.env")
                 .contains("./bin/start.sh start dev")
                 .contains("NACOS_PASSWORD='<nacos-password-if-it-contains-shell-metacharacters>'")

@@ -380,7 +380,7 @@ Nacos 会按顺序加载：
 
 ## V1.2 签名切换与验证（2026-10-16）
 
-本服务统一升级V1.2：getToken签发独立随机32字节signKey及keyId，完整密钥用于HMAC-SM3；aesKey仅用于SM4。旧签名、签名旁路和旧系统代理均不开放。部署前置条件、历史回调处理和主密钥保护见[启动说明](deploy/STARTUP.md#v12-升级前置条件)。
+本服务直接使用V1.2：getToken签发独立随机32字节signKey及keyId，完整密钥用于HMAC-SM3；aesKey仅用于SM4。旧签名、签名旁路和旧系统代理均不开放。当前为全新项目的开发到测试阶段，不涉及旧业务数据迁移、旧订单换绑或旧回调任务清理。测试环境准备、数据库结构初始化、密钥配置及HTTPS联调步骤见[开发与测试环境部署说明](deploy/STARTUP.md)。
 
 原`cardshop-trade-engine-test-console`已删除且不可恢复。本次使用仓库内模拟器与自动化测试验证协议，不依赖该目录。模拟器内`example.v12.crypto.HmacSm3SignUtils`来自对外交付的Java源码包，调用方复制源码即可，只依赖公开的Bouncy Castle，不需要任何`com.cardshop.openapi`依赖。
 
