@@ -10,7 +10,7 @@ import java.util.Map;
  */
 public interface V1CardApiClient {
 
-    String getToken(String appId, String appSecret) throws Exception;
+    Credentials getToken(String appId, String appSecret) throws Exception;
 
     ApiResponse createRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) throws Exception;
 

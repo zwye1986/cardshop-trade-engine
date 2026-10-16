@@ -5,5 +5,7 @@ package com.cardshop.trade.engine.api.v1.security;
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「3. API/V1 接入层」。
  */
-public record AuthenticatedMerchant(String appId, String orgCode) {
+public record AuthenticatedMerchant(String appId, String orgCode,
+        com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential signingCredential) {
+    public AuthenticatedMerchant(String appId,String orgCode) { this(appId,orgCode,null); }
 }

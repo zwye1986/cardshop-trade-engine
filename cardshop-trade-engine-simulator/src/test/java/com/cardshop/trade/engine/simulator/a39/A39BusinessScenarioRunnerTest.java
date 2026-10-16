@@ -14,28 +14,28 @@ class A39BusinessScenarioRunnerTest {
     @Test
     void createPayloadCarriesRuntimeRequiredFieldsWithoutSigningThem() throws Exception {
         CapturingClient client = new CapturingClient(new V1CardApiClient.ApiResponse("505", "订单号重复", Map.of()));
-        A39BusinessScenarioRunner runner = new A39BusinessScenarioRunner(client, new V1Sm3Signer(), Duration.ZERO);
+        A39BusinessScenarioRunner runner = new A39BusinessScenarioRunner(client, new V12Signer(), Duration.ZERO);
 
         runner.run(options("OUT-1", 1));
 
         assertThat(client.createPayload)
                 .containsEntry("order_price", 5200L)
                 .containsEntry("product_type", 1);
-        assertThat(client.createPayload.get("sign")).isEqualTo("2504f57140911a9c8484489fb634086a9a1ab60d9ca47131218c06f9ddb18268");
+        assertThat(client.createPayload.get("sign")).isEqualTo("dfcb7d93f3dc20eb3b37ed8d95f80fb8ea5483d2f49fd463d6f9109bd767a1d1");
     }
 
     @Test
     void queryRunsForAcceptedOrAsyncCreateResponsesOnly() throws Exception {
         CapturingClient accepted = new CapturingClient(new V1CardApiClient.ApiResponse("200", "操作成功", Map.of()));
-        new A39BusinessScenarioRunner(accepted, new V1Sm3Signer(), Duration.ZERO).run(options("OUT-2", 2));
+        new A39BusinessScenarioRunner(accepted, new V12Signer(), Duration.ZERO).run(options("OUT-2", 2));
         assertThat(accepted.queryPayloads).hasSize(2);
 
         CapturingClient async = new CapturingClient(new V1CardApiClient.ApiResponse("510", "请等待，稍后重新获卡", Map.of()));
-        new A39BusinessScenarioRunner(async, new V1Sm3Signer(), Duration.ZERO).run(options("OUT-3", 2));
+        new A39BusinessScenarioRunner(async, new V12Signer(), Duration.ZERO).run(options("OUT-3", 2));
         assertThat(async.queryPayloads).hasSize(2);
 
         CapturingClient failed = new CapturingClient(new V1CardApiClient.ApiResponse("501", "验签不合规", Map.of()));
-        new A39BusinessScenarioRunner(failed, new V1Sm3Signer(), Duration.ZERO).run(options("OUT-4", 2));
+        new A39BusinessScenarioRunner(failed, new V12Signer(), Duration.ZERO).run(options("OUT-4", 2));
         assertThat(failed.queryPayloads).isEmpty();
     }
 
@@ -47,7 +47,7 @@ class A39BusinessScenarioRunnerTest {
         client.queryResponses.add(new V1CardApiClient.ApiResponse("200", "操作成功", Map.of("order_status", "12")));
         List<String> logs = new ArrayList<>();
 
-        new A39BusinessScenarioRunner(client, new V1Sm3Signer(), Duration.ZERO, logs::add)
+        new A39BusinessScenarioRunner(client, new V12Signer(), Duration.ZERO, logs::add)
                 .run(options("OUT-5", 3));
 
         assertThat(logs)
@@ -105,8 +105,8 @@ class A39BusinessScenarioRunnerTest {
         }
 
         @Override
-        public String getToken(String appId, String appSecret) {
-            return "token";
+        public Credentials getToken(String appId, String appSecret) {
+            return new Credentials("token", "test-key", TestKeys.KEY);
         }
 
         @Override

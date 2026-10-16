@@ -1,0 +1,89 @@
+{
+  "warning": "仅供离线测试，禁止用于生产",
+  "signKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "vectors": [
+    {
+      "operation": "QUERY",
+      "payload": {
+        "out_order_sn": "2024051318021328753592",
+        "timestamp": "1715592615713",
+        "nonce_str": "00000000000000000000000000000001"
+      },
+      "stringA": "nonce_str=00000000000000000000000000000001,out_order_sn=2024051318021328753592,timestamp=1715592615713",
+      "expectedSign": "9bee431562361df387186cea6b72e0a4e8d3d56884ae02c09f16d10a4edfc7d3"
+    },
+    {
+      "operation": "CREATE",
+      "payload": {
+        "product_id": "25528",
+        "out_order_sn": "2024022120200772347024",
+        "account": "13423456789",
+        "timestamp": "1715592615713",
+        "nonce_str": "00000000000000000000000000000002",
+        "notify_url": "https://merchant.example.com/callback/order",
+        "num": 1,
+        "sign": "a01609224f631c4049a39772464b84cb76781cf02df07d1f0f2ccef7e20d2545"
+      },
+      "stringA": "account=13423456789,nonce_str=00000000000000000000000000000002,notify_url=https://merchant.example.com/callback/order,num=1,out_order_sn=2024022120200772347024,product_id=25528,timestamp=1715592615713",
+      "expectedSign": "a01609224f631c4049a39772464b84cb76781cf02df07d1f0f2ccef7e20d2545"
+    },
+    {
+      "operation": "QUERY",
+      "payload": {
+        "out_order_sn": "2024022120200772347024",
+        "timestamp": "1715592615713",
+        "nonce_str": "00000000000000000000000000000003",
+        "sign": "91e142633b23a46d91bfbc46c95b5eed11421f18339d5f45683a2b45830b0601"
+      },
+      "stringA": "nonce_str=00000000000000000000000000000003,out_order_sn=2024022120200772347024,timestamp=1715592615713",
+      "expectedSign": "91e142633b23a46d91bfbc46c95b5eed11421f18339d5f45683a2b45830b0601"
+    },
+    {
+      "operation": "INVALID",
+      "payload": {
+        "out_order_sn": "2024022120200772347024",
+        "timestamp": "1715592615713",
+        "nonce_str": "00000000000000000000000000000004",
+        "sign": "7b6a991441181b1004621c434d3c68a15a27663c32a07573a10b76f969a7930a"
+      },
+      "stringA": "nonce_str=00000000000000000000000000000004,out_order_sn=2024022120200772347024,timestamp=1715592615713",
+      "expectedSign": "7b6a991441181b1004621c434d3c68a15a27663c32a07573a10b76f969a7930a"
+    },
+    {
+      "operation": "ORDER_CALLBACK",
+      "payload": {
+        "order_id": "2024051410460831111495",
+        "out_order_sn": "2024022120200772347024",
+        "total_price": 1950,
+        "type": "1",
+        "total_settle_price": 1900,
+        "timestamp": "1715592615713",
+        "nonce_str": "00000000000000000000000000000005",
+        "order_status": "12",
+        "account": "13423456789",
+        "sign": "f0a73eaa0ec4048fd85317a7459b4d06712feca269af1e030f5c28afd36b3130",
+        "keyId": "demo-key-20261015-001"
+      },
+      "stringA": "account=13423456789,keyId=demo-key-20261015-001,nonce_str=00000000000000000000000000000005,order_id=2024051410460831111495,order_status=12,out_order_sn=2024022120200772347024,timestamp=1715592615713,total_price=1950,total_settle_price=1900,type=1",
+      "expectedSign": "f0a73eaa0ec4048fd85317a7459b4d06712feca269af1e030f5c28afd36b3130"
+    },
+    {
+      "operation": "WRITEOFF_CALLBACK",
+      "payload": {
+        "order_id": "2024051410460831111495",
+        "out_order_sn": "2024022120200772347024",
+        "timestamp": "1715592615713",
+        "nonce_str": "00000000000000000000000000000006",
+        "account": "13423456789",
+        "use_time": "2025-11-01 10:05:30",
+        "state_type": "2",
+        "use_state": "2",
+        "invalid_time": "",
+        "sign": "f70181a433e0acb9dfce122729f106f1b0d6db6139e811ec23c69e3877cdcb9a",
+        "keyId": "demo-key-20261015-001"
+      },
+      "stringA": "account=13423456789,invalid_time=,keyId=demo-key-20261015-001,nonce_str=00000000000000000000000000000006,order_id=2024051410460831111495,out_order_sn=2024022120200772347024,state_type=2,timestamp=1715592615713,use_state=2,use_time=2025-11-01 10:05:30",
+      "expectedSign": "f70181a433e0acb9dfce122729f106f1b0d6db6139e811ec23c69e3877cdcb9a"
+    }
+  ]
+}

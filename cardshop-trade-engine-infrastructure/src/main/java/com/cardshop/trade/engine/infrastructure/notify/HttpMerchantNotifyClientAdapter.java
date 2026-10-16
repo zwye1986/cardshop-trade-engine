@@ -13,6 +13,11 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.function.Supplier;
+import java.util.Map;
+import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort;
+import com.cardshop.trade.engine.application.v1.crypto.V12MessageSignatures;
+import com.fasterxml.jackson.core.type.TypeReference;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,11 +42,18 @@ public class HttpMerchantNotifyClientAdapter implements MerchantNotifyClientPort
     private static final String LOG_EVENT_HTTP_EXCEPTION = "merchant-notify.http.exception";
 
     private final HttpClient httpClient;
+    private final Supplier<V12SigningCredentialStorePort> credentialStore;
     private final ObjectMapper objectMapper;
     private final Duration timeout;
     private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
     public HttpMerchantNotifyClientAdapter(HttpClient httpClient, ObjectMapper objectMapper, Duration timeout) {
+        this(httpClient,objectMapper,timeout,() -> null);
+    }
+
+    public HttpMerchantNotifyClientAdapter(HttpClient httpClient, ObjectMapper objectMapper, Duration timeout,
+                                           Supplier<V12SigningCredentialStorePort> credentialStore) {
+        this.credentialStore = credentialStore;
         this.httpClient = Objects.requireNonNull(httpClient, "httpClient must not be null");
         this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper must not be null");
         this.timeout = timeout == null || timeout.isZero() || timeout.isNegative() ? DEFAULT_TIMEOUT : timeout;
@@ -57,6 +69,23 @@ public class HttpMerchantNotifyClientAdapter implements MerchantNotifyClientPort
             return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "blank notify_url");
         }
         try {
+            // 对应详细设计3.1：正常重试不重签，但每次发送必须重新确认未撤销和订单绑定。
+            var store = credentialStore.get();
+            if (store == null || request.orgCode() == null || request.orderId() == null) {
+                return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "V1.2 signing binding unavailable");
+            }
+            var credential = store.findForOrder(request.orgCode(),request.orderId());
+            if (credential.isEmpty()) {
+                return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "V1.2 signing key revoked or missing");
+            }
+            Map<String,Object> payload = objectMapper.readValue(request.payload(),new TypeReference<>() {});
+            var operation = payload.containsKey("order_status") ? V12MessageSignatures.Operation.ORDER_CALLBACK
+                    : V12MessageSignatures.Operation.WRITEOFF_CALLBACK;
+            if (!request.orderId().equals(payload.get("order_id"))
+                    || !V12MessageSignatures.verifyCallback(operation,payload,request.outOrderSn(),
+                    credential.get().keyId(),credential.get().signKey())) {
+                return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "V1.2 callback signature or binding mismatch");
+            }
             HttpRequest httpRequest = HttpRequest.newBuilder(URI.create(request.notifyUrl()))
                     .timeout(timeout)
                     .header(HEADER_CONTENT_TYPE, CONTENT_TYPE_JSON)

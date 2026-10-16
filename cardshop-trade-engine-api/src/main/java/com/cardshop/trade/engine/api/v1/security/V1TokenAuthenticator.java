@@ -20,6 +20,8 @@ import java.time.Clock;
 import java.util.Base64;
 import java.util.Map;
 import java.util.Optional;
+import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential;
+import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort;
 
 /**
  * 原卡管 `/v1/cardapi` JWT Token 兼容解析器。
@@ -42,11 +44,14 @@ public class V1TokenAuthenticator {
     private final V1TokenSettings settings;
     private final Clock clock;
     private final Optional<V1TokenStorePort> tokenStorePort;
+    private final Optional<V12SigningCredentialStorePort> credentialStore;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
-    public V1TokenAuthenticator(V1TokenSettings settings, ObjectProvider<V1TokenStorePort> tokenStorePort) {
-        this(settings, Clock.systemUTC(), Optional.ofNullable(tokenStorePort.getIfAvailable()));
+    public V1TokenAuthenticator(V1TokenSettings settings, ObjectProvider<V1TokenStorePort> tokenStorePort,
+                                ObjectProvider<V12SigningCredentialStorePort> credentialStore) {
+        this(settings, Clock.systemUTC(), Optional.ofNullable(tokenStorePort.getIfAvailable()),
+                Optional.ofNullable(credentialStore.getIfAvailable()));
     }
 
     V1TokenAuthenticator(V1TokenSettings settings, Clock clock) {
@@ -54,6 +59,12 @@ public class V1TokenAuthenticator {
     }
 
     public V1TokenAuthenticator(V1TokenSettings settings, Clock clock, Optional<V1TokenStorePort> tokenStorePort) {
+        this(settings,clock,tokenStorePort,Optional.empty());
+    }
+
+    public V1TokenAuthenticator(V1TokenSettings settings, Clock clock, Optional<V1TokenStorePort> tokenStorePort,
+                                Optional<V12SigningCredentialStorePort> credentialStore) {
+        this.credentialStore = credentialStore;
         this.settings = settings;
         this.clock = clock;
         this.tokenStorePort = tokenStorePort == null ? Optional.empty() : tokenStorePort;
@@ -93,15 +104,20 @@ public class V1TokenAuthenticator {
             if (!StringUtils.hasText(appId)) {
                 return Optional.empty();
             }
-            if (tokenStorePort.isPresent()
-                    && tokenStorePort.get().findIssuedToken(appId).filter(token::equals).isEmpty()) {
+            if (tokenStorePort.isEmpty() || credentialStore.isEmpty()
+                    || tokenStorePort.get().findIssuedToken(appId).filter(token::equals).isEmpty()) {
                 return Optional.empty();
             }
             String orgCode = optionalText(payload.get("orgCode"));
             if (!StringUtils.hasText(orgCode)) {
                 orgCode = optionalText(payload.get("org_code"));
             }
-            return Optional.of(new AuthenticatedMerchant(appId, orgCode));
+            String keyId = optionalText(payload.get("keyId"));
+            if (!StringUtils.hasText(orgCode) || !StringUtils.hasText(keyId)) return Optional.empty();
+            Optional<V12SigningCredential> credential = credentialStore.get().findActive(appId,orgCode,keyId)
+                    .filter(key -> key.validForRequestAt(clock.instant()));
+            if (credential.isEmpty()) return Optional.empty();
+            return Optional.of(new AuthenticatedMerchant(appId, orgCode, credential.get()));
         } catch (Exception ex) {
             LogDecision decision = LOG_STORM_GUARD.shouldLog(LOG_EVENT_TOKEN_PARSE_FAILED);
             if (decision.shouldLog()) {
@@ -119,7 +135,7 @@ public class V1TokenAuthenticator {
         long now = clock.instant().getEpochSecond();
         long skewSeconds = settings.clockSkew().toSeconds();
         Long exp = longValue(payload.get("exp"));
-        if (exp != null && exp + skewSeconds < now) {
+        if (exp == null || exp <= now) {
             return false;
         }
         Long nbf = longValue(payload.get("nbf"));

@@ -21,21 +21,28 @@ public final class A39BusinessScenarioRunner {
     private static final String ASYNC_PROCESSING_CODE = "510";
     private static final List<String> TERMINAL_ORDER_STATUSES = List.of("6", "11", "12");
 
+    private final java.util.function.BiConsumer<String, Credentials> callbackBinding;
     private final V1CardApiClient client;
-    private final V1Sm3Signer signer;
+    private final V12Signer signer;
     private final Duration queryIntervalOverride;
     private final Consumer<String> logSink;
 
-    public A39BusinessScenarioRunner(V1CardApiClient client, V1Sm3Signer signer, Duration queryIntervalOverride) {
+    public A39BusinessScenarioRunner(V1CardApiClient client, V12Signer signer, Duration queryIntervalOverride) {
         this(client, signer, queryIntervalOverride, ignored -> {
         });
     }
 
     public A39BusinessScenarioRunner(
             V1CardApiClient client,
-            V1Sm3Signer signer,
+            V12Signer signer,
             Duration queryIntervalOverride,
             Consumer<String> logSink) {
+        this(client, signer, queryIntervalOverride, logSink, (order, credential) -> { });
+    }
+
+    public A39BusinessScenarioRunner(V1CardApiClient client, V12Signer signer, Duration queryIntervalOverride,
+            Consumer<String> logSink, java.util.function.BiConsumer<String, Credentials> callbackBinding) {
+        this.callbackBinding = Objects.requireNonNull(callbackBinding);
         this.client = Objects.requireNonNull(client, "client must not be null");
         this.signer = Objects.requireNonNull(signer, "signer must not be null");
         this.queryIntervalOverride = queryIntervalOverride;
@@ -44,10 +51,11 @@ public final class A39BusinessScenarioRunner {
 
     public ScenarioResult run(A39SimulatorOptions options) throws Exception {
         Objects.requireNonNull(options, "options must not be null");
-        String token = client.getToken(options.appId(), options.appSecret());
-        Map<String, Object> createPayload = createPayload(options);
+        Credentials token = client.getToken(options.appId(), options.appSecret());
+        Map<String, Object> createPayload = createPayload(options, token.signKey());
+        callbackBinding.accept(options.outOrderSn(), token);
         V1CardApiClient.ApiResponse createResponse = client.createRechargeOrder(
-                token,
+                token.token(),
                 createPayload,
                 options.requestSm4Enabled(),
                 options.aesKey());
@@ -57,8 +65,8 @@ public final class A39BusinessScenarioRunner {
             for (int attempt = 0; attempt < options.queryAttempts(); attempt++) {
                 sleepBeforeNextQuery(attempt, options.queryInterval());
                 V1CardApiClient.ApiResponse queryResponse = client.getRechargeOrder(
-                        token,
-                        queryPayload(options),
+                        token.token(),
+                        queryPayload(options, token.signKey()),
                         options.requestSm4Enabled(),
                         options.aesKey());
                 queryResponses.add(queryResponse);
@@ -71,7 +79,7 @@ public final class A39BusinessScenarioRunner {
         return new ScenarioResult(createResponse, queryResponses);
     }
 
-    Map<String, Object> createPayload(A39SimulatorOptions options) {
+    Map<String, Object> createPayload(A39SimulatorOptions options, String signKey) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("product_id", options.productId());
         payload.put("out_order_sn", options.outOrderSn());
@@ -82,16 +90,16 @@ public final class A39BusinessScenarioRunner {
         payload.put("num", options.num());
         payload.put("order_price", options.orderPrice());
         payload.put("product_type", options.productType());
-        payload.put("sign", signer.signCreateOrder(payload, options.aesKey()).sign());
+        payload.put("sign", signer.signCreateOrder(payload, signKey).sign());
         return payload;
     }
 
-    private Map<String, Object> queryPayload(A39SimulatorOptions options) {
+    private Map<String, Object> queryPayload(A39SimulatorOptions options, String signKey) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("out_order_sn", options.outOrderSn());
         payload.put("timestamp", String.valueOf(System.currentTimeMillis()));
         payload.put("nonce_str", A39SimulatorOptions.randomNonce());
-        payload.put("sign", signer.signQueryOrder(payload, options.aesKey()).sign());
+        payload.put("sign", signer.signQueryOrder(payload, signKey).sign());
         return payload;
     }
 

@@ -165,8 +165,8 @@ class A39BusinessSimulatorApplicationTest {
         }
 
         @Override
-        public String getToken(String appId, String appSecret) {
-            return "token";
+        public Credentials getToken(String appId, String appSecret) {
+            return new Credentials("token", "test-key", TestKeys.KEY);
         }
 
         @Override
@@ -189,7 +189,7 @@ class A39BusinessSimulatorApplicationTest {
         private int queryCount;
 
         @Override
-        public String getToken(String appId, String appSecret) {
+        public Credentials getToken(String appId, String appSecret) {
             throw new IllegalStateException("token service unavailable");
         }
 

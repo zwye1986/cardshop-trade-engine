@@ -9,7 +9,7 @@ package com.cardshop.trade.engine.application.v1;
  *
  * @param appId 商户应用 ID
  * @param orgCode 商户机构编码
- * @param aesKey 兼容旧系统的 SM4/SM3 密钥，日志禁止输出
+ * @param aesKey 兼容旧系统的 SM4加密密钥（V1.2不参与签名），日志禁止输出
  * @param enabled 商户是否启用
  * @param configVersion 商户配置版本，用于 Redis Lua 防止 TOCTOU
  */
@@ -19,4 +19,7 @@ public record V1MerchantProfile(
         String aesKey,
         boolean enabled,
         Long configVersion) {
+    @Override public String toString() {
+        return "V1MerchantProfile[appId=" + appId + ", orgCode=" + orgCode + ", aesKey=REDACTED]";
+    }
 }

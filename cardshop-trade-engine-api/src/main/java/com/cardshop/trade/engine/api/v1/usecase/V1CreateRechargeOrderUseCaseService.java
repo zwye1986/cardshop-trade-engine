@@ -515,6 +515,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 Map.entry("selected_product_id", command.selectedProductId()),
                 Map.entry("account", command.account()),
                 Map.entry("notify_url", command.notifyUrl()),
+                Map.entry("signing_key_id", command.signingKeyId()),
                 Map.entry("num", command.num()),
                 Map.entry("order_price", command.orderAmountCent()),
                 Map.entry("product_name", command.productName()),
@@ -559,19 +560,19 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
 
     private Preparation prepare(V1MerchantCommand command) {
         Optional<V1MerchantProfile> maybeMerchant = merchantProfilePort.findByAppIdAndOrgCode(command.appId(), command.orgCode());
-        if (maybeMerchant.isEmpty() || !StringUtils.hasText(maybeMerchant.get().aesKey())) {
+        if (maybeMerchant.isEmpty()) {
             log.warn("V1直充下单商户资料缺失 appId={}, orgCode={}", command.appId(), command.orgCode());
             return Preparation.error(V1CardApiResultStatus.AUTH_FAILED.result());
         }
 
         V1MerchantProfile merchant = maybeMerchant.get();
         /*
-         * 创建用例将 Controller 传入的 X-Load-Test 原值交给三参预检；查询/作废等用例仍走两参预检，不启用压测旁路。
+         * 历史X-Load-Test参数仅作调用兼容，V1.2在所有接口完整验签，不能跳过签名结果比对。
          * 参见详细设计「3. API/V1 接入层」。
          */
         V1ProtocolPrecheckResult<V1RechargeCreateOrderRequest> precheck = precheckService.precheckCreate(
                 command.rawBody(),
-                new V1MerchantSecurityProfile(merchant.appId(), merchant.orgCode(), merchant.aesKey()),
+                new V1MerchantSecurityProfile(merchant.appId(), merchant.orgCode(), merchant.aesKey(), command.signingCredential()),
                 command.loadTestHeader());
         if (!precheck.valid()) {
             return Preparation.error(protocolFailure(precheck.reason()));
@@ -643,7 +644,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 productSelection.cacheFingerprint(),
                 productSelection.productSnapshotAvailable(),
                 now,
-                now + settings.firstPersistRetryDelay().toMillis());
+                now + settings.firstPersistRetryDelay().toMillis(),
+                command.signingCredential().keyId());
         return Preparation.ready(acceptCommand, request.outOrderSn());
     }
 

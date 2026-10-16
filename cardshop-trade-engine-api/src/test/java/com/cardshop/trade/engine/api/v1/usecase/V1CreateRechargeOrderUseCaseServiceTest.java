@@ -3,7 +3,7 @@ package com.cardshop.trade.engine.api.v1.usecase;
 import com.cardshop.trade.engine.api.v1.codec.V1RequestBodyCodec;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolSettings;
-import com.cardshop.trade.engine.api.v1.security.V1Sm3SignatureVerifier;
+import com.cardshop.trade.engine.api.v1.security.V12SignatureVerifier;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampSettings;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampValidator;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecord;
@@ -73,7 +73,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
     private final V1CreateRechargeOrderUseCaseService service = new V1CreateRechargeOrderUseCaseService(
             precheckService(),
             new RequestHashCanonicalizer(),
-            (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+            (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
             (orgCode, productId, account) -> V1ProductSelection.passed(
                     productId,
                     "73301289",
@@ -105,7 +105,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 1L);
 
         V1CardApiResult result = service.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-1001", "nonce-12345678901234567890123456", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-1001", "nonce-12345678901234567890123456", 1)))
                 .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("200");
@@ -117,6 +117,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 .containsEntry("out_order_sn", "OUT-1001");
         assertThat(acceptPort.lastCommand).isNotNull();
         assertThat(acceptPort.lastCommand.orgCode()).isEqualTo("A36");
+        assertThat(acceptPort.lastCommand.signingKeyId()).isEqualTo("test-key");
         assertThat(acceptPort.lastCommand.productId()).isEqualTo("73301280");
         assertThat(acceptPort.lastCommand.selectedProductId()).isEqualTo("73301289");
         assertThat(acceptPort.lastCommand.orderAmountCent()).isEqualTo(5200L);
@@ -133,7 +134,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         String rawBody = validRawBody("OUT-1002", "nonce-12345678901234567890123457", 1)
                 .replaceFirst("\"sign\"\\s*:\\s*\"[0-9a-f]+\"", "\"sign\": \"bad-sign\"");
 
-        V1CardApiResult result = service.createRechargeOrder(new V1MerchantCommand("app-gray", "A36", rawBody))
+        V1CardApiResult result = service.createRechargeOrder(com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", rawBody))
                 .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("501");
@@ -149,7 +150,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         logger.addAppender(appender);
         try {
             V1CardApiResult result = service.createRechargeOrder(
-                            new V1MerchantCommand(
+                            com.cardshop.trade.engine.api.v1.V12TestCredentials.command(
                                     "app-gray",
                                     "A36",
                                     rawBody("OUT-BAD-NOTIFY", "nonce-12345678901234567890123447", 1, "http://[")))
@@ -181,7 +182,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 1L);
 
         V1CardApiResult result = service.createRechargeOrder(
-                        new V1MerchantCommand(
+                        com.cardshop.trade.engine.api.v1.V12TestCredentials.command(
                                 "app-gray",
                                 "A36",
                                 rawBody("OUT-NO-NOTIFY", "nonce-12345678901234567890123448", 1, "")))
@@ -207,7 +208,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 0L);
 
         V1CardApiResult result = service.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-1003", "nonce-12345678901234567890123458", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-1003", "nonce-12345678901234567890123458", 1)))
                 .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("505");
@@ -229,7 +230,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         V1CreateRechargeOrderUseCaseService localService = new V1CreateRechargeOrderUseCaseService(
                 precheckService(),
                 new RequestHashCanonicalizer(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, productId, account) -> V1ProductSelection.failed(
                         productId,
                         "PRODUCT_NO_PERMISSION",
@@ -242,7 +243,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 SYNC_EXECUTOR);
 
         V1CardApiResult result = localService.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-1004", "nonce-12345678901234567890123459", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-1004", "nonce-12345678901234567890123459", 1)))
                 .toCompletableFuture().join();
 
         assertThat(localAcceptPort.lastCommand).isNotNull();
@@ -269,7 +270,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         V1CreateRechargeOrderUseCaseService localService = new V1CreateRechargeOrderUseCaseService(
                 precheckService(),
                 new RequestHashCanonicalizer(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, productId, account) -> new V1ProductSelection(
                         productId,
                         "80100023",
@@ -293,7 +294,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 SYNC_EXECUTOR);
 
         localService.createRechargeOrder(
-                        new V1MerchantCommand("app-gray", "A36", validRawBody(
+                        com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody(
                                 "OUT-RESOLVED-FAIL",
                                 "nonce-12345678901234567890123460",
                                 1)))
@@ -311,7 +312,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         V1CreateRechargeOrderUseCaseService localService = new V1CreateRechargeOrderUseCaseService(
                 precheckService(),
                 new RequestHashCanonicalizer(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, productId, account) -> {
                     throw new V1ProductCacheUnavailableException("hard stale refresh failed");
                 },
@@ -323,7 +324,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 SYNC_EXECUTOR);
 
         V1CardApiResult result = localService.createRechargeOrder(
-                        new V1MerchantCommand("app-gray", "A36", validRawBody(
+                        com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody(
                                 "OUT-CACHE-HARD-STALE",
                                 "nonce-12345678901234567890123461",
                                 1)))
@@ -344,7 +345,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         V1CreateRechargeOrderUseCaseService localService = new V1CreateRechargeOrderUseCaseService(
                 precheckService(),
                 new RequestHashCanonicalizer(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, productId, account) -> V1ProductSelection.passed(
                         productId, "80100023", "MINISO", "名创直充100", "codekey",
                         1, 10000L, 10000L, 9000L, 1L),
@@ -356,7 +357,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 SYNC_EXECUTOR);
 
         V1CardApiResult result = localService.createRechargeOrder(
-                        new V1MerchantCommand("app-gray", "A36", validRawBody(
+                        com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody(
                                 "OUT-CACHE-REPAIR-FAIL",
                                 "nonce-12345678901234567890123462",
                                 1)))
@@ -383,7 +384,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, new RecordingReliabilityPort(), new RecordingPersistPublisher());
 
         V1CardApiResult result = localService.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-EMPTY-FAIL", "nonce-12345678901234567890123449", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-EMPTY-FAIL", "nonce-12345678901234567890123449", 1)))
                 .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("503");
@@ -402,7 +403,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         var localService = new V1CreateRechargeOrderUseCaseService(
                 precheckService(),
                 new RequestHashCanonicalizer(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, productId, account) -> V1ProductSelection.passed(
                         productId, productId, "TF_KA", "话费50元", "codekey", 1, 5200L, 5000L, 4900L, 11L),
                 localAcceptPort,
@@ -413,7 +414,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
 
         try {
             localService.createRechargeOrder(
-                    new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-ASYNC", "nonce-12345678901234567890123450", 1)))
+                    com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-ASYNC", "nonce-12345678901234567890123450", 1)))
                     .toCompletableFuture().join();
         } finally {
             realExecutor.shutdown();
@@ -434,7 +435,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher);
 
         V1CardApiResult result = localService.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-MQ-OFF", "nonce-12345678901234567890123451", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-MQ-OFF", "nonce-12345678901234567890123451", 1)))
                 .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("500");
@@ -459,7 +460,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 redisHaGuard);
 
         V1CardApiResult result = localService.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-REDIS-GUARD", "nonce-12345678901234567890123460", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-REDIS-GUARD", "nonce-12345678901234567890123460", 1)))
                 .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("500");
@@ -477,7 +478,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher);
 
         V1CardApiResult result = localService.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-RELIABLE", "nonce-12345678901234567890123452", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-RELIABLE", "nonce-12345678901234567890123452", 1)))
                 .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("200");
@@ -515,7 +516,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher);
 
         V1CardApiResult result = localService.createRechargeOrder(
-                        new V1MerchantCommand(
+                        com.cardshop.trade.engine.api.v1.V12TestCredentials.command(
                                 "app-gray",
                                 "A36",
                                 validRawBody("OUT-CONFIG-CHANGED", "nonce-12345678901234567890123461", 1)))
@@ -551,7 +552,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher);
 
         V1CardApiResult result = localService.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-FAIL", "nonce-12345678901234567890123453", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-WAIT-FAIL", "nonce-12345678901234567890123453", 1)))
                 .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("500");
@@ -579,7 +580,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 redisHaGuard);
 
         V1CardApiResult result = localService.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-UNKNOWN", "nonce-12345678901234567890123455", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-WAIT-UNKNOWN", "nonce-12345678901234567890123455", 1)))
                 .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("500");
@@ -611,7 +612,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher, anomalyPort);
 
         V1CardApiResult result = localService.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-RECORD-FAIL", "nonce-12345678901234567890123456", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-WAIT-RECORD-FAIL", "nonce-12345678901234567890123456", 1)))
                 .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("500");
@@ -637,7 +638,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 dbExecutor);
 
         CompletableFuture<V1CardApiResult> response = localService.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-NO-BLOCK", "nonce-12345678901234567890123458", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-WAIT-NO-BLOCK", "nonce-12345678901234567890123458", 1)))
                 .toCompletableFuture();
 
         V1CardApiResult result = response.get(200, TimeUnit.MILLISECONDS);
@@ -670,7 +671,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher, anomalyPort);
 
         localService.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-NO-ORDER-ID", "nonce-12345678901234567890123459", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-WAIT-NO-ORDER-ID", "nonce-12345678901234567890123459", 1)))
                 .toCompletableFuture().join();
 
         assertThat(anomalyPort.lastRecord).isNotNull();
@@ -700,7 +701,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
 
         try {
             V1CardApiResult result = localService.createRechargeOrder(
-                    new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-WAIT-THREAD", "nonce-12345678901234567890123457", 1)))
+                    com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-WAIT-THREAD", "nonce-12345678901234567890123457", 1)))
                     .toCompletableFuture().join();
 
             assertThat(result.msg()).isEqualTo("系统繁忙，请稍后查询订单状态");
@@ -723,7 +724,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         V1CreateRechargeOrderUseCaseService localService = service(localAcceptPort, reliabilityPort, publisher);
 
         V1CardApiResult result = localService.createRechargeOrder(
-                new V1MerchantCommand("app-gray", "A36", validRawBody("OUT-MQ-NACK", "nonce-12345678901234567890123454", 1)))
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-MQ-NACK", "nonce-12345678901234567890123454", 1)))
                 .toCompletableFuture().join();
 
         assertThat(result.code()).isEqualTo("500");
@@ -737,7 +738,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         return new V1ProtocolPrecheckService(
                 new V1RequestBodyCodec(),
                 new V1TimestampValidator(new V1TimestampSettings(Duration.ofSeconds(300)), CLOCK),
-                new V1Sm3SignatureVerifier(),
+                new V12SignatureVerifier(),
                 new V1ProtocolSettings(false));
     }
 
@@ -784,7 +785,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         return new V1CreateRechargeOrderUseCaseService(
                 precheckService(),
                 new RequestHashCanonicalizer(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, productId, account) -> V1ProductSelection.passed(
                         productId,
                         productId,
@@ -812,9 +813,9 @@ class V1CreateRechargeOrderUseCaseServiceTest {
     }
 
     private static String rawBody(String outOrderSn, String nonceStr, int num, String notifyUrl) {
-        String signSource = "account=18186222336,aesKey=AES-KEY,nonce_str=%s,notify_url=%s,num=%d,"
+        String signSource = "account=18186222336,nonce_str=%s,notify_url=%s,num=%d,"
                 + "out_order_sn=%s,product_id=73301280,timestamp=1783224958";
-        String sign = new V1Sm3SignatureVerifier().digestHex(signSource.formatted(nonceStr, notifyUrl, num, outOrderSn));
+        String sign = com.cardshop.trade.engine.api.v1.V12TestCredentials.signSource(signSource.formatted(nonceStr, notifyUrl, num, outOrderSn));
         return """
                 {
                   "product_id": "73301280",

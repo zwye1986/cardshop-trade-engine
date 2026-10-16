@@ -29,6 +29,13 @@ class PersistRechargeOrderConsumerServiceTest {
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-07-07T01:30:00Z"), ZoneOffset.UTC);
 
     @Test
+    void mqFallbackSnapshotPreservesOrderKeyBindingThroughPersistenceCommand() {
+        var snapshot = PersistOrderSnapshot.fromInitialSnapshot(message(1L));
+        assertThat(snapshot.signingKeyId()).isEqualTo("bound-key");
+        assertThat(snapshot.toAcceptCommand(1000L, 2000L).signingKeyId()).isEqualTo("bound-key");
+    }
+
+    @Test
     void persistsMqInitialSnapshotAndMarksRedisAfterMysqlCommit() {
         RecordingSnapshotPort snapshotPort = new RecordingSnapshotPort(Optional.empty());
         RecordingPersistencePort persistencePort = new RecordingPersistencePort();
@@ -580,6 +587,7 @@ class PersistRechargeOrderConsumerServiceTest {
                         Map.entry("order_id", orderId),
                         Map.entry("org_code", "A36"),
                         Map.entry("app_id", "app-gray"),
+                        Map.entry("signing_key_id", "bound-key"),
                         Map.entry("out_order_sn", outOrderSn),
                         Map.entry("product_id", "PARENT-100"),
                         Map.entry("selected_product_id", "SKU-100"),
@@ -619,6 +627,7 @@ class PersistRechargeOrderConsumerServiceTest {
                         Map.entry("order_id", "ORDER-1001"),
                         Map.entry("org_code", "A36"),
                         Map.entry("app_id", "app-gray"),
+                        Map.entry("signing_key_id", "bound-key"),
                         Map.entry("out_order_sn", "OUT-1001"),
                         Map.entry("product_id", "PARENT-100"),
                         Map.entry("selected_product_id", "SKU-100"),

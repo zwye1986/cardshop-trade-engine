@@ -6,7 +6,7 @@ import com.cardshop.trade.engine.api.v1.codec.V1RequestBodyCodec;
 import com.cardshop.trade.engine.api.v1.dto.V1RechargeOrderResponse;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolSettings;
-import com.cardshop.trade.engine.api.v1.security.V1Sm3SignatureVerifier;
+import com.cardshop.trade.engine.api.v1.security.V12SignatureVerifier;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampSettings;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampValidator;
 import com.cardshop.trade.engine.application.v1.RechargeOrderSnapshot;
@@ -39,7 +39,7 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
     void queryReturnsProcessingWhenRedisOrderIsStillPendingPersistence() {
         var service = new V1QueryRechargeOrderUseCaseService(
                 precheckService(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, outOrderSn) -> Optional.of(snapshot("ACCEPTED", "PERSIST_QUEUED", "PASSED", "", "")));
 
         V1CardApiResult result = service.queryRechargeOrder(command("OUT-QUERY-1", "nonce-query-12345678901234567890"));
@@ -54,7 +54,7 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
     void queryReturnsFailedWhenRedisSnapshotContainsValidationFailure() {
         var service = new V1QueryRechargeOrderUseCaseService(
                 precheckService(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, outOrderSn) -> Optional.of(snapshot(
                         "VALIDATION_FAILED",
                         "PENDING_MQ",
@@ -74,7 +74,7 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
     void queryReturnsSuccessWhenRedisSnapshotContainsTerminalSuccess() {
         var service = new V1QueryRechargeOrderUseCaseService(
                 precheckService(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, outOrderSn) -> Optional.of(snapshot("SUCCESS", "DB_PERSISTED", "PASSED", "", "")));
 
         V1CardApiResult result = service.queryRechargeOrder(command("OUT-QUERY-3", "nonce-query-42345678901234567890"));
@@ -89,7 +89,7 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
     void queryReturnsRechargingWhenRedisSnapshotContainsSupplierAccepted() {
         var service = new V1QueryRechargeOrderUseCaseService(
                 precheckService(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, outOrderSn) -> Optional.of(snapshot("SUPPLIER_ACCEPTED", "DB_PERSISTED", "PASSED", "", "")));
 
         V1CardApiResult result = service.queryRechargeOrder(command("OUT-QUERY-4", "nonce-query-52345678901234567890"));
@@ -104,7 +104,7 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
     void queryReturnsRefundedWhenRedisSnapshotContainsRefunded() {
         var service = new V1QueryRechargeOrderUseCaseService(
                 precheckService(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, outOrderSn) -> Optional.of(snapshot("REFUNDED", "DB_PERSISTED", "PASSED", "", "")));
 
         V1CardApiResult result = service.queryRechargeOrder(command("OUT-QUERY-5", "nonce-query-62345678901234567890"));
@@ -120,7 +120,7 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
         RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort();
         var service = new V1InvalidRechargeOrderUseCaseService(
                 precheckService(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, outOrderSn) -> Optional.of(snapshot("ACCEPTED", "PENDING_MQ", "PASSED", "", "")),
                 invalidOutboxPort);
 
@@ -138,7 +138,7 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
         RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort();
         var service = new V1InvalidRechargeOrderUseCaseService(
                 precheckService(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, outOrderSn) -> Optional.of(snapshot("SUPPLIER_ACCEPTED", "DB_PERSISTED", "PASSED", "", "")),
                 invalidOutboxPort);
 
@@ -160,7 +160,7 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
     void queryReturnsNotFoundWhenOrderSnapshotDoesNotExist() {
         var service = new V1QueryRechargeOrderUseCaseService(
                 precheckService(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, outOrderSn) -> Optional.empty());
 
         V1CardApiResult result = service.queryRechargeOrder(command("OUT-MISSING", "nonce-query-32345678901234567890"));
@@ -174,13 +174,13 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
         return new V1ProtocolPrecheckService(
                 new V1RequestBodyCodec(),
                 new V1TimestampValidator(new V1TimestampSettings(Duration.ofSeconds(300)), CLOCK),
-                new V1Sm3SignatureVerifier(),
+                new V12SignatureVerifier(),
                 new V1ProtocolSettings(false));
     }
 
     private static V1MerchantCommand command(String outOrderSn, String nonceStr) {
-        String signSource = "aesKey=AES-KEY,nonce_str=%s,out_order_sn=%s,timestamp=1783224958";
-        String sign = new V1Sm3SignatureVerifier().digestHex(signSource.formatted(nonceStr, outOrderSn));
+        String signSource = "nonce_str=%s,out_order_sn=%s,timestamp=1783224958";
+        String sign = com.cardshop.trade.engine.api.v1.V12TestCredentials.signSource(signSource.formatted(nonceStr, outOrderSn));
         String rawBody = """
                 {
                   "out_order_sn": "%s",
@@ -189,7 +189,7 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
                   "sign": "%s"
                 }
                 """.formatted(outOrderSn, nonceStr, sign);
-        return new V1MerchantCommand("app-gray", "A36", rawBody);
+        return com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", rawBody);
     }
 
     private static RechargeOrderSnapshot snapshot(

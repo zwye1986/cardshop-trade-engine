@@ -20,6 +20,7 @@ class RedisPersistOrderSnapshotAdapterTest {
                         Map.entry("order_id", "ORDER-1001"),
                         Map.entry("org_code", "A36"),
                         Map.entry("app_id", "app-gray"),
+                        Map.entry("signing_key_id", "bound-key"),
                         Map.entry("out_order_sn", "OUT-1001"),
                         Map.entry("product_id", "PARENT-100"),
                         Map.entry("selected_product_id", "SKU-100"),
@@ -50,6 +51,7 @@ class RedisPersistOrderSnapshotAdapterTest {
         var snapshot = adapter.findLatestSnapshot("A36", "OUT-1001", "ORDER-1001");
 
         assertThat(snapshot).isPresent();
+        assertThat(snapshot.get().signingKeyId()).isEqualTo("bound-key");
         assertThat(snapshot.get().orderId()).isEqualTo("ORDER-1001");
         assertThat(snapshot.get().productName()).isEqualTo("交行话费100元");
         assertThat(snapshot.get().orderVersion()).isEqualTo(2L);

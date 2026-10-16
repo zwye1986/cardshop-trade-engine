@@ -120,7 +120,7 @@ public final class A39BusinessSimulatorApplication {
     }
 
     static int run(A39SimulatorOptions options, V1CardApiClient client, Consumer<String> logSink) throws Exception {
-        V1Sm3Signer signer = new V1Sm3Signer();
+        V12Signer signer = new V12Signer();
         if (options.mode() == A39SimulatorMode.LOAD) {
             return runLoad(options, client, signer, logSink);
         }
@@ -130,7 +130,7 @@ public final class A39BusinessSimulatorApplication {
     private static int runLoad(
             A39SimulatorOptions options,
             V1CardApiClient client,
-            V1Sm3Signer signer,
+            V12Signer signer,
             Consumer<String> logSink) throws Exception {
         // load 模式只压创建订单入口；参见 docs/superpowers/specs/2026-07-15-a39-simulator-load-test-design.md。
         logSink.accept("A39 simulator starting: " + options.sanitizedSummary());
@@ -149,12 +149,11 @@ public final class A39BusinessSimulatorApplication {
     private static int runScenario(
             A39SimulatorOptions options,
             V1CardApiClient client,
-            V1Sm3Signer signer,
+            V12Signer signer,
             Consumer<String> logSink) throws Exception {
         try (A39CallbackServer callbackServer = A39CallbackServer.start(
                 options.callbackBindHost(),
                 options.callbackPort(),
-                options.aesKey(),
                 signer)) {
             logSink.accept("A39 simulator starting: " + options.sanitizedSummary());
             logSink.accept("Callback server listening: " + callbackServer.callbackUrl("/callback/order"));
@@ -166,7 +165,7 @@ public final class A39BusinessSimulatorApplication {
                     client,
                     signer,
                     null,
-                    logSink);
+                    logSink, callbackServer::bindOrder);
             A39BusinessScenarioRunner.ScenarioResult result = runner.run(options);
             logSink.accept("Create response: code=%s, msg=%s".formatted(
                     result.createResponse().code(),

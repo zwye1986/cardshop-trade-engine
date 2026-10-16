@@ -1,81 +1,78 @@
 package com.cardshop.trade.engine.application.recharge;
 
-import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
-import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential;
+import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort;
+import com.cardshop.trade.engine.application.v1.crypto.V12MessageSignatures;
+
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Objects;
-import java.util.TreeMap;
 import org.bouncycastle.crypto.digests.SM3Digest;
 
 /**
- * V1 商户回调 SM3 签名器。
- *
- * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。签名串沿用旧 V1
- * 协议的 ASCII 升序 {@code key=value,key=value} 规则，内部加入商户 {@code aesKey}，但响应 JSON
- * 只输出业务字段和 {@code sign}。
+ * V1.2商户回调签名器；对应docs/交行直充业务系统详细设计.md「3.1」「9.3 回调设计」。
+ * 只按订单持久化keyId加载未撤销历史密钥，不使用最新token密钥，不读取aesKey。
+ * 对外字段采用协议下划线命名；空字符串仍参与认证，keyId与业务字段共同签名。
  */
 public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigner {
 
     private static final String SIGN_FIELD = "sign";
-    private static final String AES_KEY_FIELD = "aesKey";
     private static final String WRITE_OFF_NONCE_STATUS = "writeoff";
     private static final String WRITE_OFF_STATE_TYPE = "1";
     private static final String WRITE_OFF_USE_STATE_CANCELLED = "2";
     private static final int NONCE_HEX_LENGTH = 32;
-    private static final int SIGN_SOURCE_INITIAL_CAPACITY = 128;
+    private static final String RECHARGE_TYPE = "1";
+    private static final java.time.format.DateTimeFormatter CALLBACK_TIME = java.time.format.DateTimeFormatter
+            .ofPattern("yyyy-MM-dd HH:mm:ss").withZone(java.time.ZoneId.of("Asia/Shanghai"));
 
-    private final V1MerchantProfilePort merchantProfilePort;
+    private final V12SigningCredentialStorePort credentialStore;
 
-    public V1MerchantNotifyPayloadSigner(V1MerchantProfilePort merchantProfilePort) {
-        this.merchantProfilePort = Objects.requireNonNull(merchantProfilePort, "merchantProfilePort must not be null");
+    public V1MerchantNotifyPayloadSigner(V12SigningCredentialStorePort credentialStore) {
+        this.credentialStore = Objects.requireNonNull(credentialStore);
     }
 
     @Override
     public Map<String, String> signOrderStatus(RechargeFulfillmentOrder order, String orderStatus, Instant now) {
-        V1MerchantProfile merchant = merchant(order.orgCode());
+        V12SigningCredential credential = credentialStore.findForOrder(order.orgCode(),order.orderId())
+                .orElseThrow(() -> new IllegalStateException("order signing binding missing or revoked"));
         String timestamp = String.valueOf(now.getEpochSecond());
         String nonce = nonce(order.orderId(), orderStatus, timestamp);
         Map<String, String> payload = orderedPayload();
-        payload.put("orderId", normalize(order.orderId()));
-        payload.put("outOrderSn", normalize(order.outOrderSn()));
-        payload.put("totalPrice", String.valueOf(order.orderPrice()));
-        payload.put("type", "");
-        payload.put("totalSettlePrice", String.valueOf(order.orderPrice()));
+        payload.put("order_id", normalize(order.orderId()));
+        payload.put("out_order_sn", normalize(order.outOrderSn()));
+        payload.put("total_price", String.valueOf(order.orderPrice()));
+        payload.put("type", RECHARGE_TYPE);
+        payload.put("total_settle_price", String.valueOf(order.orderPrice()));
         payload.put("timestamp", timestamp);
-        payload.put("nonceStr", nonce);
-        payload.put("orderStatus", normalize(orderStatus));
+        payload.put("nonce_str", nonce);
+        payload.put("order_status", normalize(orderStatus));
         payload.put("account", normalize(order.account()));
-        payload.put(SIGN_FIELD, sign(payload, merchant.aesKey()));
+        payload.put("keyId", credential.keyId());
+        payload.put(SIGN_FIELD, V12MessageSignatures.sign(V12MessageSignatures.Operation.ORDER_CALLBACK, payload, credential.signKey()));
         return payload;
     }
 
     @Override
     public Map<String, String> signWriteOff(RechargeFulfillmentOrder order, Instant invalidTime) {
-        V1MerchantProfile merchant = merchant(order.orgCode());
+        V12SigningCredential credential = credentialStore.findForOrder(order.orgCode(),order.orderId())
+                .orElseThrow(() -> new IllegalStateException("order signing binding missing or revoked"));
         String timestamp = String.valueOf(invalidTime.getEpochSecond());
         String nonce = nonce(order.orderId(), WRITE_OFF_NONCE_STATUS, timestamp);
         Map<String, String> payload = orderedPayload();
-        payload.put("orderId", normalize(order.orderId()));
-        payload.put("outOrderSn", normalize(order.outOrderSn()));
+        payload.put("order_id", normalize(order.orderId()));
+        payload.put("out_order_sn", normalize(order.outOrderSn()));
         payload.put("timestamp", timestamp);
-        payload.put("nonceStr", nonce);
+        payload.put("nonce_str", nonce);
         payload.put("account", normalize(order.account()));
-        payload.put("useTime", "");
-        payload.put("stateType", WRITE_OFF_STATE_TYPE);
-        payload.put("useState", WRITE_OFF_USE_STATE_CANCELLED);
-        payload.put("invalidTime", timestamp);
-        payload.put(SIGN_FIELD, sign(payload, merchant.aesKey()));
+        payload.put("use_time", "");
+        payload.put("state_type", WRITE_OFF_STATE_TYPE);
+        payload.put("use_state", WRITE_OFF_USE_STATE_CANCELLED);
+        payload.put("invalid_time", CALLBACK_TIME.format(invalidTime));
+        payload.put("keyId", credential.keyId());
+        payload.put(SIGN_FIELD, V12MessageSignatures.sign(V12MessageSignatures.Operation.WRITEOFF_CALLBACK, payload, credential.signKey()));
         return payload;
-    }
-
-    private V1MerchantProfile merchant(String orgCode) {
-        return merchantProfilePort.findByOrgCode(orgCode)
-                .filter(V1MerchantProfile::enabled)
-                .filter(profile -> profile.aesKey() != null && !profile.aesKey().isBlank())
-                .orElseThrow(() -> new IllegalStateException("merchant notify signing profile not found: orgCode=" + orgCode));
     }
 
     private static Map<String, String> orderedPayload() {
@@ -84,26 +81,6 @@ public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigne
 
     private static String nonce(String orderId, String bizStatus, String timestamp) {
         return digestHex(orderId + ":" + bizStatus + ":" + timestamp).substring(0, NONCE_HEX_LENGTH);
-    }
-
-    private static String sign(Map<String, String> payload, String aesKey) {
-        TreeMap<String, String> params = new TreeMap<>();
-        payload.forEach((key, value) -> {
-            if (!SIGN_FIELD.equals(key)) {
-                params.put(key, normalize(value));
-            }
-        });
-        params.put(AES_KEY_FIELD, normalize(aesKey));
-        return digestHex(source(params));
-    }
-
-    private static String source(Map<String, String> params) {
-        StringBuilder builder = new StringBuilder(SIGN_SOURCE_INITIAL_CAPACITY);
-        params.forEach((key, value) -> builder.append(key).append('=').append(value).append(','));
-        if (!builder.isEmpty()) {
-            builder.deleteCharAt(builder.length() - 1);
-        }
-        return builder.toString();
     }
 
     private static String digestHex(String source) {

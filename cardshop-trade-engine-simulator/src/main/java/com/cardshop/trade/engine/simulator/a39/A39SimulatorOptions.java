@@ -73,7 +73,8 @@ public record A39SimulatorOptions(
         baseUrl = requireText(baseUrl, "baseUrl");
         appId = requireText(appId, "appId");
         appSecret = requireText(appSecret, "appSecret");
-        aesKey = requireText(aesKey, "aesKey");
+        // V1.2明文测试不要求aesKey；请求签名只用getToken签发的signKey，见详细设计3.1。
+        aesKey = requestSm4Enabled ? requireText(aesKey, "aesKey") : Objects.toString(aesKey, "");
         productId = requireText(productId, "productId");
         account = requireText(account, "account");
         outOrderSn = requireText(outOrderSn, "outOrderSn");
@@ -214,6 +215,8 @@ public record A39SimulatorOptions(
                 A39 business simulator
 
                 Secret sources: prefer A39_APP_SECRET/A39_AES_KEY in config/a39-simulator.env; --app-secret/--aes-key are accepted for temporary local runs only.
+                V1.2 requires --base-url with a confirmed HTTPS endpoint; the historical HTTP default is rejected before sending.
+                aesKey is only required with --request-sm4 true; signing uses getToken.signKey.
                 Defaults: --base-url http://apitest.kalaiwang.com, --app-id A35cecjXS7lZ1W30NMN, --product-id 1011, --account 18186222336, --num 1, --product-type 1, --request-sm4 true
 
                 Common options:

@@ -5,7 +5,7 @@ import com.cardshop.trade.engine.api.v1.dto.V1RechargeCreateOrderRequest;
 import com.cardshop.trade.engine.api.v1.dto.V1RechargeOrderInvalidRequest;
 import com.cardshop.trade.engine.api.v1.dto.V1RechargeOrderQueryRequest;
 import com.cardshop.trade.engine.api.v1.security.V1SignatureVerifyResult;
-import com.cardshop.trade.engine.api.v1.security.V1Sm3SignatureVerifier;
+import com.cardshop.trade.engine.api.v1.security.V12SignatureVerifier;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampSettings;
 import com.cardshop.trade.engine.api.v1.security.V1TimestampValidator;
 import org.junit.jupiter.api.Test;
@@ -28,12 +28,12 @@ class V1ProtocolPrecheckServiceTest {
                     new V1TimestampSettings(Duration.ofSeconds(300)),
                     FIXED_CLOCK
             ),
-            new V1Sm3SignatureVerifier(),
+            new V12SignatureVerifier(),
             new V1ProtocolSettings(false)
     );
 
     private static V1ProtocolPrecheckService serviceWith(
-            V1Sm3SignatureVerifier signatureVerifier,
+            V12SignatureVerifier signatureVerifier,
             V1ProtocolSettings settings) {
         return new V1ProtocolPrecheckService(
                 new V1RequestBodyCodec(),
@@ -74,13 +74,13 @@ class V1ProtocolPrecheckServiceTest {
                   "num": 1,
                   "order_price": 5200,
                   "product_type": 1,
-                  "sign": "f5ddf1d6176455094137bd110d611af4c6437cde5df2445ee9ac6aa55f0030af"
+                  "sign": "8ebc766e26f42d7e212a542839d6e23d62909a701700b1c6db159862fc940cc4"
                 }
                 """;
 
         V1ProtocolPrecheckResult<V1RechargeCreateOrderRequest> result = service.precheckCreate(
                 rawBody,
-                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY")
+                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY", com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL)
         );
 
         assertThat(result.valid()).isTrue();
@@ -102,13 +102,13 @@ class V1ProtocolPrecheckServiceTest {
                   "num": 1,
                   "order_price": 5200,
                   "product_type": 1,
-                  "sign": "f5ddf1d6176455094137bd110d611af4c6437cde5df2445ee9ac6aa55f0030af"
+                  "sign": "8ebc766e26f42d7e212a542839d6e23d62909a701700b1c6db159862fc940cc4"
                 }
                 """;
 
         V1ProtocolPrecheckResult<V1RechargeCreateOrderRequest> result = service.precheckCreate(
                 rawBody,
-                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY")
+                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY", com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL)
         );
 
         assertThat(result.valid()).isFalse();
@@ -120,7 +120,7 @@ class V1ProtocolPrecheckServiceTest {
     void rejectsCreateRequestWhenSignatureIsInvalid() {
         V1ProtocolPrecheckResult<V1RechargeCreateOrderRequest> result = service.precheckCreate(
                 BAD_SIGN_CREATE_BODY,
-                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY")
+                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY", com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL)
         );
 
         assertThat(result.valid()).isFalse();
@@ -129,34 +129,33 @@ class V1ProtocolPrecheckServiceTest {
     }
 
     @Test
-    void bypassesCreateSignatureMismatchWhenLoadTestHeaderMatchesConfiguredToken() {
+    void rejectsCreateSignatureEvenWhenFormerBypassHeaderMatches() {
         V1ProtocolPrecheckService loadTestService = serviceWith(
-                new V1Sm3SignatureVerifier(),
+                new V12SignatureVerifier(),
                 new V1ProtocolSettings(false, "load-secret")
         );
 
         V1ProtocolPrecheckResult<V1RechargeCreateOrderRequest> result = loadTestService.precheckCreate(
                 BAD_SIGN_CREATE_BODY,
-                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY"),
+                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY", com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL),
                 "load-secret"
         );
 
-        assertThat(result.valid()).isTrue();
-        assertThat(result.reason()).isEqualTo("OK");
-        assertThat(result.payload()).isNotNull();
-        assertThat(result.payload().outOrderSn()).isEqualTo("OUT-1");
+        assertThat(result.valid()).isFalse();
+        assertThat(result.reason()).isEqualTo("SIGN_FAILED");
+        assertThat(result.payload()).isNull();
     }
 
     @Test
     void doesNotBypassCreateSignatureWhenLoadTestTokenBlank() {
         V1ProtocolPrecheckService loadTestService = serviceWith(
-                new V1Sm3SignatureVerifier(),
+                new V12SignatureVerifier(),
                 new V1ProtocolSettings(false, "")
         );
 
         V1ProtocolPrecheckResult<V1RechargeCreateOrderRequest> result = loadTestService.precheckCreate(
                 BAD_SIGN_CREATE_BODY,
-                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY"),
+                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY", com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL),
                 "load-secret"
         );
 
@@ -168,13 +167,13 @@ class V1ProtocolPrecheckServiceTest {
     @Test
     void doesNotBypassCreateSignatureWhenHeaderMismatches() {
         V1ProtocolPrecheckService loadTestService = serviceWith(
-                new V1Sm3SignatureVerifier(),
+                new V12SignatureVerifier(),
                 new V1ProtocolSettings(false, "load-secret")
         );
 
         V1ProtocolPrecheckResult<V1RechargeCreateOrderRequest> result = loadTestService.precheckCreate(
                 BAD_SIGN_CREATE_BODY,
-                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY"),
+                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY", com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL),
                 "wrong"
         );
 
@@ -184,7 +183,7 @@ class V1ProtocolPrecheckServiceTest {
     }
 
     @Test
-    void stillComputesSm3WhenBypassingSignatureMismatch() {
+    void stillVerifiesAndRejectsWithFormerBypassHeader() {
         CountingVerifier countingVerifier = new CountingVerifier();
         V1ProtocolPrecheckService loadTestService = serviceWith(
                 countingVerifier,
@@ -193,11 +192,11 @@ class V1ProtocolPrecheckServiceTest {
 
         V1ProtocolPrecheckResult<V1RechargeCreateOrderRequest> result = loadTestService.precheckCreate(
                 BAD_SIGN_CREATE_BODY,
-                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY"),
+                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY", com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL),
                 "load-secret"
         );
 
-        assertThat(result.valid()).isTrue();
+        assertThat(result.valid()).isFalse();
         assertThat(countingVerifier.createCalls).isEqualTo(1);
     }
 
@@ -215,7 +214,7 @@ class V1ProtocolPrecheckServiceTest {
 
         V1ProtocolPrecheckResult<V1RechargeOrderQueryRequest> result = service.precheckQuery(
                 rawBody,
-                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY")
+                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY", com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL)
         );
 
         assertThat(result.valid()).isTrue();
@@ -239,7 +238,7 @@ class V1ProtocolPrecheckServiceTest {
 
         V1ProtocolPrecheckResult<V1RechargeOrderInvalidRequest> result = service.precheckInvalid(
                 rawBody,
-                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY")
+                new V1MerchantSecurityProfile("app-gray", "A36", "AES-KEY", com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL)
         );
 
         assertThat(result.valid()).isTrue();
@@ -249,15 +248,15 @@ class V1ProtocolPrecheckServiceTest {
     }
 
     private static String signQueryLike(String outOrderSn, String nonceStr, String timestamp) {
-        String source = "aesKey=AES-KEY,nonce_str=%s,out_order_sn=%s,timestamp=%s"
+        String source = "nonce_str=%s,out_order_sn=%s,timestamp=%s"
                 .formatted(nonceStr, outOrderSn, timestamp);
-        return new V1Sm3SignatureVerifier().digestHex(source);
+        return com.cardshop.trade.engine.api.v1.V12TestCredentials.signSource(source);
     }
 
     /**
      * 计数创建订单验签调用次数，用于断言旁路仍执行 SM3。
      */
-    private static final class CountingVerifier extends V1Sm3SignatureVerifier {
+    private static final class CountingVerifier extends V12SignatureVerifier {
         private int createCalls;
 
         @Override

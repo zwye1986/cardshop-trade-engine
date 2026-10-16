@@ -12,7 +12,8 @@ package com.cardshop.trade.engine.application.v1;
  * @param rawBody 原始请求体，用于协议预校验、解密和验签
  * @param loadTestHeader 请求头 {@code X-Load-Test} 原值；空白表示未启用压测旁路
  */
-public record V1MerchantCommand(String appId, String orgCode, String rawBody, String loadTestHeader) {
+public record V1MerchantCommand(String appId, String orgCode, String rawBody, String loadTestHeader,
+        com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential signingCredential) {
 
     /**
      * 兼容既有三参构造；未携带压测头时视为未启用旁路。
@@ -21,6 +22,14 @@ public record V1MerchantCommand(String appId, String orgCode, String rawBody, St
      */
     public V1MerchantCommand(String appId, String orgCode, String rawBody) {
         this(appId, orgCode, rawBody, "");
+    }
+
+    public V1MerchantCommand(String appId,String orgCode,String rawBody,String loadTestHeader) {
+        this(appId,orgCode,rawBody,loadTestHeader,null);
+    }
+
+    @Override public String toString() {
+        return "V1MerchantCommand[appId=" + appId + ", orgCode=" + orgCode + ", body=REDACTED]";
     }
 
     public V1MerchantCommand {

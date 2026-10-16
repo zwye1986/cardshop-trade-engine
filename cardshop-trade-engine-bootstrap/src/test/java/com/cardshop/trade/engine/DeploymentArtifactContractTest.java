@@ -176,6 +176,7 @@ class DeploymentArtifactContractTest {
                   printf 'NACOS_PASSWORD=%s\\n' "${NACOS_PASSWORD:-}"
                   printf 'SPRING_RABBITMQ_PASSWORD=%s\\n' "${SPRING_RABBITMQ_PASSWORD:-}"
                   printf 'V1_CARDAPI_JWT_SECRET=%s\\n' "${V1_CARDAPI_JWT_SECRET:-}"
+                  printf 'V1_SIGNING_KEY_ENCRYPTION_KEY=%s\\n' "${V1_SIGNING_KEY_ENCRYPTION_KEY:-}"
                 } > "$JAVA_ENV_FILE"
                 while true; do sleep 1; done
                 """);
@@ -198,6 +199,7 @@ class DeploymentArtifactContractTest {
                 SPRING_RABBITMQ_VIRTUAL_HOST=cardshop-trade-dev
                 LEGACY_CARD_SHOP_BASE_URL=http://legacy.example
                 V1_CARDAPI_JWT_SECRET=jwt-secret-for-test
+                V1_SIGNING_KEY_ENCRYPTION_KEY=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
                 JAVA_ARGS_FILE='%s'
                 JAVA_ENV_FILE='%s'
                 """.formatted(fakeJdk, javaArgsFile, javaEnvFile));
@@ -213,6 +215,7 @@ class DeploymentArtifactContractTest {
                     .doesNotContain("secret-for-test")
                     .doesNotContain("rabbit-secret")
                     .doesNotContain("jwt-secret-for-test")
+                    .doesNotContain("AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
                     .doesNotContain("--spring.profiles.active")
                     .doesNotContain("--server.port");
 
@@ -223,7 +226,8 @@ class DeploymentArtifactContractTest {
                     .contains("NACOS_SERVER_ADDR=nacos.example:8848")
                     .contains("NACOS_PASSWORD=secret-for-test")
                     .contains("SPRING_RABBITMQ_PASSWORD=rabbit-secret")
-                    .contains("V1_CARDAPI_JWT_SECRET=jwt-secret-for-test");
+                    .contains("V1_CARDAPI_JWT_SECRET=jwt-secret-for-test")
+                    .contains("V1_SIGNING_KEY_ENCRYPTION_KEY=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8");
         } finally {
             if (Files.exists(appHome.resolve("run/cardshop-trade-engine-dev.pid"))) {
                 runScript(appHome, "stop", "dev");
@@ -272,6 +276,7 @@ class DeploymentArtifactContractTest {
                 SPRING_RABBITMQ_VIRTUAL_HOST=cardshop-trade-prod
                 LEGACY_CARD_SHOP_BASE_URL=http://legacy.example
                 V1_CARDAPI_JWT_SECRET=jwt-secret-for-test
+                V1_SIGNING_KEY_ENCRYPTION_KEY=AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8
                 JAVA_STARTED_FILE='%s'
                 """.formatted(fakeJdk, javaStartedFile));
 

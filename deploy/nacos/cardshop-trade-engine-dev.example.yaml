@@ -53,6 +53,8 @@ trade:
     fault-injection:
       enabled: false
     v1:
+      sign-alg: HMAC-SM3
+      signing-key-encryption-key: ${V1_SIGNING_KEY_ENCRYPTION_KEY:}
       merchant-config-preheat:
         enabled: false
         org-codes: []

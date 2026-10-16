@@ -898,7 +898,7 @@ public class TradeEngineProperties {
         private boolean requestSm4Enabled = true;
 
         /**
-         * JMeter 压测签名结果旁路口令。空字符串表示旁路关闭。
+         * 历史JMeter配置，仅保留配置绑定兼容性；V1.2不读取该值，不能旁路验签。
          * 敏感配置，禁止写入日志。参见详细设计「3. API/V1 接入层」。
          */
         private String loadTestToken = "";
@@ -921,12 +921,18 @@ public class TradeEngineProperties {
         /**
          * 请求验签算法。
          */
-        private String signAlg = "SM3";
+        private String signAlg = "HMAC-SM3";
 
         /**
          * V1 Token JWT 密钥。该值为敏感配置，禁止写入日志。
          */
         private String jwtSecret = "";
+
+        /** 独立32字节存储主密钥的Base64URL编码；禁止复用JWT/商户密钥。参见详细设计3.1。 */
+        private String signingKeyEncryptionKey = "";
+        public String getSigningKeyEncryptionKey() { return signingKeyEncryptionKey; }
+        public void setSigningKeyEncryptionKey(String value) { signingKeyEncryptionKey = value; }
+
 
         /**
          * Token Redis Key 前缀。
@@ -1230,14 +1236,14 @@ public class TradeEngineProperties {
             private String sm4KeySource = "MERCHANT_SECRET";
 
             /**
-             * SM3 验签密钥来源，默认使用商户密钥派生。
+             * 历史配置已废弃；V1.2始终使用getToken独立签发的signKey，不读取此字段。
              */
-            private String signKeySource = "MERCHANT_SECRET";
+            private String signKeySource = "ISSUED_RANDOM_KEY";
 
             /**
-             * 是否启用上一版本密钥兼容，用于密钥轮换灰度。
+             * 历史配置已废弃；V1.2不接受旧签名，请求只认当前token，回调只认订单绑定。
              */
-            private boolean keyRotationPreviousEnabled = true;
+            private boolean keyRotationPreviousEnabled = false;
 
             public String getSm4KeySource() {
                 return sm4KeySource;

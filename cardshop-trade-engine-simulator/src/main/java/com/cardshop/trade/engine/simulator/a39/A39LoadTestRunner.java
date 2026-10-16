@@ -42,18 +42,18 @@ public final class A39LoadTestRunner {
     private static final long NANOS_PER_SECOND = 1_000_000_000L;
 
     private final V1CardApiClient client;
-    private final V1Sm3Signer signer;
+    private final V12Signer signer;
     private final Clock clock;
     private final Consumer<String> logSink;
     private final Supplier<String> nonceSupplier;
 
-    public A39LoadTestRunner(V1CardApiClient client, V1Sm3Signer signer, Clock clock, Consumer<String> logSink) {
+    public A39LoadTestRunner(V1CardApiClient client, V12Signer signer, Clock clock, Consumer<String> logSink) {
         this(client, signer, clock, logSink, A39SimulatorOptions::randomNonce);
     }
 
     A39LoadTestRunner(
             V1CardApiClient client,
-            V1Sm3Signer signer,
+            V12Signer signer,
             Clock clock,
             Consumer<String> logSink,
             Supplier<String> nonceSupplier) {
@@ -75,7 +75,7 @@ public final class A39LoadTestRunner {
         Instant startedAt = clock.instant();
         long totalStartNanos = System.nanoTime();
         long tokenStartNanos = System.nanoTime();
-        String token;
+        Credentials token;
         try {
             token = client.getToken(options.appId(), options.appSecret());
         } catch (Exception ex) {
@@ -103,7 +103,7 @@ public final class A39LoadTestRunner {
 
     private CreateWindowResult runCreateWindow(
             A39SimulatorOptions options,
-            String token,
+            Credentials token,
             Set<String> usedNonces,
             String runId,
             Set<String> expectedCodes) throws Exception {
@@ -174,7 +174,7 @@ public final class A39LoadTestRunner {
     private void submitCreate(
             CompletionService<CreateRequestResult> completionService,
             A39SimulatorOptions options,
-            String token,
+            Credentials token,
             int sequence,
             Set<String> usedNonces,
             String runId,
@@ -184,7 +184,7 @@ public final class A39LoadTestRunner {
 
     private CreateRequestResult createOne(
             A39SimulatorOptions options,
-            String token,
+            Credentials token,
             int sequence,
             Set<String> usedNonces,
             String runId,
@@ -192,9 +192,9 @@ public final class A39LoadTestRunner {
         long startedAtNanos = System.nanoTime();
         String outOrderSn = outOrderSn(options, sequence, runId);
         try {
-            Map<String, Object> payload = createPayload(options, outOrderSn, sequence, nextUniqueNonce(usedNonces));
+            Map<String, Object> payload = createPayload(options, outOrderSn, sequence, nextUniqueNonce(usedNonces), token.signKey());
             V1CardApiClient.ApiResponse response = client.createRechargeOrder(
-                    token,
+                    token.token(),
                     payload,
                     options.requestSm4Enabled(),
                     options.aesKey());
@@ -230,7 +230,7 @@ public final class A39LoadTestRunner {
         }
     }
 
-    Map<String, Object> createPayload(A39SimulatorOptions options, String outOrderSn, int sequence, String nonceStr) {
+    Map<String, Object> createPayload(A39SimulatorOptions options, String outOrderSn, int sequence, String nonceStr, String signKey) {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("product_id", options.productId());
         payload.put("out_order_sn", outOrderSn);
@@ -241,7 +241,7 @@ public final class A39LoadTestRunner {
         payload.put("num", options.num());
         payload.put("order_price", options.orderPrice());
         payload.put("product_type", options.productType());
-        payload.put("sign", signer.signCreateOrder(payload, options.aesKey()).sign());
+        payload.put("sign", signer.signCreateOrder(payload, signKey).sign());
         return payload;
     }
 

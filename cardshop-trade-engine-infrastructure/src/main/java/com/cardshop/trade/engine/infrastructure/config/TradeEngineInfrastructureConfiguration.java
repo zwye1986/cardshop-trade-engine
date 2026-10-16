@@ -42,6 +42,7 @@ import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfileCacheObserver;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfileCacheSettings;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort;
 import com.cardshop.trade.engine.application.v1.V1ProductCacheObserver;
 import com.cardshop.trade.engine.application.v1.V1ProductCacheSettings;
 import com.cardshop.trade.engine.application.v1.V1ProductCandidateSelector;
@@ -705,13 +706,15 @@ public class TradeEngineInfrastructureConfiguration {
     @Bean
     @ConditionalOnMissingBean(MerchantNotifyClientPort.class)
     public MerchantNotifyClientPort merchantNotifyClientPort(
+            ObjectProvider<V12SigningCredentialStorePort> credentialStoreProvider,
             HttpClient httpClient,
             ObjectMapper objectMapper,
             TradeEngineProperties properties) {
         return new HttpMerchantNotifyClientAdapter(
                 httpClient,
                 objectMapper,
-                Duration.ofMillis(properties.getNotify().getHttpTimeoutMs()));
+                Duration.ofMillis(properties.getNotify().getHttpTimeoutMs()),
+                credentialStoreProvider::getIfAvailable);
     }
 
     @Bean
@@ -757,13 +760,14 @@ public class TradeEngineInfrastructureConfiguration {
             BalanceReservationReleasePort balanceReservationReleasePort,
             RechargeNotifyTaskPort notifyTaskPort,
             ObjectProvider<MerchantNotifyPayloadSigner> payloadSignerProvider,
+            ObjectProvider<V12SigningCredentialStorePort> credentialStoreProvider,
             ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
             V1MerchantProfilePort merchantProfilePort,
             Clock clock,
             TradeEngineProperties properties) {
         var fulfillment = properties.getFulfillment();
         MerchantNotifyPayloadSigner payloadSigner = payloadSignerProvider.getIfAvailable(
-                () -> new V1MerchantNotifyPayloadSigner(merchantProfilePort));
+                () -> new V1MerchantNotifyPayloadSigner(credentialStoreProvider.getIfAvailable(V12SigningCredentialStorePort::unavailable)));
         return new RechargeOutboxWorkerService(
                 outboxPort,
                 orderPort,

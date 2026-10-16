@@ -12,6 +12,7 @@ import java.util.Objects;
  * 「8.3 异步落库 Consumer」。`RechargeOrderSnapshot` 只服务查单/作废入口，字段不足以写
  * `mc_order`；本对象专门承载落库字段，避免 Consumer 从多个协议 DTO 或 Redis hash 中临时拼字段。
  *
+ * @param signingKeyId 订单创建时绑定的签名密钥标识
  * @param orgCode 商户编码，对应旧表 {@code mc_order.org_code}
  * @param appId 商户 appId，用于追踪 V1 请求来源
  * @param orderId 平台订单号，对应旧表 {@code mc_order.order_Id}
@@ -69,7 +70,41 @@ public record PersistOrderSnapshot(
         String persistStatus,
         long orderVersion,
         long persistedVersion,
+        int mqPublishCount,
+        String signingKeyId) {
+    /** 兼容历史无密钥绑定快照；缺失绑定的订单不得发送V1.2回调。参见详细设计3.1。 */
+    public PersistOrderSnapshot(
+        String orgCode,
+        String appId,
+        String orderId,
+        String outOrderSn,
+        String productId,
+        String selectedProductId,
+        String account,
+        String notifyUrl,
+        int num,
+        long orderPrice,
+        String productName,
+        long productValue,
+        int productType,
+        String couponType,
+        String supplierChannel,
+        String requestHash,
+        String requestHashVersion,
+        String requestHashAlg,
+        String orderStatus,
+        String validationStatus,
+        String failCode,
+        String failReason,
+        boolean dispatchAllowed,
+        boolean balanceReserved,
+        String persistStatus,
+        long orderVersion,
+        long persistedVersion,
         int mqPublishCount) {
+        this(orgCode, appId, orderId, outOrderSn, productId, selectedProductId, account, notifyUrl, num, orderPrice, productName, productValue, productType, couponType, supplierChannel, requestHash, requestHashVersion, requestHashAlg, orderStatus, validationStatus, failCode, failReason, dispatchAllowed, balanceReserved, persistStatus, orderVersion, persistedVersion, mqPublishCount, "");
+    }
+
 
     private static final String REDIS_TRUE = "1";
     private static final String TEXT_TRUE = "true";
@@ -80,6 +115,7 @@ public record PersistOrderSnapshot(
     private static final long PERSIST_CONSUMER_PLACEHOLDER_CONFIG_VERSION = 1L;
 
     public PersistOrderSnapshot {
+        signingKeyId = signingKeyId == null ? "" : signingKeyId;
         orgCode = requireText(orgCode, "orgCode");
         appId = defaultText(appId);
         orderId = requireText(orderId, "orderId");
@@ -163,7 +199,8 @@ public record PersistOrderSnapshot(
                 text(snapshot, "persist_status", PersistStatus.PERSIST_QUEUED.name()),
                 longValue(snapshot, "order_version", message.orderVersion()),
                 longValue(snapshot, "persisted_version", 0L),
-                intValue(snapshot, "mq_publish_count", 1));
+                intValue(snapshot, "mq_publish_count", 1),
+                text(snapshot, "signing_key_id", ""));
     }
 
     AcceptRechargeOrderCommand toAcceptCommand(long nowEpochMillis, long nextRetryEpochMillis) {
@@ -200,7 +237,7 @@ public record PersistOrderSnapshot(
                 PERSIST_CONSUMER_SELECTION_FINGERPRINT,
                 true,
                 nowEpochMillis,
-                nextRetryEpochMillis);
+                nextRetryEpochMillis, signingKeyId);
     }
 
     AcceptRechargeOrderResult toAcceptResult() {

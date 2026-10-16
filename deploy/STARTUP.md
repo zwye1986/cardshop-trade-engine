@@ -123,3 +123,17 @@ templates for Prometheus/Alertmanager and Grafana, not proof that production
 alerts have been published. RabbitMQ queue depth still comes from the RabbitMQ
 management Prometheus/exporter or an operations probe; do not add RabbitMQ
 management credentials to the business application.
+
+## V1.2 升级前置条件
+
+本版本统一使用HMAC-SM3，旧SM3签名和签名压测旁路均不再接受。先停止新流量并处理存量回调，再执行Liquibase `0018-v12-signing-credentials`，为所有实例注入相同的独立存储主密钥 `V1_SIGNING_KEY_ENCRYPTION_KEY`，最后让调用方重新getToken后开放流量。
+
+主密钥为安全随机32字节的43字符无填充Base64URL编码，只存部署密钥系统或受限env文件；不得复用JWT/app_secret/aesKey，不得放进JAVA_OPTS、日志、Git。该密钥用于AES-256-GCM保护数据库中的signKey；重启必须保留，直接替换会导致所有历史密钥无法解密。轮换需要另行完成全量密文迁移及验证。
+
+getToken返回token/keyId/signKey；请求凭证默认3小时到期，建议2小时刷新。刷新会替换当前token，但不删除历史signKey。订单创建绑定keyId，历史回调和重试继续使用该绑定；撤销后禁止新签名和重试发送。密钥表不设自动TTL或清理任务。
+
+撤销操作仅由有数据库维护权限的运维人员执行：在目标环境核对商户、keyId和受影响订单后，按`org_code + key_id`设置`recharge_v12_signing_key.revoked_at`。不删除记录，不自动绑定最新密钥。若需更换存量订单绑定，应先停发并与调用方同步新绑定，再事务更新指定订单及重建待发送回调快照；本次未提供自动批量换绑入口。普通重试保留原签名报文。
+
+旧订单`signing_key_id=''`和旧SM3回调快照会被拒绝发送；上线前必须清空处理完成的旧任务，或逐单完成双方确认的迁移。不能通过回退旧签名解决。已有签名检查通过并进入网络发送的在途请求不保证能被随后撤销的操作追回。
+
+测试环境HTTPS域名/路径及证书链仍须由部署负责人确认；本次不猜测地址，也未进行远端联调。模拟器拒绝非回环HTTP入口，禁止关闭TLS证书校验。

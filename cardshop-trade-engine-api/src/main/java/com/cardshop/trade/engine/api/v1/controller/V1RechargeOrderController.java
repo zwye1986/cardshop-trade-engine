@@ -32,7 +32,7 @@ import java.util.function.Function;
  * 原卡管兼容的 `/v1/cardapi/order` 入口。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md} 的「4. Application 用例编排层」、
- * 「3. API/V1 接入层」和「9.2 作废设计」。入口层负责 token 兼容解析、临时全量接管路由和旧系统代理兜底；
+ * 「3. API/V1 接入层」和「9.2 作废设计」。入口层负责V1.2凭证认证及可用性门禁；关闭入口时拒绝请求，不代理旧签名接口；
  * 其中 token 兼容解析可能读取共享 Redis key {@code token:app_id:{appId}}，必须和 Netty
  * 事件循环隔离，避免 V1 流量放大后造成 worker 线程饥饿。
  */
@@ -43,7 +43,7 @@ public class V1RechargeOrderController {
     private static final Logger log = LoggerFactory.getLogger(V1RechargeOrderController.class);
 
     /**
-     * 压测旁路请求头；原值经 {@link V1MerchantCommand} 传入创建用例预检。
+     * 历史压测请求头（V1.2中无旁路能力）；原值经 {@link V1MerchantCommand} 传入创建用例预检。
      *
      * <p>参见详细设计「3. API/V1 接入层」。
      */
@@ -124,18 +124,21 @@ public class V1RechargeOrderController {
             Function<V1MerchantCommand, V1CardApiResult> newRouteHandler,
             Optional<AuthenticatedMerchant> merchant,
             String rawBody) {
+        if (merchant.isEmpty() || merchant.get().signingCredential() == null) {
+            return Mono.just(ok(com.cardshop.trade.engine.application.v1.V1CardApiResultStatus.AUTH_FAILED.result()));
+        }
         V1RouteDecision decision = routeDecisionService.decideOrder(path(request), merchant.orElse(null));
         logOrderDecision(request, decision, merchant);
         if (decision.isLegacy()) {
-            return legacyCardApiClient.proxy(request, rawBody).map(entity -> (ResponseEntity<?>) entity);
+            return Mono.just(ok(com.cardshop.trade.engine.application.v1.V1CardApiResultStatus.SYSTEM_BUSY.result()));
         }
-        AuthenticatedMerchant principal = merchant.orElse(new AuthenticatedMerchant("", ""));
+        AuthenticatedMerchant principal = merchant.orElseThrow();
         return Mono.fromCallable(() -> newRouteHandler.apply(
                         new V1MerchantCommand(
                                 principal.appId(),
                                 principal.orgCode(),
                                 rawBody,
-                                request.getHeaders().getFirst(LOAD_TEST_HEADER))))
+                                request.getHeaders().getFirst(LOAD_TEST_HEADER), principal.signingCredential())))
                 .subscribeOn(Schedulers.boundedElastic())
                 .map(V1RechargeOrderController::ok);
     }
@@ -145,18 +148,21 @@ public class V1RechargeOrderController {
             Function<V1MerchantCommand, CompletionStage<V1CardApiResult>> newRouteHandler,
             Optional<AuthenticatedMerchant> merchant,
             String rawBody) {
+        if (merchant.isEmpty() || merchant.get().signingCredential() == null) {
+            return Mono.just(ok(com.cardshop.trade.engine.application.v1.V1CardApiResultStatus.AUTH_FAILED.result()));
+        }
         V1RouteDecision decision = routeDecisionService.decideOrder(path(request), merchant.orElse(null));
         logOrderDecision(request, decision, merchant);
         if (decision.isLegacy()) {
-            return legacyCardApiClient.proxy(request, rawBody).map(entity -> (ResponseEntity<?>) entity);
+            return Mono.just(ok(com.cardshop.trade.engine.application.v1.V1CardApiResultStatus.SYSTEM_BUSY.result()));
         }
-        AuthenticatedMerchant principal = merchant.orElse(new AuthenticatedMerchant("", ""));
+        AuthenticatedMerchant principal = merchant.orElseThrow();
         return Mono.fromCompletionStage(newRouteHandler.apply(
                 new V1MerchantCommand(
                         principal.appId(),
                         principal.orgCode(),
                         rawBody,
-                        request.getHeaders().getFirst(LOAD_TEST_HEADER))))
+                        request.getHeaders().getFirst(LOAD_TEST_HEADER), principal.signingCredential())))
                 .map(V1RechargeOrderController::ok);
     }
 

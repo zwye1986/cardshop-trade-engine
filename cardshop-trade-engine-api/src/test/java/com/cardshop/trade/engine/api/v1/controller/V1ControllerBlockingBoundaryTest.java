@@ -38,6 +38,25 @@ import static org.assertj.core.api.Assertions.assertThat;
 class V1ControllerBlockingBoundaryTest {
 
     @Test
+    void unauthenticatedRequestsNeverReachAnyBusinessHandler() {
+        V1TokenAuthenticator authenticator = new V1TokenAuthenticator(tokenSettings(), fixedClock(), Optional.empty());
+        V1RechargeOrderController controller = new V1RechargeOrderController(
+                routeDecisionService("/v1/cardapi/order/getRechargeOrder"), authenticator,
+                (request, body) -> { throw new AssertionError("legacy route forbidden"); },
+                command -> { throw new AssertionError("create must not run"); },
+                command -> { throw new AssertionError("query must not run"); },
+                command -> { throw new AssertionError("invalid must not run"); });
+        for (var result : List.of(
+                controller.createRechargeOrder(null, Mono.just("{}"), request("/v1/cardapi/order/createRechargeOrder")),
+                controller.getRechargeOrder(null, Mono.just("{}"), request("/v1/cardapi/order/getRechargeOrder")),
+                controller.invalidRechargeOrder(null, Mono.just("{}"), request("/v1/cardapi/order/invalid")))) {
+            assertThat(result.block().getBody())
+                    .isInstanceOfSatisfying(com.cardshop.trade.engine.api.v1.dto.V1CardApiResponse.class,
+                            body -> assertThat(body.code()).isEqualTo("401"));
+        }
+    }
+
+    @Test
     void authTokenIssueRunsOnBoundedElasticWhenNewRouteIsSelected() {
         AtomicReference<String> threadName = new AtomicReference<>();
         IssueV1TokenUseCase useCase = rawBody -> {
@@ -63,7 +82,7 @@ class V1ControllerBlockingBoundaryTest {
             @Override
             public Optional<AuthenticatedMerchant> authenticate(String authorization) {
                 threadName.set(Thread.currentThread().getName());
-                return Optional.of(new AuthenticatedMerchant("app-gray", "A36"));
+                return Optional.of(new AuthenticatedMerchant("app-gray", "A36", com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL));
             }
         };
         QueryRechargeOrderUseCase queryUseCase = command -> new V1CardApiResult("200", "操作成功", null);

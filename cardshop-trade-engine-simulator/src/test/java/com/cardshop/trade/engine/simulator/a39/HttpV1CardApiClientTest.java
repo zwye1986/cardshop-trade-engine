@@ -28,6 +28,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HttpV1CardApiClientTest {
 
     @Test
+    void rejectsRemoteHttpBeforeSendingCredentials() {
+        CapturingTimeoutHttpClient transport = new CapturingTimeoutHttpClient();
+        var client = new HttpV1CardApiClient(URI.create("http://api.example"), transport,
+                new ObjectMapper(), new LegacySm4BodyEncoder());
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> client.getToken("app", "secret"))
+                .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("HTTPS");
+        assertThat(transport.lastRequest).isNull();
+    }
+
+    @Test
     void baseUrlActsAsRequestPrefixEvenWhenItContainsPathSegments() {
         HttpV1CardApiClient client = new HttpV1CardApiClient(
                 URI.create("http://apitest.kalaiwang.com/testSuite/trade-api/dev"),
@@ -52,9 +62,9 @@ class HttpV1CardApiClientTest {
                     new LegacySm4BodyEncoder(),
                     logs::add);
 
-            String token = client.getToken("app-id", "secret-value");
+            Credentials token = client.getToken("app-id", "secret-value");
 
-            assertThat(token).isEqualTo("token-value");
+            assertThat(token.token()).isEqualTo("token-value");
             assertThat(logs).anySatisfy(log -> assertThat(log)
                     .contains("[A39][HTTP][request]")
                     .contains("curl -i -X POST")
@@ -63,8 +73,8 @@ class HttpV1CardApiClientTest {
             assertThat(logs).anySatisfy(log -> assertThat(log)
                     .contains("[A39][HTTP][response]")
                     .contains("status=200")
-                    .contains("\"token\":\"token-value\""));
-            assertThat(String.join("\n", logs)).doesNotContain("secret-value");
+                    .contains("[credentials redacted]"));
+            assertThat(String.join("\n", logs)).doesNotContain("secret-value", "token-value", TestKeys.KEY);
         }
     }
 
@@ -72,7 +82,7 @@ class HttpV1CardApiClientTest {
     void appliesConfiguredRequestTimeoutToPostRequests() throws Exception {
         CapturingTimeoutHttpClient httpClient = new CapturingTimeoutHttpClient();
         HttpV1CardApiClient client = new HttpV1CardApiClient(
-                URI.create("http://api.example"),
+                URI.create("https://api.example"),
                 httpClient,
                 new ObjectMapper(),
                 new LegacySm4BodyEncoder(),
@@ -95,7 +105,7 @@ class HttpV1CardApiClientTest {
         CapturingTimeoutHttpClient httpClient = new CapturingTimeoutHttpClient();
         List<String> logs = new ArrayList<>();
         HttpV1CardApiClient client = new HttpV1CardApiClient(
-                URI.create("http://api.example"),
+                URI.create("https://api.example"),
                 httpClient,
                 new ObjectMapper(),
                 new LegacySm4BodyEncoder(),
@@ -227,7 +237,7 @@ class HttpV1CardApiClientTest {
             HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             server.createContext("/v1/cardapi/auth/getToken", exchange -> {
                 byte[] bytes = """
-                        {"code":200,"msg":"操作成功","data":{"token":"token-value"}}
+                        {"code":200,"msg":"操作成功","data":{"token":"token-value","keyId":"test-key","signKey":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}}
                         """.getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
                 exchange.sendResponseHeaders(200, bytes.length);

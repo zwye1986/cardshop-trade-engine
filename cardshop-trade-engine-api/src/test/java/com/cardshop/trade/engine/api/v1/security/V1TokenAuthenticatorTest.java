@@ -24,17 +24,24 @@ class V1TokenAuthenticatorTest {
         );
 
         Clock clock = Clock.fixed(Instant.parse("2026-07-05T04:00:00Z"), ZoneOffset.UTC);
-        V1TokenAuthenticator authenticator = new V1TokenAuthenticator(settings, clock);
+
         String jwt = jwt("test-secret", """
                 {"alg":"HS512","typ":"JWT"}
                 """, """
-                {"order_token_key:":"app-gray","orgCode":"A36","exp":1783230000}
+                {"order_token_key:":"app-gray","orgCode":"A36","keyId":"test-key","exp":1783230000}
                 """);
 
+        var credentials = new com.cardshop.trade.engine.api.v1.V12TestCredentials.Store();
+        credentials.save(com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL);
+        V1TokenStorePort current=new V1TokenStorePort() {
+            public boolean storeIssuedToken(String app,String token,Duration ttl) { return true; }
+            public Optional<String> findIssuedToken(String app) { return Optional.of(jwt); }
+        };
+        V1TokenAuthenticator authenticator = new V1TokenAuthenticator(settings,clock,Optional.of(current),Optional.of(credentials));
         assertThat(authenticator.authenticate("Bearer " + jwt))
-                .contains(new AuthenticatedMerchant("app-gray", "A36"));
+                .contains(new AuthenticatedMerchant("app-gray", "A36", com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL));
         assertThat(authenticator.authenticate(jwt))
-                .contains(new AuthenticatedMerchant("app-gray", "A36"));
+                .contains(new AuthenticatedMerchant("app-gray", "A36", com.cardshop.trade.engine.api.v1.V12TestCredentials.CREDENTIAL));
     }
 
     @Test
@@ -50,7 +57,7 @@ class V1TokenAuthenticatorTest {
                 Clock.fixed(Instant.parse("2026-07-05T04:00:00Z"), ZoneOffset.UTC)
         );
         String jwt = jwt("wrong-secret", "{\"alg\":\"HS512\",\"typ\":\"JWT\"}", """
-                {"order_token_key:":"app-gray","orgCode":"A36","exp":1783230000}
+                {"order_token_key:":"app-gray","orgCode":"A36","keyId":"test-key","exp":1783230000}
                 """);
 
         assertThat(authenticator.authenticate(jwt)).isEmpty();
@@ -79,7 +86,7 @@ class V1TokenAuthenticatorTest {
         String jwt = jwt("test-secret", """
                 {"alg":"HS512","typ":"JWT"}
                 """, """
-                {"order_token_key:":"app-gray","orgCode":"A36","exp":1783230000}
+                {"order_token_key:":"app-gray","orgCode":"A36","keyId":"test-key","exp":1783230000}
                 """);
 
         assertThat(authenticator.authenticate(jwt)).isEmpty();

@@ -18,6 +18,13 @@ class A39SimulatorOptionsTest {
     private static final Clock FIXED_CLOCK = Clock.fixed(Instant.parse("2026-07-13T08:00:00Z"), ZoneOffset.UTC);
 
     @Test
+    void plainRequestsDoNotRequireEncryptionKeyForSigning() {
+        var options = A39SimulatorOptions.parse(new String[]{"--request-sm4", "false"},
+                Map.of("A39_APP_SECRET", "secret"), FIXED_CLOCK);
+        assertThat(options.aesKey()).isEmpty();
+    }
+
+    @Test
     void productIdDefaultsToA39BusinessProduct1011() {
         A39SimulatorOptions options = A39SimulatorOptions.parse(
                 new String[]{"--account", "18186222336"},

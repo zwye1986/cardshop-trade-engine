@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.bootstrap.config;
 
+import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort;
+
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
 import com.cardshop.trade.engine.api.v1.usecase.V1CreateRechargeOrderUseCaseService;
 import com.cardshop.trade.engine.api.v1.usecase.V1InvalidRechargeOrderUseCaseService;
@@ -92,6 +94,7 @@ class V1CardApiConfigurationTest {
         contextRunner
                 .withBean(V1MerchantProfilePort.class, () -> interfaceProxy(V1MerchantProfilePort.class))
                 .withBean(V1TokenStorePort.class, () -> interfaceProxy(V1TokenStorePort.class))
+                .withBean(V12SigningCredentialStorePort.class, () -> interfaceProxy(V12SigningCredentialStorePort.class))
                 .run(context -> {
                     assertThat(context.getBeansOfType(IssueV1TokenUseCase.class))
                             .as("商户资料和 token store 就绪时应注册真实 token 生成用例")
@@ -306,6 +309,11 @@ class V1CardApiConfigurationTest {
 
     @org.springframework.boot.test.context.TestConfiguration
     static class LateV1DependencyBeans {
+        @Bean
+        V12SigningCredentialStorePort signingCredentialStore() {
+            return interfaceProxy(V12SigningCredentialStorePort.class);
+        }
+
 
         @Bean
         V1MerchantProfilePort v1MerchantProfilePort() {

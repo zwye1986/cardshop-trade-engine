@@ -91,7 +91,8 @@ public class RedisPersistOrderSnapshotAdapter implements PersistOrderSnapshotPor
                     text(fields, "persist_status", ""),
                     longValue(fields, "order_version", 1L),
                     longValue(fields, "persisted_version", 0L),
-                    intValue(fields, "mq_publish_count", 0)));
+                    intValue(fields, "mq_publish_count", 0),
+                    text(fields, "signing_key_id", "")));
         } catch (NumericFieldParseException ex) {
             log.error("Redis落库快照数字字段解析失败 orgCode={}, outOrderSn={}, orderId={}, field={}, rawValue={}",
                     orgCode,

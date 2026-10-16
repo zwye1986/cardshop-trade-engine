@@ -12,5 +12,8 @@ package com.cardshop.trade.engine.application.recharge;
 public record MerchantNotifyRequest(
         String taskId,
         String notifyUrl,
-        String payload) {
+        String payload, String orgCode, String orderId, String outOrderSn) {
+    public MerchantNotifyRequest(String taskId,String notifyUrl,String payload) {
+        this(taskId,notifyUrl,payload,null,null,null);
+    }
 }

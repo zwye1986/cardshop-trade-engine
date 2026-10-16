@@ -230,16 +230,17 @@ public class V1CardApiConfiguration {
     public IssueV1TokenUseCase v1IssueTokenUseCase(
             ObjectProvider<V1MerchantProfilePort> merchantProfilePortProvider,
             ObjectProvider<V1TokenStorePort> tokenStorePortProvider,
+            ObjectProvider<com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort> credentialStoreProvider,
             V1TokenSettings settings,
             Clock clock) {
         // 参见详细设计「3. API/V1 接入层」：真实签发依赖旧商户表和共享 Redis token key。
         // 这里延迟到 Bean 创建期检查依赖，避免配置类解析顺序导致灰度环境误返回“Token生成暂未启用”。
         V1MerchantProfilePort merchantProfilePort = merchantProfilePortProvider.getIfAvailable();
         V1TokenStorePort tokenStorePort = tokenStorePortProvider.getIfAvailable();
-        if (merchantProfilePort == null || tokenStorePort == null) {
+        if (merchantProfilePort == null || tokenStorePort == null || credentialStoreProvider.getIfAvailable() == null) {
             return unavailableIssueV1TokenUseCase();
         }
-        return new V1IssueTokenUseCaseService(merchantProfilePort, tokenStorePort, settings, clock);
+        return new V1IssueTokenUseCaseService(merchantProfilePort, tokenStorePort, credentialStoreProvider.getObject(), settings, clock);
     }
 
     private static IssueV1TokenUseCase unavailableIssueV1TokenUseCase() {

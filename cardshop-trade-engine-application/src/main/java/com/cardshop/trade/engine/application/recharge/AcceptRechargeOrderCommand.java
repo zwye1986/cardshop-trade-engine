@@ -11,6 +11,7 @@ import java.util.Objects;
  * 一次性传给 Redis 接单端口；Redis Lua 会基于这些字段做最终动态校验并原子写入订单快照、幂等、
  * pending 和事件索引。
  *
+ * @param signingKeyId 订单创建时绑定的签名密钥标识
  * @param orgCode 商户机构号，来自 token 对应的服务端商户资料
  * @param appId 商户应用 ID，来自 token claim 或商户资料
  * @param outOrderSn 商户订单号，对应 V1 请求 `out_order_sn`
@@ -68,9 +69,44 @@ public record AcceptRechargeOrderCommand(
         String productSelectionFingerprint,
         boolean productSnapshotAvailable,
         Long nowEpochMillis,
+        Long nextRetryEpochMillis,
+        String signingKeyId) {
+    /** 兼容历史无密钥绑定快照；缺失绑定的订单不得发送V1.2回调。参见详细设计3.1。 */
+    public AcceptRechargeOrderCommand(
+        String orgCode,
+        String appId,
+        String outOrderSn,
+        String orderId,
+        String productId,
+        String selectedProductId,
+        String account,
+        String notifyUrl,
+        String nonceStr,
+        Integer num,
+        Long orderAmountCent,
+        String productName,
+        Long productValueCent,
+        Integer productType,
+        String couponType,
+        String supplierChannel,
+        String requestHash,
+        String requestHashVersion,
+        String requestHashAlg,
+        ValidationStatus candidateValidationStatus,
+        String candidateFailCode,
+        String candidateFailReason,
+        Long merchantConfigVersion,
+        Long productConfigVersion,
+        String productSelectionFingerprint,
+        boolean productSnapshotAvailable,
+        Long nowEpochMillis,
         Long nextRetryEpochMillis) {
+        this(orgCode, appId, outOrderSn, orderId, productId, selectedProductId, account, notifyUrl, nonceStr, num, orderAmountCent, productName, productValueCent, productType, couponType, supplierChannel, requestHash, requestHashVersion, requestHashAlg, candidateValidationStatus, candidateFailCode, candidateFailReason, merchantConfigVersion, productConfigVersion, productSelectionFingerprint, productSnapshotAvailable, nowEpochMillis, nextRetryEpochMillis, "");
+    }
+
 
     public AcceptRechargeOrderCommand {
+        signingKeyId = signingKeyId == null ? "" : signingKeyId;
         orgCode = requireText(orgCode, "orgCode");
         appId = requireText(appId, "appId");
         outOrderSn = requireText(outOrderSn, "outOrderSn");

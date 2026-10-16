@@ -17,9 +17,7 @@ Put production code in each module's `src/main/java`, tests in `src/test/java`, 
 
 ## Cross-Project Integration
 
-During dev/test integration testing this backend is tightly coupled with the test helper frontend at `/Users/mac/Documents/codeSpace/frontend/cardshop-trade-engine-test-console`. The frontend is a separate project, but changes to V1 APIs, Actuator/RabbitMQ metrics, Redis pending republish parameters, integration-test evidence, or dev/test environment defaults must be considered cross-project changes.
-
-If the change affects frontend requests, curl generation, observation aggregation, or execution-record Markdown, update the frontend project README/AGENTS and relevant source files as part of the same work. The frontend remains dev/test-only and must not introduce `local` as an integration-test environment.
+The former test helper frontend at `/Users/mac/Documents/codeSpace/frontend/cardshop-trade-engine-test-console` was confirmed deleted and unrecoverable by the user on 2026-10-16. Do not treat it as an active dependency or claim it was updated. V1 API changes must instead update the in-repository simulator, executable protocol examples, and integration guidance. Integration environments remain dev/test only. A future replacement frontend requires its own implementation scope.
 
 ## Build, Test, and Development Commands
 

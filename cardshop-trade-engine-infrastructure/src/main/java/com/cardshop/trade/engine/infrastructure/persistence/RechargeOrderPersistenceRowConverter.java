@@ -110,6 +110,7 @@ final class RechargeOrderPersistenceRowConverter {
         ext.setRequestHash(snapshot.requestHash());
         ext.setRequestHashVersion(snapshot.requestHashVersion());
         ext.setRequestHashAlg(snapshot.requestHashAlg());
+        ext.setSigningKeyId(snapshot.signingKeyId());
         ext.setRedisOrderId(snapshot.orderId());
         ext.setPersistMsgId(aggregate.persistMessageId());
         ext.setPersistStatus(PersistStatus.DB_PERSISTED.name());

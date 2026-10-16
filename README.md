@@ -105,7 +105,7 @@ mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
 
 模拟器不进入 `./scripts/package.sh` 生成的主服务包，也不会在打包阶段注入 `base_url`、`app_id`、`product_id`、`account`、`out_order_sn`、`app_secret`、`aesKey`、`notify_url` 等业务参数。打包只生成可执行 jar、运行脚本和配置模板；实际参数在运行阶段通过命令行参数或环境变量传入。
 
-`--app-secret` / `A39_APP_SECRET` 和 `--aes-key` / `A39_AES_KEY` 是 `scenario` / `load` 模式的必填敏感参数。`supplier-mock` 模式不需要商户凭证，可单独启动。真实值只应写入部署机本地 `config/a39-simulator.env`、临时环境变量或密钥系统，不能提交到 Git，也不建议直接写进会进入 shell 历史的命令行。
+`--app-secret` / `A39_APP_SECRET` 是 `scenario` / `load` 模式的必填敏感参数；`--aes-key` / `A39_AES_KEY` 只在启用SM4时必填，不参与签名。`supplier-mock` 模式不需要商户凭证，可单独启动。真实值只应写入部署机本地 `config/a39-simulator.env`、临时环境变量或密钥系统，不能提交到 Git，也不建议直接写进会进入 shell 历史的命令行。
 
 `scenario` / `load` 与 `supplier-mock` 可在同一台机器上并行运行：前者调用交易引擎 V1 接口，后者只监听供应商 HTTP 端口，互不依赖。
 
@@ -151,7 +151,7 @@ export CARD_SHOP_TRADE_JAVA_HOME='/opt/java/jdk-21.0.11'
 export A39_APP_SECRET='***'
 export A39_AES_KEY='***'
 
-export A39_BASE_URL='http://apitest.kalaiwang.com'
+export A39_BASE_URL='https://<已确认的测试入口>'
 export A39_APP_ID='A35cecjXS7lZ1W30NMN'
 export A39_PRODUCT_ID='80100022'
 export A39_ACCOUNT='18186222336'
@@ -244,10 +244,10 @@ Nacos / `cardshop-trade-engine-supplier.yaml` 中将 `dispatch-url` / `query-url
 | 参数 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `--mode` | `A39_MODE` | `scenario` | 运行模式：`scenario`、`load` 或 `supplier-mock`。 |
-| `--base-url` | `A39_BASE_URL` | `http://apitest.kalaiwang.com` | 请求前缀，不包含接口路径。 |
+| `--base-url` | `A39_BASE_URL` | `http://apitest.kalaiwang.com` | 旧默认值已不可用于V1.2；必须显式指定已确认的HTTPS请求前缀，不包含接口路径。 |
 | `--app-id` | `A39_APP_ID` | `A35cecjXS7lZ1W30NMN` | A39 机构 `app_id`。 |
 | `--app-secret` | `A39_APP_SECRET` | 必填 | A39 机构密钥，必须用 `***` 之外的真实值在本地安全注入。 |
-| `--aes-key` | `A39_AES_KEY` | 必填 | A39 SM3/SM4 密钥，必须用 `***` 之外的真实值在本地安全注入。 |
+| `--aes-key` | `A39_AES_KEY` | SM4启用时必填 | A39 SM4加密密钥（不参与签名），必须用 `***` 之外的真实值在本地安全注入。 |
 | `--product-id` | `A39_PRODUCT_ID` | `1011` | 直充父产品 ID；test188 MINISO 样本当前使用 `80100022`。 |
 | `--account` | `A39_ACCOUNT` | `18186222336` | 充值账号。 |
 | `--num` | `A39_NUM` | `1` | 下单数量。 |
@@ -322,7 +322,7 @@ export CARD_SHOP_TRADE_JAVA_HOME='/opt/java/jdk-21.0.11'
 
 如果 token 阶段报 `getToken failed: code=401, msg=凭证错误`，说明请求已经到达服务端，但 `app_id + app_secret` 在目标环境的 `mc_ext_depart` 中没有匹配到启用商户。优先检查本地 env 是否仍是模板值 `***`、运行脚本是否加载当前包下的 `config/a39-simulator.env`、请求路径是否为 `/v1/cardapi/auth/getToken`，以及服务端目标环境商户是否启用。
 
-如果下单阶段报 `Create response: code=500, msg=商户配置缺失或版本不一致`，说明请求已经通过 token、SM4 解密和 SM3 验签，进入 Redis 受理 Lua 后因为商户或商品配置基线缺失而 fail closed。优先检查目标 Redis 是否存在：
+如果下单阶段报 `Create response: code=500, msg=商户配置缺失或版本不一致`，说明请求已经通过 token、SM4解密和HMAC-SM3验签，进入 Redis 受理 Lua 后因为商户或商品配置基线缺失而 fail closed。优先检查目标 Redis 是否存在：
 
 ```text
 cardshop:trade:recharge:{A39}:merchant:config
@@ -377,3 +377,19 @@ Nacos 会按顺序加载：
 ## 安全要求
 
 不要提交账号、密码、密钥或真实连接串。Nacos、Redis、RabbitMQ、MySQL 和旧系统地址等配置必须通过环境变量、Nacos 或部署密钥注入。提交前确认 `target/`、日志、IDE 文件和本地配置未进入版本库。
+
+## V1.2 签名切换与验证（2026-10-16）
+
+本服务统一升级V1.2：getToken签发独立随机32字节signKey及keyId，完整密钥用于HMAC-SM3；aesKey仅用于SM4。旧签名、签名旁路和旧系统代理均不开放。部署前置条件、历史回调处理和主密钥保护见[启动说明](deploy/STARTUP.md#v12-升级前置条件)。
+
+原`cardshop-trade-engine-test-console`已删除且不可恢复。本次使用仓库内模拟器与自动化测试验证协议，不依赖该目录。模拟器内`example.v12.crypto.HmacSm3SignUtils`来自对外交付的Java源码包，调用方复制源码即可，只依赖公开的Bouncy Castle，不需要任何`com.cardshop.openapi`依赖。
+
+```bash
+mvn test
+mvn -f cardshop-trade-engine-simulator/pom.xml test
+./scripts/package-a39-simulator.sh
+```
+
+模拟器自动读取token/keyId/signKey成组凭证；scenario在下单前绑定本地订单与keyId，回调核对绑定并验签。模拟器进程内绑定不持久化，仅用于本次测试，不是生产商户的密钥保管实现。load模式发起同样完整的签名请求。取token响应及凭证对象的日志均脱敏。远端调用必须显式设置已确认的HTTPS入口，HTTP仅允许本机回环测试；旧HTTP默认入口会在发送前被拒绝。
+
+服务端新增`recharge_v12_signing_key`加密存储及`recharge_order_ext.signing_key_id`绑定，Redis与MQ只携带keyId。刷新/请求过期不删除历史回调密钥，撤销会阻止后续发送，未知绑定不回退最新密钥。密钥和订单绑定属于恢复所需数据，应与业务库、部署主密钥共同备份并验证恢复。

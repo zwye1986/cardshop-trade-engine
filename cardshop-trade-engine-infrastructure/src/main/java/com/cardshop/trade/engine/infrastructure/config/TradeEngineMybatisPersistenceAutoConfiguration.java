@@ -82,6 +82,22 @@ import org.springframework.transaction.PlatformTransactionManager;
 @ConditionalOnClass({MybatisPlusAutoConfiguration.class, MybatisRechargeOrderPersistenceAdapter.class})
 public class TradeEngineMybatisPersistenceAutoConfiguration {
 
+    /** 密钥持久化依赖MySQL；未提供独立主密钥时装配不可用端口，入口拒绝签发，参见详细设计3.1。 */
+    @Bean
+    @ConditionalOnBean(SqlSessionFactory.class)
+    @ConditionalOnMissingBean(com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort.class)
+    public com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort v12CredentialStore(
+            org.springframework.beans.factory.ObjectProvider<com.cardshop.trade.engine.infrastructure.persistence.mapper.V12SigningKeyMapper> mapper,
+            TradeEngineProperties properties) {
+        if (properties.getV1().getSigningKeyEncryptionKey().isBlank()) {
+            return com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort.unavailable();
+        }
+        return new com.cardshop.trade.engine.infrastructure.persistence.MybatisV12SigningCredentialStore(mapper.getObject(),
+                new com.cardshop.trade.engine.infrastructure.security.V12KeyEnvelope(
+                        properties.getV1().getSigningKeyEncryptionKey()));
+    }
+
+
     /**
      * 创建 Redis/MQ 到 MySQL 异步落库端口。
      *

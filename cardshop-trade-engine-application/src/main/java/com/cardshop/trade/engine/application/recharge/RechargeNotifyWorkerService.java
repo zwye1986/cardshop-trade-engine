@@ -70,7 +70,7 @@ public class RechargeNotifyWorkerService {
             MerchantNotifySendResult sendResult = notifyClientPort.send(new MerchantNotifyRequest(
                     task.taskId(),
                     task.notifyUrl(),
-                    task.payload()));
+                    task.payload(), task.orgCode(), task.orderId(), task.outOrderSn()));
             if (sendResult.success()) {
                 taskPort.markSuccess(task);
                 return true;

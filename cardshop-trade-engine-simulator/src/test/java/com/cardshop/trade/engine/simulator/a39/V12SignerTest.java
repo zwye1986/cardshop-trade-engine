@@ -7,18 +7,12 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class V1Sm3SignerTest {
+class V12SignerTest {
 
-    private final V1Sm3Signer signer = new V1Sm3Signer();
-
-    @Test
-    void sm3DigestMatchesKnownVector() {
-        assertThat(signer.digestHex("abc"))
-                .isEqualTo("66c7f0f462eeedd9d1f2d46bdc10e4e24167c4875cf2f7a2297da02b8f4ba8e0");
-    }
+    private final V12Signer signer = new V12Signer();
 
     @Test
-    void createOrderSignatureUsesLegacyFieldSetAndAsciiOrdering() {
+    void createOrderSignatureUsesV12FieldSetAndAsciiOrdering() {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("product_id", "73301280");
         payload.put("out_order_sn", "OUT-1");
@@ -30,16 +24,16 @@ class V1Sm3SignerTest {
         payload.put("order_price", 5200);
         payload.put("product_type", 1);
 
-        V1Sm3Signer.Signature signature = signer.signCreateOrder(payload, "AES-KEY");
+        V12Signer.Signature signature = signer.signCreateOrder(payload, TestKeys.KEY);
 
         assertThat(signature.source()).isEqualTo(
-                "account=18186222336,aesKey=AES-KEY,nonce_str=JANwG4jwiHGMaNc4EtPdbmkKxBhY7daR,"
+                "account=18186222336,nonce_str=JANwG4jwiHGMaNc4EtPdbmkKxBhY7daR,"
                         + "notify_url=http://notify,num=1,out_order_sn=OUT-1,product_id=73301280,timestamp=1783224958");
-        assertThat(signature.sign()).isEqualTo("95e8617e6b33203297bb4240dbfab24cea064e240fda70906bf9d6fde085b46c");
+        assertThat(signature.sign()).isEqualTo("f9d4718955501516946fb3bb4facfe2ec87429f6d67c9488415b32ec59f6bd88");
     }
 
     @Test
-    void createOrderSignatureKeepsBlankNotifyUrlForLoadMode() {
+    void createOrderSignatureOmitsBlankNotifyUrlForLoadMode() {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("product_id", "80100022");
         payload.put("out_order_sn", "PERF-A39-1");
@@ -51,25 +45,25 @@ class V1Sm3SignerTest {
         payload.put("order_price", 0);
         payload.put("product_type", 1);
 
-        V1Sm3Signer.Signature signature = signer.signCreateOrder(payload, "AES-KEY");
+        V12Signer.Signature signature = signer.signCreateOrder(payload, TestKeys.KEY);
 
         assertThat(signature.source()).isEqualTo(
-                "account=18186222336,aesKey=AES-KEY,nonce_str=JANwG4jwiHGMaNc4EtPdbmkKxBhY7daR,"
-                        + "notify_url=,num=1,out_order_sn=PERF-A39-1,product_id=80100022,timestamp=1783224958");
+                "account=18186222336,nonce_str=JANwG4jwiHGMaNc4EtPdbmkKxBhY7daR,"
+                        + "num=1,out_order_sn=PERF-A39-1,product_id=80100022,timestamp=1783224958");
     }
 
     @Test
-    void querySignatureUsesLegacyQueryFieldSet() {
+    void querySignatureUsesV12QueryFieldSet() {
         Map<String, Object> payload = Map.of(
                 "out_order_sn", "OUT-1",
                 "timestamp", "1783224958",
                 "nonce_str", "JANwG4jwiHGMaNc4EtPdbmkKxBhY7daR"
         );
 
-        V1Sm3Signer.Signature signature = signer.signQueryOrder(payload, "AES-KEY");
+        V12Signer.Signature signature = signer.signQueryOrder(payload, TestKeys.KEY);
 
         assertThat(signature.source()).isEqualTo(
-                "aesKey=AES-KEY,nonce_str=JANwG4jwiHGMaNc4EtPdbmkKxBhY7daR,out_order_sn=OUT-1,timestamp=1783224958");
-        assertThat(signature.sign()).isEqualTo("f95c93b7d002df22b3173c3f706bb462c470161750483b4d0400e3a5a2136f70");
+                "nonce_str=JANwG4jwiHGMaNc4EtPdbmkKxBhY7daR,out_order_sn=OUT-1,timestamp=1783224958");
+        assertThat(signature.sign()).isEqualTo("d6699a015e9586ca76d7224c1a0451a66743962faa61bc592b51c6c84d4a7cc8");
     }
 }

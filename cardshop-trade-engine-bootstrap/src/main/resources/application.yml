@@ -128,7 +128,8 @@ trade:
       nonce-replay-ttl-seconds: 600
       token-clock-skew-seconds: 30
       token-ttl-seconds: 10800
-      sign-alg: SM3
+      signing-key-encryption-key: ${V1_SIGNING_KEY_ENCRYPTION_KEY:}
+      sign-alg: HMAC-SM3
       jwt-secret: ${V1_CARDAPI_JWT_SECRET:}
       token-redis-key-prefix: "token:app_id:"
       token-claim-key: "order_token_key:"

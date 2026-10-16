@@ -19,9 +19,12 @@ import java.time.Clock;
 import java.util.Base64;
 import java.util.Map;
 import java.util.Optional;
+import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential;
+import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort;
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
 
 /**
- * V1 Token 生成用例。
+ * V1.2 Token及独立签名密钥成组签发；对应详细设计3.1。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」
  * 和「3. API/V1 接入层」。实现遵循旧系统 `TokenUtils` 的兼容语义：HS512 JWT、
@@ -33,6 +36,8 @@ public class V1IssueTokenUseCaseService implements IssueV1TokenUseCase {
 
     private final V1MerchantProfilePort merchantProfilePort;
     private final V1TokenStorePort tokenStorePort;
+    private final V12SigningCredentialStorePort credentialStore;
+    private static final LogStormGuard LOG_GUARD = LogStormGuard.defaultGuard();
     private final V1TokenSettings settings;
     private final Clock clock;
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -40,10 +45,12 @@ public class V1IssueTokenUseCaseService implements IssueV1TokenUseCase {
     public V1IssueTokenUseCaseService(
             V1MerchantProfilePort merchantProfilePort,
             V1TokenStorePort tokenStorePort,
+            V12SigningCredentialStorePort credentialStore,
             V1TokenSettings settings,
             Clock clock) {
         this.merchantProfilePort = merchantProfilePort;
         this.tokenStorePort = tokenStorePort;
+        this.credentialStore = credentialStore;
         this.settings = settings;
         this.clock = clock;
     }
@@ -67,12 +74,25 @@ public class V1IssueTokenUseCaseService implements IssueV1TokenUseCase {
             return V1CardApiResultStatus.AUTH_FAILED.result();
         }
 
-        String token = createToken(merchant.get());
-        boolean stored = tokenStorePort.storeIssuedToken(merchant.get().appId(), token, settings.tokenTtl());
-        if (!stored) {
+        // 先持久化独立密钥，再发布当前token。Redis失败时不返回半套凭证，历史密钥不随TTL删除。
+        // 对应详细设计3.1；同一秒签发的keyId也不同，避免token和密钥发生错配。
+        V12SigningCredential credential = V12SigningCredential.generate(merchant.get().appId(),
+                merchant.get().orgCode(), clock.instant().plus(settings.tokenTtl()));
+        try {
+            credentialStore.save(credential);
+            String token = createToken(merchant.get(), credential);
+            if (!tokenStorePort.storeIssuedToken(merchant.get().appId(), token, settings.tokenTtl())) {
+                return V1CardApiResultStatus.SYSTEM_ERROR.result();
+            }
+            return V1CardApiResultStatus.SUCCESS.result(Map.of("token", token,
+                    "keyId", credential.keyId(), "signKey", credential.signKey()));
+        } catch (Exception ex) {
+            // 签发属于高频入口，依赖故障时采样error，禁止打印凭证或请求体。
+            if (LOG_GUARD.shouldLog("v12-credential.issue.failed").shouldLog()) {
+                log.error("V1.2凭证签发失败 appId={}, orgCode={}", merchant.get().appId(), merchant.get().orgCode(), ex);
+            }
             return V1CardApiResultStatus.SYSTEM_ERROR.result();
         }
-        return V1CardApiResultStatus.SUCCESS.result(Map.of("token", token));
     }
 
     private V1IssueTokenRequest decode(String rawBody) {
@@ -82,17 +102,21 @@ public class V1IssueTokenUseCaseService implements IssueV1TokenUseCase {
         try {
             return objectMapper.readValue(rawBody, V1IssueTokenRequest.class);
         } catch (Exception ex) {
-            log.error("V1 Token生成请求解码失败 rawBodyLength={}", rawBody.length(), ex);
+            // 外部坏报文为预期拒绝；采样warn避免入口日志风暴，参见详细设计3.1。
+            if (LOG_GUARD.shouldLog("v12-credential.decode.failed").shouldLog()) {
+                log.warn("V1 Token生成请求解码失败 rawBodyLength={}", rawBody.length(), ex);
+            }
             return null;
         }
     }
 
-    private String createToken(V1MerchantProfile merchant) {
+    private String createToken(V1MerchantProfile merchant, V12SigningCredential credential) {
         long now = clock.instant().getEpochSecond();
         long exp = now + settings.tokenTtl().toSeconds();
         Map<String, Object> header = Map.of("alg", "HS512", "typ", "JWT");
         Map<String, Object> payload = Map.of(
                 settings.tokenClaimKey(), merchant.appId(),
+                "keyId", credential.keyId(),
                 "orgCode", merchant.orgCode(),
                 "org_code", merchant.orgCode(),
                 "iat", now,

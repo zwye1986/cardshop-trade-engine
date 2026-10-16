@@ -19,40 +19,56 @@ class V1MerchantNotifyPayloadSignerTest {
     @Test
     void signsOrderStatusPayloadAndKeepsRequiredKeys() {
         V1MerchantNotifyPayloadSigner signer = new V1MerchantNotifyPayloadSigner(
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)));
+                store());
 
         Map<String, String> payload = signer.signOrderStatus(order(), "12", Instant.parse("2026-07-08T03:20:00Z"));
 
         assertThat(payload)
-                .containsEntry("orderId", "ORDER-1")
-                .containsEntry("outOrderSn", "OUT-1")
-                .containsEntry("totalPrice", "5200")
-                .containsEntry("type", "")
-                .containsEntry("totalSettlePrice", "5200")
+                .containsEntry("order_id", "ORDER-1")
+                .containsEntry("out_order_sn", "OUT-1")
+                .containsEntry("total_price", "5200")
+                .containsEntry("type", "1")
+                .containsEntry("total_settle_price", "5200")
                 .containsEntry("timestamp", "1783480800")
-                .containsEntry("orderStatus", "12")
+                .containsEntry("order_status", "12")
                 .containsEntry("account", "13800138000");
-        assertThat(payload.get("nonceStr")).hasSize(32);
+        assertThat(payload.get("nonce_str")).hasSize(32);
         assertThat(payload.get("sign")).hasSize(64);
+        assertThat(payload).containsKey("keyId");
     }
 
     @Test
     void signsWriteOffPayloadWithEmptyFieldsPresent() {
         V1MerchantNotifyPayloadSigner signer = new V1MerchantNotifyPayloadSigner(
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "AES-KEY", true, 7L)));
+                store());
 
         Map<String, String> payload = signer.signWriteOff(order(), Instant.parse("2026-07-08T03:20:00Z"));
 
         assertThat(payload)
-                .containsEntry("orderId", "ORDER-1")
-                .containsEntry("outOrderSn", "OUT-1")
+                .containsEntry("order_id", "ORDER-1")
+                .containsEntry("out_order_sn", "OUT-1")
                 .containsEntry("account", "13800138000")
-                .containsEntry("useTime", "")
-                .containsEntry("stateType", "1")
-                .containsEntry("useState", "2")
-                .containsEntry("invalidTime", "1783480800");
-        assertThat(payload.get("nonceStr")).hasSize(32);
+                .containsEntry("use_time", "")
+                .containsEntry("state_type", "1")
+                .containsEntry("use_state", "2")
+                .containsEntry("invalid_time", "2026-07-08 11:20:00");
+        assertThat(payload.get("nonce_str")).hasSize(32);
         assertThat(payload.get("sign")).hasSize(64);
+        assertThat(payload).containsKey("keyId");
+    }
+
+    private static com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort store() {
+        var store = org.mockito.Mockito.mock(com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort.class);
+        org.mockito.Mockito.when(store.findForOrder("A36","ORDER-1")).thenReturn(Optional.of(
+            new com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential("bound-key","app","A36",
+                "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",Instant.EPOCH)));
+        return store;
+    }
+    @Test void rejectsOrderWithoutHistoricalKeyInsteadOfUsingLatestKey() {
+        var signer = new V1MerchantNotifyPayloadSigner(
+                com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort.unavailable());
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> signer.signOrderStatus(order(),"12",Instant.now()))
+                .isInstanceOf(IllegalStateException.class);
     }
 
     private static RechargeFulfillmentOrder order() {

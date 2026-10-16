@@ -53,7 +53,7 @@ public class V1AuthController {
                     log.info("V1 token路由判定 path={}, target={}, reason={}",
                             path(request), decision.target(), decision.reason());
                     if (decision.isLegacy()) {
-                        return legacyCardApiClient.proxy(request, rawBody).map(entity -> (ResponseEntity<?>) entity);
+                        return Mono.just(ok(com.cardshop.trade.engine.application.v1.V1CardApiResultStatus.SYSTEM_BUSY.result()));
                     }
                     return issueTokenOnBlockingScheduler(rawBody).map(V1AuthController::ok);
                 });

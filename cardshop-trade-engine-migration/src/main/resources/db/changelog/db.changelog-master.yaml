@@ -562,3 +562,29 @@ databaseChangeLog:
         - sql:
             sql: |
               SELECT 1
+
+  # V1.2独立签名凭证持久化及订单绑定；先部署DDL再启用新入口。
+  - changeSet:
+      id: 0018-v12-signing-credentials
+      author: codex
+      changes:
+        - sql:
+            sql: |
+              CREATE TABLE recharge_v12_signing_key (
+                key_id varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '签名密钥标识',
+                app_id varchar(128) COLLATE utf8mb4_bin NOT NULL COMMENT '商户应用ID',
+                org_code varchar(64) COLLATE utf8mb4_bin NOT NULL COMMENT '商户编码',
+                encrypted_sign_key varchar(256) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'AES-256-GCM加密签名密钥',
+                request_expires_at_ms bigint NOT NULL COMMENT '配对请求凭证到期毫秒时间戳',
+                revoked_at datetime(3) NULL COMMENT '密钥撤销时间',
+                created_at datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '密钥创建时间',
+                PRIMARY KEY (key_id),
+                KEY idx_v12_key_merchant (org_code, app_id)
+              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V1.2独立签名凭证';
+              ALTER TABLE recharge_order_ext
+                ADD COLUMN signing_key_id varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '' COMMENT '订单创建时绑定的签名密钥标识',
+                ADD INDEX idx_order_signing_key (signing_key_id);
+      # 已签发凭证和订单绑定不可在回滚时直接丢弃，回滚操作必须保留历史密钥及绑定。
+      rollback:
+        - sql:
+            sql: SELECT 1

@@ -80,7 +80,7 @@ public final class HttpV1CardApiClient implements V1CardApiClient {
     }
 
     @Override
-    public String getToken(String appId, String appSecret) throws Exception {
+    public Credentials getToken(String appId, String appSecret) throws Exception {
         Map<String, Object> payload = new LinkedHashMap<>();
         payload.put("app_id", appId);
         payload.put("app_secret", appSecret);
@@ -89,7 +89,8 @@ public final class HttpV1CardApiClient implements V1CardApiClient {
         if (!"200".equals(response.code()) || token == null || String.valueOf(token).isBlank()) {
             throw new IllegalStateException("getToken failed: code=%s, msg=%s".formatted(response.code(), response.msg()));
         }
-        return String.valueOf(token);
+        return new Credentials(String.valueOf(token), (String) response.data().get("keyId"),
+                (String) response.data().get("signKey"));
     }
 
     @Override
@@ -103,6 +104,12 @@ public final class HttpV1CardApiClient implements V1CardApiClient {
     }
 
     private ApiResponse post(String path, String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) throws Exception {
+        // V1.2凭证只能经HTTPS传输；仅内存测试的回环HTTP例外，参见详细设计3.1。
+        String host = baseUri.getHost();
+        boolean loopback = "127.0.0.1".equals(host) || "localhost".equals(host) || "[::1]".equals(host);
+        if (!"https".equalsIgnoreCase(baseUri.getScheme()) && !loopback) {
+            throw new IllegalArgumentException("V1.2 requires a confirmed HTTPS endpoint");
+        }
         long totalStartNanos = System.nanoTime();
         String json = objectMapper.writeValueAsString(payload);
         String body = sm4Enabled ? sm4BodyEncoder.encode(json, aesKey) : json;
@@ -134,7 +141,7 @@ public final class HttpV1CardApiClient implements V1CardApiClient {
         }
         long bodyReadNanos = System.nanoTime() - bodyReadStartNanos;
         if (logHttpTraffic) {
-            logSink.accept("[A39][HTTP][response] path=%s status=%d body=%s".formatted(path, response.statusCode(), responseBody));
+            logSink.accept("[A39][HTTP][response] path=%s status=%d body=%s".formatted(path, response.statusCode(), path.endsWith("/getToken") ? "[credentials redacted]" : responseBody));
         }
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IllegalStateException("HTTP request failed: path=%s, status=%d".formatted(path, response.statusCode()));

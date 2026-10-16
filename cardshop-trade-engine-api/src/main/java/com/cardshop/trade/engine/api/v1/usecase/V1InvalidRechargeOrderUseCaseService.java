@@ -61,7 +61,7 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
     @Override
     public V1CardApiResult invalidRechargeOrder(V1MerchantCommand command) {
         Optional<V1MerchantProfile> maybeMerchant = merchantProfilePort.findByAppIdAndOrgCode(command.appId(), command.orgCode());
-        if (maybeMerchant.isEmpty() || !StringUtils.hasText(maybeMerchant.get().aesKey())) {
+        if (maybeMerchant.isEmpty()) {
             log.warn("V1作废商户资料缺失 appId={}, orgCode={}", command.appId(), command.orgCode());
             return V1CardApiResultStatus.AUTH_FAILED.result();
         }
@@ -69,7 +69,7 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
         V1MerchantProfile merchant = maybeMerchant.get();
         V1ProtocolPrecheckResult<V1RechargeOrderInvalidRequest> precheck = precheckService.precheckInvalid(
                 command.rawBody(),
-                new V1MerchantSecurityProfile(merchant.appId(), merchant.orgCode(), merchant.aesKey()));
+                new V1MerchantSecurityProfile(merchant.appId(), merchant.orgCode(), merchant.aesKey(), command.signingCredential()));
         if (!precheck.valid()) {
             return protocolFailure(precheck.reason());
         }

@@ -17,6 +17,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPor
 import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.recharge.V1MerchantNotifyPayloadSigner;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort;
 import java.time.Clock;
 import java.time.Duration;
 import org.springframework.beans.factory.ObjectProvider;
@@ -76,13 +77,14 @@ public class TradeEngineFulfillmentAutoConfiguration {
             BalanceReservationReleasePort balanceReservationReleasePort,
             RechargeNotifyTaskPort notifyTaskPort,
             ObjectProvider<MerchantNotifyPayloadSigner> payloadSignerProvider,
+            ObjectProvider<V12SigningCredentialStorePort> credentialStoreProvider,
             ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
             V1MerchantProfilePort merchantProfilePort,
             Clock clock,
             TradeEngineProperties properties) {
         var fulfillment = properties.getFulfillment();
         MerchantNotifyPayloadSigner payloadSigner = payloadSignerProvider.getIfAvailable(
-                () -> new V1MerchantNotifyPayloadSigner(merchantProfilePort));
+                () -> new V1MerchantNotifyPayloadSigner(credentialStoreProvider.getIfAvailable(V12SigningCredentialStorePort::unavailable)));
         return new RechargeOutboxWorkerService(
                 outboxPort,
                 orderPort,

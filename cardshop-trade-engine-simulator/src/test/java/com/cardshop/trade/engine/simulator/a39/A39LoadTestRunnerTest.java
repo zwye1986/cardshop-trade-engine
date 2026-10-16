@@ -26,7 +26,7 @@ class A39LoadTestRunnerTest {
                 response("200"), response("510"), response("200"), response("510"), response("200")), 2);
         A39SimulatorOptions options = options(2, 5, List.of("200", "510"), 20);
 
-        A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), ignored -> {
+        A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(client, new V12Signer(), Clock.systemUTC(), ignored -> {
         }).run(options);
 
         assertThat(result.successful()).isEqualTo(5);
@@ -53,7 +53,7 @@ class A39LoadTestRunnerTest {
                 response("510")), 0);
         A39SimulatorOptions options = options(2, 4, List.of("200", "510"), 1);
 
-        A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), ignored -> {
+        A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(client, new V12Signer(), Clock.systemUTC(), ignored -> {
         }).run(options);
 
         assertThat(result.completed()).isEqualTo(4);
@@ -73,7 +73,7 @@ class A39LoadTestRunnerTest {
 
         A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(
                 client,
-                new V1Sm3Signer(),
+                new V12Signer(),
                 Clock.fixed(Instant.parse("2026-07-15T01:00:00Z"), ZoneId.of("UTC")),
                 logs::add)
                 .run(options);
@@ -114,7 +114,7 @@ class A39LoadTestRunnerTest {
         List<String> logs = new ArrayList<>();
         A39SimulatorOptions options = options(1, 2, List.of("200", "510"), 20);
 
-        new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), logs::add).run(options);
+        new A39LoadTestRunner(client, new V12Signer(), Clock.systemUTC(), logs::add).run(options);
 
         assertThat(logs).isEmpty();
     }
@@ -126,7 +126,7 @@ class A39LoadTestRunnerTest {
         A39SimulatorOptions options = progressOptions(2, 6, Duration.ofMillis(50));
 
         A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(
-                client, new V1Sm3Signer(), Clock.systemUTC(), logs::add).run(options);
+                client, new V12Signer(), Clock.systemUTC(), logs::add).run(options);
 
         assertThat(result.successful()).isEqualTo(6);
         assertThat(logs.stream().anyMatch(line -> line.startsWith("[A39][LOAD][progress]"))).isTrue();
@@ -161,7 +161,7 @@ class A39LoadTestRunnerTest {
             }
         };
 
-        new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), ignored -> {
+        new A39LoadTestRunner(client, new V12Signer(), Clock.systemUTC(), ignored -> {
         }, nonceSupplier).run(options);
 
         assertThat(client.createPayloads)
@@ -175,7 +175,7 @@ class A39LoadTestRunnerTest {
         Clock fixedClock = Clock.fixed(Instant.parse("2026-07-15T01:00:00Z"), ZoneId.of("UTC"));
         A39SimulatorOptions options = options(1, 2, List.of("200", "510"), 20);
 
-        new A39LoadTestRunner(client, new V1Sm3Signer(), fixedClock, ignored -> {
+        new A39LoadTestRunner(client, new V12Signer(), fixedClock, ignored -> {
         }).run(options);
 
         assertThat(client.createPayloads)
@@ -188,7 +188,7 @@ class A39LoadTestRunnerTest {
         CapturingLoadClient client = new CapturingLoadClient(List.of(response("200"), response("200"), response("200")), 0);
         A39SimulatorOptions options = options(1, 3, List.of("200", "510"), 20, true);
 
-        new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), ignored -> {
+        new A39LoadTestRunner(client, new V12Signer(), Clock.systemUTC(), ignored -> {
         }).run(options);
 
         assertThat(client.createPayloads)
@@ -202,7 +202,7 @@ class A39LoadTestRunnerTest {
         RepeatingLoadClient client = new RepeatingLoadClient(response("200"));
         A39SimulatorOptions options = durationRateOptions(2, 0, Duration.ofSeconds(1), 5, 5);
 
-        A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), ignored -> {
+        A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(client, new V12Signer(), Clock.systemUTC(), ignored -> {
         }).run(options);
 
         assertThat(result.completed()).isEqualTo(5);
@@ -218,7 +218,7 @@ class A39LoadTestRunnerTest {
         RepeatingLoadClient client = new RepeatingLoadClient(response("200"));
         A39SimulatorOptions options = durationRateOptions(2, 0, Duration.ofSeconds(1), 10, 10);
 
-        A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(client, new V1Sm3Signer(), Clock.systemUTC(), ignored -> {
+        A39LoadTestRunner.LoadTestResult result = new A39LoadTestRunner(client, new V12Signer(), Clock.systemUTC(), ignored -> {
         }).run(options);
 
         assertThat(result.completed()).isBetween(9, 10);
@@ -364,8 +364,8 @@ class A39LoadTestRunnerTest {
         }
 
         @Override
-        public String getToken(String appId, String appSecret) {
-            return "token";
+        public Credentials getToken(String appId, String appSecret) {
+            return new Credentials("token", "test-key", TestKeys.KEY);
         }
 
         @Override
@@ -393,8 +393,8 @@ class A39LoadTestRunnerTest {
         }
 
         @Override
-        public String getToken(String appId, String appSecret) {
-            return "token";
+        public Credentials getToken(String appId, String appSecret) {
+            return new Credentials("token", "test-key", TestKeys.KEY);
         }
 
         @Override
@@ -426,8 +426,8 @@ class A39LoadTestRunnerTest {
         }
 
         @Override
-        public String getToken(String appId, String appSecret) {
-            return "token";
+        public Credentials getToken(String appId, String appSecret) {
+            return new Credentials("token", "test-key", TestKeys.KEY);
         }
 
         @Override

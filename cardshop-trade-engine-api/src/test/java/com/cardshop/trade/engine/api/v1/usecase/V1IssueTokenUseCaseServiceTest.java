@@ -25,6 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * 必须按旧系统 app_id/app_secret 语义生成 HS512 JWT，并写入共享 Redis token key 空间。
  */
 class V1IssueTokenUseCaseServiceTest {
+    private final com.cardshop.trade.engine.api.v1.V12TestCredentials.Store credentials = new com.cardshop.trade.engine.api.v1.V12TestCredentials.Store();
 
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-07-06T02:00:00Z"), ZoneOffset.UTC);
     private static final V1TokenSettings SETTINGS = new V1TokenSettings(
@@ -35,11 +36,36 @@ class V1IssueTokenUseCaseServiceTest {
             Duration.ofHours(3));
 
     @Test
+    void sameSecondRefreshRotatesCredentialsButRetainsHistoricalCallbackKey() {
+        RecordingTokenStore tokenStore = new RecordingTokenStore();
+        var service = new V1IssueTokenUseCaseService(merchantPort(true), tokenStore, credentials, SETTINGS, CLOCK);
+        String request = "{\"app_id\":\"app-gray\",\"app_secret\":\"secret-1\"}";
+        Map<?, ?> first = (Map<?, ?>) service.issueToken(request).data();
+        Map<?, ?> second = (Map<?, ?>) service.issueToken(request).data();
+        for (String field : new String[]{"token", "keyId", "signKey"}) {
+            assertThat(first.get(field)).isNotEqualTo(second.get(field));
+        }
+        var auth = new V1TokenAuthenticator(SETTINGS, CLOCK, Optional.of(tokenStore), Optional.of(credentials));
+        assertThat(auth.authenticate((String) first.get("token"))).isEmpty();
+        assertThat(auth.authenticate((String) second.get("token"))).isPresent();
+        assertThat(credentials.findActive("app-gray", "A36", (String) first.get("keyId")))
+                .get().extracting(com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential::signKey)
+                .isEqualTo(first.get("signKey"));
+        var expired = new V1TokenAuthenticator(SETTINGS, Clock.offset(CLOCK, Duration.ofHours(3)),
+                Optional.of(tokenStore), Optional.of(credentials));
+        assertThat(expired.authenticate((String) second.get("token"))).isEmpty();
+        assertThat(credentials.findActive("app-gray", "A36", (String) second.get("keyId"))).isPresent();
+        credentials.revoke("A36", (String) second.get("keyId"));
+        assertThat(auth.authenticate((String) second.get("token"))).isEmpty();
+    }
+
+    @Test
     void issuesLegacyCompatibleTokenAndStoresItByAppId() {
         RecordingTokenStore tokenStore = new RecordingTokenStore();
         V1IssueTokenUseCaseService service = new V1IssueTokenUseCaseService(
                 merchantPort(true),
                 tokenStore,
+                credentials,
                 SETTINGS,
                 CLOCK);
 
@@ -52,15 +78,16 @@ class V1IssueTokenUseCaseServiceTest {
         assertThat(result.data()).isInstanceOf(Map.class);
         @SuppressWarnings("unchecked")
         Map<String, Object> data = (Map<String, Object>) result.data();
+        assertThat(data).containsKeys("token", "keyId", "signKey");
         String token = String.valueOf(data.get("token"));
         assertThat(token).isNotBlank();
         assertThat(tokenStore.appId).isEqualTo("app-gray");
         assertThat(tokenStore.token).isEqualTo(token);
         assertThat(tokenStore.ttl).isEqualTo(Duration.ofHours(3));
 
-        V1TokenAuthenticator authenticator = new V1TokenAuthenticator(SETTINGS, CLOCK, Optional.of(tokenStore));
+        V1TokenAuthenticator authenticator = new V1TokenAuthenticator(SETTINGS, CLOCK, Optional.of(tokenStore), Optional.of(credentials));
         assertThat(authenticator.authenticate("Bearer " + token))
-                .contains(new com.cardshop.trade.engine.api.v1.security.AuthenticatedMerchant("app-gray", "A36"));
+                .get().extracting(com.cardshop.trade.engine.api.v1.security.AuthenticatedMerchant::orgCode).isEqualTo("A36");
     }
 
     @Test
@@ -68,6 +95,7 @@ class V1IssueTokenUseCaseServiceTest {
         V1IssueTokenUseCaseService service = new V1IssueTokenUseCaseService(
                 (appId, orgCode) -> Optional.empty(),
                 new RecordingTokenStore(),
+                credentials,
                 SETTINGS,
                 CLOCK);
 
@@ -87,6 +115,7 @@ class V1IssueTokenUseCaseServiceTest {
         V1IssueTokenUseCaseService service = new V1IssueTokenUseCaseService(
                 merchantPort(true),
                 tokenStore,
+                credentials,
                 SETTINGS,
                 CLOCK);
 

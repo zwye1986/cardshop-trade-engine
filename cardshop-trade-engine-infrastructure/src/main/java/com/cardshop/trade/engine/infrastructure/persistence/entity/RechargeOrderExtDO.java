@@ -18,6 +18,13 @@ public class RechargeOrderExtDO {
     /**
      * 表主键。
      */
+    /** 订单创建时绑定的签名密钥标识；与DDL COMMENT一致，参见详细设计3.1。 */
+    @TableField("signing_key_id")
+    private String signingKeyId;
+
+    public String getSigningKeyId() { return signingKeyId; }
+    public void setSigningKeyId(String signingKeyId) { this.signingKeyId = signingKeyId; }
+
     @TableId(value = "id", type = IdType.AUTO)
     private Long id;
 
