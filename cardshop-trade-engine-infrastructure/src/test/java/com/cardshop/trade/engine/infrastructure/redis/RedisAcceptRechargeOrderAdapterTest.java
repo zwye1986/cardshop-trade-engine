@@ -79,7 +79,7 @@ class RedisAcceptRechargeOrderAdapterTest {
         assertThat(result.balanceReserved()).isTrue();
         assertThat(executor.calls).isEqualTo(1);
         assertThat(executor.keys).hasSize(13);
-        assertThat(executor.args).hasSize(31);
+        assertThat(executor.args).hasSize(30);
     }
 
     private static TradeEngineProperties properties(boolean writeEnabled) {

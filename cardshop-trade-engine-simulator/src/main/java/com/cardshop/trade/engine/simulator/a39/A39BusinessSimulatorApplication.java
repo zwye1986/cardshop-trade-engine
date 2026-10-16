@@ -165,7 +165,7 @@ public final class A39BusinessSimulatorApplication {
                     client,
                     signer,
                     null,
-                    logSink, callbackServer::bindOrder);
+                    logSink, callbackServer::registerCredentials, callbackServer::registerOrder);
             A39BusinessScenarioRunner.ScenarioResult result = runner.run(options);
             logSink.accept("Create response: code=%s, msg=%s".formatted(
                     result.createResponse().code(),

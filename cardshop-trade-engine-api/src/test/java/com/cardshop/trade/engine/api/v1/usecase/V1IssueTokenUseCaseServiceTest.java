@@ -36,27 +36,80 @@ class V1IssueTokenUseCaseServiceTest {
             Duration.ofHours(3));
 
     @Test
-    void sameSecondRefreshRotatesCredentialsButRetainsHistoricalCallbackKey() {
+    void sameSecondRefreshChangesOnlyTokenAndReusesMerchantKey() {
         RecordingTokenStore tokenStore = new RecordingTokenStore();
         var service = new V1IssueTokenUseCaseService(merchantPort(true), tokenStore, credentials, SETTINGS, CLOCK);
         String request = "{\"app_id\":\"app-gray\",\"app_secret\":\"secret-1\"}";
         Map<?, ?> first = (Map<?, ?>) service.issueToken(request).data();
         Map<?, ?> second = (Map<?, ?>) service.issueToken(request).data();
-        for (String field : new String[]{"token", "keyId", "signKey"}) {
-            assertThat(first.get(field)).isNotEqualTo(second.get(field));
-        }
+        assertThat(first.get("token")).isNotEqualTo(second.get("token"));
+        assertThat(first.get("keyId")).isEqualTo(second.get("keyId"));
+        assertThat(first.get("signKey")).isEqualTo(second.get("signKey"));
         var auth = new V1TokenAuthenticator(SETTINGS, CLOCK, Optional.of(tokenStore), Optional.of(credentials));
         assertThat(auth.authenticate((String) first.get("token"))).isEmpty();
         assertThat(auth.authenticate((String) second.get("token"))).isPresent();
-        assertThat(credentials.findActive("app-gray", "A36", (String) first.get("keyId")))
+        assertThat(credentials.findForCallback("A36", (String) first.get("keyId")))
                 .get().extracting(com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential::signKey)
                 .isEqualTo(first.get("signKey"));
         var expired = new V1TokenAuthenticator(SETTINGS, Clock.offset(CLOCK, Duration.ofHours(3)),
                 Optional.of(tokenStore), Optional.of(credentials));
         assertThat(expired.authenticate((String) second.get("token"))).isEmpty();
-        assertThat(credentials.findActive("app-gray", "A36", (String) second.get("keyId"))).isPresent();
+        assertThat(credentials.findForCallback("A36", (String) second.get("keyId"))).isPresent();
         credentials.revoke("A36", (String) second.get("keyId"));
         assertThat(auth.authenticate((String) second.get("token"))).isEmpty();
+    }
+
+    @Test
+    void currentKeyRotationAppliesToExistingTokenWithoutBindingJwtToKeyId() throws Exception {
+        var tokenStore = new RecordingTokenStore();
+        var service = new V1IssueTokenUseCaseService(merchantPort(true), tokenStore, credentials, SETTINGS, CLOCK);
+        Map<?, ?> first = (Map<?, ?>) service.issueToken(
+                "{\"app_id\":\"app-gray\",\"app_secret\":\"secret-1\"}").data();
+        String token = (String) first.get("token");
+        var claims = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
+                java.util.Base64.getUrlDecoder().decode(token.split("\\.")[1]));
+        assertThat(claims.has("keyId")).isFalse();
+        assertThat(claims.has("signKey")).isFalse();
+        assertThat(claims.path("jti").asText()).isNotBlank();
+        var rotated = credentials.rotate("A36");
+        var auth = new V1TokenAuthenticator(SETTINGS, CLOCK, Optional.of(tokenStore), Optional.of(credentials));
+        assertThat(auth.authenticate(token)).get()
+                .extracting(com.cardshop.trade.engine.api.v1.security.AuthenticatedMerchant::signingCredential)
+                .isEqualTo(rotated);
+        assertThat(credentials.findForCallback("A36", (String) first.get("keyId"))).isPresent();
+    }
+
+    @Test
+    void revokedCurrentKeyRejectsOrdinaryGetTokenUntilExplicitRotation() {
+        var tokenStore = new RecordingTokenStore();
+        var service = new V1IssueTokenUseCaseService(merchantPort(true), tokenStore, credentials, SETTINGS, CLOCK);
+        String request = "{\"app_id\":\"app-gray\",\"app_secret\":\"secret-1\"}";
+        Map<?, ?> first = (Map<?, ?>) service.issueToken(request).data();
+        credentials.revoke("A36", (String) first.get("keyId"));
+        assertThat(service.issueToken(request).code()).isEqualTo("502");
+        assertThat(tokenStore.token).isEqualTo(first.get("token"));
+        var rotated = credentials.rotate("A36");
+        Map<?, ?> restored = (Map<?, ?>) service.issueToken(request).data();
+        assertThat(restored.get("keyId")).isEqualTo(rotated.keyId());
+    }
+
+    @Test
+    void differentApplicationsOfSameMerchantShareSigningKeyButOtherMerchantsDoNot() {
+        var profiles = new V1MerchantProfilePort() {
+            public Optional<V1MerchantProfile> findByAppIdAndOrgCode(String appId, String orgCode) {
+                return Optional.empty();
+            }
+            public Optional<V1MerchantProfile> findByAppIdAndAppSecret(String appId, String secret) {
+                return Optional.of(new V1MerchantProfile(appId,
+                        "app-other-merchant".equals(appId) ? "OTHER" : "A36", "AES-KEY-12345678", true, 7L));
+            }
+        };
+        var service = new V1IssueTokenUseCaseService(profiles, new RecordingTokenStore(), credentials, SETTINGS, CLOCK);
+        Map<?, ?> first = (Map<?, ?>) service.issueToken("{\"app_id\":\"app-one\",\"app_secret\":\"secret\"}").data();
+        Map<?, ?> second = (Map<?, ?>) service.issueToken("{\"app_id\":\"app-two\",\"app_secret\":\"secret\"}").data();
+        Map<?, ?> other = (Map<?, ?>) service.issueToken("{\"app_id\":\"app-other-merchant\",\"app_secret\":\"secret\"}").data();
+        assertThat(first.get("keyId")).isEqualTo(second.get("keyId")).isNotEqualTo(other.get("keyId"));
+        assertThat(first.get("signKey")).isEqualTo(second.get("signKey")).isNotEqualTo(other.get("signKey"));
     }
 
     @Test

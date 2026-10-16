@@ -29,7 +29,6 @@ public final class HmacSm3SignUtils {
     private static final int KEY_BYTES = 32;
     private static final String SIGN_FIELD = "sign";
     private static final String KEY_ID_FIELD = "keyId";
-    private static final String ORDER_FIELD = "out_order_sn";
     private static final Pattern KEY_FORMAT = Pattern.compile("[A-Za-z0-9_-]{43}");
     private static final Pattern SIGN_FORMAT = Pattern.compile("[0-9a-f]{64}");
 
@@ -116,19 +115,20 @@ public final class HmacSm3SignUtils {
     }
 
     /**
-     * 商户回调验签入口：先核对可信订单绑定，再验证认证码。
-     * trustedOrderSn、trustedKeyId必须从本商户的本地订单记录读取，不能复制报文值作为可信参数。
-     * signKey必须来自同商户、同keyId且未撤销的历史密钥记录；未知/撤销密钥应在调用前拒绝。
-     * token刷新或过期不自动使历史回调密钥失效。验签成功后仍须做防重放、幂等和状态迁移检查。
+     * 商户回调密码学验签入口，参见《交行直充业务系统详细设计》3.1。
+     * 调用方先从可信配置确定商户范围，再按报文keyId查该商户未撤销的密钥；
+     * trustedKeyId和signKey必须来自这条可信记录，未知/撤销/跨商户密钥直接拒绝，不试最新密钥。
+     * 订单不绑定密钥；普通token刷新不更换商户密钥，token过期也不影响回调验签。
+     * 验签成功后仍须独立确认本商户本地订单身份、业务字段、幂等和状态迁移。
      */
     public static boolean verifyCallback(Operation operation, Map<String, ?> payload,
-                                         String trustedOrderSn, String trustedKeyId, String signKey) {
+                                         String trustedKeyId, String signKey) {
         requireInputs(operation, payload);
         if (!operation.callback) {
             throw new IllegalArgumentException("verifyCallback仅用于两类回调");
         }
-        if (trustedOrderSn == null || trustedOrderSn.isEmpty() || trustedKeyId == null || trustedKeyId.isEmpty()
-                || !trustedOrderSn.equals(payload.get(ORDER_FIELD)) || !trustedKeyId.equals(payload.get(KEY_ID_FIELD))) {
+        if (trustedKeyId == null || trustedKeyId.isEmpty()
+                || !trustedKeyId.equals(payload.get(KEY_ID_FIELD))) {
             return false;
         }
         return verify(operation, payload, signKey);

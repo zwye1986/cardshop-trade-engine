@@ -2,7 +2,9 @@ package com.cardshop.trade.engine.application.recharge;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
+import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential;
+import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort;
+import com.cardshop.trade.engine.application.v1.crypto.V12MessageSignatures;
 import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
@@ -11,7 +13,7 @@ import org.junit.jupiter.api.Test;
 /**
  * V1 商户回调签名测试。
  *
- * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」的空字段保留和 SM3
+ * <p>覆盖 {@code docs/交行直充业务系统详细设计.md}「3.1」「9.3 回调设计」的商户当前密钥和 HMAC-SM3
  * 签名规则。回调 payload 的 key 不能因为 Java null 或业务字段缺失而被省略。
  */
 class V1MerchantNotifyPayloadSignerTest {
@@ -59,15 +61,42 @@ class V1MerchantNotifyPayloadSignerTest {
 
     private static com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort store() {
         var store = org.mockito.Mockito.mock(com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort.class);
-        org.mockito.Mockito.when(store.findForOrder("A36","ORDER-1")).thenReturn(Optional.of(
-            new com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential("bound-key","app","A36",
-                "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",Instant.EPOCH)));
+        org.mockito.Mockito.when(store.findCurrent("A36")).thenReturn(Optional.of(
+            new com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential("bound-key","A36",
+                "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")));
         return store;
     }
-    @Test void rejectsOrderWithoutHistoricalKeyInsteadOfUsingLatestKey() {
+    @Test void rejectsMerchantWithoutCurrentKey() {
         var signer = new V1MerchantNotifyPayloadSigner(
                 com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort.unavailable());
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> signer.signOrderStatus(order(),"12",Instant.now()))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test void laterCallbacksForSameOrderUseRotatedMerchantCurrentKey() {
+        var store = org.mockito.Mockito.mock(V12SigningCredentialStorePort.class);
+        String key = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        org.mockito.Mockito.when(store.findCurrent("A36")).thenReturn(
+                Optional.of(new V12SigningCredential("first-key", "A36", key)),
+                Optional.of(new V12SigningCredential("rotated-key", "A36", key)));
+        var signer = new V1MerchantNotifyPayloadSigner(store);
+        Instant now = Instant.parse("2026-07-08T03:20:00Z");
+
+        var first = signer.signOrderStatus(order(), "12", now);
+        var later = signer.signWriteOff(order(), now);
+
+        assertThat(first).containsEntry("keyId", "first-key");
+        assertThat(later).containsEntry("keyId", "rotated-key");
+        assertThat(V12MessageSignatures.verify(V12MessageSignatures.Operation.ORDER_CALLBACK, first, key)).isTrue();
+        assertThat(V12MessageSignatures.verify(V12MessageSignatures.Operation.WRITEOFF_CALLBACK, later, key)).isTrue();
+    }
+
+    @Test void rejectsCredentialFromDifferentMerchant() {
+        var store = org.mockito.Mockito.mock(V12SigningCredentialStorePort.class);
+        org.mockito.Mockito.when(store.findCurrent("A36")).thenReturn(Optional.of(
+                new V12SigningCredential("foreign-key", "OTHER", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")));
+        var signer = new V1MerchantNotifyPayloadSigner(store);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> signer.signOrderStatus(order(), "12", Instant.now()))
                 .isInstanceOf(IllegalStateException.class);
     }
 

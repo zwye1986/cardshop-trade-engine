@@ -21,7 +21,8 @@ public final class A39BusinessScenarioRunner {
     private static final String ASYNC_PROCESSING_CODE = "510";
     private static final List<String> TERMINAL_ORDER_STATUSES = List.of("6", "11", "12");
 
-    private final java.util.function.BiConsumer<String, Credentials> callbackBinding;
+    private final Consumer<Credentials> credentialRegistration;
+    private final java.util.function.BiConsumer<String, String> orderRegistration;
     private final V1CardApiClient client;
     private final V12Signer signer;
     private final Duration queryIntervalOverride;
@@ -37,12 +38,14 @@ public final class A39BusinessScenarioRunner {
             V12Signer signer,
             Duration queryIntervalOverride,
             Consumer<String> logSink) {
-        this(client, signer, queryIntervalOverride, logSink, (order, credential) -> { });
+        this(client, signer, queryIntervalOverride, logSink, credential -> { }, (order, account) -> { });
     }
 
     public A39BusinessScenarioRunner(V1CardApiClient client, V12Signer signer, Duration queryIntervalOverride,
-            Consumer<String> logSink, java.util.function.BiConsumer<String, Credentials> callbackBinding) {
-        this.callbackBinding = Objects.requireNonNull(callbackBinding);
+            Consumer<String> logSink, Consumer<Credentials> credentialRegistration,
+            java.util.function.BiConsumer<String, String> orderRegistration) {
+        this.credentialRegistration = Objects.requireNonNull(credentialRegistration);
+        this.orderRegistration = Objects.requireNonNull(orderRegistration);
         this.client = Objects.requireNonNull(client, "client must not be null");
         this.signer = Objects.requireNonNull(signer, "signer must not be null");
         this.queryIntervalOverride = queryIntervalOverride;
@@ -53,7 +56,9 @@ public final class A39BusinessScenarioRunner {
         Objects.requireNonNull(options, "options must not be null");
         Credentials token = client.getToken(options.appId(), options.appSecret());
         Map<String, Object> createPayload = createPayload(options, token.signKey());
-        callbackBinding.accept(options.outOrderSn(), token);
+        // 下单前分别登记商户密钥和可信订单，避免早到回调；订单不绑定密钥，见详细设计3.1。
+        credentialRegistration.accept(token);
+        orderRegistration.accept(options.outOrderSn(), options.account());
         V1CardApiClient.ApiResponse createResponse = client.createRechargeOrder(
                 token.token(),
                 createPayload,

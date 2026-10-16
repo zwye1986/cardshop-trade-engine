@@ -55,7 +55,7 @@ class AcceptRechargeOrderLuaArgumentsTest {
                         "1783224958000",
                         "1783225258000",
                         "604800000",
-                        "600000", "order-key-id");
+                        "600000");
     }
 
     @Test
@@ -99,6 +99,6 @@ class AcceptRechargeOrderLuaArgumentsTest {
                 "selection-fingerprint",
                 true,
                 1783224958000L,
-                1783225258000L, "order-key-id");
+                1783225258000L);
     }
 }

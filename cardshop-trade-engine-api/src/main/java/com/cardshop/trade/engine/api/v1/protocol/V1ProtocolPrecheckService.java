@@ -145,10 +145,9 @@ public class V1ProtocolPrecheckService {
             return V1ProtocolPrecheckResult.invalid(timestampResult.reason());
         }
 
-        // V1.2只信任认证上下文提供的成组凭证，aesKey仅交给解密器。任何旧压测头都不能旁路验签。
+        // 详细设计3.1：只信任认证商户当前密钥，aesKey仅交给解密器，压测头不能旁路。
         var credential = merchant.signingCredential();
-        if (credential == null || !merchant.appId().equals(credential.appId())
-                || !merchant.orgCode().equals(credential.orgCode())) {
+        if (credential == null || !merchant.orgCode().equals(credential.orgCode())) {
             return V1ProtocolPrecheckResult.invalid(V1ProtocolFailureReason.SIGN_FAILED);
         }
         V1SignatureVerifyResult signatureResult = signatureVerifierFunction.apply(payload, credential.signKey());

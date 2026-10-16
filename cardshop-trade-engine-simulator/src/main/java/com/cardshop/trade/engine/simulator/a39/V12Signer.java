@@ -15,9 +15,9 @@ public final class V12Signer {
     public Signature signCallback(Map<String, ?> payload, String signKey) {
         return sign(callbackOperation(payload), payload, signKey);
     }
-    public boolean verifyCallback(Map<String, ?> payload, String orderSn, Credentials credential) {
+    public boolean verifyCallback(Map<String, ?> payload, String keyId, String signKey) {
         return HmacSm3SignUtils.verifyCallback(callbackOperation(payload), payload,
-                orderSn, credential.keyId(), credential.signKey());
+                keyId, signKey);
     }
     private static Operation callbackOperation(Map<String, ?> payload) {
         return payload.containsKey("order_status") ? Operation.ORDER_CALLBACK : Operation.WRITEOFF_CALLBACK;

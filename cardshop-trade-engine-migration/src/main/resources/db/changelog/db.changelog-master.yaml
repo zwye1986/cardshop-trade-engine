@@ -563,7 +563,7 @@ databaseChangeLog:
             sql: |
               SELECT 1
 
-  # V1.2独立签名凭证持久化及订单绑定；先部署DDL再启用新入口。
+  # V1.2首次实现的结构记录，商户级版本不再读写此表和订单绑定列；保留既有变更记录。
   - changeSet:
       id: 0018-v12-signing-credentials
       author: codex
@@ -585,6 +585,35 @@ databaseChangeLog:
                 ADD COLUMN signing_key_id varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '' COMMENT '订单创建时绑定的签名密钥标识',
                 ADD INDEX idx_order_signing_key (signing_key_id);
       # 已签发凭证和订单绑定不可在回滚时直接丢弃，回滚操作必须保留历史密钥及绑定。
+      rollback:
+        - sql:
+            sql: SELECT 1
+
+  # 商户级签名密钥：参见详细设计「V1.2 密钥存储实施约束」。开发/测试直接建表，不迁移旧数据。
+  - changeSet:
+      id: 0019-v12-merchant-signing-keys
+      author: codex
+      changes:
+        - sql:
+            sql: |
+              CREATE TABLE recharge_v12_merchant_key (
+                org_code varchar(64) COLLATE utf8mb4_bin NOT NULL COMMENT '商户编码',
+                current_key_id varchar(64) CHARACTER SET ascii COLLATE ascii_bin NULL COMMENT '商户当前签名密钥标识',
+                created_at datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+                PRIMARY KEY (org_code)
+              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V1.2商户当前签名密钥指针';
+              CREATE TABLE recharge_v12_merchant_signing_key (
+                key_id varchar(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '签名密钥标识',
+                org_code varchar(64) COLLATE utf8mb4_bin NOT NULL COMMENT '商户编码',
+                encrypted_sign_key varchar(256) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT 'AES-256-GCM加密签名密钥',
+                key_status varchar(16) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '密钥状态：CURRENT当前、RETIRED历史、REVOKED撤销',
+                created_at datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '密钥创建时间',
+                retired_at datetime(3) NULL COMMENT '密钥退役时间',
+                revoked_at datetime(3) NULL COMMENT '密钥撤销时间',
+                PRIMARY KEY (key_id),
+                KEY idx_v12_merchant_key_status (org_code, key_status)
+              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='V1.2商户签名密钥版本';
+      # 当前/历史密钥用于正常回调重试；回滚应用不自动销毁密钥。
       rollback:
         - sql:
             sql: SELECT 1

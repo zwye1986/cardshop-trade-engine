@@ -29,10 +29,12 @@ class PersistRechargeOrderConsumerServiceTest {
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-07-07T01:30:00Z"), ZoneOffset.UTC);
 
     @Test
-    void mqFallbackSnapshotPreservesOrderKeyBindingThroughPersistenceCommand() {
+    void mqFallbackSnapshotAndAcceptCommandDoNotBindSigningKey() {
         var snapshot = PersistOrderSnapshot.fromInitialSnapshot(message(1L));
-        assertThat(snapshot.signingKeyId()).isEqualTo("bound-key");
-        assertThat(snapshot.toAcceptCommand(1000L, 2000L).signingKeyId()).isEqualTo("bound-key");
+        assertThat(java.util.Arrays.stream(snapshot.getClass().getRecordComponents()).map(java.lang.reflect.RecordComponent::getName))
+                .doesNotContain("signingKeyId");
+        assertThat(java.util.Arrays.stream(snapshot.toAcceptCommand(1000L, 2000L).getClass().getRecordComponents())
+                .map(java.lang.reflect.RecordComponent::getName)).doesNotContain("signingKeyId");
     }
 
     @Test

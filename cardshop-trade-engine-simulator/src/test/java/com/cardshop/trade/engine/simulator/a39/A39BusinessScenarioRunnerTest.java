@@ -58,6 +58,18 @@ class A39BusinessScenarioRunnerTest {
                 );
     }
 
+    @Test
+    void registersMerchantCredentialAndTrustedOrderSeparatelyBeforeSending() throws Exception {
+        CapturingClient client = new CapturingClient(new V1CardApiClient.ApiResponse("505", "订单号重复", Map.of()));
+        List<String> events = new ArrayList<>();
+        client.beforeCreate = () -> assertThat(events).containsExactly("merchant:test-key", "order:OUT-6:18186222336");
+        new A39BusinessScenarioRunner(client, new V12Signer(), Duration.ZERO, ignored -> { },
+                credential -> events.add("merchant:" + credential.keyId()),
+                (order, account) -> events.add("order:" + order + ":" + account))
+                .run(options("OUT-6", 0));
+        assertThat(client.createPayload).containsEntry("out_order_sn", "OUT-6");
+    }
+
     private static A39SimulatorOptions options(String outOrderSn, int queryAttempts) {
         return new A39SimulatorOptions(
                 "http://apitest.kalaiwang.com",
@@ -96,6 +108,7 @@ class A39BusinessScenarioRunnerTest {
     private static final class CapturingClient implements V1CardApiClient {
 
         private final ApiResponse createResponse;
+        private Runnable beforeCreate = () -> { };
         private Map<String, Object> createPayload = Map.of();
         private final List<Map<String, Object>> queryPayloads = new ArrayList<>();
         private final List<ApiResponse> queryResponses = new ArrayList<>();
@@ -111,6 +124,7 @@ class A39BusinessScenarioRunnerTest {
 
         @Override
         public ApiResponse createRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            beforeCreate.run();
             this.createPayload = Map.copyOf(payload);
             return createResponse;
         }

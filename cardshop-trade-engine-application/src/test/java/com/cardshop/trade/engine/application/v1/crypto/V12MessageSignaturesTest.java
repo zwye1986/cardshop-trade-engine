@@ -73,14 +73,13 @@ class V12MessageSignaturesTest {
         p.put("invalid_time",null);
         assertThrows(IllegalArgumentException.class, () -> V12MessageSignatures.canonicalize(WRITEOFF_CALLBACK,p));
     }
-    @Test void callbackMustMatchTrustedOrderAndKeyBinding() throws Exception {
+    @Test void callbackMustMatchScopedTrustedKeyWithoutOrderKeyBinding() throws Exception {
         Map<String,Object> p=payload(4);
-        String order=p.get("out_order_sn").toString(), id=p.get("keyId").toString();
-        assertTrue(V12MessageSignatures.verifyCallback(ORDER_CALLBACK,p,order,id,KEY));
-        assertFalse(V12MessageSignatures.verifyCallback(ORDER_CALLBACK,p,order,"new-key",KEY));
-        assertFalse(V12MessageSignatures.verifyCallback(ORDER_CALLBACK,p,"other-order",id,KEY));
-        assertFalse(V12MessageSignatures.verifyCallback(ORDER_CALLBACK,p,order,null,KEY));
-        assertThrows(IllegalArgumentException.class, () -> V12MessageSignatures.verifyCallback(QUERY,p,order,id,KEY));
+        String id=p.get("keyId").toString();
+        assertTrue(V12MessageSignatures.verifyCallback(ORDER_CALLBACK,p,id,KEY));
+        assertFalse(V12MessageSignatures.verifyCallback(ORDER_CALLBACK,p,"new-key",KEY));
+        assertFalse(V12MessageSignatures.verifyCallback(ORDER_CALLBACK,p,null,KEY));
+        assertThrows(IllegalArgumentException.class, () -> V12MessageSignatures.verifyCallback(QUERY,p,id,KEY));
         p.put("keyId","tampered"); assertFalse(V12MessageSignatures.verify(ORDER_CALLBACK,p,KEY));
     }
     @Test void callbackUnknownFieldsAreRejectedToAvoidConsumingUnsignedData() throws Exception {

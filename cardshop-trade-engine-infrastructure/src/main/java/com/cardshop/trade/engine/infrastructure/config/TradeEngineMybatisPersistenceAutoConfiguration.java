@@ -88,13 +88,14 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     @ConditionalOnMissingBean(com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort.class)
     public com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort v12CredentialStore(
             org.springframework.beans.factory.ObjectProvider<com.cardshop.trade.engine.infrastructure.persistence.mapper.V12SigningKeyMapper> mapper,
+            org.springframework.beans.factory.ObjectProvider<org.springframework.transaction.PlatformTransactionManager> transactionManager,
             TradeEngineProperties properties) {
         if (properties.getV1().getSigningKeyEncryptionKey().isBlank()) {
             return com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort.unavailable();
         }
         return new com.cardshop.trade.engine.infrastructure.persistence.MybatisV12SigningCredentialStore(mapper.getObject(),
                 new com.cardshop.trade.engine.infrastructure.security.V12KeyEnvelope(
-                        properties.getV1().getSigningKeyEncryptionKey()));
+                        properties.getV1().getSigningKeyEncryptionKey()), transactionManager.getObject());
     }
 
 

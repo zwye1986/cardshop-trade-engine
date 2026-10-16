@@ -515,7 +515,6 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 Map.entry("selected_product_id", command.selectedProductId()),
                 Map.entry("account", command.account()),
                 Map.entry("notify_url", command.notifyUrl()),
-                Map.entry("signing_key_id", command.signingKeyId()),
                 Map.entry("num", command.num()),
                 Map.entry("order_price", command.orderAmountCent()),
                 Map.entry("product_name", command.productName()),
@@ -644,8 +643,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 productSelection.cacheFingerprint(),
                 productSelection.productSnapshotAvailable(),
                 now,
-                now + settings.firstPersistRetryDelay().toMillis(),
-                command.signingCredential().keyId());
+                now + settings.firstPersistRetryDelay().toMillis());
         return Preparation.ready(acceptCommand, request.outOrderSn());
     }
 

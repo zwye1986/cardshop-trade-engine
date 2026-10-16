@@ -117,7 +117,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 .containsEntry("out_order_sn", "OUT-1001");
         assertThat(acceptPort.lastCommand).isNotNull();
         assertThat(acceptPort.lastCommand.orgCode()).isEqualTo("A36");
-        assertThat(acceptPort.lastCommand.signingKeyId()).isEqualTo("test-key");
+        assertThat(java.util.Arrays.stream(acceptPort.lastCommand.getClass().getRecordComponents())
+                .map(java.lang.reflect.RecordComponent::getName)).doesNotContain("signingKeyId");
         assertThat(acceptPort.lastCommand.productId()).isEqualTo("73301280");
         assertThat(acceptPort.lastCommand.selectedProductId()).isEqualTo("73301289");
         assertThat(acceptPort.lastCommand.orderAmountCent()).isEqualTo(5200L);
@@ -495,7 +496,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 .containsEntry("coupon_type", "codekey")
                 .containsEntry("supplier_channel", "TF_KA")
                 .containsEntry("request_hash_version", "v1")
-                .containsEntry("request_hash_alg", "SHA-256");
+                .containsEntry("request_hash_alg", "SHA-256")
+                .doesNotContainKey("signing_key_id");
         assertThat(reliabilityPort.lastPersistMessageId).isEqualTo(publisher.lastMessage.messageId());
     }
 

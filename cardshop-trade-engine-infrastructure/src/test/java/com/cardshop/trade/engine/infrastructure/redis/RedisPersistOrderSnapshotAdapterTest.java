@@ -51,7 +51,8 @@ class RedisPersistOrderSnapshotAdapterTest {
         var snapshot = adapter.findLatestSnapshot("A36", "OUT-1001", "ORDER-1001");
 
         assertThat(snapshot).isPresent();
-        assertThat(snapshot.get().signingKeyId()).isEqualTo("bound-key");
+        assertThat(java.util.Arrays.stream(snapshot.get().getClass().getRecordComponents())
+                .map(java.lang.reflect.RecordComponent::getName)).doesNotContain("signingKeyId");
         assertThat(snapshot.get().orderId()).isEqualTo("ORDER-1001");
         assertThat(snapshot.get().productName()).isEqualTo("交行话费100元");
         assertThat(snapshot.get().orderVersion()).isEqualTo(2L);

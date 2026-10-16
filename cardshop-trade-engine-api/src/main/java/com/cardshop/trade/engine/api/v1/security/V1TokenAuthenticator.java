@@ -64,7 +64,7 @@ public class V1TokenAuthenticator {
 
     public V1TokenAuthenticator(V1TokenSettings settings, Clock clock, Optional<V1TokenStorePort> tokenStorePort,
                                 Optional<V12SigningCredentialStorePort> credentialStore) {
-        this.credentialStore = credentialStore;
+        this.credentialStore = credentialStore == null ? Optional.empty() : credentialStore;
         this.settings = settings;
         this.clock = clock;
         this.tokenStorePort = tokenStorePort == null ? Optional.empty() : tokenStorePort;
@@ -112,10 +112,11 @@ public class V1TokenAuthenticator {
             if (!StringUtils.hasText(orgCode)) {
                 orgCode = optionalText(payload.get("org_code"));
             }
-            String keyId = optionalText(payload.get("keyId"));
-            if (!StringUtils.hasText(orgCode) || !StringUtils.hasText(keyId)) return Optional.empty();
-            Optional<V12SigningCredential> credential = credentialStore.get().findActive(appId,orgCode,keyId)
-                    .filter(key -> key.validForRequestAt(clock.instant()));
+            if (!StringUtils.hasText(orgCode)) return Optional.empty();
+            final String trustedOrgCode = orgCode;
+            // 详细设计3.1：token只确定可信商户；轮换后请求选择当前密钥，不跟随旧JWT的keyId。
+            Optional<V12SigningCredential> credential = credentialStore.get().findCurrent(orgCode)
+                    .filter(key -> trustedOrgCode.equals(key.orgCode()));
             if (credential.isEmpty()) return Optional.empty();
             return Optional.of(new AuthenticatedMerchant(appId, orgCode, credential.get()));
         } catch (Exception ex) {

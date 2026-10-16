@@ -48,7 +48,6 @@ local nextRetryTime = ARGV[28]
 local pendingTtlMs = tonumber(ARGV[29])
 local nonceTtlMs = tonumber(ARGV[30])
 -- V1.2非秘密密钥标识与订单原子写入；重复请求在前置幂等分支返回，不覆盖绑定。
-local signingKeyId = ARGV[31] or ''
 
 -- 父商品选品快照与子商品配置字段属于 Java/Redis/Lua 跨语言合同；参见详细设计「6. Redis 受理与缓存层」。
 local FIELD_PRODUCT_ID = 'product_id'
@@ -202,7 +201,6 @@ redis.call('HSET', KEYS[3],
   'selected_product_id', selectedProductId,
   'account', account,
   'notify_url', notifyUrl,
-  'signing_key_id', signingKeyId,
   'num', tostring(num),
   'order_price', tostring(amount),
   'product_name', productName,

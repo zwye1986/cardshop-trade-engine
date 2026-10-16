@@ -69,22 +69,29 @@ public class HttpMerchantNotifyClientAdapter implements MerchantNotifyClientPort
             return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "blank notify_url");
         }
         try {
-            // 对应详细设计3.1：正常重试不重签，但每次发送必须重新确认未撤销和订单绑定。
+            // 对应详细设计3.1、9.3：正常重试不重签，按可信任务商户和原文keyId确认历史密钥未撤销。
             var store = credentialStore.get();
-            if (store == null || request.orgCode() == null || request.orderId() == null) {
-                return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "V1.2 signing binding unavailable");
-            }
-            var credential = store.findForOrder(request.orgCode(),request.orderId());
-            if (credential.isEmpty()) {
-                return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "V1.2 signing key revoked or missing");
+            if (store == null || request.orgCode() == null || request.orgCode().isBlank()
+                    || request.orderId() == null || request.orderId().isBlank()
+                    || request.outOrderSn() == null || request.outOrderSn().isBlank()) {
+                return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "V1.2 trusted task identity unavailable");
             }
             Map<String,Object> payload = objectMapper.readValue(request.payload(),new TypeReference<>() {});
+            if (payload == null || !(payload.get("keyId") instanceof String keyId) || keyId.isBlank()) {
+                return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "V1.2 callback keyId missing or invalid");
+            }
+            var credential = store.findForCallback(request.orgCode(), keyId);
+            if (credential.isEmpty() || !request.orgCode().equals(credential.get().orgCode())) {
+                return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "V1.2 signing key revoked or missing");
+            }
             var operation = payload.containsKey("order_status") ? V12MessageSignatures.Operation.ORDER_CALLBACK
                     : V12MessageSignatures.Operation.WRITEOFF_CALLBACK;
+            // 密钥不绑定订单；独立核对任务的可信订单身份，避免合法商户签名替换待发任务的订单。
             if (!request.orderId().equals(payload.get("order_id"))
-                    || !V12MessageSignatures.verifyCallback(operation,payload,request.outOrderSn(),
+                    || !request.outOrderSn().equals(payload.get("out_order_sn"))
+                    || !V12MessageSignatures.verifyCallback(operation,payload,
                     credential.get().keyId(),credential.get().signKey())) {
-                return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "V1.2 callback signature or binding mismatch");
+                return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "V1.2 callback signature or task identity mismatch");
             }
             HttpRequest httpRequest = HttpRequest.newBuilder(URI.create(request.notifyUrl()))
                     .timeout(timeout)

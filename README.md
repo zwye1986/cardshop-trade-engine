@@ -20,7 +20,7 @@
 
 ## 关联测试辅助前端
 
-dev/test 集成测试阶段同时维护独立前端项目 `/Users/mac/Documents/codeSpace/frontend/cardshop-trade-engine-test-console`。该前端用于发送 V1/Actuator 请求、生成 curl、聚合 Redis/RabbitMQ/MySQL 证据和导出执行记录 Markdown。两个项目不在同一个 Git 仓库中，但接口、观测指标、Redis pending 补投入口和集成测试用例变更需要同步维护。
+原测试控制台 `/Users/mac/Documents/codeSpace/frontend/cardshop-trade-engine-test-console` 已删除且不可恢复，不再作为 dev/test 联调依赖。接口变更同步维护仓库内模拟器、可执行协议示例和集成指引；联调步骤与证据继续记录于 `docs/集成测试.md`。
 
 test188 HTTP 访问入口：`http://apitest.kalaiwang.com/testSuite/console/`。
 
@@ -380,7 +380,9 @@ Nacos 会按顺序加载：
 
 ## V1.2 签名切换与验证（2026-10-16）
 
-本服务直接使用V1.2：getToken签发独立随机32字节signKey及keyId，完整密钥用于HMAC-SM3；aesKey仅用于SM4。旧签名、签名旁路和旧系统代理均不开放。当前为全新项目的开发到测试阶段，不涉及旧业务数据迁移、旧订单换绑或旧回调任务清理。测试环境准备、数据库结构初始化、密钥配置及HTTPS联调步骤见[开发与测试环境部署说明](deploy/STARTUP.md)。
+最新协议采用商户级独立32字节signKey及keyId：首次getToken初始化，普通token刷新只更新token，继续返回同一keyId/signKey；专门轮换才生成新版本。完整密钥用于HMAC-SM3，aesKey仅用于SM4，订单不绑定签名密钥。当前为全新项目的开发到测试阶段，不涉及旧业务数据迁移或生产切流。测试环境准备、结构初始化、密钥配置及HTTPS要求见[开发与测试环境部署说明](deploy/STARTUP.md)。
+
+实现已调整为商户级生命周期：密钥版本加密持久化，普通token刷新复用当前版本，专门轮换与撤销通过受控内部端口执行。数据库新增结构见0019，具体约束见详细设计3.1。
 
 原`cardshop-trade-engine-test-console`已删除且不可恢复。本次使用仓库内模拟器与自动化测试验证协议，不依赖该目录。模拟器内`example.v12.crypto.HmacSm3SignUtils`来自对外交付的Java源码包，调用方复制源码即可，只依赖公开的Bouncy Castle，不需要任何`com.cardshop.openapi`依赖。
 
@@ -390,6 +392,6 @@ mvn -f cardshop-trade-engine-simulator/pom.xml test
 ./scripts/package-a39-simulator.sh
 ```
 
-模拟器自动读取token/keyId/signKey成组凭证；scenario在下单前绑定本地订单与keyId，回调核对绑定并验签。模拟器进程内绑定不持久化，仅用于本次测试，不是生产商户的密钥保管实现。load模式发起同样完整的签名请求。取token响应及凭证对象的日志均脱敏。远端调用必须显式设置已确认的HTTPS入口，HTTP仅允许本机回环测试；旧HTTP默认入口会在发送前被拒绝。
+模拟器及对外Java源码示例已改为独立登记商户密钥与可信订单：刷新token保持密钥版本不变，回调按报文keyId选择本商户对应版本，再独立校验订单归属及业务幂等。签名字段、规范化、完整32字节使用和固定向量不变。远端调用仍须使用已确认HTTPS入口，凭证日志脱敏。
 
-服务端新增`recharge_v12_signing_key`加密存储及`recharge_order_ext.signing_key_id`绑定，Redis与MQ只携带keyId。刷新/请求过期不删除历史回调密钥，撤销会阻止后续发送，未知绑定不回退最新密钥。密钥和订单绑定属于恢复所需数据，应与业务库、部署主密钥共同备份并验证恢复。
+新方案按商户维护当前密钥及历史版本，继续加密保存signKey；不要求订单hash、MQ快照或订单表携带keyId。新回调以商户当前版本签名，正常重试保留原签名和keyId；轮换旧版仅用于已签名任务重试，撤销版全部拒绝。密钥、版本状态和部署主密钥属于恢复所需数据；0019创建recharge_v12_merchant_key和recharge_v12_merchant_signing_key，0018中的旧凭证表与订单绑定字段保留但不再读写。

@@ -13,7 +13,8 @@ import org.bouncycastle.crypto.digests.SM3Digest;
 
 /**
  * V1.2商户回调签名器；对应docs/交行直充业务系统详细设计.md「3.1」「9.3 回调设计」。
- * 只按订单持久化keyId加载未撤销历史密钥，不使用最新token密钥，不读取aesKey。
+ * 新回调任务使用商户当前未撤销密钥；普通重试保留已生成的签名原文，由发送边界检查历史密钥。
+ * 密钥不绑定订单或token，不读取aesKey。
  * 对外字段采用协议下划线命名；空字符串仍参与认证，keyId与业务字段共同签名。
  */
 public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigner {
@@ -35,8 +36,7 @@ public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigne
 
     @Override
     public Map<String, String> signOrderStatus(RechargeFulfillmentOrder order, String orderStatus, Instant now) {
-        V12SigningCredential credential = credentialStore.findForOrder(order.orgCode(),order.orderId())
-                .orElseThrow(() -> new IllegalStateException("order signing binding missing or revoked"));
+        V12SigningCredential credential = currentCredential(order.orgCode());
         String timestamp = String.valueOf(now.getEpochSecond());
         String nonce = nonce(order.orderId(), orderStatus, timestamp);
         Map<String, String> payload = orderedPayload();
@@ -56,8 +56,7 @@ public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigne
 
     @Override
     public Map<String, String> signWriteOff(RechargeFulfillmentOrder order, Instant invalidTime) {
-        V12SigningCredential credential = credentialStore.findForOrder(order.orgCode(),order.orderId())
-                .orElseThrow(() -> new IllegalStateException("order signing binding missing or revoked"));
+        V12SigningCredential credential = currentCredential(order.orgCode());
         String timestamp = String.valueOf(invalidTime.getEpochSecond());
         String nonce = nonce(order.orderId(), WRITE_OFF_NONCE_STATUS, timestamp);
         Map<String, String> payload = orderedPayload();
@@ -73,6 +72,13 @@ public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigne
         payload.put("keyId", credential.keyId());
         payload.put(SIGN_FIELD, V12MessageSignatures.sign(V12MessageSignatures.Operation.WRITEOFF_CALLBACK, payload, credential.signKey()));
         return payload;
+    }
+
+    /** 按可信订单所属商户取当前密钥，防止存储实现错误造成跨商户签名；参见详细设计3.1。 */
+    private V12SigningCredential currentCredential(String orgCode) {
+        return credentialStore.findCurrent(orgCode)
+                .filter(credential -> credential.orgCode().equals(orgCode))
+                .orElseThrow(() -> new IllegalStateException("merchant current signing key missing or revoked"));
     }
 
     private static Map<String, String> orderedPayload() {

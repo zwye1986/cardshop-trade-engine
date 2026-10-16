@@ -19,12 +19,14 @@ import java.time.Clock;
 import java.util.Base64;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential;
 import com.cardshop.trade.engine.application.v1.crypto.V12SigningCredentialStorePort;
 import com.cardshop.trade.engine.application.logging.LogStormGuard;
 
 /**
- * V1.2 Token及独立签名密钥成组签发；对应详细设计3.1。
+ * V1.2 Token签发与商户当前签名密钥领取；对应详细设计3.1。
+ * 首次初始化商户密钥，后续领取复用当前版本，不与 token 或订单建立绑定。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」
  * 和「3. API/V1 接入层」。实现遵循旧系统 `TokenUtils` 的兼容语义：HS512 JWT、
@@ -74,13 +76,10 @@ public class V1IssueTokenUseCaseService implements IssueV1TokenUseCase {
             return V1CardApiResultStatus.AUTH_FAILED.result();
         }
 
-        // 先持久化独立密钥，再发布当前token。Redis失败时不返回半套凭证，历史密钥不随TTL删除。
-        // 对应详细设计3.1；同一秒签发的keyId也不同，避免token和密钥发生错配。
-        V12SigningCredential credential = V12SigningCredential.generate(merchant.get().appId(),
-                merchant.get().orgCode(), clock.instant().plus(settings.tokenTtl()));
         try {
-            credentialStore.save(credential);
-            String token = createToken(merchant.get(), credential);
+            // 详细设计3.1：密钥按商户原子首次初始化，刷新只更换token，不创建或延长密钥。
+            V12SigningCredential credential = credentialStore.getOrCreateCurrent(merchant.get().orgCode());
+            String token = createToken(merchant.get());
             if (!tokenStorePort.storeIssuedToken(merchant.get().appId(), token, settings.tokenTtl())) {
                 return V1CardApiResultStatus.SYSTEM_ERROR.result();
             }
@@ -110,13 +109,14 @@ public class V1IssueTokenUseCaseService implements IssueV1TokenUseCase {
         }
     }
 
-    private String createToken(V1MerchantProfile merchant, V12SigningCredential credential) {
+    private String createToken(V1MerchantProfile merchant) {
         long now = clock.instant().getEpochSecond();
         long exp = now + settings.tokenTtl().toSeconds();
         Map<String, Object> header = Map.of("alg", "HS512", "typ", "JWT");
         Map<String, Object> payload = Map.of(
                 settings.tokenClaimKey(), merchant.appId(),
-                "keyId", credential.keyId(),
+                // keyId不再充当token唯一标识；同秒刷新以独立jti区分，密钥也不进入JWT。
+                "jti", UUID.randomUUID().toString(),
                 "orgCode", merchant.orgCode(),
                 "org_code", merchant.orgCode(),
                 "iat", now,
