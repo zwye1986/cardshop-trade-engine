@@ -613,7 +613,7 @@ public class RechargeOutboxWorkerService {
                         flowId,
                         null,
                         null,
-                        "供应商充值成功"));
+                        "供应商充值成功").withMinisoReceipt(response.minisoReceipt()));
                 createOrderStatusNotifyTask(order, LegacyOrderStatusCode.SUCCESS);
                 frequencyPort.releaseIfOwned(
                         order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
@@ -759,7 +759,7 @@ public class RechargeOutboxWorkerService {
                         flowId,
                         response.responseCode(),
                         null,
-                        "供应商查单确认成功"));
+                        "供应商查单确认成功").withMinisoReceipt(response.minisoReceipt()));
                 createOrderStatusNotifyTask(order, LegacyOrderStatusCode.SUCCESS);
                 frequencyPort.releaseIfOwned(
                         order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
@@ -836,7 +836,7 @@ public class RechargeOutboxWorkerService {
                     null,
                     response.responseCode(),
                     response.responseMessage(),
-                    "供应商作废成功"));
+                    "供应商作废成功").withMinisoReceipt(response.minisoReceipt()));
             createWriteOffNotifyTask(order);
             if (!releaseBalanceReservationAndEnqueueDelta(event, order, "供应商作废成功")) {
                 frequencyPort.releaseIfOwned(

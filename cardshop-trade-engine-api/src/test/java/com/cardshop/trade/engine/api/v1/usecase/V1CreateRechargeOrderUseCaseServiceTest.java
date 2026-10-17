@@ -495,9 +495,12 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 .containsEntry("product_type", 1)
                 .containsEntry("coupon_type", "codekey")
                 .containsEntry("supplier_channel", "TF_KA")
+                .containsEntry("supplier_batch_id", "100023")
                 .containsEntry("request_hash_version", "v1")
                 .containsEntry("request_hash_alg", "SHA-256")
                 .doesNotContainKey("signing_key_id");
+        assertThat(com.cardshop.trade.engine.application.recharge.PersistOrderSnapshot
+                .fromInitialSnapshot(publisher.lastMessage).supplierBatchId()).isEqualTo("100023");
         assertThat(reliabilityPort.lastPersistMessageId).isEqualTo(publisher.lastMessage.messageId());
     }
 
@@ -798,7 +801,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                         5200L,
                         5000L,
                         4900L,
-                        11L),
+                        11L).withSupplierBatchId("100023"),
                 acceptPort,
                 reliabilityPort,
                 publisher,

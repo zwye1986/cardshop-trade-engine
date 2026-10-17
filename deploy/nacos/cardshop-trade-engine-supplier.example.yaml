@@ -1,0 +1,14 @@
+# 名创专属协议默认关闭；仅供受控dev/test配置，不包含供应商凭证。
+# 先执行0020迁移并确认冻结批次/凭据持久化，再在测试窗口显式启用。
+trade:
+  engine:
+    supplier:
+      http-enabled: false
+      miniso:
+        enabled: false
+        base-url: ${MINISO_BASE_URL:}
+        tenant: MINISO
+        tripartite: ${MINISO_TRIPARTITE:}
+        version: tripartite1.0
+        key: ${MINISO_API_KEY:}
+        timeout-ms: 3000

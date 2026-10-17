@@ -395,3 +395,7 @@ mvn -f cardshop-trade-engine-simulator/pom.xml test
 模拟器及对外Java源码示例已改为独立登记商户密钥与可信订单：刷新token保持密钥版本不变，回调按报文keyId选择本商户对应版本，再独立校验订单归属及业务幂等。签名字段、规范化、完整32字节使用和固定向量不变。远端调用仍须使用已确认HTTPS入口，凭证日志脱敏。
 
 新方案按商户维护当前密钥及历史版本，继续加密保存signKey；不要求订单hash、MQ快照或订单表携带keyId。新回调以商户当前版本签名，正常重试保留原签名和keyId；轮换旧版仅用于已签名任务重试，撤销版全部拒绝。密钥、版本状态和部署主密钥属于恢复所需数据；0019创建recharge_v12_merchant_key和recharge_v12_merchant_signing_key，0018中的旧凭证表与订单绑定字段保留但不再读写。
+
+## 名创 MINISO 专属适配
+
+名创四个主动接口现由独立协议客户端实现，按供应商PDF和旧卡管使用大写MD5请求鉴权，不改变调用方V1.2 HMAC-SM3协议。真实适配默认关闭；配置、0020结构变更、冻结批次、凭据事务与待确认核销回调边界见 [启动说明](deploy/STARTUP.md#名创专属协议本地验证与受控启用) 和 [名创适配设计](docs/superpowers/specs/2026-10-17-miniso-legacy-request-auth-design.md)。本地测试通过不能替代真实名创沙箱验收。

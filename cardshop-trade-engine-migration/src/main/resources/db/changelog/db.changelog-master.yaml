@@ -617,3 +617,32 @@ databaseChangeLog:
       rollback:
         - sql:
             sql: SELECT 1
+
+  # 名创冻结批次与履约凭据：详细设计「名创 MINISO 专属协议实施约束（2026-10-17）」。
+  - changeSet:
+      id: 0020-miniso-fulfillment-receipts
+      author: codex
+      changes:
+        - sql:
+            sql: |
+              ALTER TABLE recharge_order_ext
+                ADD COLUMN supplier_batch_id varchar(64) NOT NULL DEFAULT '' COMMENT '供应商批次号快照';
+              CREATE TABLE recharge_miniso_receipt (
+                order_id varchar(100) COLLATE utf8mb4_bin NOT NULL COMMENT '平台订单号',
+                org_code varchar(64) COLLATE utf8mb4_bin NOT NULL COMMENT '商户编码',
+                batch_id int NOT NULL COMMENT '名创券批次号',
+                coupon_code varchar(128) COLLATE utf8mb4_bin NOT NULL COMMENT '名创券码',
+                phone varchar(64) COLLATE utf8mb4_bin NOT NULL COMMENT '充值手机号',
+                begin_time varchar(19) NOT NULL COMMENT '开始使用时间',
+                end_time varchar(19) NOT NULL COMMENT '结束使用时间',
+                coupon_status int NOT NULL COMMENT '名创券状态',
+                created_at datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+                updated_at datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
+                PRIMARY KEY (order_id),
+                UNIQUE KEY uk_miniso_coupon (coupon_code),
+                KEY idx_miniso_receipt_merchant (org_code, order_id)
+              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='名创直充履约凭据表';
+      # 回滚应用不得删除用于后续查单、作废、核销关联的业务凭据。
+      rollback:
+        - sql:
+            sql: SELECT 1

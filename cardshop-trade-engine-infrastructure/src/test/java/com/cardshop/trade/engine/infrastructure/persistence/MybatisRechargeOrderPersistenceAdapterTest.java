@@ -59,6 +59,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.order.getEditTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30));
 
         assertThat(store.ext.getOrderId()).isEqualTo("ORDER-1001");
+        assertThat(store.ext.getSupplierBatchId()).isEqualTo("100023");
         assertThat(store.ext.getPersistMsgId()).isEqualTo("persist-ORDER-1001-01");
         assertThat(store.ext.getPersistStatus()).isEqualTo("DB_PERSISTED");
         assertThat(store.ext.getPersistSource()).isEqualTo(PersistSource.MQ_SNAPSHOT_FALLBACK.name());
@@ -87,7 +88,8 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(dispatchOutbox.getNextRetryTime()).isEqualTo(LocalDateTime.of(2026, 7, 7, 9, 30, 1));
         assertThat(dispatchOutbox.getPayload())
                 .contains("\"order_id\":\"ORDER-1001\"")
-                .contains("\"supplier_channel\":\"BOCOM\"");
+                .contains("\"supplier_channel\":\"BOCOM\"")
+                .contains("\"supplier_batch_id\":\"100023\"");
 
         RechargeBalanceDeltaOutboxDO balanceOutbox = store.balanceByEventId("balance-flush-ORDER-1001");
         assertThat(balanceOutbox.getDeltaType()).isEqualTo("PRE_DEDUCT");
@@ -213,7 +215,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
                 "PERSIST_QUEUED",
                 1L,
                 0L,
-                1);
+                1).withSupplierBatchId("100023");
     }
 
     private static final class RecordingStore

@@ -49,6 +49,7 @@ record AcceptRechargeOrderLuaArguments(List<String> keys, List<String> args) {
                         String.valueOf(command.nowEpochMillis()),
                         String.valueOf(command.nextRetryEpochMillis()),
                         String.valueOf(pendingTtl.toMillis()),
-                        String.valueOf(nonceTtl.toMillis())));
+                        String.valueOf(nonceTtl.toMillis()),
+                        command.supplierBatchId()));
     }
 }

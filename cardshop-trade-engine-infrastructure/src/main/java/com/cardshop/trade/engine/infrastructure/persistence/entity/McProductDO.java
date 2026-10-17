@@ -23,6 +23,14 @@ public class McProductDO {
     @TableField("product_id")
     private String productId;
 
+    /** 外部产品编号，对应旧卡管名创券批次；参见详细设计名创实施约束。 */
+    @TableField("external_product_id")
+    private String externalProductId;
+
+    public String getExternalProductId() { return externalProductId; }
+
+    public void setExternalProductId(String value) { externalProductId = value; }
+
     @TableField("channel")
     private String channel;
 

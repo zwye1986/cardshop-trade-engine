@@ -16,7 +16,22 @@ public record SupplierGatewayResponse(
         String supplierOrderId,
         String responseCode,
         String responseMessage,
-        String rawResponse) {
+        String rawResponse,
+        MinisoFulfillmentReceipt minisoReceipt) {
+    public SupplierGatewayResponse(SupplierGatewayStatus status, String supplierOrderId, String responseCode, String responseMessage, String rawResponse) {
+        this(status, supplierOrderId, responseCode, responseMessage, rawResponse, null);
+    }
+
+    /** 携带凭据参与成功事务；参见详细设计名创实施约束。 */
+    public SupplierGatewayResponse withMinisoReceipt(MinisoFulfillmentReceipt receipt) {
+        return new SupplierGatewayResponse(status, supplierOrderId, responseCode, responseMessage, rawResponse, receipt);
+    }
+
+
+    /** 供应商原文可能包含券码，只允许受控落库，不进入默认日志表示。 */
+    @Override public String toString() {
+        return "SupplierGatewayResponse[status=" + status + ", payload=redacted]";
+    }
 
     public static SupplierGatewayResponse success(
             String supplierOrderId, String responseCode, String responseMessage, String rawResponse) {

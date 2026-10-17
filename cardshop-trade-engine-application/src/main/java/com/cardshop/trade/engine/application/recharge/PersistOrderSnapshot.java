@@ -42,6 +42,7 @@ import java.util.Objects;
  * @param orderVersion Redis 订单版本，对应 {@code recharge_order_ext.redis_order_version}
  * @param persistedVersion MySQL 已持久化版本，对应 {@code recharge_order_ext.persisted_version}
  * @param mqPublishCount MQ 发布次数，对应 {@code recharge_order_ext.mq_publish_count}
+ * @param supplierBatchId 供应商批次号快照
  */
 public record PersistOrderSnapshot(
         String orgCode,
@@ -71,7 +72,46 @@ public record PersistOrderSnapshot(
         String persistStatus,
         long orderVersion,
         long persistedVersion,
-        int mqPublishCount) {
+        int mqPublishCount,
+        String supplierBatchId) {
+    /** 旧合同缺失供应商批次时保持空值，禁止真实名创回源猜测；参见详细设计「名创 MINISO 专属协议实施约束（2026-10-17）」。 */
+    public PersistOrderSnapshot(
+            String orgCode,
+            String appId,
+            String orderId,
+            String outOrderSn,
+            String productId,
+            String selectedProductId,
+            String account,
+            String notifyUrl,
+            int num,
+            long orderPrice,
+            String productName,
+            long productValue,
+            int productType,
+            String couponType,
+            String supplierChannel,
+            String requestHash,
+            String requestHashVersion,
+            String requestHashAlg,
+            String orderStatus,
+            String validationStatus,
+            String failCode,
+            String failReason,
+            boolean dispatchAllowed,
+            boolean balanceReserved,
+            String persistStatus,
+            long orderVersion,
+            long persistedVersion,
+            int mqPublishCount) {
+        this(orgCode, appId, orderId, outOrderSn, productId, selectedProductId, account, notifyUrl, num, orderPrice, productName, productValue, productType, couponType, supplierChannel, requestHash, requestHashVersion, requestHashAlg, orderStatus, validationStatus, failCode, failReason, dispatchAllowed, balanceReserved, persistStatus, orderVersion, persistedVersion, mqPublishCount, "");
+    }
+
+    /** 冻结供应商批次并保留其余订单事实；参见详细设计「名创 MINISO 专属协议实施约束（2026-10-17）」。 */
+    public PersistOrderSnapshot withSupplierBatchId(String batchId) {
+        return new PersistOrderSnapshot(orgCode, appId, orderId, outOrderSn, productId, selectedProductId, account, notifyUrl, num, orderPrice, productName, productValue, productType, couponType, supplierChannel, requestHash, requestHashVersion, requestHashAlg, orderStatus, validationStatus, failCode, failReason, dispatchAllowed, balanceReserved, persistStatus, orderVersion, persistedVersion, mqPublishCount, defaultText(batchId));
+    }
+
 
     private static final String REDIS_TRUE = "1";
     private static final String TEXT_TRUE = "true";
@@ -82,6 +122,7 @@ public record PersistOrderSnapshot(
     private static final long PERSIST_CONSUMER_PLACEHOLDER_CONFIG_VERSION = 1L;
 
     public PersistOrderSnapshot {
+        supplierBatchId = supplierBatchId == null ? "" : supplierBatchId;
         orgCode = requireText(orgCode, "orgCode");
         appId = defaultText(appId);
         orderId = requireText(orderId, "orderId");
@@ -165,7 +206,7 @@ public record PersistOrderSnapshot(
                 text(snapshot, "persist_status", PersistStatus.PERSIST_QUEUED.name()),
                 longValue(snapshot, "order_version", message.orderVersion()),
                 longValue(snapshot, "persisted_version", 0L),
-                intValue(snapshot, "mq_publish_count", 1));
+                intValue(snapshot, "mq_publish_count", 1)).withSupplierBatchId(text(snapshot, "supplier_batch_id", ""));
     }
 
     AcceptRechargeOrderCommand toAcceptCommand(long nowEpochMillis, long nextRetryEpochMillis) {

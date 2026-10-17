@@ -23,5 +23,15 @@ public record OrderFulfillmentStatusUpdate(
         Long supplierFlowId,
         String failCode,
         String failReason,
-        String remark) {
+        String remark,
+        MinisoFulfillmentReceipt minisoReceipt) {
+    public OrderFulfillmentStatusUpdate(String orderId, FulfillmentDispatchStatus dispatchStatus, int orderStatus, String dataStatus, Long supplierFlowId, String failCode, String failReason, String remark) {
+        this(orderId, dispatchStatus, orderStatus, dataStatus, supplierFlowId, failCode, failReason, remark, null);
+    }
+
+    /** 携带凭据参与成功事务；参见详细设计名创实施约束。 */
+    public OrderFulfillmentStatusUpdate withMinisoReceipt(MinisoFulfillmentReceipt receipt) {
+        return new OrderFulfillmentStatusUpdate(orderId, dispatchStatus, orderStatus, dataStatus, supplierFlowId, failCode, failReason, remark, receipt);
+    }
+
 }

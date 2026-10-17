@@ -1,5 +1,10 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
+import com.cardshop.trade.engine.infrastructure.persistence.MinisoReceiptStore;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper;
+import com.cardshop.trade.engine.infrastructure.supplier.MinisoRoutingSupplierGateway;
+import com.cardshop.trade.engine.infrastructure.supplier.miniso.MinisoHttpClient;
+import com.cardshop.trade.engine.infrastructure.supplier.miniso.MinisoRechargeSupplierGatewayAdapter;
 import com.cardshop.trade.engine.application.recharge.AcceptRechargeOrderPort;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyRecordPort;
@@ -655,9 +660,17 @@ public class TradeEngineInfrastructureConfiguration {
     }
 
     @Bean
+    @ConditionalOnBean(MinisoReceiptMapper.class)
+    @ConditionalOnMissingBean(MinisoReceiptStore.class)
+    public MinisoReceiptStore minisoReceiptStore(MinisoReceiptMapper mapper) {
+        return new MinisoReceiptStore(mapper);
+    }
+
+    @Bean
     @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class, McOrderSupplierFlowMapper.class})
     @ConditionalOnMissingBean(RechargeFulfillmentOrderPort.class)
     public RechargeFulfillmentOrderPort rechargeFulfillmentOrderPort(
+            ObjectProvider<MinisoReceiptStore> minisoReceipts,
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper,
@@ -672,7 +685,8 @@ public class TradeEngineInfrastructureConfiguration {
                 extMapper,
                 flowMapper,
                 objectMapper,
-                clock);
+                clock,
+                minisoReceipts.getIfAvailable());
     }
 
     @Bean
@@ -721,6 +735,8 @@ public class TradeEngineInfrastructureConfiguration {
     @ConditionalOnProperty(prefix = "trade.engine.supplier", name = "http-enabled", havingValue = "true")
     @ConditionalOnMissingBean(RechargeSupplierGatewayPort.class)
     public RechargeSupplierGatewayPort rechargeSupplierGatewayPort(
+            ObjectProvider<MinisoReceiptMapper> minisoMappers,
+            ObjectProvider<MinisoReceiptStore> minisoStores,
             HttpClient httpClient,
             ObjectMapper objectMapper,
             TradeEngineProperties properties) {
@@ -734,7 +750,26 @@ public class TradeEngineInfrastructureConfiguration {
                     endpoint.getInvalidUrl(),
                     Duration.ofMillis(timeoutMs)));
         });
-        return new HttpRechargeSupplierGatewayAdapter(channels, objectMapper, httpClient);
+        var fallback = new HttpRechargeSupplierGatewayAdapter(channels, objectMapper, httpClient);
+        if (!properties.getSupplier().getMiniso().isEnabled()) return fallback;
+        var mapper = minisoMappers.getIfAvailable();
+        if (mapper == null || minisoStores.getIfAvailable() == null) {
+            throw new IllegalStateException("MINISO enabled without durable snapshot/receipt persistence");
+        }
+        var client = new MinisoHttpClient(properties.getSupplier().getMiniso().settings(), httpClient, objectMapper);
+        var miniso = new MinisoRechargeSupplierGatewayAdapter(client,
+                new com.cardshop.trade.engine.infrastructure.supplier.miniso.MinisoOrderSnapshotReader() {
+                    @Override public java.util.Optional<com.cardshop.trade.engine.infrastructure.supplier.miniso.MinisoOrderSnapshot> find(
+                            String orgCode, String orderId) {
+                        return java.util.Optional.ofNullable(mapper.selectSnapshot(orgCode, orderId));
+                    }
+                    @Override public java.util.Optional<com.cardshop.trade.engine.application.recharge.MinisoFulfillmentReceipt> localReceipt(
+                            String orgCode, String orderId) {
+                        return java.util.Optional.ofNullable(mapper.selectReceipt(orderId))
+                                .filter(receipt -> orgCode.equals(receipt.orgCode()));
+                    }
+                });
+        return new MinisoRoutingSupplierGateway(miniso, fallback);
     }
 
     @Bean

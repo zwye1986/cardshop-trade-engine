@@ -32,6 +32,25 @@ class RechargeOutboxWorkerServiceTest {
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-07-08T03:20:00Z"), ZoneOffset.UTC);
 
     @Test
+    void confirmedMinisoReceiptReachesTerminalWriteBeforeMerchantNotification() {
+        var receipt = new MinisoFulfillmentReceipt("ORDER-1","A36",100023,"TEST-C1","13800138000",
+                "2026-10-01 00:00:00","2026-12-01 00:00:00",0);
+        var outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
+        var orderPort = new FakeFulfillmentOrderPort(dispatchableOrder());
+        var notifications = new FakeNotifyTaskPort();
+        var gateway = new FakeSupplierGatewayPort(SupplierGatewayResponse.success("ORDER-1","200","ok","{}")
+                .withMinisoReceipt(receipt));
+        var service = new RechargeOutboxWorkerService(outboxPort,orderPort,gateway,new FakeFrequencyPort(true),
+                new FakeBalanceDeltaOutboxPort(),new FakeBalanceReleasePort(BalanceReservationReleaseResult.releasedSuccess()),
+                notifications,new FixedNotifyPayloadSigner(),CLOCK,settings());
+        assertThat(service.processDue(1,0,10,"worker").succeeded()).isEqualTo(1);
+        assertThat(orderPort.statusUpdates).anySatisfy(update -> {
+            assertThat(update.dispatchStatus()).isEqualTo(FulfillmentDispatchStatus.SUCCESS);
+            assertThat(update.minisoReceipt()).isEqualTo(receipt);
+        });
+    }
+
+    @Test
     void dispatchSuccessWritesSupplierFlowUpdatesOrderCreatesNotifyTaskAndCompletesOutbox() {
         FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
         FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(dispatchableOrder());

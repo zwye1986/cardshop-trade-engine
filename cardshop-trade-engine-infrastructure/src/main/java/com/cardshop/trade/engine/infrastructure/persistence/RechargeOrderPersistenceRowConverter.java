@@ -104,6 +104,7 @@ final class RechargeOrderPersistenceRowConverter {
         PersistOrderSnapshot snapshot = aggregate.snapshot();
         LocalDateTime persistedAt = persistedAt(aggregate);
         RechargeOrderExtDO ext = new RechargeOrderExtDO();
+        ext.setSupplierBatchId(snapshot.supplierBatchId());
         ext.setOrderId(snapshot.orderId());
         ext.setOrgCode(snapshot.orgCode());
         ext.setOutOrderSn(snapshot.outOrderSn());
@@ -235,6 +236,8 @@ final class RechargeOrderPersistenceRowConverter {
                     Map.entry("product_id", snapshot.productId()),
                     Map.entry("selected_product_id", snapshot.selectedProductId()),
                     Map.entry("supplier_channel", snapshot.supplierChannel()),
+                    Map.entry("supplier_batch_id", snapshot.supplierBatchId()),
+                    Map.entry("num", snapshot.num()),
                     Map.entry("order_price", snapshot.orderPrice()),
                     Map.entry("persist_msg_id", aggregate.persistMessageId()),
                     Map.entry("persist_source", aggregate.persistSource().name())));

@@ -1,0 +1,60 @@
+package com.cardshop.trade.engine.infrastructure.persistence;
+
+import com.cardshop.trade.engine.application.recharge.MinisoFulfillmentReceipt;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper;
+import java.util.Objects;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+
+/**
+ * 名创履约凭据保存，参与订单终态的同一事务，不提供独立库存能力。
+ * 参见详细设计「名创 MINISO 专属协议实施约束（2026-10-17）」。异常直接抛回事务边界，不吞错。
+ */
+public final class MinisoReceiptStore {
+    private final MinisoReceiptMapper mapper;
+    public MinisoReceiptStore(MinisoReceiptMapper mapper) { this.mapper = Objects.requireNonNull(mapper); }
+
+    private static boolean sameBatch(int batchId, String frozen) {
+        // 名创batchId为Integer，冻结源为旧表字符串；前导零不改变批次身份，与Gateway数值转换一致。
+        return frozen != null && frozen.length() <= 10 && frozen.matches("[0-9]+")
+                && Long.parseLong(frozen) == batchId;
+    }
+
+    public void save(MinisoFulfillmentReceipt receipt) {
+        try {
+            saveWithinOrderTransaction(receipt);
+        } catch (RuntimeException ex) {
+            // 数据库Duplicate entry消息含完整券码，禁止把原始cause交Worker日志/last_error；由上层采样安全栈。
+            throw new IllegalStateException("MINISO receipt persistence failed: " + ex.getClass().getSimpleName());
+        }
+    }
+
+    private void saveWithinOrderTransaction(MinisoFulfillmentReceipt receipt) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("MINISO receipt requires order transaction");
+        }
+        var snapshot = mapper.lockSnapshot(receipt.orderId());
+        if (snapshot == null || !receipt.orgCode().equals(snapshot.orgCode())
+                || !receipt.phone().equals(snapshot.account()) || snapshot.num() != 1
+                || !sameBatch(receipt.batchId(), snapshot.batchId())) {
+            throw new IllegalStateException("MINISO receipt ownership or frozen snapshot mismatch");
+        }
+        var existing = mapper.selectReceipt(receipt.orderId());
+        if (existing == null) {
+            // 券码全局唯一约束阻止另一订单盗用券码；冲突使订单终态事务整体回滚。
+            if (mapper.insert(receipt) != 1) throw new IllegalStateException("MINISO receipt insert failed");
+            return;
+        }
+        if (!existing.orgCode().equals(receipt.orgCode()) || existing.batchId() != receipt.batchId()
+                || !existing.phone().equals(receipt.phone()) || !existing.couponCode().equals(receipt.couponCode())
+                || !existing.beginTime().equals(receipt.beginTime()) || !existing.endTime().equals(receipt.endTime())) {
+            throw new IllegalStateException("MINISO immutable receipt conflict");
+        }
+        // 状态3作废终态优先；已使用不能退回未使用/过期。迟到查询只补证据，不回退已知终态。
+        int next = existing.couponStatus() == 3 || receipt.couponStatus() == 3 ? 3
+                : existing.couponStatus() == 1 || receipt.couponStatus() == 1 ? 1
+                : existing.couponStatus() == 2 ? 2 : receipt.couponStatus();
+        if (next != existing.couponStatus() && mapper.updateStatus(receipt.orderId(), next) != 1) {
+            throw new IllegalStateException("MINISO receipt status update failed");
+        }
+    }
+}

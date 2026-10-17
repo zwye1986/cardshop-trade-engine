@@ -26,6 +26,7 @@ import java.util.HexFormat;
  * @param validationStatus Java 候选校验结果
  * @param failCode Java 候选失败码
  * @param failReason Java 候选失败原因
+ * @param supplierBatchId 供应商批次号快照
  */
 public record V1ProductSelection(
         String productId,
@@ -41,7 +42,34 @@ public record V1ProductSelection(
         boolean productSnapshotAvailable,
         ValidationStatus validationStatus,
         String failCode,
-        String failReason) {
+        String failReason,
+        String supplierBatchId) {
+    /** 旧合同缺失供应商批次时保持空值，禁止真实名创回源猜测；参见详细设计「名创 MINISO 专属协议实施约束（2026-10-17）」。 */
+    public V1ProductSelection(
+            String productId,
+            String selectedProductId,
+            String supplierChannel,
+            String productName,
+            String couponType,
+            Integer productType,
+            Long salePriceCent,
+            Long faceValueCent,
+            Long basePriceCent,
+            Long productConfigVersion,
+            boolean productSnapshotAvailable,
+            ValidationStatus validationStatus,
+            String failCode,
+            String failReason) {
+        this(productId, selectedProductId, supplierChannel, productName, couponType, productType, salePriceCent, faceValueCent, basePriceCent, productConfigVersion, productSnapshotAvailable, validationStatus, failCode, failReason, "");
+    }
+
+    /** 冻结供应商批次并保留其余订单事实；参见详细设计「名创 MINISO 专属协议实施约束（2026-10-17）」。 */
+    public V1ProductSelection withSupplierBatchId(String batchId) {
+        return new V1ProductSelection(productId, selectedProductId, supplierChannel, productName, couponType, productType, salePriceCent, faceValueCent, basePriceCent, productConfigVersion, productSnapshotAvailable, validationStatus, failCode, failReason, batchId == null ? "" : batchId);
+    }
+
+
+    public V1ProductSelection { supplierBatchId = supplierBatchId == null ? "" : supplierBatchId; }
 
     private static final String FINGERPRINT_ALGORITHM = "SHA-256";
 
@@ -67,6 +95,7 @@ public record V1ProductSelection(
         appendFingerprintField(canonical, validationStatus == null ? null : validationStatus.name());
         appendFingerprintField(canonical, failCode);
         appendFingerprintField(canonical, failReason);
+        appendFingerprintField(canonical, supplierBatchId);
         try {
             byte[] digest = MessageDigest.getInstance(FINGERPRINT_ALGORITHM)
                     .digest(canonical.toString().getBytes(StandardCharsets.UTF_8));

@@ -108,6 +108,34 @@ class TradeEngineInfrastructureConfigurationTest {
             .withUserConfiguration(TradeEngineInfrastructureConfiguration.class);
 
     @Test
+    void supplierMockRouteRemainsDefaultAndRealMinisoRequiresDurableStore() {
+        contextRunner.withPropertyValues("trade.engine.supplier.http-enabled=true").run(context -> {
+            assertThat(context).hasSingleBean(RechargeSupplierGatewayPort.class);
+            assertThat(context.getBean(RechargeSupplierGatewayPort.class))
+                    .isInstanceOf(com.cardshop.trade.engine.infrastructure.supplier.HttpRechargeSupplierGatewayAdapter.class);
+        });
+        contextRunner.withPropertyValues("trade.engine.supplier.http-enabled=true",
+                "trade.engine.supplier.miniso.enabled=true").run(context -> assertThat(context).hasFailed());
+    }
+
+    @Test
+    void realMinisoRouteIsExplicitAndKeepsOtherChannelsOnGenericGateway() {
+        contextRunner.withBean(com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper.class,
+                () -> interfaceProxy(com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper.class))
+                .withPropertyValues("trade.engine.supplier.http-enabled=true", "trade.engine.supplier.miniso.enabled=true",
+                        "trade.engine.supplier.miniso.base-url=https://miniso.example.test",
+                        "trade.engine.supplier.miniso.tripartite=test", "trade.engine.supplier.miniso.key=test-only-key")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var gateway = context.getBean(RechargeSupplierGatewayPort.class);
+                    assertThat(gateway).isInstanceOf(com.cardshop.trade.engine.infrastructure.supplier.MinisoRoutingSupplierGateway.class);
+                    var response = gateway.query(new com.cardshop.trade.engine.application.recharge.SupplierQueryGatewayRequest(
+                            "event","ORDER","OUT","A39","13800138000","OTHER",java.util.Map.of()));
+                    assertThat(response.responseCode()).isEqualTo("SUPPLIER_QUERY_NOT_CONFIGURED");
+                });
+    }
+
+    @Test
     void defaultsRedisWritesToFailClosedUntilExplicitlyEnabled() {
         TradeEngineProperties properties = new TradeEngineProperties();
 

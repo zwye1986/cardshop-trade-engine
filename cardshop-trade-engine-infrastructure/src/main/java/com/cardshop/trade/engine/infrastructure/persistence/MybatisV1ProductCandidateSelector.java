@@ -128,7 +128,7 @@ public class MybatisV1ProductCandidateSelector implements V1ProductCandidateSele
                 true,
                 validationStatus,
                 failCode,
-                failReason);
+                failReason).withSupplierBatchId(selectedProduct.getExternalProductId());
     }
 
     private static long price(McDepartProductDO departProduct) {

@@ -522,6 +522,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 Map.entry("product_type", command.productType()),
                 Map.entry("coupon_type", command.couponType()),
                 Map.entry("supplier_channel", command.supplierChannel()),
+                Map.entry("supplier_batch_id", command.supplierBatchId()),
                 Map.entry("order_status", orderStatus(validationStatus)),
                 Map.entry("validation_status", validationStatus),
                 Map.entry("fail_code", acceptResult.failCode()),
@@ -643,7 +644,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 productSelection.cacheFingerprint(),
                 productSelection.productSnapshotAvailable(),
                 now,
-                now + settings.firstPersistRetryDelay().toMillis());
+                now + settings.firstPersistRetryDelay().toMillis()).withSupplierBatchId(productSelection.supplierBatchId());
         return Preparation.ready(acceptCommand, request.outOrderSn());
     }
 

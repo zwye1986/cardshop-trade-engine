@@ -1691,6 +1691,42 @@ public class TradeEngineProperties {
      * 供应商 Gateway 配置。
      */
     public static class Supplier {
+        /** 名创专属协议默认关闭；参见详细设计名创MINISO实施约束。 */
+        private final Miniso miniso = new Miniso();
+        public Miniso getMiniso() { return miniso; }
+
+        public static class Miniso {
+            private boolean enabled;
+            private String baseUrl = "";
+            private String tenant = "MINISO";
+            private String tripartite = "";
+            private String version = "tripartite1.0";
+            private String key = "";
+            private int timeoutMs = 3000;
+            public boolean isEnabled() { return enabled; }
+            public void setEnabled(boolean value) { enabled = value; }
+            public String getBaseUrl() { return baseUrl; }
+            public void setBaseUrl(String value) { baseUrl = value; }
+            public String getTenant() { return tenant; }
+            public void setTenant(String value) { tenant = value; }
+            public String getTripartite() { return tripartite; }
+            public void setTripartite(String value) { tripartite = value; }
+            public String getVersion() { return version; }
+            public void setVersion(String value) { version = value; }
+            public String getKey() { return key; }
+            public void setKey(String value) { key = value; }
+            public int getTimeoutMs() { return timeoutMs; }
+            public void setTimeoutMs(int value) { timeoutMs = value; }
+            public com.cardshop.trade.engine.infrastructure.supplier.miniso.MinisoSettings settings() {
+                java.net.URI uri;
+                try { uri = java.net.URI.create(baseUrl == null ? "" : baseUrl); }
+                catch (IllegalArgumentException ex) { throw new IllegalArgumentException("Invalid MINISO base URL"); }
+                return new com.cardshop.trade.engine.infrastructure.supplier.miniso.MinisoSettings(
+                        uri, tenant, tripartite, version, key, java.time.Duration.ofMillis(timeoutMs));
+            }
+            @Override public String toString() { return "Miniso[enabled=" + enabled + ",credentials=redacted]"; }
+        }
+
 
         private boolean httpEnabled = false;
         private int defaultTimeoutMs = 3000;

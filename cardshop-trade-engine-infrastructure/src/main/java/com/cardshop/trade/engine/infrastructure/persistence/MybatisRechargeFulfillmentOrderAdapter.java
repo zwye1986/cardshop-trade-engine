@@ -39,6 +39,7 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
     private final McOrderSupplierFlowMapper flowMapper;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private final MinisoReceiptStore minisoReceipts;
 
     public MybatisRechargeFulfillmentOrderAdapter(
             McOrderMapper orderMapper,
@@ -46,6 +47,13 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
             McOrderSupplierFlowMapper flowMapper,
             ObjectMapper objectMapper,
             Clock clock) {
+        this(orderMapper, extMapper, flowMapper, objectMapper, clock, null);
+    }
+
+    public MybatisRechargeFulfillmentOrderAdapter(McOrderMapper orderMapper, RechargeOrderExtMapper extMapper,
+            McOrderSupplierFlowMapper flowMapper, ObjectMapper objectMapper, Clock clock,
+            MinisoReceiptStore minisoReceipts) {
+        this.minisoReceipts = minisoReceipts;
         this.orderMapper = Objects.requireNonNull(orderMapper, "orderMapper must not be null");
         this.extMapper = Objects.requireNonNull(extMapper, "extMapper must not be null");
         this.flowMapper = Objects.requireNonNull(flowMapper, "flowMapper must not be null");
@@ -125,12 +133,19 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
     @Override
     @Transactional
     public void updateFulfillmentStatus(OrderFulfillmentStatusUpdate update) {
+        // 先保存并锁定可信订单凭据；本方法Spring事务保证凭据/主单/扩展状态整体提交或回滚。
+        if (update.minisoReceipt() != null) {
+            if (minisoReceipts == null || !update.orderId().equals(update.minisoReceipt().orderId())) {
+                throw new IllegalStateException("MINISO receipt store or order mismatch");
+            }
+            minisoReceipts.save(update.minisoReceipt());
+        }
         /*
          * supplierFlowId 对应旧表 mc_order.flow_id，用于运营后台按订单快速定位最后一次供应商流水。
          * 只有真实插入流水后才写入；频控等待、未找到订单等没有流水的状态更新保持 null，避免制造假关联。
          * 参见高可用方案「6.2 `mc_order` 字段说明」和详细设计「9.1 派单 Outbox」。
          */
-        orderMapper.update(null, new LambdaUpdateWrapper<McOrderDO>()
+        int orderRows = orderMapper.update(null, new LambdaUpdateWrapper<McOrderDO>()
                 .eq(McOrderDO::getOrderId, update.orderId())
                 .set(McOrderDO::getOrderStatus, update.orderStatus())
                 .set(McOrderDO::getDataStatus, update.dataStatus())
@@ -139,11 +154,14 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
                 .set(McOrderDO::getFailReason, update.failReason())
                 .set(McOrderDO::getRemark, update.remark())
                 .set(McOrderDO::getEditTime, now()));
-        extMapper.update(null, new LambdaUpdateWrapper<RechargeOrderExtDO>()
+        int extRows = extMapper.update(null, new LambdaUpdateWrapper<RechargeOrderExtDO>()
                 .eq(RechargeOrderExtDO::getOrderId, update.orderId())
                 .set(RechargeOrderExtDO::getDispatchStatus, update.dispatchStatus().name())
                 .set(RechargeOrderExtDO::getLastError, update.failReason())
                 .set(RechargeOrderExtDO::getUpdatedAt, now()));
+        if (update.minisoReceipt() != null && (orderRows != 1 || extRows != 1)) {
+            throw new IllegalStateException("MINISO order terminal update did not affect one owned row");
+        }
     }
 
     @Override

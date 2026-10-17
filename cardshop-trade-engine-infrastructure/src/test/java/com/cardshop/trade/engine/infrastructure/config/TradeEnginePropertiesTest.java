@@ -22,6 +22,22 @@ class TradeEnginePropertiesTest {
             .withUserConfiguration(PropertiesConfiguration.class);
 
     @Test
+    void minisoIsOptInAndUsesIndependentSupplierCredentials() {
+        contextRunner.run(context -> assertThat(context.getBean(TradeEngineProperties.class)
+                .getSupplier().getMiniso().isEnabled()).isFalse());
+        contextRunner.withPropertyValues("trade.engine.supplier.miniso.enabled=true",
+                "trade.engine.supplier.miniso.base-url=https://miniso.example.test",
+                "trade.engine.supplier.miniso.tripartite=test-partner",
+                "trade.engine.supplier.miniso.key=test-supplier-secret").run(context -> {
+            var miniso = context.getBean(TradeEngineProperties.class).getSupplier().getMiniso();
+            assertThat(miniso.isEnabled()).isTrue();
+            assertThat(miniso.settings().tenant()).isEqualTo("MINISO");
+            assertThat(miniso.settings().version()).isEqualTo("tripartite1.0");
+            assertThat(miniso.settings().toString()).doesNotContain("test-supplier-secret");
+        });
+    }
+
+    @Test
     void bindsDesignDefaults() {
         contextRunner.run(context -> {
             var properties = context.getBean(TradeEngineProperties.class);

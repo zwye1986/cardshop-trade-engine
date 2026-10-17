@@ -47,6 +47,8 @@ local now = ARGV[27]
 local nextRetryTime = ARGV[28]
 local pendingTtlMs = tonumber(ARGV[29])
 local nonceTtlMs = tonumber(ARGV[30])
+-- 名创冻结批次追加在合同末尾，兼容旧请求；参见详细设计名创实施约束。
+local supplierBatchId = ARGV[31] or ''
 -- V1.2非秘密密钥标识与订单原子写入；重复请求在前置幂等分支返回，不覆盖绑定。
 
 -- 父商品选品快照与子商品配置字段属于 Java/Redis/Lua 跨语言合同；参见详细设计「6. Redis 受理与缓存层」。
@@ -208,6 +210,7 @@ redis.call('HSET', KEYS[3],
   'product_type', productType,
   'coupon_type', couponType,
   'supplier_channel', supplierChannel,
+  'supplier_batch_id', supplierBatchId,
   'request_hash', requestHash,
   'request_hash_version', requestHashVersion,
   'request_hash_alg', requestHashAlg,

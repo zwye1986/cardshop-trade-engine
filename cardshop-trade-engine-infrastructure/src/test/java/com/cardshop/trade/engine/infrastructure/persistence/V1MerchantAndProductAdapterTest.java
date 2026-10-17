@@ -108,6 +108,7 @@ class V1MerchantAndProductAdapterTest {
         assertThat(selection.selectedProductId()).isEqualTo("80100023");
         assertThat(selection.productSnapshotAvailable()).isTrue();
         assertThat(selection.supplierChannel()).isEqualTo("MINISO");
+        assertThat(selection.supplierBatchId()).isEqualTo("100023");
         assertThat(selection.salePriceCent()).isEqualTo(1L);
         assertThat(selection.productName()).isEqualTo("名创直充100");
         assertThat(selection.productConfigVersion()).isEqualTo(1L);
@@ -245,6 +246,7 @@ class V1MerchantAndProductAdapterTest {
         product.setBasePrice(basePrice);
         product.setVersion(version);
         product.setStatus("1");
+        product.setExternalProductId("100023");
         return product;
     }
 }

@@ -30,6 +30,7 @@ public interface McProductMapper extends V1ProductReader {
               status,
               product_id as productId,
               channel,
+              external_product_id as externalProductId,
               coupon_type as couponType,
               product_name as productName,
               value,

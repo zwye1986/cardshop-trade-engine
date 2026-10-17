@@ -41,6 +41,7 @@ import java.util.Objects;
  * @param productSnapshotAvailable 是否已选出可供 Redis 父子快照校验的真实子商品
  * @param nowEpochMillis 接单请求当前时间戳，毫秒
  * @param nextRetryEpochMillis pending 首次补偿扫描时间，毫秒
+ * @param supplierBatchId 供应商批次号快照
  */
 public record AcceptRechargeOrderCommand(
         String orgCode,
@@ -70,9 +71,49 @@ public record AcceptRechargeOrderCommand(
         String productSelectionFingerprint,
         boolean productSnapshotAvailable,
         Long nowEpochMillis,
-        Long nextRetryEpochMillis) {
+        Long nextRetryEpochMillis,
+        String supplierBatchId) {
+    /** 旧合同缺失供应商批次时保持空值，禁止真实名创回源猜测；参见详细设计「名创 MINISO 专属协议实施约束（2026-10-17）」。 */
+    public AcceptRechargeOrderCommand(
+            String orgCode,
+            String appId,
+            String outOrderSn,
+            String orderId,
+            String productId,
+            String selectedProductId,
+            String account,
+            String notifyUrl,
+            String nonceStr,
+            Integer num,
+            Long orderAmountCent,
+            String productName,
+            Long productValueCent,
+            Integer productType,
+            String couponType,
+            String supplierChannel,
+            String requestHash,
+            String requestHashVersion,
+            String requestHashAlg,
+            ValidationStatus candidateValidationStatus,
+            String candidateFailCode,
+            String candidateFailReason,
+            Long merchantConfigVersion,
+            Long productConfigVersion,
+            String productSelectionFingerprint,
+            boolean productSnapshotAvailable,
+            Long nowEpochMillis,
+            Long nextRetryEpochMillis) {
+        this(orgCode, appId, outOrderSn, orderId, productId, selectedProductId, account, notifyUrl, nonceStr, num, orderAmountCent, productName, productValueCent, productType, couponType, supplierChannel, requestHash, requestHashVersion, requestHashAlg, candidateValidationStatus, candidateFailCode, candidateFailReason, merchantConfigVersion, productConfigVersion, productSelectionFingerprint, productSnapshotAvailable, nowEpochMillis, nextRetryEpochMillis, "");
+    }
+
+    /** 冻结供应商批次并保留其余订单事实；参见详细设计「名创 MINISO 专属协议实施约束（2026-10-17）」。 */
+    public AcceptRechargeOrderCommand withSupplierBatchId(String batchId) {
+        return new AcceptRechargeOrderCommand(orgCode, appId, outOrderSn, orderId, productId, selectedProductId, account, notifyUrl, nonceStr, num, orderAmountCent, productName, productValueCent, productType, couponType, supplierChannel, requestHash, requestHashVersion, requestHashAlg, candidateValidationStatus, candidateFailCode, candidateFailReason, merchantConfigVersion, productConfigVersion, productSelectionFingerprint, productSnapshotAvailable, nowEpochMillis, nextRetryEpochMillis, defaultString(batchId));
+    }
+
 
     public AcceptRechargeOrderCommand {
+        supplierBatchId = supplierBatchId == null ? "" : supplierBatchId;
         orgCode = requireText(orgCode, "orgCode");
         appId = requireText(appId, "appId");
         outOrderSn = requireText(outOrderSn, "outOrderSn");

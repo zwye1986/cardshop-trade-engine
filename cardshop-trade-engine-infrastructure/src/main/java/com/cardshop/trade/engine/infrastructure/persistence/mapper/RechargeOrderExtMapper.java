@@ -23,6 +23,7 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
      */
     @Insert("""
             insert into recharge_order_ext (
+              supplier_batch_id,
               order_id,
               org_code,
               out_order_sn,
@@ -46,6 +47,7 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
               updated_at
             )
             values (
+              #{supplierBatchId},
               #{orderId},
               #{orgCode},
               #{outOrderSn},
@@ -107,6 +109,7 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
     @Insert("""
             <script>
             insert into recharge_order_ext (
+              supplier_batch_id,
               order_id,
               org_code,
               out_order_sn,
@@ -132,6 +135,7 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
             values
             <foreach collection="rows" item="row" separator=",">
             (
+              #{row.supplierBatchId},
               #{row.orderId},
               #{row.orgCode},
               #{row.outOrderSn},
@@ -195,6 +199,7 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
     @Select("""
             <script>
             select
+              supplier_batch_id,
               order_id,
               org_code,
               out_order_sn,

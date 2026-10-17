@@ -48,6 +48,15 @@ class V1ProductSelectionTest {
         assertThat(passed.cacheFingerprint()).isNotEqualTo(failed.cacheFingerprint());
     }
 
+    @Test
+    void frozenSupplierBatchChangesFingerprintEvenWhenPriceAndVersionAreUnchanged() {
+        var first = passed(9000L).withSupplierBatchId("100023");
+        var second = passed(9000L).withSupplierBatchId("100024");
+        assertThat(first.supplierBatchId()).isEqualTo("100023");
+        assertThat(first.cacheFingerprint()).isNotEqualTo(second.cacheFingerprint());
+        assertThat(passed(9000L).supplierBatchId()).isEmpty();
+    }
+
     private static V1ProductSelection passed(long basePrice) {
         return V1ProductSelection.passed(
                 "80100022",

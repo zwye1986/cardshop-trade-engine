@@ -55,7 +55,7 @@ class AcceptRechargeOrderLuaArgumentsTest {
                         "1783224958000",
                         "1783225258000",
                         "604800000",
-                        "600000");
+                        "600000", "");
     }
 
     @Test

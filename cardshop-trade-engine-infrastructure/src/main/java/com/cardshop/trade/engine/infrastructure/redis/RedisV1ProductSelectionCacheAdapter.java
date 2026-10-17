@@ -202,6 +202,7 @@ public class RedisV1ProductSelectionCacheAdapter implements V1ProductSelectionCa
                 : loadedAt.plus(settings.refreshAfter());
         Instant expireAt = loadedAt.plus(logicalTtl);
         Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("supplier_batch_id", selection.supplierBatchId());
         fields.put(FIELD_PRODUCT_ID, value(selection.productId()));
         fields.put(FIELD_SELECTED_PRODUCT_ID, value(selection.selectedProductId()));
         fields.put(FIELD_SUPPLIER_CHANNEL, value(selection.supplierChannel()));
@@ -250,7 +251,7 @@ public class RedisV1ProductSelectionCacheAdapter implements V1ProductSelectionCa
                 Boolean.parseBoolean(required(fields, FIELD_PRODUCT_SNAPSHOT_AVAILABLE)),
                 ValidationStatus.valueOf(required(fields, FIELD_VALIDATION_STATUS)),
                 required(fields, FIELD_FAIL_CODE),
-                required(fields, FIELD_FAIL_REASON));
+                required(fields, FIELD_FAIL_REASON)).withSupplierBatchId(fields.getOrDefault("supplier_batch_id", ""));
         String storedFingerprint = required(fields, FIELD_SELECTION_FINGERPRINT);
         if (!storedFingerprint.equals(selection.cacheFingerprint())) {
             throw new IllegalArgumentException("product selection cache fingerprint mismatch");
@@ -379,7 +380,7 @@ public class RedisV1ProductSelectionCacheAdapter implements V1ProductSelectionCa
                   FIELD_PRODUCT_SNAPSHOT_AVAILABLE, ARGV[14], FIELD_VALIDATION_STATUS, ARGV[15],
                   FIELD_FAIL_CODE, ARGV[16], FIELD_FAIL_REASON, ARGV[17], FIELD_LOADED_AT, ARGV[18],
                   FIELD_REFRESH_AFTER, ARGV[19], FIELD_EXPIRE_AT, ARGV[20],
-                  FIELD_CACHE_KIND, ARGV[21])
+                  FIELD_CACHE_KIND, ARGV[21], 'supplier_batch_id', ARGV[#ARGV])
                 """;
         private static final String CHILD_FIELD_DECLARATIONS = """
                 local CHILD_FIELD_STATUS = '%s'
@@ -472,6 +473,7 @@ public class RedisV1ProductSelectionCacheAdapter implements V1ProductSelectionCa
             appendFields(args, snapshotFields, SNAPSHOT_FIELD_ORDER);
             appendFields(args, childFields, CHILD_FIELD_ORDER);
             args.add(String.valueOf(physicalTtl.toMillis()));
+            args.add(value(snapshotFields.get("supplier_batch_id")));
             Long result = redisTemplate.execute(
                             COMPLETE_SNAPSHOT_SCRIPT,
                             List.of(selectionKey, childKey, lockKey),
@@ -492,6 +494,8 @@ public class RedisV1ProductSelectionCacheAdapter implements V1ProductSelectionCa
             args.add(token);
             appendFields(args, snapshotFields, SNAPSHOT_FIELD_ORDER);
             args.add(String.valueOf(ttl.toMillis()));
+            // 批次追加末尾，不移位既有父快照/子商品/TTL位置合同。
+            args.add(value(snapshotFields.get("supplier_batch_id")));
             Long result = redisTemplate.execute(
                             COMPLETE_NEGATIVE_SCRIPT,
                             List.of(selectionKey, lockKey),

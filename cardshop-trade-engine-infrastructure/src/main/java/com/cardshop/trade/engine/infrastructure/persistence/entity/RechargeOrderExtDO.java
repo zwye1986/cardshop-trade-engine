@@ -15,6 +15,14 @@ import java.time.LocalDateTime;
 @TableName("recharge_order_ext")
 public class RechargeOrderExtDO {
 
+    /** 供应商批次号快照；DDL COMMENT同名。参见详细设计名创实施约束。 */
+    @TableField("supplier_batch_id")
+    private String supplierBatchId;
+
+    public String getSupplierBatchId() { return supplierBatchId; }
+    public void setSupplierBatchId(String value) { supplierBatchId = value; }
+
+
     /**
      * 表主键。
      */

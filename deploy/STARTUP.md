@@ -183,3 +183,15 @@ HTTPS 保护 `app_secret`、token 和 `signKey` 在传输中的安全，属于�
 5. 将实际环境、配置、数据范围、步骤及结果证据记录到仓库的 `docs/集成测试.md`。本地单元测试不代替真实环境联调结果。
 
 本阶段部署顺序为：准备测试依赖和基础表、配置 Nacos 与环境变量、启动并完成结构初始化、确认 HTTPS 可达、执行协议与业务联调。无需增加旧业务数据迁移或旧回调任务处置步骤。
+
+## 名创专属协议本地验证与受控启用
+
+2026-10-17新增名创四个主动POST客户端、独立Gateway、冻结批次及履约凭据；协议依据为用户提供的名创PDF（文件名V1.5，正文首页1.4），不是供应商最新版本认证。
+
+1. 应用启动前按数据库发布流程执行新增0020，保留既有0018/0019记录。0020追加扩展订单 `supplier_batch_id` 并创建 `recharge_miniso_receipt`，回滚应用不删除业务凭据。
+2. 确认目标子商品 `external_product_id` 为名创数字批次。新订单在选品阶段冻结批次；旧快照缺失时真实适配保守拒绝，不用当前商品配置补猜。
+3. 配置示例见 `deploy/nacos/cardshop-trade-engine-supplier.example.yaml`。`supplier.http-enabled` 和 `supplier.miniso.enabled` 均显式开启才走真实名创；默认保持原通用/mock渠道行为。`MINISO_API_KEY` 为供应商密钥，与调用方V1.2签名密钥无关。正常验证TLS证书，不向日志输出签名原文、密钥或券码。
+4. 开启真实名创后，停止接新单应在商户准入/入口层进行，保持查单和作废恢复链路。不能通过关闭名创协议开关把未确认订单送回通用/mock路由；切换供应商配置前先停止接单并排空/登记未确认任务，不把同一订单交旧卡管重新发券。
+5. PDF没有核销回调独立key2、签名正文规范、应答与重试约定；本轮不新增猜测的入站回调接口。先补齐供应商约定，再做真实核销闭环验收。四个主动接口通过本地测试不等于可放行真实商户流量。
+
+本地可复验命令（JDK21）：`mvn test`、`mvn -f cardshop-trade-engine-simulator/pom.xml test`。具有本机redis-server时，可显式运行 `mvn -pl cardshop-trade-engine-infrastructure -am test -Dtest=MinisoLocalRedisContractTest -Dminiso.localRedisTests=true -Dsurefire.failIfNoSpecifiedTests=false`；此测试自行启动临时回环Redis并清理，无需配置共享中间件。fake HTTP、H2和本机Redis证据在 `docs/集成测试.md` 留存，与真实供应商验收分别记录。
