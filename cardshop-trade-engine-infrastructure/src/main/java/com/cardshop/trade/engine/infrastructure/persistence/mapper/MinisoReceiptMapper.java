@@ -11,10 +11,13 @@ public interface MinisoReceiptMapper {
     record FrozenOrder(String orgCode, String orderId, String outOrderSn, String batchId, String persistStatus) { }
     record OrderIdentity(String orgCode, String orderId, String outOrderSn, String account, int num, String channel) { }
 
-    String FROZEN_SQL = "select org_code as orgCode, order_id as orderId, out_order_sn as outOrderSn, "
-            + "supplier_batch_id as batchId, persist_status as persistStatus from recharge_order_ext where order_id=#{orderId}";
-    String ORDER_SQL = "select org_code as orgCode, order_Id as orderId, out_orderId as outOrderSn, "
-            + "account, num, supplier_channel as channel from mc_order where order_Id=#{orderId}";
+    String FROZEN_SQL =
+            "select org_code as orgCode, order_id as orderId, out_order_sn as outOrderSn,"
+                + " supplier_batch_id as batchId, persist_status as persistStatus from"
+                + " recharge_order_ext where order_id=#{orderId}";
+    String ORDER_SQL =
+            "select org_code as orgCode, order_Id as orderId, out_orderId as outOrderSn, account,"
+                + " num, supplier_channel as channel from mc_order where order_Id=#{orderId}";
     @Select(FROZEN_SQL) FrozenOrder selectFrozen(@Param("orderId") String orderId);
     @Select(FROZEN_SQL + " for update") FrozenOrder lockFrozen(@Param("orderId") String orderId);
     @Select(ORDER_SQL) OrderIdentity selectOrder(@Param("orderId") String orderId);
@@ -36,22 +39,51 @@ public interface MinisoReceiptMapper {
         return new MinisoOrderSnapshot(ext.orgCode(), ext.orderId(), order.account(), ext.batchId(), order.num());
     }
 
-    @Select("""
-        select order_id as orderId, org_code as orgCode, batch_id as batchId, coupon_code as couponCode,
-               phone, begin_time as beginTime, end_time as endTime, coupon_status as couponStatus
-        from recharge_miniso_receipt where order_id=#{orderId}
-        """)
+    @Select(
+            """
+select order_id as orderId, org_code as orgCode, batch_id as batchId, coupon_code as couponCode,
+       phone, begin_time as beginTime, end_time as endTime, coupon_status as couponStatus
+from recharge_miniso_receipt where order_id=#{orderId}
+""")
     MinisoFulfillmentReceipt selectReceipt(@Param("orderId") String orderId);
 
-    @Insert("""
-        insert into recharge_miniso_receipt(order_id,org_code,batch_id,coupon_code,phone,begin_time,end_time,coupon_status)
-        values(#{orderId},#{orgCode},#{batchId},#{couponCode},#{phone},#{beginTime},#{endTime},#{couponStatus})
-        """)
+    String RECEIPT_COLUMNS =
+            "order_id as orderId,org_code as orgCode,batch_id as batchId,coupon_code as"
+                + " couponCode,phone,begin_time as beginTime,end_time as endTime,coupon_status as"
+                + " couponStatus";
+
+    @Select(
+            "select "
+                    + RECEIPT_COLUMNS
+                    + " from recharge_miniso_receipt where coupon_code=#{coupon}")
+    MinisoFulfillmentReceipt selectByCoupon(@Param("coupon") String coupon);
+
+    @Select(
+            "select "
+                    + RECEIPT_COLUMNS
+                    + " from recharge_miniso_receipt where order_id=#{id} for update")
+    MinisoFulfillmentReceipt lockReceipt(@Param("id") String id);
+
+    @Select("select use_time from recharge_miniso_receipt where order_id=#{id}")
+    java.time.LocalDateTime useTime(@Param("id") String id);
+
+    @Update(
+            "update recharge_miniso_receipt set"
+                + " coupon_status=1,use_time=#{used},updated_at=current_timestamp where"
+                + " order_id=#{id}")
+    int redeem(@Param("id") String id, @Param("used") java.time.LocalDateTime used);
+
+    @Insert(
+            """
+insert into recharge_miniso_receipt(order_id,org_code,batch_id,coupon_code,phone,begin_time,end_time,coupon_status)
+values(#{orderId},#{orgCode},#{batchId},#{couponCode},#{phone},#{beginTime},#{endTime},#{couponStatus})
+""")
     int insert(MinisoFulfillmentReceipt receipt);
 
-    @Update("""
-        update recharge_miniso_receipt set coupon_status=#{status}, updated_at=current_timestamp
-        where order_id=#{orderId}
-        """)
+    @Update(
+            """
+update recharge_miniso_receipt set coupon_status=#{status}, updated_at=current_timestamp
+where order_id=#{orderId}
+""")
     int updateStatus(@Param("orderId") String orderId, @Param("status") int status);
 }

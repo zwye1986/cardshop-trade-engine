@@ -66,6 +66,11 @@ public class RechargeNotifyWorkerService {
             taskPort.markSuccess(task);
             return true;
         }
+        // 次数达到上限后不再发HTTP，避免持久任务变成无限重试；参见详细设计9.5。
+        if (task.retryCount() >= task.maxRetryCount()) {
+            taskPort.markManualRequired(task, "RETRY_EXHAUSTED");
+            return false;
+        }
         try {
             MerchantNotifySendResult sendResult = notifyClientPort.send(new MerchantNotifyRequest(
                     task.taskId(),

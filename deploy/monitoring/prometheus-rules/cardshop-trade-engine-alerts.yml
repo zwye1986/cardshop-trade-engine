@@ -198,3 +198,28 @@ groups:
           summary: "RabbitMQ DLQ 非空（{{ $labels.vhost }}）"
           description: "{{ $labels.queue }} 非空。需要保留消息证据，核查 poison message、幂等冲突、落库异常和 Redis/MQ snapshot；不要直接清空队列。"
           runbook: "deploy/monitoring/README.md#rabbitmq-depth-外部探针"
+
+      # 名创核销指标为Job轮末缓存，启动只读初始化；没有调度时新接收也更新积压提示。
+      - alert: CardshopTradeMinisoWriteOffRecoveryStalled
+        expr: (max by (environment) (trade_miniso_writeoff_pending) > 0) and (time() - max by (environment) (trade_miniso_writeoff_last_scan_epoch_seconds) > 60)
+        for: 1m
+        labels:
+          severity: critical
+          service: cardshop-trade-engine
+          scope: miniso-writeoff
+        annotations:
+          summary: "名创核销事件积压且恢复Job停止"
+          description: "检查processing-enabled、minisoWriteOffProcessJob调度及MySQL；保持核销事件，不自动作废退款。"
+          runbook: "deploy/STARTUP.md#名创核销回调入口与恢复"
+
+      - alert: CardshopTradeMinisoWriteOffManualRequired
+        expr: max by (environment) (trade_miniso_writeoff_manual) > 0
+        for: 1m
+        labels:
+          severity: warning
+          service: cardshop-trade-engine
+          scope: miniso-writeoff
+        annotations:
+          summary: "名创核销事件需要人工核查"
+          description: "按脱敏eventId核对订单归属、核销与作废冲突、商户密钥及重试次数；不要覆盖首次核销时间。"
+          runbook: "deploy/STARTUP.md#名创核销回调入口与恢复"

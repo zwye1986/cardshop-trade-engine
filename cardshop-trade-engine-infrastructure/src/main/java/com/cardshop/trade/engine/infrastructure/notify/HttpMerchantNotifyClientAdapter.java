@@ -113,14 +113,15 @@ public class HttpMerchantNotifyClientAdapter implements MerchantNotifyClientPort
         } catch (Exception ex) {
             LogDecision decision = logStormGuard.shouldLog(LOG_EVENT_HTTP_EXCEPTION);
             if (decision.shouldLog()) {
-                log.error("商户回调HTTP发送异常 taskId={}, notifyUrl={}, occurrence={}, sampled={}",
-                        request.taskId(),
-                        request.notifyUrl(),
-                        decision.occurrence(),
-                        decision.sampledOccurrence(),
-                        ex);
+                // URI/传输异常可能包含回调URL密钥或报文，保留原栈帧而不记录原文/cause；参见详细设计9.5。
+                var safe = new IllegalStateException("merchant callback failed: " + ex.getClass().getSimpleName());
+                safe.setStackTrace(ex.getStackTrace());
+                log.error("商户回调HTTP发送异常 taskId={}, orgCode={}, orderId={}, occurrence={}, sampled={}",
+                        request.taskId(), request.orgCode(), request.orderId(),
+                        decision.occurrence(), decision.sampledOccurrence(),
+                        safe);
             }
-            return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, ex.getMessage());
+            return MerchantNotifySendResult.failed(HTTP_STATUS_NOT_SENT, "merchant callback failed: " + ex.getClass().getSimpleName());
         }
     }
 }

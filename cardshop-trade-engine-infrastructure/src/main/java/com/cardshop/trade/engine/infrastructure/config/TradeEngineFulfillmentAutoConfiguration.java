@@ -79,6 +79,8 @@ public class TradeEngineFulfillmentAutoConfiguration {
             ObjectProvider<MerchantNotifyPayloadSigner> payloadSignerProvider,
             ObjectProvider<V12SigningCredentialStorePort> credentialStoreProvider,
             ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
+            ObjectProvider<com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection>
+                    minisoProtection,
             V1MerchantProfilePort merchantProfilePort,
             Clock clock,
             TradeEngineProperties properties) {
@@ -97,7 +99,8 @@ public class TradeEngineFulfillmentAutoConfiguration {
                 payloadSigner,
                 RechargeFulfillmentConfigurationSupport.deferredRechargeDispatchTimerPort(dispatchTimerPortProvider),
                 clock,
-                RechargeFulfillmentConfigurationSupport.workerSettings(fulfillment));
+                RechargeFulfillmentConfigurationSupport.workerSettings(fulfillment),
+                minisoProtection::getIfAvailable);
     }
 
     /**

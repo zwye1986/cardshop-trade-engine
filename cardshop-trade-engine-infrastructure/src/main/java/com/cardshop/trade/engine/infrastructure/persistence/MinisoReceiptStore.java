@@ -11,7 +11,20 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  */
 public final class MinisoReceiptStore {
     private final MinisoReceiptMapper mapper;
-    public MinisoReceiptStore(MinisoReceiptMapper mapper) { this.mapper = Objects.requireNonNull(mapper); }
+    private final java.util.function.Supplier<
+                    com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection>
+            protection;
+
+    public MinisoReceiptStore(MinisoReceiptMapper mapper) {
+        this(mapper, () -> null);
+    }
+
+    public MinisoReceiptStore(
+            MinisoReceiptMapper mapper,
+            java.util.function.Supplier<
+                            com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection>
+                    protection) { this.mapper = Objects.requireNonNull(mapper);
+        this.protection = Objects.requireNonNull(protection); }
 
     private static boolean sameBatch(int batchId, String frozen) {
         // 名创batchId为Integer，冻结源为旧表字符串；前导零不改变批次身份，与Gateway数值转换一致。
@@ -22,6 +35,8 @@ public final class MinisoReceiptStore {
     public void save(MinisoFulfillmentReceipt receipt) {
         try {
             saveWithinOrderTransaction(receipt);
+        } catch (com.cardshop.trade.engine.application.recharge.MinisoWriteOffException ex) {
+            throw ex;
         } catch (RuntimeException ex) {
             // 数据库Duplicate entry消息含完整券码，禁止把原始cause交Worker日志/last_error；由上层采样安全栈。
             throw new IllegalStateException("MINISO receipt persistence failed: " + ex.getClass().getSimpleName());
@@ -39,6 +54,15 @@ public final class MinisoReceiptStore {
             throw new IllegalStateException("MINISO receipt ownership or frozen snapshot mismatch");
         }
         var existing = mapper.selectReceipt(receipt.orderId());
+        if (receipt.couponStatus() == 3 && protection.get() != null) {
+            // 在同一主单事务内检查已接收事件，堵住作废HTTP返回到终态落库之间的竞态；参见详细设计9.5。
+            protection.get().assertVoidAllowed(receipt.orderId());
+        }
+        if (existing != null && existing.couponStatus() == 1 && receipt.couponStatus() == 3) {
+            throw new com.cardshop.trade.engine.application.recharge.MinisoWriteOffException(
+                    com.cardshop.trade.engine.application.recharge.MinisoWriteOffException.Reason
+                            .REDEEM_VOID_CONFLICT);
+        }
         if (existing == null) {
             // 券码全局唯一约束阻止另一订单盗用券码；冲突使订单终态事务整体回滚。
             if (mapper.insert(receipt) != 1) throw new IllegalStateException("MINISO receipt insert failed");

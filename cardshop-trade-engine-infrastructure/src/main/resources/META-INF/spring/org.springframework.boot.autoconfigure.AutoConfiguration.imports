@@ -3,3 +3,4 @@ com.cardshop.trade.engine.infrastructure.config.TradeEngineMybatisPersistenceAut
 com.cardshop.trade.engine.infrastructure.config.TradeEngineRedisPendingAutoConfiguration
 com.cardshop.trade.engine.infrastructure.config.TradeEngineFulfillmentAutoConfiguration
 com.cardshop.trade.engine.infrastructure.config.TradeEngineObservabilityAutoConfiguration
+com.cardshop.trade.engine.infrastructure.config.MinisoWriteOffAutoConfiguration

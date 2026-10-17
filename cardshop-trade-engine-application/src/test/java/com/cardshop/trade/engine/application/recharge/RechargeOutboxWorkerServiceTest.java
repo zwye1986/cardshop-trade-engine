@@ -525,6 +525,72 @@ class RechargeOutboxWorkerServiceTest {
     }
 
     @Test
+    void minisoRedemptionBlocksBeforeAfterRemoteVoidAndTerminalReleaseCompensation() {
+        for (int scenario = 0; scenario < 3; scenario++) {
+            int stage = scenario;
+            var order =
+                    new RechargeFulfillmentOrder(
+                            "ORDER-1",
+                            "OUT-1",
+                            "A36",
+                            "13800138000",
+                            "P",
+                            "SKU",
+                            "MINISO",
+                            5200,
+                            "https://merchant.example",
+                            stage == 2 ? 6 : 12,
+                            "DB_PERSISTED",
+                            "PASSED",
+                            true,
+                            true);
+            var outbox = new FakeOutboxPort(outbox(OutboxEventType.INVALID_ORDER));
+            var orders = new FakeFulfillmentOrderPort(order);
+            var gateway =
+                    new FakeSupplierGatewayPort(
+                            SupplierGatewayResponse.success("SUP", "200", "ok", "{}"));
+            var release =
+                    new FakeBalanceReleasePort(BalanceReservationReleaseResult.releasedSuccess());
+            var deltas = new FakeBalanceDeltaOutboxPort();
+            var notify = new FakeNotifyTaskPort();
+            var checks = new AtomicInteger();
+            var guard =
+                    new MinisoWriteOffProtection() {
+                        public boolean blockInvalidation(String eventId, String orderId) {
+                            return stage != 1 || checks.incrementAndGet() > 1;
+                        }
+
+                        public void assertVoidAllowed(String orderId) {}
+                    };
+            var service =
+                    new RechargeOutboxWorkerService(
+                            outbox,
+                            orders,
+                            gateway,
+                            command -> {},
+                            new FakeFrequencyPort(true),
+                            deltas,
+                            release,
+                            notify,
+                            new FixedNotifyPayloadSigner(),
+                            RechargeDispatchTimerPort.noop(),
+                            CLOCK,
+                            settings(),
+                            () -> guard);
+            service.processDue(1, 0, 10, "worker", List.of(OutboxEventType.INVALID_ORDER), 1);
+            assertThat(release.commands).isEmpty();
+            assertThat(deltas.commands).isEmpty();
+            assertThat(notify.createdTasks).isEmpty();
+            assertThat(outbox.manualRequired).hasSize(1);
+            assertThat(gateway.invalidRequests).hasSize(stage == 1 ? 1 : 0);
+            assertThat(orders.statusUpdates)
+                    .noneMatch(
+                            update ->
+                                    update.dispatchStatus() == FulfillmentDispatchStatus.CANCELLED);
+        }
+    }
+
+    @Test
     void invalidOrderSuccessUpdatesLocalStateCreatesWriteOffNotifyAndCompletesOutbox() {
         FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.INVALID_ORDER));
         FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(dispatchableOrder());

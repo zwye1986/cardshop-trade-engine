@@ -99,7 +99,7 @@ public final class MinisoRechargeSupplierGatewayAdapter implements RechargeSuppl
         });
     }
 
-    // TODO：待供应商明确入站通知协议后再实现验签和受控回执入口；参见详细设计「名创 MINISO 专属协议实施约束」。
+    // 核销由独立 MinisoWriteOffCallbackController 接收并持久恢复，不混入主动HTTP客户端；参见详细设计9.5。
 
     /** 请求定位字段与已落库订单必须完全一致，且当前协议只支持单张券。 */
     private Optional<TrustedOrder> trusted(String channel, String orgCode, String orderId, String account) {

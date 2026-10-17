@@ -398,4 +398,7 @@ mvn -f cardshop-trade-engine-simulator/pom.xml test
 
 ## 名创 MINISO 专属适配
 
-名创四个主动接口现由独立协议客户端实现，按供应商PDF和旧卡管使用大写MD5请求鉴权，不改变调用方V1.2 HMAC-SM3协议。真实适配默认关闭；配置、0020结构变更、冻结批次、凭据事务与待确认核销回调边界见 [启动说明](deploy/STARTUP.md#名创专属协议本地验证与受控启用) 和 [名创适配设计](docs/superpowers/specs/2026-10-17-miniso-legacy-request-auth-design.md)。本地测试通过不能替代真实名创沙箱验收。
+名创四个主动接口现由独立协议客户端实现，按供应商PDF和旧卡管使用大写MD5请求鉴权，不改变调用方V1.2 HMAC-SM3协议。真实适配默认关闭；配置、0020/0021结构变更、冻结批次、凭据事务与核销回调恢复见 [启动说明](deploy/STARTUP.md#名创专属协议本地验证与受控启用) 和 [名创适配设计](docs/superpowers/specs/2026-10-17-miniso-legacy-request-auth-design.md)。本地测试通过不能替代真实名创沙箱验收。
+
+
+名创核销入站已按旧卡管独立key2协议实现 `POST /api/common/mcNotify`，持久接收后由 `minisoWriteOffProcessJob` 恢复处理并生成V1.2商户通知；新增入口和处理默认均关闭。详见 [核销入口与恢复](deploy/STARTUP.md#名创核销回调入口与恢复) 及 [详细设计](docs/superpowers/specs/2026-10-17-miniso-writeoff-callback-design.md)。离线可运行 `python3 scripts/miniso-writeoff-example.py` 校验测试MD5/HMAC-SM3向量，需Python运行时支持SM3。

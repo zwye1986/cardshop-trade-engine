@@ -23,9 +23,20 @@ class MinisoReceiptPersistenceTest {
         var ds = new JdbcDataSource();
         ds.setURL("jdbc:h2:mem:" + UUID.randomUUID() + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1");
         jdbc = new JdbcTemplate(ds);
-        jdbc.execute("create table mc_order(order_Id varchar(100) primary key,org_code varchar(64),out_orderId varchar(100),account varchar(64),num int,supplier_channel varchar(32),order_status int)");
-        jdbc.execute("create table recharge_order_ext(order_id varchar(100) primary key,org_code varchar(64),out_order_sn varchar(100),supplier_batch_id varchar(64),persist_status varchar(32))");
-        jdbc.execute("create table recharge_miniso_receipt(order_id varchar(100) primary key,org_code varchar(64),batch_id int,coupon_code varchar(128) unique,phone varchar(64),begin_time varchar(19),end_time varchar(19),coupon_status int,created_at timestamp default current_timestamp,updated_at timestamp default current_timestamp)");
+        jdbc.execute(
+                "create table mc_order(order_Id varchar(100) primary key,org_code"
+                    + " varchar(64),out_orderId varchar(100),account varchar(64),num"
+                    + " int,supplier_channel varchar(32),order_status int)");
+        jdbc.execute(
+                "create table recharge_order_ext(order_id varchar(100) primary key,org_code"
+                    + " varchar(64),out_order_sn varchar(100),supplier_batch_id"
+                    + " varchar(64),persist_status varchar(32))");
+        jdbc.execute(
+                "create table recharge_miniso_receipt(order_id varchar(100) primary key,org_code"
+                    + " varchar(64),batch_id int,coupon_code varchar(128) unique,phone"
+                    + " varchar(64),begin_time varchar(19),end_time varchar(19),coupon_status"
+                    + " int,created_at timestamp default current_timestamp,updated_at timestamp"
+                    + " default current_timestamp)");
         for (var id : new String[]{"O1", "O2"}) {
             jdbc.update("insert into mc_order values(?, 'A39', ?, '13800138000', 1, 'MINISO', 13)",id,id);
             jdbc.update("insert into recharge_order_ext values(?, 'A39', ?, '100023', 'DB_PERSISTED')",id,id);
@@ -89,9 +100,19 @@ class MinisoReceiptPersistenceTest {
         tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 1)));
         tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 0)));
         assertThat(status()).isEqualTo(1);
-        tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 3)));
-        tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 1)));
-        assertThat(status()).isEqualTo(3);
+        // 新核销合同禁止“已使用→作废”静默覆盖；独立未使用订单仍允许确认作废。
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 3))))
+                .isInstanceOf(
+                        com.cardshop.trade.engine.application.recharge.MinisoWriteOffException
+                                .class);
+        assertThat(status()).isEqualTo(1);
+        tx.executeWithoutResult(s -> store.save(receipt("O2", "C2", 3)));
+        tx.executeWithoutResult(s -> store.save(receipt("O2", "C2", 1)));
+        assertThat(
+                        jdbc.queryForObject(
+                                "select coupon_status from recharge_miniso_receipt where"
+                                    + " order_id='O2'",
+                                Integer.class)).isEqualTo(3);
         assertThatThrownBy(() -> store.save(receipt("O1","C1",0))).isInstanceOf(IllegalStateException.class);
     }
     int status() { return jdbc.queryForObject("select coupon_status from recharge_miniso_receipt where order_id='O1'",Integer.class); }

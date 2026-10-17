@@ -27,6 +27,9 @@ public interface RechargeNotifyWorkerTaskPort {
 
     Optional<RechargeNotifyTask> claim(RechargeNotifyTask task, String workerId, Duration lease);
 
+    /** 次数耗尽后转人工并清理租约；参见详细设计9.4、9.5。 */
+    void markManualRequired(RechargeNotifyTask task, String reason);
+
     void markSuccess(RechargeNotifyTask task);
 
     void markFailed(RechargeNotifyTask task, String errorMessage, Duration nextRetryDelay);

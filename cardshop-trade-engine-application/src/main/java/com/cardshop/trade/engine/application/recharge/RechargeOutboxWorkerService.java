@@ -47,6 +47,10 @@ public class RechargeOutboxWorkerService {
     private static final int MAX_SCAN_LIMIT = 1000;
     private static final char ACCOUNT_KEY_SEPARATOR = '\0';
 
+    private final java.util.function.Supplier<MinisoWriteOffProtection> minisoWriteOffProtection;
+    private final com.cardshop.trade.engine.application.logging.LogStormGuard errorLogs =
+            com.cardshop.trade.engine.application.logging.LogStormGuard.defaultGuard();
+
     private final RechargeOutboxPort outboxPort;
     private final RechargeFulfillmentOrderPort orderPort;
     private final RechargeSupplierGatewayPort supplierGatewayPort;
@@ -163,6 +167,37 @@ public class RechargeOutboxWorkerService {
             RechargeDispatchTimerPort dispatchTimerPort,
             Clock clock,
             RechargeOutboxWorkerSettings settings) {
+        this(
+                outboxPort,
+                orderPort,
+                supplierGatewayPort,
+                supplierQueryOutboxPort,
+                frequencyPort,
+                balanceDeltaFlushOutboxPort,
+                balanceReservationReleasePort,
+                notifyTaskPort,
+                notifyPayloadSigner,
+                dispatchTimerPort,
+                clock,
+                settings,
+                () -> null);
+    }
+
+    public RechargeOutboxWorkerService(
+            RechargeOutboxPort outboxPort,
+            RechargeFulfillmentOrderPort orderPort,
+            RechargeSupplierGatewayPort supplierGatewayPort,
+            SupplierQueryOutboxPort supplierQueryOutboxPort,
+            DirectRechargeFrequencyPort frequencyPort,
+            BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
+            BalanceReservationReleasePort balanceReservationReleasePort,
+            RechargeNotifyTaskPort notifyTaskPort,
+            MerchantNotifyPayloadSigner notifyPayloadSigner,
+            RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock,
+            RechargeOutboxWorkerSettings settings,
+            java.util.function.Supplier<MinisoWriteOffProtection> minisoWriteOffProtection) {
+        this.minisoWriteOffProtection = Objects.requireNonNull(minisoWriteOffProtection);
         this.outboxPort = Objects.requireNonNull(outboxPort, "outboxPort must not be null");
         this.orderPort = Objects.requireNonNull(orderPort, "orderPort must not be null");
         this.supplierGatewayPort = Objects.requireNonNull(supplierGatewayPort, "supplierGatewayPort must not be null");
@@ -464,8 +499,17 @@ public class RechargeOutboxWorkerService {
                 }
             };
         } catch (Exception ex) {
-            log.error("outbox事件处理异常 eventId={}, eventType={}, orderId={}",
+            // 高频重试按类别采样，保留安全分类栈；参见详细设计9.5及日志风暴防护。
+            if (errorLogs.shouldLog("outbox.handle." + ex.getClass().getSimpleName()).shouldLog()) {
+                log.error("outbox事件处理异常 eventId={}, eventType={}, orderId={}",
                     event.eventId(), event.eventType(), event.orderId(), ex);
+            }
+            if (ex instanceof MinisoWriteOffException conflict
+                    && conflict.reason() == MinisoWriteOffException.Reason.REDEEM_VOID_CONFLICT) {
+                blockedByMinisoRedemption(event, order);
+                outboxPort.markManualRequired(event, conflict.getMessage());
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
             if (event.eventType() == OutboxEventType.SUPPLIER_DISPATCH
                     && recoverDispatchExceptionByQuery(event, order, ex)) {
                 return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
@@ -814,6 +858,8 @@ public class RechargeOutboxWorkerService {
             markFailedOrManualRequired(event, "order not found for invalid", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
+        if (blockedByMinisoRedemption(event, order))
+            return RechargeOutboxBatchResult.Outcome.FAILED;
         if (order.terminalFailureAwaitingBalanceRelease()) {
             return completeTerminalBalanceRelease(event, order, "供应商作废终态补偿释放预扣");
         }
@@ -828,6 +874,8 @@ public class RechargeOutboxWorkerService {
                 "供应商作废中"));
         SupplierGatewayResponse response = supplierGatewayPort.invalid(invalidRequest(event, order));
         if (response.status() == SupplierGatewayStatus.SUCCESS) {
+            if (blockedByMinisoRedemption(event, order))
+                return RechargeOutboxBatchResult.Outcome.FAILED;
             orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
                     order.orderId(),
                     FulfillmentDispatchStatus.CANCELLED,
@@ -856,10 +904,24 @@ public class RechargeOutboxWorkerService {
         return RechargeOutboxBatchResult.Outcome.FAILED;
     }
 
+    /** 作废前、远端成功后与退款补偿统一复核持久核销证据；参见详细设计9.5。 */
+    private boolean blockedByMinisoRedemption(
+            RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
+        if (order == null || !"MINISO".equals(order.supplierChannel())) return false;
+        var protection = minisoWriteOffProtection.get();
+        if (protection != null && protection.blockInvalidation(event.eventId(), order.orderId())) {
+            outboxPort.markManualRequired(event, "REDEEM_VOID_CONFLICT");
+            return true;
+        }
+        return false;
+    }
+
     private RechargeOutboxBatchResult.Outcome completeTerminalBalanceRelease(
             RechargeOutboxEvent event,
             RechargeFulfillmentOrder order,
             String reason) {
+        if (blockedByMinisoRedemption(event, order))
+            return RechargeOutboxBatchResult.Outcome.FAILED;
         if (!releaseBalanceReservationAndEnqueueDelta(event, order, reason)) {
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }

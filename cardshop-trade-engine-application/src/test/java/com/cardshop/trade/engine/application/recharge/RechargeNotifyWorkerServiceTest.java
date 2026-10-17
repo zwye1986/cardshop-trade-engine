@@ -95,6 +95,40 @@ class RechargeNotifyWorkerServiceTest {
         assertThat(result.succeeded()).isEqualTo(1);
     }
 
+    @Test
+    void exhaustedTaskDoesNotSendAgainAndMovesToManual() {
+        var base = task();
+        var exhausted =
+                new RechargeNotifyTask(
+                        base.taskId(),
+                        base.notifyType(),
+                        base.orgCode(),
+                        base.orderId(),
+                        base.outOrderSn(),
+                        base.notifyUrl(),
+                        base.bizStatus(),
+                        base.payload(),
+                        10,
+                        10,
+                        base.nextRetryTime(),
+                        "last failure");
+        var port = new FakeNotifyWorkerTaskPort(exhausted);
+        var sent = new ArrayList<MerchantNotifyRequest>();
+        var service =
+                new RechargeNotifyWorkerService(
+                        port,
+                        request -> {
+                            sent.add(request);
+                            return MerchantNotifySendResult.success(200, "{}");
+                        },
+                        CLOCK,
+                        new RechargeNotifyWorkerSettings(
+                                Duration.ofMinutes(1), Duration.ofSeconds(10)));
+        service.processDue(10, "worker");
+        assertThat(sent).isEmpty();
+        assertThat(port.manual).containsExactly(base.taskId());
+    }
+
     private static RechargeNotifyTask task() {
         return taskWithNotifyUrl("https://merchant.example/notify");
     }
@@ -120,6 +154,12 @@ class RechargeNotifyWorkerServiceTest {
         private final RechargeNotifyTask task;
         private final List<String> successes = new ArrayList<>();
         private final List<NotifyFailure> failures = new ArrayList<>();
+        private final List<String> manual = new ArrayList<>();
+
+        public void markManualRequired(RechargeNotifyTask task, String reason) {
+            manual.add(task.taskId());
+        }
+
         private int blankClosedCount;
         private int closeBlankInvocations;
 

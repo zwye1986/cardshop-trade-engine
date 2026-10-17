@@ -132,6 +132,30 @@ class V12CallbackSendGuardTest {
         verifyNoInteractions(store, http);
     }
 
+    @Test
+    void transportFailureDoesNotLeakUrlOrExceptionPayloadIntoLogsAndRetryRecord() throws Exception {
+        var store = mock(V12SigningCredentialStorePort.class);
+        when(store.findForCallback("A36", "known-key"))
+                .thenReturn(Optional.of(new V12SigningCredential("known-key", "A36", KEY)));
+        var http = mock(HttpClient.class);
+        when(http.send(any(HttpRequest.class), any(HttpResponse.BodyHandler.class)))
+                .thenThrow(new java.io.IOException("private-payload-marker"));
+        var original = request(payload("known-key"));
+        var request = new MerchantNotifyRequest(original.taskId(), "https://merchant.example/callback?token=private-url-marker",
+                original.payload(), original.orgCode(), original.orderId(), original.outOrderSn());
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(HttpMerchantNotifyClientAdapter.class);
+        var capture = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>();
+        capture.start(); logger.addAppender(capture);
+        try {
+            var result = adapter(http, store).send(request);
+            assertThat(result.success()).isFalse();
+            assertThat(result.errorMessage()).doesNotContain("private-payload-marker", "private-url-marker");
+            assertThat(capture.list).hasSize(1);
+            assertThat(capture.list.getFirst().getFormattedMessage()).doesNotContain("private-url-marker");
+            assertThat(capture.list.getFirst().getThrowableProxy().getMessage()).doesNotContain("private-payload-marker");
+        } finally { logger.detachAppender(capture); capture.stop(); }
+    }
+
     private static HttpMerchantNotifyClientAdapter adapter(HttpClient http, V12SigningCredentialStorePort store) {
         return new HttpMerchantNotifyClientAdapter(http, new ObjectMapper(), Duration.ofSeconds(1), () -> store);
     }

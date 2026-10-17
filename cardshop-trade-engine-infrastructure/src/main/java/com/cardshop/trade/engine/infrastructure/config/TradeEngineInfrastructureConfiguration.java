@@ -662,8 +662,10 @@ public class TradeEngineInfrastructureConfiguration {
     @Bean
     @ConditionalOnBean(MinisoReceiptMapper.class)
     @ConditionalOnMissingBean(MinisoReceiptStore.class)
-    public MinisoReceiptStore minisoReceiptStore(MinisoReceiptMapper mapper) {
-        return new MinisoReceiptStore(mapper);
+    public MinisoReceiptStore minisoReceiptStore(MinisoReceiptMapper mapper,
+            ObjectProvider<com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection>
+                    protection) {
+        return new MinisoReceiptStore(mapper, protection::getIfAvailable);
     }
 
     @Bean
@@ -797,6 +799,8 @@ public class TradeEngineInfrastructureConfiguration {
             ObjectProvider<MerchantNotifyPayloadSigner> payloadSignerProvider,
             ObjectProvider<V12SigningCredentialStorePort> credentialStoreProvider,
             ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
+            ObjectProvider<com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection>
+                    minisoProtection,
             V1MerchantProfilePort merchantProfilePort,
             Clock clock,
             TradeEngineProperties properties) {
@@ -815,7 +819,8 @@ public class TradeEngineInfrastructureConfiguration {
                 payloadSigner,
                 RechargeFulfillmentConfigurationSupport.deferredRechargeDispatchTimerPort(dispatchTimerPortProvider),
                 clock,
-                RechargeFulfillmentConfigurationSupport.workerSettings(fulfillment));
+                RechargeFulfillmentConfigurationSupport.workerSettings(fulfillment),
+                minisoProtection::getIfAvailable);
     }
 
     /**

@@ -192,6 +192,41 @@ HTTPS 保护 `app_secret`、token 和 `signKey` 在传输中的安全，属于�
 2. 确认目标子商品 `external_product_id` 为名创数字批次。新订单在选品阶段冻结批次；旧快照缺失时真实适配保守拒绝，不用当前商品配置补猜。
 3. 配置示例见 `deploy/nacos/cardshop-trade-engine-supplier.example.yaml`。`supplier.http-enabled` 和 `supplier.miniso.enabled` 均显式开启才走真实名创；默认保持原通用/mock渠道行为。`MINISO_API_KEY` 为供应商密钥，与调用方V1.2签名密钥无关。正常验证TLS证书，不向日志输出签名原文、密钥或券码。
 4. 开启真实名创后，停止接新单应在商户准入/入口层进行，保持查单和作废恢复链路。不能通过关闭名创协议开关把未确认订单送回通用/mock路由；切换供应商配置前先停止接单并排空/登记未确认任务，不把同一订单交旧卡管重新发券。
-5. PDF没有核销回调独立key2、签名正文规范、应答与重试约定；本轮不新增猜测的入站回调接口。先补齐供应商约定，再做真实核销闭环验收。四个主动接口通过本地测试不等于可放行真实商户流量。
+5. 核销入站已按用户指定旧卡管实现独立key2、排序后两字段JSON MD5及接收回执，见下节。PDF仍未定义该扩展与供应商重试承诺；本地兼容验证不等于供应商已确认新入口或完成真实核销验收。
 
 本地可复验命令（JDK21）：`mvn test`、`mvn -f cardshop-trade-engine-simulator/pom.xml test`。具有本机redis-server时，可显式运行 `mvn -pl cardshop-trade-engine-infrastructure -am test -Dtest=MinisoLocalRedisContractTest -Dminiso.localRedisTests=true -Dsurefire.failIfNoSpecifiedTests=false`；此测试自行启动临时回环Redis并清理，无需配置共享中间件。fake HTTP、H2和本机Redis证据在 `docs/集成测试.md` 留存，与真实供应商验收分别记录。
+
+
+## 名创核销回调入口与恢复
+
+本节仅用于dev/test受控测试。回调是独立链路：关闭主动发券或停止接新单不能连带停止既存核销与商户通知恢复。
+
+1. 先执行0021，创建 `recharge_miniso_writeoff_event` 并为履约凭据增加use_time；保留0020、原履约凭据和商户密钥表。回滚应用不能删除这些业务记录。处理启用后启动runner只读核验关键列；缺迁移时启动失败，不伪装已具备接收能力。
+2. 从部署密钥或环境变量注入独立 `MINISO_CALLBACK_KEY2`，不复用主动请求 `MINISO_API_KEY`、商户signKey或aesKey。供应商模板默认 `callback.enabled=false`、`callback.processing-enabled=false`；接收启用要求处理也启用、key2非空、真实MySQL/事务/通知/商户密钥存储可用，否则失败关闭。
+3. 先开启processing-enabled并在XXL配置handler `minisoWriteOffProcessJob`，建议5秒一次；参数示例 `limit=100,workerId=miniso-dev`，分片遵循CRC32(event_id)。确认至少一次真实扫描，再启用enabled。停入口时只关闭enabled，保留处理及商户通知Worker。作废/退款保护随真实持久化端口独立装配，即使processing-enabled关闭也不会绕过已接收事件；缺0021时失败关闭。
+4. 入口为 `POST /api/common/mcNotify`，独立nonce/time/sign头和couponCode/useTime正文；无需商户token/SM4。只有接收事务提交后才返回数值 `code=200,msg=接收成功`，该确认不代表核销已归属订单或商户已收到通知。相同事实重投幂等，同券不同时间返回冲突；验签失败业务code=500，存储/排队失败HTTP503，超大正文HTTP413。
+5. 商户核销通知为 `state_type=3,use_state=2`，use_time取名创事件、invalid_time为空，使用当前商户HMAC-SM3密钥及keyId创建任务；正常重试保留原报文。通知地址使用订单冻结notify_url；为空时只保存事实，不查询密钥或创建任务。不读取旧卡管writeOffNotifyUrl作兜底。
+6. 对已接收但待处理的核销事件，作废及退款也应停止并转核查。MANUAL_REQUIRED保留首次核销时间，按eventId核对可信订单、凭据和通知任务；不要覆盖时间、删除事件、自动补扣款或重发券。需要重置时按设计使用version CAS并保留人工操作审计。
+7. 若供应商只有租户级全局回调URL，必须先解决新旧订单归属分流或使用独立测试租户；不能全量切到只认识新引擎凭据的入口。入口对未知券的成功接收不会替旧系统转发通知。本次实现不修改真实供应商URL、Nacos或网关。
+
+离线示例（只打印自检结果，不发HTTP）：
+
+```bash
+python3 scripts/miniso-writeoff-example.py
+```
+
+Python须支持OpenSSL SM3；也可使用仓库模拟器的HmacSm3SignUtils验证。对已保存的商户回调JSON可运行 `python3 scripts/miniso-writeoff-example.py --verify-callback /受控临时目录/callback.json --key-id 商户可信keyId`，密钥由V12_SIGN_KEY环境变量提供，不在命令行内联。该工具只校验签名，商户仍需验证订单归属和业务幂等。
+
+显式测试发送为 `python3 scripts/miniso-writeoff-example.py --url http://127.0.0.1:10080/api/common/mcNotify`，要求环境已有MINISO_CALLBACK_KEY2；仅允许本机固定路径、禁止代理/重定向、不打印密钥或报文。默认发送虚构TEST-MINISO-0001，若无对应测试凭据，事件会等待归属并最终转人工，不能据此宣称业务闭环成功。
+
+可在dev/test打开既有 `trade.engine.integration.manual-job-enabled` 后，从本机直接POST `/internal/integration/recharge/jobs/miniso-writeoff`，请求字段为shardTotal、shardIndex、limit、workerId；最多100条/128分片，拒绝远程地址及代理转发头。恢复关闭时返回503。该入口不提供人工改券、改归属或重签能力，不在prod注册。
+
+验证命令（JDK21，zsh通配参数需引号）：
+
+```bash
+mvn -pl cardshop-trade-engine-bootstrap -am test '-Dtest=Miniso*Test,RechargeNotifyWorkerServiceTest,RechargeOutboxWorkerServiceTest' -Dsurefire.failIfNoSpecifiedTests=false
+mvn test
+mvn -f cardshop-trade-engine-simulator/pom.xml test
+```
+
+指标前缀为 `trade.miniso.writeoff`：received按固定outcome计数、processed批次计数、pending/manual/notifications.pending、oldest.age.seconds及last.scan.epoch.seconds。积压指标使用启动/Job轮末缓存，新接收作增量提示，不作为资金事实；Prometheus scrape不访问数据库。对应告警只写入监控模板，未发布到真实平台。实际执行证据继续记入docs/集成测试.md。

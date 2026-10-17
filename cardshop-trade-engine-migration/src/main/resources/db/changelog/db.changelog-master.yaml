@@ -646,3 +646,37 @@ databaseChangeLog:
       rollback:
         - sql:
             sql: SELECT 1
+
+  # 核销接收与恢复证据，参见详细设计9.5；回滚应用不删除业务记录。
+  - changeSet:
+      id: 0021-miniso-writeoff-events
+      author: codex
+      changes:
+        - sql:
+            sql: |
+              CREATE TABLE recharge_miniso_writeoff_event (
+                event_id varchar(80) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '核销事件唯一ID',
+                coupon_code varchar(128) COLLATE utf8mb4_bin NOT NULL COMMENT '名创券码',
+                use_time datetime NOT NULL COMMENT '核销时间',
+                order_id varchar(100) COLLATE utf8mb4_bin NULL COMMENT '平台订单号',
+                org_code varchar(64) COLLATE utf8mb4_bin NULL COMMENT '商户编码',
+                status varchar(24) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT 'INIT' COMMENT '处理状态',
+                retry_count int unsigned NOT NULL DEFAULT 0 COMMENT '重试次数',
+                next_retry_time datetime(3) NOT NULL COMMENT '下次处理时间',
+                last_error varchar(128) NOT NULL DEFAULT '' COMMENT '最近处理错误',
+                version bigint unsigned NOT NULL DEFAULT 0 COMMENT '记录版本号',
+                received_at datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '接收时间',
+                processed_at datetime(3) NULL COMMENT '处理完成时间',
+                updated_at datetime(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+                  ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
+                PRIMARY KEY (event_id),
+                UNIQUE KEY uk_miniso_writeoff_coupon (coupon_code),
+                KEY idx_miniso_writeoff_due (status, next_retry_time, received_at, event_id),
+                KEY idx_miniso_writeoff_order (org_code, order_id)
+              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='名创核销接收事件表';
+
+              ALTER TABLE recharge_miniso_receipt
+                ADD COLUMN use_time datetime NULL COMMENT '核销时间';
+      rollback:
+        - sql:
+            sql: SELECT 1

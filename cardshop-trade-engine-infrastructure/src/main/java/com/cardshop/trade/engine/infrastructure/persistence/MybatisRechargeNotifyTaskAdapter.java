@@ -103,6 +103,8 @@ public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort,
         LocalDateTime now = now();
         int updated = mapper.update(null, new LambdaUpdateWrapper<RechargeNotifyTaskDO>()
                 .eq(RechargeNotifyTaskDO::getTaskId, task.taskId())
+                // 次数随失败递增，旧扫描快照不能在新一轮失败后继续发送；参见详细设计9.5。
+                .eq(RechargeNotifyTaskDO::getRetryCount, task.retryCount())
                 .and(wrapper -> wrapper
                         .and(due -> due
                                 .in(RechargeNotifyTaskDO::getStatus, TaskStatus.INIT.name(), TaskStatus.FAILED.name())
@@ -118,6 +120,19 @@ public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort,
                 .set(RechargeNotifyTaskDO::getLockedUntil, now.plusNanos(lease.toNanos()))
                 .set(RechargeNotifyTaskDO::getUpdatedAt, now));
         return updated == 1 ? Optional.of(task) : Optional.empty();
+    }
+
+    @Override
+    public void markManualRequired(RechargeNotifyTask task, String reason) {
+        mapper.update(
+                null,
+                new LambdaUpdateWrapper<RechargeNotifyTaskDO>()
+                        .eq(RechargeNotifyTaskDO::getTaskId, task.taskId())
+                        .set(RechargeNotifyTaskDO::getStatus, TaskStatus.MANUAL_REQUIRED.name())
+                        .set(RechargeNotifyTaskDO::getLockedBy, null)
+                        .set(RechargeNotifyTaskDO::getLockedUntil, null)
+                        .set(RechargeNotifyTaskDO::getLastError, reason)
+                        .set(RechargeNotifyTaskDO::getUpdatedAt, now()));
     }
 
     @Override
