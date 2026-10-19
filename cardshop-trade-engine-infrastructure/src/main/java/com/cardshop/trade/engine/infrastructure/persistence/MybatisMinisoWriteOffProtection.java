@@ -12,7 +12,7 @@ import java.time.*;
 
 /** 永久作废/退款保护，不依赖核销处理开关、key2或商户签名密钥。 参见docs/交行直充业务系统详细设计.md「9.5」；处理暂停仍须保留已接收事件的资金门禁。 */
 public final class MybatisMinisoWriteOffProtection implements MinisoWriteOffProtection {
-    private static final int USED = 1, VOID = 3, PENDING = 13;
+    private static final int USED = 1, VOID = 3;
     private final MinisoWriteOffEventMapper events;
     private final MinisoReceiptMapper receipts;
     private final MinisoWriteOffOrderLocks orderLocks;
@@ -48,8 +48,7 @@ public final class MybatisMinisoWriteOffProtection implements MinisoWriteOffProt
                                 if (owned == null)
                                     throw new MinisoWriteOffException(OWNERSHIP_CONFLICT);
                                 if (!evidence(owned.receipt())) return false;
-                                if (owned.order().orderStatus() == PENDING
-                                        && "CANCEL_REQUESTED".equals(events.dispatchStatus(orderId))
+                                if ("CANCEL_REQUESTED".equals(events.dispatchStatus(orderId))
                                         && owned.receipt().couponStatus() != VOID) {
                                     events.restoreSuccess(orderId, now());
                                     events.restoreDispatch(orderId, now());

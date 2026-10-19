@@ -8,6 +8,8 @@ import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrder
 import java.time.LocalDateTime;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 /**
  * MySQL 查单兜底适配器测试。
@@ -63,6 +65,80 @@ class MybatisRechargeOrderQueryAdapterTest {
                 (orgCode, outOrderSn) -> ext("DB_PERSISTED", "PASSED", true));
 
         assertThat(adapter.findByOrgCodeAndOutOrderSn("A36", "OUT-MISSING")).isEmpty();
+    }
+
+    @ParameterizedTest
+    @CsvSource({"MINISO,3", "OTHER,2"})
+    void cancelledVoucherKeepsSuccessfulOrderAndOriginalInvalidTime(String supplierChannel, String stateType) {
+        RechargeOrderExtDO ext = ext("DB_PERSISTED", "PASSED", true);
+        ext.setDispatchStatus("CANCELLED");
+        ext.setVoucherUseState("3");
+        ext.setVoucherInvalidTime(LocalDateTime.parse("2026-10-19T10:20:30"));
+        McOrderDO order = order(12, "", "");
+        order.setSupplierChannel(supplierChannel);
+        MybatisRechargeOrderQueryAdapter adapter = new MybatisRechargeOrderQueryAdapter(
+                (orgCode, outOrderSn) -> order, (orgCode, outOrderSn) -> ext);
+
+        assertThat(adapter.findByOrgCodeAndOutOrderSn("A36", "OUT-1001")).hasValueSatisfying(snapshot -> {
+            assertThat(snapshot.orderStatus()).isEqualTo("SUCCESS");
+            assertThat(snapshot.stateType()).isEqualTo(stateType);
+            assertThat(snapshot.useState()).isEqualTo("3");
+            assertThat(snapshot.useTime()).isEmpty();
+            assertThat(snapshot.invalidTime()).isEqualTo("2026-10-19 10:20:30");
+        });
+    }
+
+    @ParameterizedTest
+    @CsvSource({"MINISO,3", "OTHER,2"})
+    void redeemedVoucherExposesItsUseTimeWithoutChangingOrderSuccess(String supplierChannel, String stateType) {
+        RechargeOrderExtDO ext = ext("DB_PERSISTED", "PASSED", true);
+        ext.setVoucherUseState("2");
+        ext.setVoucherUseTime(LocalDateTime.parse("2026-10-19T10:20:30"));
+        McOrderDO order = order(12, "", "");
+        order.setSupplierChannel(supplierChannel);
+        MybatisRechargeOrderQueryAdapter adapter = new MybatisRechargeOrderQueryAdapter(
+                (orgCode, outOrderSn) -> order, (orgCode, outOrderSn) -> ext);
+
+        assertThat(adapter.findByOrgCodeAndOutOrderSn("A36", "OUT-1001")).hasValueSatisfying(snapshot -> {
+            assertThat(snapshot.orderStatus()).isEqualTo("SUCCESS");
+            assertThat(snapshot.stateType()).isEqualTo(stateType);
+            assertThat(snapshot.useState()).isEqualTo("2");
+            assertThat(snapshot.useTime()).isEqualTo("2026-10-19 10:20:30");
+            assertThat(snapshot.invalidTime()).isEmpty();
+        });
+    }
+
+    @Test
+    void legacyCancelledOrderIsNotReportedAsRechargeFailureOrGivenInventedVoucherFact() {
+        RechargeOrderExtDO ext = ext("DB_PERSISTED", "FAILED", false);
+        ext.setDispatchStatus("CANCELLED");
+        MybatisRechargeOrderQueryAdapter adapter = new MybatisRechargeOrderQueryAdapter(
+                (orgCode, outOrderSn) -> order(6, "", "旧作废"), (orgCode, outOrderSn) -> ext);
+
+        assertThat(adapter.findByOrgCodeAndOutOrderSn("A36", "OUT-1001")).hasValueSatisfying(snapshot -> {
+            assertThat(snapshot.orderStatus()).isEqualTo("SUCCESS");
+            assertThat(snapshot.validationStatus()).isEqualTo("PASSED");
+            assertThat(snapshot.stateType()).isEmpty();
+            assertThat(snapshot.useState()).isEmpty();
+            assertThat(snapshot.useTime()).isEmpty();
+            assertThat(snapshot.invalidTime()).isEmpty();
+        });
+    }
+
+    @Test
+    void mismatchedExtensionCannotProvideVoucherFacts() {
+        RechargeOrderExtDO ext = ext("DB_PERSISTED", "PASSED", true);
+        ext.setOrderId("OTHER-ORDER");
+        ext.setVoucherUseState("3");
+        ext.setVoucherInvalidTime(LocalDateTime.parse("2026-10-19T10:20:30"));
+        MybatisRechargeOrderQueryAdapter adapter = new MybatisRechargeOrderQueryAdapter(
+                (orgCode, outOrderSn) -> order(12, "", ""), (orgCode, outOrderSn) -> ext);
+
+        assertThat(adapter.findByOrgCodeAndOutOrderSn("A36", "OUT-1001")).hasValueSatisfying(snapshot -> {
+            assertThat(snapshot.stateType()).isEmpty();
+            assertThat(snapshot.useState()).isEmpty();
+            assertThat(snapshot.invalidTime()).isEmpty();
+        });
     }
 
     private static McOrderDO order(int orderStatus, String failCode, String failReason) {

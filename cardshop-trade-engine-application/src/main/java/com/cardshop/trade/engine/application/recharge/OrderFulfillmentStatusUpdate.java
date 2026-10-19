@@ -14,6 +14,8 @@ package com.cardshop.trade.engine.application.recharge;
  * @param failCode 失败码，对应 {@code mc_order.fail_code}
  * @param failReason 失败原因，对应 {@code mc_order.fail_reason}
  * @param remark 订单履约备注，对应 {@code mc_order.remark}
+ * @param minisoReceipt 同事务保存的供应商凭据
+ * @param invalidTime 作废完成时间，参见详细设计9.6
  */
 public record OrderFulfillmentStatusUpdate(
         String orderId,
@@ -24,14 +26,28 @@ public record OrderFulfillmentStatusUpdate(
         String failCode,
         String failReason,
         String remark,
-        MinisoFulfillmentReceipt minisoReceipt) {
+        MinisoFulfillmentReceipt minisoReceipt,
+        java.time.Instant invalidTime) {
     public OrderFulfillmentStatusUpdate(String orderId, FulfillmentDispatchStatus dispatchStatus, int orderStatus, String dataStatus, Long supplierFlowId, String failCode, String failReason, String remark) {
-        this(orderId, dispatchStatus, orderStatus, dataStatus, supplierFlowId, failCode, failReason, remark, null);
+        this(orderId, dispatchStatus, orderStatus, dataStatus, supplierFlowId, failCode, failReason, remark, null, null);
+    }
+
+    public OrderFulfillmentStatusUpdate(String orderId, FulfillmentDispatchStatus dispatchStatus, int orderStatus,
+            String dataStatus, Long supplierFlowId, String failCode, String failReason, String remark,
+            MinisoFulfillmentReceipt minisoReceipt) {
+        this(orderId, dispatchStatus, orderStatus, dataStatus, supplierFlowId, failCode, failReason, remark,
+                minisoReceipt, null);
     }
 
     /** 携带凭据参与成功事务；参见详细设计名创实施约束。 */
     public OrderFulfillmentStatusUpdate withMinisoReceipt(MinisoFulfillmentReceipt receipt) {
-        return new OrderFulfillmentStatusUpdate(orderId, dispatchStatus, orderStatus, dataStatus, supplierFlowId, failCode, failReason, remark, receipt);
+        return new OrderFulfillmentStatusUpdate(orderId, dispatchStatus, orderStatus, dataStatus, supplierFlowId, failCode, failReason, remark, receipt, invalidTime);
+    }
+
+    /** 作废事实时间在终态与通知中复用，资金补偿不得重新取当前时间；参见详细设计9.6。 */
+    public OrderFulfillmentStatusUpdate withInvalidTime(java.time.Instant time) {
+        return new OrderFulfillmentStatusUpdate(orderId, dispatchStatus, orderStatus, dataStatus,
+                supplierFlowId, failCode, failReason, remark, minisoReceipt, time);
     }
 
 }

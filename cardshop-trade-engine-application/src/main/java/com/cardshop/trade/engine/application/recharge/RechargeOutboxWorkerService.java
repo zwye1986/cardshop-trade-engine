@@ -525,8 +525,10 @@ public class RechargeOutboxWorkerService {
             markFailedOrManualRequired(event, "order not found for dispatch", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
+        // 作废属于券终态，任何旧派单事件恢复均不能重派或误发订单失败通知；参见详细设计9.6。
+        if (order.cancelled()) return handleInvalidOrder(event, order);
         if (!order.dispatchable()) {
-            if (order.terminalFailureAwaitingBalanceRelease()) {
+            if (order.terminalBalanceReleasePending()) {
                 return completeTerminalBalanceRelease(event, order, "供应商失败终态补偿释放预扣");
             }
             if (order.orderStatus() == ORDER_STATUS_SUPPLIER_ACCEPTED) {
@@ -749,7 +751,9 @@ public class RechargeOutboxWorkerService {
             markFailedOrManualRequired(event, "order not found for supplier query", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
-        if (order.terminalFailureAwaitingBalanceRelease()) {
+        // CANCELLED订单仍为12，必须先于失败资金补偿分支识别；参见详细设计9.6。
+        if (order.cancelled()) return handleInvalidOrder(event, order);
+        if (order.terminalBalanceReleasePending()) {
             createOrderStatusNotifyTask(order, LegacyOrderStatusCode.FAILED);
             return completeTerminalBalanceRelease(event, order, "供应商查单终态补偿释放预扣");
         }
@@ -860,13 +864,29 @@ public class RechargeOutboxWorkerService {
         }
         if (blockedByMinisoRedemption(event, order))
             return RechargeOutboxBatchResult.Outcome.FAILED;
-        if (order.terminalFailureAwaitingBalanceRelease()) {
+        // 作废完成仍保留订单12，独立终态及原时间用于恢复；参见详细设计9.6。
+        if (order.cancelled()) {
+            if (order.invalidTime() == null) {
+                outboxPort.markManualRequired(event, "CANCELLED_TIME_MISSING");
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
+            createWriteOffNotifyTask(order, order.invalidTime());
+            if (order.balanceReserved())
+                return completeTerminalBalanceRelease(event, order, "供应商作废终态补偿释放预扣");
+            outboxPort.markSuccess(event);
+            return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+        }
+        if (order.terminalBalanceReleasePending()) {
             return completeTerminalBalanceRelease(event, order, "供应商作废终态补偿释放预扣");
+        }
+        if (order.orderStatus() != ORDER_STATUS_SUCCESS) {
+            markFailedOrManualRequired(event, "订单尚未发券成功，不能确认券作废", settings.retryBackoff());
+            return RechargeOutboxBatchResult.Outcome.FAILED;
         }
         orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
                 order.orderId(),
                 FulfillmentDispatchStatus.CANCEL_REQUESTED,
-                ORDER_STATUS_SUPPLIER_ACCEPTED,
+                ORDER_STATUS_SUCCESS,
                 DATA_STATUS_PROCESSING,
                 null,
                 null,
@@ -876,16 +896,17 @@ public class RechargeOutboxWorkerService {
         if (response.status() == SupplierGatewayStatus.SUCCESS) {
             if (blockedByMinisoRedemption(event, order))
                 return RechargeOutboxBatchResult.Outcome.FAILED;
+            var invalidTime = clock.instant();
             orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
                     order.orderId(),
                     FulfillmentDispatchStatus.CANCELLED,
-                    ORDER_STATUS_FAILED,
+                    ORDER_STATUS_SUCCESS,
                     DATA_STATUS_PROCESSED,
                     null,
-                    response.responseCode(),
-                    response.responseMessage(),
-                    "供应商作废成功").withMinisoReceipt(response.minisoReceipt()));
-            createWriteOffNotifyTask(order);
+                    null,
+                    null,
+                    "供应商作废成功").withMinisoReceipt(response.minisoReceipt()).withInvalidTime(invalidTime));
+            createWriteOffNotifyTask(order, invalidTime);
             if (!releaseBalanceReservationAndEnqueueDelta(event, order, "供应商作废成功")) {
                 frequencyPort.releaseIfOwned(
                         order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
@@ -897,8 +918,9 @@ public class RechargeOutboxWorkerService {
             return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
         }
         if (response.status() == SupplierGatewayStatus.PROCESSING) {
-            outboxPort.markSuccess(event);
-            return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+            // 作废受理不是作废完成，保留同一任务恢复且不释放资金；参见详细设计9.6。
+            markFailedOrManualRequired(event, "供应商作废处理中", settings.retryBackoff());
+            return RechargeOutboxBatchResult.Outcome.FAILED;
         }
         markFailedOrManualRequired(event, response.responseMessage(), settings.retryBackoff());
         return RechargeOutboxBatchResult.Outcome.FAILED;
@@ -1046,11 +1068,11 @@ public class RechargeOutboxWorkerService {
                 LocalDateTime.now(clock)));
     }
 
-    private void createWriteOffNotifyTask(RechargeFulfillmentOrder order) {
+    private void createWriteOffNotifyTask(RechargeFulfillmentOrder order, java.time.Instant invalidTime) {
         if (!hasNotifyUrl(order)) {
             return;
         }
-        Map<String, String> payload = notifyPayloadSigner.signWriteOff(order, clock.instant());
+        Map<String, String> payload = notifyPayloadSigner.signWriteOff(order, invalidTime);
         notifyTaskPort.insertIfAbsent(new RechargeNotifyTaskDraft(
                 "notify-writeoff-" + order.orderId() + "-cancelled",
                 "VOUCHER_STATE",

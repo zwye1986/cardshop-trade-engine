@@ -65,6 +65,8 @@ class HttpV1CardApiClientTest {
             Credentials token = client.getToken("app-id", "secret-value");
 
             assertThat(token.token()).isEqualTo("token-value");
+            assertThat(token.keyId()).isNull();
+            assertThat(token.signKey()).isEqualTo(TestKeys.KEY);
             assertThat(logs).anySatisfy(log -> assertThat(log)
                     .contains("[A39][HTTP][request]")
                     .contains("curl -i -X POST")
@@ -237,7 +239,7 @@ class HttpV1CardApiClientTest {
             HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
             server.createContext("/v1/cardapi/auth/getToken", exchange -> {
                 byte[] bytes = """
-                        {"code":200,"msg":"操作成功","data":{"token":"token-value","keyId":"test-key","signKey":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}}
+                        {"code":200,"msg":"操作成功","data":{"token":"token-value","signKey":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}}
                         """.getBytes(StandardCharsets.UTF_8);
                 exchange.getResponseHeaders().set("Content-Type", "application/json; charset=UTF-8");
                 exchange.sendResponseHeaders(200, bytes.length);

@@ -65,8 +65,13 @@ public final class A39CallbackServer implements AutoCloseable {
         return callbackServer;
     }
 
-    /** 只从本商户可信getToken响应登记；停用但未撤销的历史密钥继续可验签，参见详细设计3.1。 */
+    /** 仅登记本商户可信的旧直连凭证；历史密钥规则参见详细设计3.1，银行目标见文末认证修订。 */
     public void registerCredentials(Credentials credential) {
+        if (credential.keyId() == null || credential.keyId().isBlank()) {
+            // TODO：完成2104银行通知接收认证，参见详细设计「交行开放平台通知认证修订 2026-10-19」。
+            // 新接口不返回keyId，不能从外部回调学习版本或回退为无签名接收；业务请求发送前明确拒绝旧场景。
+            throw new IllegalStateException("Legacy callback requires trusted keyId; bank 2104 callback is not implemented");
+        }
         keys.compute(credential.keyId(), (id, existing) -> {
             if (existing != null && !existing.signKey().equals(credential.signKey())) {
                 throw new IllegalStateException("Signing keyId already registered with another key");

@@ -2,6 +2,8 @@ package com.cardshop.trade.engine.simulator.a39;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -19,6 +21,63 @@ class A39CallbackServerTest {
     private final HttpClient httpClient = HttpClient.newHttpClient();
     private final V12Signer signer = new V12Signer();
     private final ObjectMapper json = new ObjectMapper();
+
+    @Test
+    void rejectsLegacyCallbackRegistrationWithoutTrustedKeyId() throws Exception {
+        // 最新getToken不交付keyId；旧直连回调不能从外部报文猜测版本或自动接受无签名通知。
+        try (A39CallbackServer server = server()) {
+            var credentials = new Credentials("token", null, TestKeys.KEY);
+            assertThatThrownBy(() -> server.registerCredentials(credentials))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("trusted keyId")
+                    .hasMessageContaining("2104");
+            assertThat(server.receivedCallbacks()).isEmpty();
+        }
+    }
+
+    /**
+     * 交行名创券状态通知示例，参见详细设计9.5：3/2表示已核销，3/3表示作废完成。
+     * 重试必须保留原文与签名，接收方对相同有效报文持续返回成功ACK；状态篡改必须拒绝。
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"2", "3"})
+    void acceptsSignedMinisoVoucherStateAndExactRedeliveryButRejectsTampering(String useState) throws Exception {
+        try (A39CallbackServer server = server()) {
+            server.registerCredentials(new Credentials("token", "test-key", TestKeys.KEY));
+            server.registerOrder("OUT-1", "18186222336");
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("keyId", "test-key");
+            payload.put("order_id", "ORDER-1");
+            payload.put("out_order_sn", "OUT-1");
+            payload.put("account", "18186222336");
+            payload.put("timestamp", "1792377000000");
+            payload.put("nonce_str", "0123456789abcdef0123456789abcdef");
+            payload.put("state_type", "3");
+            payload.put("use_state", useState);
+            payload.put("use_time", "2".equals(useState) ? "2026-10-19 10:30:00" : "");
+            payload.put("invalid_time", "3".equals(useState) ? "2026-10-19 10:30:00" : "");
+            payload.put("sign", signer.signCallback(payload, TestKeys.KEY).sign());
+            String body = json.writeValueAsString(payload);
+
+            for (int delivery = 0; delivery < 2; delivery++) {
+                HttpResponse<String> response = post(server, "/callback/writeoff", body);
+                assertThat(response.statusCode()).isEqualTo(200);
+                assertThat(response.body()).isEqualTo("{\"code\":200,\"msg\":\"接收成功\"}");
+            }
+            assertThat(server.receivedCallbacks()).hasSize(2).allSatisfy(record -> {
+                assertThat(record.path()).isEqualTo("/callback/writeoff");
+                assertThat(record.rawBody()).isEqualTo(body);
+                assertThat(record.payload()).containsEntry("state_type", "3").containsEntry("use_state", useState)
+                        .doesNotContainKey("order_status");
+                assertThat(record.signatureValid()).isTrue();
+            });
+
+            payload.put("use_state", "1");
+            assertThat(post(server, "/callback/writeoff", json.writeValueAsString(payload)).body())
+                    .isEqualTo("{\"code\":500,\"msg\":\"接收失败，请重试\"}");
+            assertThat(server.receivedCallbacks().get(2).signatureValid()).isFalse();
+        }
+    }
 
     @Test
     void acceptsSignedCallbackAndRejectsTamperedCallback() throws Exception {
@@ -146,7 +205,11 @@ class A39CallbackServerTest {
     }
 
     private HttpResponse<String> post(A39CallbackServer server, String body) throws Exception {
-        HttpRequest request = HttpRequest.newBuilder(URI.create(server.callbackUrl("/callback/order")))
+        return post(server, "/callback/order", body);
+    }
+
+    private HttpResponse<String> post(A39CallbackServer server, String path, String body) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(URI.create(server.callbackUrl(path)))
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(body)).build();
         return httpClient.send(request, HttpResponse.BodyHandlers.ofString());

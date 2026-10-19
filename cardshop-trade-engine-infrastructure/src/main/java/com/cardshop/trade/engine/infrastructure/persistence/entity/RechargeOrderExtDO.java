@@ -10,7 +10,8 @@ import java.time.LocalDateTime;
  * 新链路订单扩展表 `recharge_order_ext`。
  *
  * <p>字段对应 {@code docs/交行直充业务系统高可用方案设计.md} 的「6.6 新增表」。
- * 该表只保存 Redis/MQ/MySQL 一致性状态，订单最终业务事实仍以 `mc_order` 为准。
+ * 该表保存Redis/MQ/MySQL一致性、履约状态及独立券事实；充值订单状态以mc_order为准，
+ * 核销/作废状态和事实时间独立保存，参见详细设计9.6，不能把作废混为订单失败。
  */
 @TableName("recharge_order_ext")
 public class RechargeOrderExtDO {
@@ -124,6 +125,23 @@ public class RechargeOrderExtDO {
      */
     @TableField("dispatch_status")
     private String dispatchStatus;
+
+    /** 交行券状态；参见详细设计9.6，DDL COMMENT同名。 */
+    @TableField("voucher_use_state")
+    private String voucherUseState;
+    /** 核销时间；参见详细设计9.6，DDL COMMENT同名。 */
+    @TableField("voucher_use_time")
+    private LocalDateTime voucherUseTime;
+    /** 作废完成时间；参见详细设计9.6，DDL COMMENT同名。 */
+    @TableField("voucher_invalid_time")
+    private LocalDateTime voucherInvalidTime;
+
+    public String getVoucherUseState() { return voucherUseState; }
+    public void setVoucherUseState(String value) { voucherUseState = value; }
+    public LocalDateTime getVoucherUseTime() { return voucherUseTime; }
+    public void setVoucherUseTime(LocalDateTime value) { voucherUseTime = value; }
+    public LocalDateTime getVoucherInvalidTime() { return voucherInvalidTime; }
+    public void setVoucherInvalidTime(LocalDateTime value) { voucherInvalidTime = value; }
 
     /**
      * 落库消息发布次数。

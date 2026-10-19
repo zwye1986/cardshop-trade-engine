@@ -18,6 +18,7 @@ import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.cardshop.trade.engine.domain.order.PersistStatus;
+import com.cardshop.trade.engine.domain.order.VoucherUseState;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,9 +27,9 @@ import org.springframework.util.StringUtils;
 /**
  * V1 作废订单用例。
  *
- * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.2 作废设计」。D4 只完成入口闭环和
- * 未落库保护：订单仍处于 Redis pending/MQ/Consumer 窗口时返回处理中，不直接调用供应商或修改旧库。
- * 真正的 DB_PERSISTED 作废 outbox 会在 D10 作废任务中接入。
+ * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 作废设计」「9.6 交行对外券状态修订」。
+ * 未落库返回处理中，已落库由outbox异步作废；已完成且具有可信时间时直接返回原券事实。
+ * 发券成功后的作废保留订单12，名创3/3与订单失败6独立，接口线程不直接调用供应商。
  */
 public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrderUseCase {
 
@@ -89,6 +90,15 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
             RechargeOrderSnapshot snapshot) {
         if (!PersistStatus.DB_PERSISTED.name().equals(defaultText(snapshot.persistStatus(), ""))) {
             return processing(snapshot);
+        }
+        /*
+         * 详细设计「9.6 交行对外券状态修订」：名创3/3、其他直充2/3及可信完成时间才证明作废完成。
+         * 重复请求直接返回已保存事实，不重建任务、不刷新时间，也不再次触发供应商作废。
+         */
+        if (VoucherUseState.isSupportedStateType(snapshot.stateType())
+                && VoucherUseState.CANCELLED.code().equals(snapshot.useState())
+                && StringUtils.hasText(snapshot.invalidTime())) {
+            return V1QueryRechargeOrderUseCaseService.snapshotResult(snapshot);
         }
         /*
          * docs/交行直充业务系统详细设计.md「9.2 作废设计」要求 DB_PERSISTED 订单只生成

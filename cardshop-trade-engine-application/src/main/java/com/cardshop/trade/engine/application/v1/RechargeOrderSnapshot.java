@@ -15,6 +15,10 @@ package com.cardshop.trade.engine.application.v1;
  * @param failCode 失败码
  * @param failReason 失败原因
  * @param dispatchAllowed 是否允许后续派单
+ * @param stateType 券状态类型（名创3，其他直充2），参见详细设计9.6
+ * @param useState 交行券状态
+ * @param useTime 核销时间
+ * @param invalidTime 作废完成时间
  */
 public record RechargeOrderSnapshot(
         String orderId,
@@ -24,5 +28,17 @@ public record RechargeOrderSnapshot(
         String validationStatus,
         String failCode,
         String failReason,
-        boolean dispatchAllowed) {
+        boolean dispatchAllowed,
+        String stateType,
+        String useState,
+        String useTime,
+        String invalidTime) {
+
+    /** 受理期尚无券事实，空字段不能被当作作废或核销；参见详细设计9.6。 */
+    public RechargeOrderSnapshot(String orderId, String outOrderSn, String orderStatus,
+            String persistStatus, String validationStatus, String failCode, String failReason,
+            boolean dispatchAllowed) {
+        this(orderId, outOrderSn, orderStatus, persistStatus, validationStatus, failCode, failReason,
+                dispatchAllowed, "", "", "", "");
+    }
 }

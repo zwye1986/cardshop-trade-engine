@@ -8,6 +8,8 @@ import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPo
 import com.cardshop.trade.engine.application.recharge.SupplierFlowSnapshot;
 import com.cardshop.trade.engine.application.recharge.SupplierFlowStartCommand;
 import com.cardshop.trade.engine.application.recharge.SupplierFlowUpdateCommand;
+import com.cardshop.trade.engine.application.recharge.FulfillmentDispatchStatus;
+import com.cardshop.trade.engine.domain.order.VoucherUseState;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderSupplierFlowDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
@@ -33,6 +35,8 @@ import org.springframework.transaction.annotation.Transactional;
 public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillmentOrderPort {
 
     private static final ZoneId LEGACY_CARDSHOP_DB_ZONE = ZoneId.of("Asia/Shanghai");
+    private static final int MINISO_COUPON_UNUSED = 0;
+    private static final int MINISO_COUPON_USED = 1;
 
     private final McOrderMapper orderMapper;
     private final RechargeOrderExtMapper extMapper;
@@ -82,7 +86,10 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
                 ext.getPersistStatus(),
                 ext.getValidationStatus(),
                 Boolean.TRUE.equals(ext.getDispatchAllowed()),
-                Boolean.TRUE.equals(ext.getBalanceReserved())));
+                Boolean.TRUE.equals(ext.getBalanceReserved()),
+                ext.getDispatchStatus(),
+                ext.getVoucherInvalidTime() == null ? null
+                        : ext.getVoucherInvalidTime().atZone(LEGACY_CARDSHOP_DB_ZONE).toInstant()));
     }
 
     @Override
@@ -133,6 +140,9 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
     @Override
     @Transactional
     public void updateFulfillmentStatus(OrderFulfillmentStatusUpdate update) {
+        if (update.dispatchStatus() == FulfillmentDispatchStatus.CANCELLED && update.invalidTime() == null) {
+            throw new IllegalArgumentException("cancelled order requires trusted invalid time");
+        }
         // 先保存并锁定可信订单凭据；本方法Spring事务保证凭据/主单/扩展状态整体提交或回滚。
         if (update.minisoReceipt() != null) {
             if (minisoReceipts == null || !update.orderId().equals(update.minisoReceipt().orderId())) {
@@ -154,13 +164,33 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
                 .set(McOrderDO::getFailReason, update.failReason())
                 .set(McOrderDO::getRemark, update.remark())
                 .set(McOrderDO::getEditTime, now()));
-        int extRows = extMapper.update(null, new LambdaUpdateWrapper<RechargeOrderExtDO>()
+        var extUpdate = new LambdaUpdateWrapper<RechargeOrderExtDO>()
                 .eq(RechargeOrderExtDO::getOrderId, update.orderId())
                 .set(RechargeOrderExtDO::getDispatchStatus, update.dispatchStatus().name())
                 .set(RechargeOrderExtDO::getLastError, update.failReason())
-                .set(RechargeOrderExtDO::getUpdatedAt, now()));
-        if (update.minisoReceipt() != null && (orderRows != 1 || extRows != 1)) {
-            throw new IllegalStateException("MINISO order terminal update did not affect one owned row");
+                .set(RechargeOrderExtDO::getUpdatedAt, now());
+        // 订单充值成功不回退已核销/已作废券；作废时间与通知使用同一事实，见详细设计9.6。
+        if (update.dispatchStatus() == FulfillmentDispatchStatus.SUCCESS) {
+            String initialState = update.minisoReceipt() == null ? VoucherUseState.UNUSED.code()
+                    : switch (update.minisoReceipt().couponStatus()) {
+                        case MINISO_COUPON_UNUSED -> VoucherUseState.UNUSED.code();
+                        case MINISO_COUPON_USED -> VoucherUseState.REDEEMED.code();
+                        // TODO: 过期等状态待单独确认外部码表，不能冒充未使用或作废完成；参见详细设计9.6。
+                        default -> "";
+                    };
+            extUpdate.setSql("voucher_use_state = CASE WHEN voucher_use_state IN ({0},{1}) "
+                            + "THEN voucher_use_state ELSE {2} END",
+                    VoucherUseState.REDEEMED.code(), VoucherUseState.CANCELLED.code(), initialState);
+        } else if (update.dispatchStatus() == FulfillmentDispatchStatus.CANCELLED) {
+            extUpdate.set(RechargeOrderExtDO::getVoucherUseState, VoucherUseState.CANCELLED.code())
+                    .setSql("voucher_invalid_time = COALESCE(voucher_invalid_time, {0})",
+                            LocalDateTime.ofInstant(update.invalidTime(), LEGACY_CARDSHOP_DB_ZONE)
+                                    .withNano(0));
+        }
+        int extRows = extMapper.update(null, extUpdate);
+        if ((update.minisoReceipt() != null || update.dispatchStatus() == FulfillmentDispatchStatus.CANCELLED)
+                && (orderRows != 1 || extRows != 1)) {
+            throw new IllegalStateException("order terminal update did not affect one owned row");
         }
     }
 

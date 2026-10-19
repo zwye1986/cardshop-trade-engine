@@ -41,21 +41,24 @@ class V1IssueTokenUseCaseServiceTest {
         var service = new V1IssueTokenUseCaseService(merchantPort(true), tokenStore, credentials, SETTINGS, CLOCK);
         String request = "{\"app_id\":\"app-gray\",\"app_secret\":\"secret-1\"}";
         Map<?, ?> first = (Map<?, ?>) service.issueToken(request).data();
+        var original = credentials.findCurrent("A36").orElseThrow();
         Map<?, ?> second = (Map<?, ?>) service.issueToken(request).data();
+        assertThat(first.keySet()).isEqualTo(java.util.Set.of("token", "signKey"));
+        assertThat(second.keySet()).isEqualTo(java.util.Set.of("token", "signKey"));
+        assertThat(credentials.findCurrent("A36")).contains(original);
         assertThat(first.get("token")).isNotEqualTo(second.get("token"));
-        assertThat(first.get("keyId")).isEqualTo(second.get("keyId"));
         assertThat(first.get("signKey")).isEqualTo(second.get("signKey"));
         var auth = new V1TokenAuthenticator(SETTINGS, CLOCK, Optional.of(tokenStore), Optional.of(credentials));
         assertThat(auth.authenticate((String) first.get("token"))).isEmpty();
         assertThat(auth.authenticate((String) second.get("token"))).isPresent();
-        assertThat(credentials.findForCallback("A36", (String) first.get("keyId")))
+        assertThat(credentials.findForCallback("A36", original.keyId()))
                 .get().extracting(com.cardshop.trade.engine.application.v1.crypto.V12SigningCredential::signKey)
                 .isEqualTo(first.get("signKey"));
         var expired = new V1TokenAuthenticator(SETTINGS, Clock.offset(CLOCK, Duration.ofHours(3)),
                 Optional.of(tokenStore), Optional.of(credentials));
         assertThat(expired.authenticate((String) second.get("token"))).isEmpty();
-        assertThat(credentials.findForCallback("A36", (String) second.get("keyId"))).isPresent();
-        credentials.revoke("A36", (String) second.get("keyId"));
+        assertThat(credentials.findForCallback("A36", original.keyId())).isPresent();
+        credentials.revoke("A36", original.keyId());
         assertThat(auth.authenticate((String) second.get("token"))).isEmpty();
     }
 
@@ -65,6 +68,7 @@ class V1IssueTokenUseCaseServiceTest {
         var service = new V1IssueTokenUseCaseService(merchantPort(true), tokenStore, credentials, SETTINGS, CLOCK);
         Map<?, ?> first = (Map<?, ?>) service.issueToken(
                 "{\"app_id\":\"app-gray\",\"app_secret\":\"secret-1\"}").data();
+        var original = credentials.findCurrent("A36").orElseThrow();
         String token = (String) first.get("token");
         var claims = new com.fasterxml.jackson.databind.ObjectMapper().readTree(
                 java.util.Base64.getUrlDecoder().decode(token.split("\\.")[1]));
@@ -76,7 +80,11 @@ class V1IssueTokenUseCaseServiceTest {
         assertThat(auth.authenticate(token)).get()
                 .extracting(com.cardshop.trade.engine.api.v1.security.AuthenticatedMerchant::signingCredential)
                 .isEqualTo(rotated);
-        assertThat(credentials.findForCallback("A36", (String) first.get("keyId"))).isPresent();
+        assertThat(credentials.findForCallback("A36", original.keyId())).isPresent();
+        Map<?, ?> refreshed = (Map<?, ?>) service.issueToken(
+                "{\"app_id\":\"app-gray\",\"app_secret\":\"secret-1\"}").data();
+        assertThat(refreshed.keySet()).isEqualTo(java.util.Set.of("token", "signKey"));
+        assertThat(refreshed.get("signKey")).isEqualTo(rotated.signKey());
     }
 
     @Test
@@ -85,12 +93,15 @@ class V1IssueTokenUseCaseServiceTest {
         var service = new V1IssueTokenUseCaseService(merchantPort(true), tokenStore, credentials, SETTINGS, CLOCK);
         String request = "{\"app_id\":\"app-gray\",\"app_secret\":\"secret-1\"}";
         Map<?, ?> first = (Map<?, ?>) service.issueToken(request).data();
-        credentials.revoke("A36", (String) first.get("keyId"));
+        var original = credentials.findCurrent("A36").orElseThrow();
+        credentials.revoke("A36", original.keyId());
         assertThat(service.issueToken(request).code()).isEqualTo("502");
         assertThat(tokenStore.token).isEqualTo(first.get("token"));
         var rotated = credentials.rotate("A36");
         Map<?, ?> restored = (Map<?, ?>) service.issueToken(request).data();
-        assertThat(restored.get("keyId")).isEqualTo(rotated.keyId());
+        assertThat(restored.keySet()).isEqualTo(java.util.Set.of("token", "signKey"));
+        assertThat(restored.get("signKey")).isEqualTo(rotated.signKey());
+        assertThat(credentials.findCurrent("A36")).contains(rotated);
     }
 
     @Test
@@ -108,7 +119,9 @@ class V1IssueTokenUseCaseServiceTest {
         Map<?, ?> first = (Map<?, ?>) service.issueToken("{\"app_id\":\"app-one\",\"app_secret\":\"secret\"}").data();
         Map<?, ?> second = (Map<?, ?>) service.issueToken("{\"app_id\":\"app-two\",\"app_secret\":\"secret\"}").data();
         Map<?, ?> other = (Map<?, ?>) service.issueToken("{\"app_id\":\"app-other-merchant\",\"app_secret\":\"secret\"}").data();
-        assertThat(first.get("keyId")).isEqualTo(second.get("keyId")).isNotEqualTo(other.get("keyId"));
+        assertThat(first.keySet()).isEqualTo(java.util.Set.of("token", "signKey"));
+        assertThat(second.keySet()).isEqualTo(java.util.Set.of("token", "signKey"));
+        assertThat(other.keySet()).isEqualTo(java.util.Set.of("token", "signKey"));
         assertThat(first.get("signKey")).isEqualTo(second.get("signKey")).isNotEqualTo(other.get("signKey"));
     }
 
@@ -131,7 +144,11 @@ class V1IssueTokenUseCaseServiceTest {
         assertThat(result.data()).isInstanceOf(Map.class);
         @SuppressWarnings("unchecked")
         Map<String, Object> data = (Map<String, Object>) result.data();
-        assertThat(data).containsKeys("token", "keyId", "signKey");
+        // 详细设计「交行开放平台通知认证修订 2026-10-19」：只交付token/signKey，版本标识仅内部使用。
+        assertThat(data).containsOnlyKeys("token", "signKey");
+        var current = credentials.findCurrent("A36").orElseThrow();
+        assertThat(current.keyId()).isNotBlank();
+        assertThat(data.get("signKey")).isEqualTo(current.signKey());
         String token = String.valueOf(data.get("token"));
         assertThat(token).isNotBlank();
         assertThat(tokenStore.appId).isEqualTo("app-gray");

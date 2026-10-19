@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""名创入站和V1.2核销通知的可执行协议示例；参见详细设计9.5。
+"""名创入站和V1.2核销/作废通知的可执行协议示例；参见详细设计9.5。
 默认仅离线自检。发送仅允许显式本机URL和环境变量key2，不打印真实密钥或报文。
 """
 import argparse
@@ -50,7 +50,8 @@ def verify_callback(payload, key_id, encoded_key):
 def self_test():
     _, headers = notice(FIXTURE_KEY2, FIXTURE_NONCE, FIXTURE_TIME, FIXTURE_BODY)
     assert headers["sign"] == "62088F92CF0CB4452F9A95098E60E350"
-    # 文档V1.2核销回调固定向量，空invalid_time与keyId都必须参与签名。
+    # 文档V1.2通用协议验签向量：2/2属于其他直充分类，不作为名创业务状态示例。
+    # 空invalid_time与keyId都必须参与签名，原固定向量保持不变。
     payload = {
         "order_id": "2024051410460831111495", "out_order_sn": "2024022120200772347024",
         "timestamp": "1715592615713", "nonce_str": "00000000000000000000000000000006",
@@ -59,9 +60,26 @@ def self_test():
         "sign": "f70181a433e0acb9dfce122729f106f1b0d6db6139e811ec23c69e3877cdcb9a",
     }
     assert verify_callback(payload, "demo-key-20261015-001", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+    # 名创已核销固定向量：state_type=3/use_state=2，不复用其他直充分类的state_type=2。
+    miniso_payload = dict(payload, state_type="3",
+                          sign="5cd69af0b03123180ea6b49b50fd055c02c84e899fce0d3cbc853ddae89df72c")
+    assert verify_callback(miniso_payload, "demo-key-20261015-001", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+    # 名创作废完成固定向量：state_type=3/use_state=3，use_time留空，invalid_time非空。
+    # 核销/作废均为券状态通知，不增加order_status；发券成功后的订单状态仍保留12。
+    invalid_payload = dict(miniso_payload, use_time="", use_state="3", invalid_time="2025-11-01 10:06:30",
+                           sign="27e954d989258511fabe57ea6441ae8e0fb7650767cf755f03d4d1311007bc68")
+    assert verify_callback(invalid_payload, "demo-key-20261015-001", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+    # 原文重投保持签名不变，文档向量及两种名创状态都应再次通过验签。
+    for original in (payload, miniso_payload, invalid_payload):
+        replay = json.loads(json.dumps(original))
+        assert verify_callback(replay, "demo-key-20261015-001", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+    invalid_payload["invalid_time"] = "2025-11-01 10:06:31"
+    assert not verify_callback(invalid_payload, "demo-key-20261015-001", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+    miniso_payload["use_time"] = "2025-11-01 10:05:31"
+    assert not verify_callback(miniso_payload, "demo-key-20261015-001", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
     payload["use_time"] = "2025-11-01 10:05:31"
     assert not verify_callback(payload, "demo-key-20261015-001", "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
-    print("PASS: legacy key2 MD5, V1.2 HMAC-SM3 and tamper rejection")
+    print("PASS: legacy key2 MD5, generic V1.2 2/2 vector, MINISO 3/2 redemption and 3/3 invalidation, replay and tamper rejection")
 
 
 def main():

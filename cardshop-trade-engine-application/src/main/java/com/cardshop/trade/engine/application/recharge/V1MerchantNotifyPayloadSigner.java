@@ -21,8 +21,8 @@ public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigne
 
     private static final String SIGN_FIELD = "sign";
     private static final String WRITE_OFF_NONCE_STATUS = "writeoff";
-    private static final String WRITE_OFF_STATE_TYPE = "1";
-    private static final String WRITE_OFF_USE_STATE_CANCELLED = "2";
+    // 作废不能使用表示已兑换的1/2；名创为3/3，其余直充沿文档2/3，参见详细设计9.6节。
+    private static final String WRITE_OFF_USE_STATE_CANCELLED = "3";
     private static final int NONCE_HEX_LENGTH = 32;
     private static final String RECHARGE_TYPE = "1";
     private static final java.time.format.DateTimeFormatter CALLBACK_TIME = java.time.format.DateTimeFormatter
@@ -66,7 +66,7 @@ public class V1MerchantNotifyPayloadSigner implements MerchantNotifyPayloadSigne
         payload.put("nonce_str", nonce);
         payload.put("account", normalize(order.account()));
         payload.put("use_time", "");
-        payload.put("state_type", WRITE_OFF_STATE_TYPE);
+        payload.put("state_type", com.cardshop.trade.engine.domain.order.VoucherUseState.stateTypeFor(order.supplierChannel()));
         payload.put("use_state", WRITE_OFF_USE_STATE_CANCELLED);
         payload.put("invalid_time", CALLBACK_TIME.format(invalidTime));
         payload.put("keyId", credential.keyId());

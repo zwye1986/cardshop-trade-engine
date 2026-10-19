@@ -129,6 +129,13 @@ update recharge_miniso_writeoff_event set status='PROCESSED',order_id=#{order},o
             @Param("org") String org,
             @Param("now") LocalDateTime now);
 
+    /** 核销与券事实同事务提交，订单状态不变；参见详细设计9.6。 */
+    @Update("update recharge_order_ext set voucher_use_state='2',voucher_use_time=#{used},"
+            + "updated_at=#{now} where order_id=#{id} and org_code=#{org} "
+            + "and (voucher_use_state is null or voucher_use_state <> '3')")
+    int redeemVoucher(@Param("id") String id, @Param("org") String org,
+            @Param("used") LocalDateTime used, @Param("now") LocalDateTime now);
+
     @Update(
             """
 update recharge_miniso_writeoff_event set status=#{status},retry_count=#{retries},next_retry_time=#{next},

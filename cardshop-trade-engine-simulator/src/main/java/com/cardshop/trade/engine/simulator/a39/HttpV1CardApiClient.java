@@ -89,6 +89,8 @@ public final class HttpV1CardApiClient implements V1CardApiClient {
         if (!"200".equals(response.code()) || token == null || String.valueOf(token).isBlank()) {
             throw new IllegalStateException("getToken failed: code=%s, msg=%s".formatted(response.code(), response.msg()));
         }
+        // 最新getToken仅交付token/signKey；可选keyId只兼容旧直连测试服务，不能影响请求签名。
+        // 参见详细设计「交行开放平台通知认证修订 2026-10-19」。
         return new Credentials(String.valueOf(token), (String) response.data().get("keyId"),
                 (String) response.data().get("signKey"));
     }

@@ -12,10 +12,22 @@ import com.fasterxml.jackson.annotation.JsonProperty;
  * @param outOrderSn 商户订单号，对应旧表 `mc_order.out_orderId`
  * @param orderStatus 旧接口数字订单状态
  * @param orderStatusDesc 订单状态说明
+ * @param stateType 券状态类型，名创3、其他直充2；参见详细设计9.6
+ * @param useState 交行券状态
+ * @param useTime 核销时间
+ * @param invalidTime 作废完成时间
  */
 public record V1RechargeOrderResponse(
         @JsonProperty("order_id") String orderId,
         @JsonProperty("out_order_sn") String outOrderSn,
         @JsonProperty("order_status") String orderStatus,
-        @JsonProperty("order_status_desc") String orderStatusDesc) {
+        @JsonProperty("order_status_desc") String orderStatusDesc,
+        @JsonProperty("state_type") String stateType,
+        @JsonProperty("use_state") String useState,
+        @JsonProperty("use_time") String useTime,
+        @JsonProperty("invalid_time") String invalidTime) {
+    public V1RechargeOrderResponse(String orderId, String outOrderSn, String orderStatus,
+            String orderStatusDesc) {
+        this(orderId, outOrderSn, orderStatus, orderStatusDesc, "", "", "", "");
+    }
 }

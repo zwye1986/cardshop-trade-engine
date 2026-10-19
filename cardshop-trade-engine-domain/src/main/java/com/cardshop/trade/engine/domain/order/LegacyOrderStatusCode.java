@@ -17,7 +17,7 @@ public enum LegacyOrderStatusCode {
     ACCEPTED(2, "ACCEPTED"),
 
     /**
-     * 订单失败或作废完成。
+     * 订单失败；发券成功后作废保留SUCCESS，券作废另以名创3/3、其他直充2/3表达，见详细设计9.6。
      */
     FAILED(6, "FAILED"),
 

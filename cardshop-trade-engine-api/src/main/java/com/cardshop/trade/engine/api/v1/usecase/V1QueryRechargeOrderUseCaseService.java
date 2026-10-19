@@ -89,7 +89,11 @@ public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUse
                 snapshot.orderId(),
                 snapshot.outOrderSn(),
                 view.orderStatus(),
-                view.orderStatusDesc()));
+                view.orderStatusDesc(),
+                defaultText(snapshot.stateType(), ""),
+                defaultText(snapshot.useState(), ""),
+                defaultText(snapshot.useTime(), ""),
+                defaultText(snapshot.invalidTime(), "")));
     }
 
     private static OrderView toOrderView(RechargeOrderSnapshot snapshot) {

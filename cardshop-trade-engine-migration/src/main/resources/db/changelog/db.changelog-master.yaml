@@ -680,3 +680,19 @@ databaseChangeLog:
       rollback:
         - sql:
             sql: SELECT 1
+
+  # 交行订单与券状态分离，保留首次可信作废时间；参见详细设计9.6。
+  - changeSet:
+      id: 0022-bocom-voucher-state
+      author: codex
+      changes:
+        - sql:
+            sql: |
+              ALTER TABLE recharge_order_ext
+                ADD COLUMN voucher_use_state varchar(1) NOT NULL DEFAULT '' COMMENT '交行券状态',
+                ADD COLUMN voucher_use_time datetime NULL COMMENT '核销时间',
+                ADD COLUMN voucher_invalid_time datetime NULL COMMENT '作废完成时间';
+      # 不删除已生成的业务事实，也不猜测历史CANCELLED记录的时间。
+      rollback:
+        - sql:
+            sql: SELECT 1

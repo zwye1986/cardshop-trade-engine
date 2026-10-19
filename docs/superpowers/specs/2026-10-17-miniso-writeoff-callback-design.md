@@ -23,7 +23,7 @@
 
 writeOffNotify从商户mc_config配置键 `writeOffNotifyUrl` 取地址；从订单data首张券、批次记录和核销历史读取状态，核销时间取MAX(use_time)。它同步调用HTTP，使用AESUtils.Encrypt生成sign，底层为AES/ECB/PKCS5Padding后Base64；未检查商户业务响应。最终正常返回数值code=200、msg=接收成功。
 
-新服务保留入站路径、独立key2、排序后两字段JSON签名、3/2核销状态和成功回执。主动发券key、名创回调key2、商户signKey三者独立。
+新服务保留入站路径、独立key2、排序后两字段JSON签名和成功回执；商户核销状态按2026-10-19用户最终更正保留3/2，见第9节。主动发券key、名创回调key2、商户signKey三者独立。
 
 以下变化明确属于新服务设计：持久接收和幂等事务代替非事务直写；持久任务代替同步商户HTTP；商户出站按V1.2使用HMAC-SM3；notify_url为空时不通知；不记录签名原文或完整敏感报文。旧代码的重复写历史、状态更新异常后继续成功、未知券空指针、状态无条件覆盖和明文密钥日志均不沿用。
 
@@ -147,7 +147,7 @@ event_id固定为 `"miniso-redeemed-" + LowerHex(SHA256(UTF8("MINISO:REDEEMED:" 
 
 按券码初读候选凭据；若存在，按全局锁序锁主单、扩展、凭据，再锁事件，重新检查事件是否仍到期、状态及version。核对主单/扩展的order_id、org_code、out_order_sn完全一致，扩展DB_PERSISTED，主单MINISO、num=1，冻结supplier_batch_id数值与凭据batch_id一致，凭据org_code/order_id/phone与可信订单一致。
 
-正常充值成功order_status=12才推进核销。若作废Worker已写入中间态13且dispatch_status=CANCEL_REQUESTED，而本地凭据仍完整，应保留事件并退避；不得据此当作重新发券或充值失败。该作废流程必须按第8节检查待处理核销并退出/人工收敛，不能无限以中间态互相等待。其它处理中状态等待原履约链路补齐。已失败6/退款11与核销冲突转人工，不把终态重写为成功。
+正常充值成功order_status=12才推进核销。2026-10-19修订后作废中保持order_status=12、dispatch_status=CANCEL_REQUESTED，持久核销证据应阻止作废并收敛中间态；历史13中间态且本地凭据仍完整时保留事件并退避；不得据此当作重新发券或充值失败。该作废流程必须按第8节检查待处理核销并退出/人工收敛，不能无限以中间态互相等待。其它处理中状态等待原履约链路补齐。已失败6/退款11与核销冲突转人工，不把终态重写为成功。
 
 没有凭据时，只锁事件确认状态/version，返回RECEIPT_PENDING，由外层在T2结束后通过T3登记退避；本事务不获取订单锁。不能按手机号、商品、最新配置或旧卡管表猜测归属，也不能为了补证据再次发券。
 
@@ -176,7 +176,7 @@ T2异常由外层应用服务捕获，先确认其已回滚，再用REQUIRES_NEW
 
 作废开始前按同订单锁检查：凭据coupon_status=1、use_time非空，或该券已经存在经过验签并提交的核销事件（包括INIT/RETRY/MANUAL_REQUIRED），都不能继续自动作废或退款。事件存在即代表需要先解释的供应商核销证据，不能因密钥暂不可用导致T2未完成而放行退款。
 
-供应商HTTP在本地事务外执行，不跨网络持有订单锁。远端作废成功后的本地最终确认事务必须再次按全局锁序复核凭据和事件，使用锁定读取看最新已提交事件，不能用旧快照。如果有核销证据，回滚本地CANCELLED/失败状态更新，作废outbox转人工，不创建作废通知、不调用Redis release、不写RELEASE余额Delta。
+供应商HTTP在本地事务外执行，不跨网络持有订单锁。远端作废成功后的本地最终确认事务必须再次按全局锁序复核凭据和事件，使用锁定读取看最新已提交事件，不能用旧快照。如果有核销证据，回滚本地CANCELLED及券作废状态更新，作废outbox转人工，不创建作废通知、不调用Redis release、不写RELEASE余额Delta。
 
 若作废Worker先写了CANCEL_REQUESTED/13，之后发现核销事件：未发HTTP时从明确成功凭据恢复原充值成功视图并将作废事件转人工；已发HTTP且返回不明确/矛盾时，按原orderNo查证并转人工，不能恢复时顺带发出新的充值成功通知，也不能释放预扣。T2随后在有效订单视图下处理核销事实。恢复动作与outbox人工状态在订单事务内完成，避免两边永久等待。
 
@@ -188,7 +188,7 @@ MinisoReceiptStore不得把已核销/有use_time的凭据从1回退0/2，也不�
 
 ## 9 V1.2商户核销通知
 
-新增独立 `V12RedemptionNotifyPayloadSigner`，明确输入可信订单、核销时间和任务创建时刻，不借用现有signWriteOff(order, invalidTime)。名创保持旧分类state_type="3"、use_state="2"；use_time为事件核销时间，invalid_time=""。V1.2示例的2/2不是所有渠道固定状态分类。
+新增独立 `V12RedemptionNotifyPayloadSigner`，明确输入可信订单、核销时间和任务创建时刻，不借用现有signWriteOff(order, invalidTime)。2026-10-19用户最终更正：交行侧名创核销成功保留state_type="3"、use_state="2"，作废采用3/3；use_time为事件核销时间，invalid_time=""。供应商原生凭据状态不变，历史签名任务不在正常重试中修改，见详细设计9.6节。
 
 报文必须包含order_id、out_order_sn、timestamp、nonce_str、account、use_time、state_type、use_state、invalid_time、keyId、sign。全部业务值从可信订单和已验签事件生成；timestamp为任务生成时13位毫秒文本，nonce_str以16字节安全随机数编码成32位小写十六进制。原名创couponCode不发送给商户。
 
@@ -202,7 +202,7 @@ MinisoReceiptStore不得把已核销/有use_time的凭据从1回退0/2，也不�
 
 本轮已补齐RechargeNotifyWorkerService的max_retry_count上限判断及端口markManualRequired：发送前检查retry_count>=max_retry_count，达到上限转MANUAL_REQUIRED、清理租约且不再发HTTP；claim同时核对retry_count，拒绝旧扫描快照绕过次数上限。失败次数不足上限才继续原退避，人工态不再进入到期扫描。通知失败不撤销已完成核销，PROCESSED与通知任务发送状态分别观察。
 
-本轮不改旧作废通知的字段分类；核销与作废使用不同的生成方法、任务ID和业务状态，避免互相覆盖。
+2026-10-19修订：交行侧名创作废完成通知按用户最终更正映射为state_type="3"、use_state="3"；其他直充沿文档示例2/3。核销与作废使用不同的生成方法、任务ID和业务状态，避免互相覆盖。
 
 ## 10 模块接口与装配
 
@@ -285,7 +285,7 @@ XXL建议5秒执行一次minisoWriteOffProcessJob，默认单分片limit=100；�
 3. 处理：先回调后凭据、无凭据重启恢复、多节点同事件、同分片扫描、锁顺序及锁竞争、主单/扩展/商户/渠道/批次/手机号归属、处理中退避、失败/退款人工、used补时间、expired有效历史核销、void冲突。
 4. 原子性：事实/任务/事件任一步失败全回滚；T3独立提交；旧失败version不能覆盖其它Worker成功；T3数据库故障留下可扫描状态；次数上限及人工CAS恢复。
 5. 作废：核销已接收但因密钥异常未处理时禁止退款；作废HTTP前后均复核；CANCEL_REQUESTED与核销不形成永久等待；终态失败的释放补偿分支不能绕过；本地先退款后迟到核销只转人工，不二次扣款。
-6. 商户：state_type=3/use_state=2、真实use_time、invalid_time空值参与签名、随机nonce、当前keyId和完整32字节HMAC-SM3；轮换后旧任务不重签、撤销不发送、URL快照不变、空notify_url无需密钥且无任务、code=200响应及重试上限。
+6. 商户：state_type=3/use_state=2（2026-10-19最终确认）、真实use_time、invalid_time空值参与签名、随机nonce、当前keyId和完整32字节HMAC-SM3；轮换后旧任务不重签、撤销不发送、URL快照不变、空notify_url无需密钥且无任务、code=200响应及重试上限。
 7. 装配与兼容：API不反向依赖infrastructure、不阻塞Netty、入口与处理开关独立、缺依赖启动失败、主动发券关闭后恢复仍可运行、现有非MINISO路由及mock场景不受影响。
 
 更新仓库内模拟器或可执行协议示例，用固定测试key2生成入站报文，再用测试商户密钥校验出站HMAC-SM3；不依赖已删除的外部测试前端。运行JDK21针对性模块测试、Maven全模块回归及独立模拟器回归。

@@ -23,6 +23,8 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.Optional;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 /**
  * V1 查单/作废用例测试。
@@ -113,6 +115,82 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
         V1RechargeOrderResponse data = (V1RechargeOrderResponse) result.data();
         assertThat(data.orderStatus()).isEqualTo("11");
         assertThat(data.orderStatusDesc()).isEqualTo("已退款");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"2", "3"})
+    void queryReturnsVoucherFactsWithoutTurningCancelledVoucherIntoFailedOrder(String stateType) {
+        var service = new V1QueryRechargeOrderUseCaseService(
+                precheckService(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
+                (orgCode, outOrderSn) -> Optional.of(voucherSnapshot(stateType, "3", "", "2026-10-19 10:20:30")));
+
+        V1CardApiResult result = service.queryRechargeOrder(command("OUT-QUERY-1", "nonce-query-12345678901234567890"));
+
+        assertThat(result.code()).isEqualTo("200");
+        V1RechargeOrderResponse data = (V1RechargeOrderResponse) result.data();
+        assertThat(data.orderStatus()).isEqualTo("12");
+        assertThat(data.stateType()).isEqualTo(stateType);
+        assertThat(data.useState()).isEqualTo("3");
+        assertThat(data.useTime()).isEmpty();
+        assertThat(data.invalidTime()).isEqualTo("2026-10-19 10:20:30");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"2", "3"})
+    void queryReturnsRedeemedVoucherUseTime(String stateType) {
+        var service = new V1QueryRechargeOrderUseCaseService(
+                precheckService(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
+                (orgCode, outOrderSn) -> Optional.of(voucherSnapshot(stateType, "2", "2026-10-19 10:20:30", "")));
+
+        V1RechargeOrderResponse data = (V1RechargeOrderResponse) service.queryRechargeOrder(
+                command("OUT-QUERY-1", "nonce-query-12345678901234567890")).data();
+
+        assertThat(data.orderStatus()).isEqualTo("12");
+        assertThat(data.stateType()).isEqualTo(stateType);
+        assertThat(data.useState()).isEqualTo("2");
+        assertThat(data.useTime()).isEqualTo("2026-10-19 10:20:30");
+        assertThat(data.invalidTime()).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"2", "3"})
+    void repeatedInvalidReturnsCompletedVoucherFactWithoutEnqueuingAgain(String stateType) {
+        RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort();
+        var service = new V1InvalidRechargeOrderUseCaseService(
+                precheckService(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
+                (orgCode, outOrderSn) -> Optional.of(voucherSnapshot(stateType, "3", "", "2026-10-19 10:20:30")),
+                invalidOutboxPort);
+
+        V1CardApiResult result = service.invalidRechargeOrder(command("OUT-QUERY-1", "nonce-invalid-123456789012345678"));
+
+        assertThat(result.code()).isEqualTo("200");
+        V1RechargeOrderResponse data = (V1RechargeOrderResponse) result.data();
+        assertThat(data.orderStatus()).isEqualTo("12");
+        assertThat(data.stateType()).isEqualTo(stateType);
+        assertThat(data.useState()).isEqualTo("3");
+        assertThat(data.useTime()).isEmpty();
+        assertThat(data.invalidTime()).isEqualTo("2026-10-19 10:20:30");
+        assertThat(invalidOutboxPort.commands).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"2", "3"})
+    void invalidWithoutTrustedCompletionTimeStillEnqueuesAsynchronousWork(String stateType) {
+        RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort();
+        var service = new V1InvalidRechargeOrderUseCaseService(
+                precheckService(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
+                (orgCode, outOrderSn) -> Optional.of(voucherSnapshot(stateType, "3", "", "")),
+                invalidOutboxPort);
+
+        V1RechargeOrderResponse data = (V1RechargeOrderResponse) service.invalidRechargeOrder(
+                command("OUT-QUERY-1", "nonce-invalid-123456789012345678")).data();
+
+        assertThat(data.orderStatus()).isEqualTo("2");
+        assertThat(invalidOutboxPort.commands).hasSize(1);
     }
 
     @Test
@@ -207,6 +285,12 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
                 failCode,
                 failReason,
                 true);
+    }
+
+    private static RechargeOrderSnapshot voucherSnapshot(String stateType, String useState, String useTime, String invalidTime) {
+        return new RechargeOrderSnapshot(
+                "202607051337458961474292", "OUT-QUERY-1", "SUCCESS", "DB_PERSISTED", "PASSED",
+                "", "", true, stateType, useState, useTime, invalidTime);
     }
 
     private static final class RecordingInvalidOutboxPort implements InvalidRechargeOrderOutboxPort {

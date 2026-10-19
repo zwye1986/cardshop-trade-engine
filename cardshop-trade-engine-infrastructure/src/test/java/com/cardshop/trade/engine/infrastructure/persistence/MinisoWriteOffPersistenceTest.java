@@ -56,7 +56,9 @@ public class MinisoWriteOffPersistenceTest {
                 "create table recharge_order_ext(order_id varchar(100) primary key,org_code"
                         + " varchar(64),out_order_sn varchar(100),supplier_batch_id"
                         + " varchar(64),persist_status varchar(32),dispatch_status"
-                        + " varchar(32),last_error varchar(128),updated_at timestamp)");
+                        + " varchar(32),last_error varchar(128),updated_at timestamp,"
+                        + "voucher_use_state varchar(1) default '',voucher_use_time timestamp,"
+                        + "voucher_invalid_time timestamp)");
         jdbc.execute(
                 "create table recharge_miniso_receipt(order_id varchar(100) primary key,org_code"
                         + " varchar(64),batch_id int,coupon_code varchar(128) unique,phone"
@@ -139,6 +141,10 @@ public class MinisoWriteOffPersistenceTest {
         assertThat(store.processBatch(1, 0, 100, "worker").processed()).isEqualTo(1);
         assertThat(eventStatus()).isEqualTo("PROCESSED");
         assertThat(status()).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select voucher_use_state from recharge_order_ext", String.class))
+                .isEqualTo("2");
+        assertThat(jdbc.queryForObject("select voucher_use_time from recharge_order_ext", java.sql.Timestamp.class)
+                .toLocalDateTime()).isEqualTo(LocalDateTime.parse("2026-10-17T09:29:00"));
         assertThat(count("recharge_notify_task")).isEqualTo(1);
         var payload =
                 new ObjectMapper()

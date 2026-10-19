@@ -27,6 +27,7 @@ import com.cardshop.trade.engine.application.logging.LogStormGuard;
 /**
  * V1.2 Token签发与商户当前签名密钥领取；对应详细设计3.1。
  * 首次初始化商户密钥，后续领取复用当前版本，不与 token 或订单建立绑定。
+ * 对外仅返回token/signKey；keyId保留于内部版本管理，参见详细设计「交行开放平台通知认证修订 2026-10-19」。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」
  * 和「3. API/V1 接入层」。实现遵循旧系统 `TokenUtils` 的兼容语义：HS512 JWT、
@@ -83,8 +84,8 @@ public class V1IssueTokenUseCaseService implements IssueV1TokenUseCase {
             if (!tokenStorePort.storeIssuedToken(merchant.get().appId(), token, settings.tokenTtl())) {
                 return V1CardApiResultStatus.SYSTEM_ERROR.result();
             }
-            return V1CardApiResultStatus.SUCCESS.result(Map.of("token", token,
-                    "keyId", credential.keyId(), "signKey", credential.signKey()));
+            // 详细设计「交行开放平台通知认证修订 2026-10-19」：keyId仅内部使用，不进入接口响应。
+            return V1CardApiResultStatus.SUCCESS.result(Map.of("token", token, "signKey", credential.signKey()));
         } catch (Exception ex) {
             // 签发属于高频入口，依赖故障时采样error，禁止打印凭证或请求体。
             if (LOG_GUARD.shouldLog("v12-credential.issue.failed").shouldLog()) {

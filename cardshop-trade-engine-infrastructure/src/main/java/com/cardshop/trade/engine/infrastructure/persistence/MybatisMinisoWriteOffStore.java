@@ -247,6 +247,8 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
         if (order.notifyUrl() != null && !order.notifyUrl().isBlank()) createTask(order, event);
         if (receipts.redeem(order.orderId(), event.useTime()) != 1)
             throw new MinisoWriteOffException(DB_UNAVAILABLE);
+        if (events.redeemVoucher(order.orderId(), order.orgCode(), event.useTime(), now()) != 1)
+            throw new MinisoWriteOffException(DB_UNAVAILABLE);
         if (events.complete(event.eventId(), order.orderId(), order.orgCode(), now()) != 1)
             throw new MinisoWriteOffException(DB_UNAVAILABLE);
         return true;

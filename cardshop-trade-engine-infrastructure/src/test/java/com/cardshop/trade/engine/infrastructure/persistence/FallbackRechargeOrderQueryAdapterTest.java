@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
  * Redis 优先、MySQL 兜底查单组合端口测试。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「3. API/V1 接入层」。
- * 查单入口必须优先返回 Redis 受理期快照；只有 Redis 未命中时，才读取 MySQL 已落库事实。
+ * 查单入口优先返回 Redis 受理期快照；Redis 已持久化时由同一订单的 MySQL 最终事实覆盖旧快照。
  */
 class FallbackRechargeOrderQueryAdapterTest {
 
@@ -40,6 +40,82 @@ class FallbackRechargeOrderQueryAdapterTest {
 
         assertThat(result).containsSame(mysqlSnapshot);
         assertThat(primary.calls).isEqualTo(1);
+        assertThat(fallback.calls).isEqualTo(1);
+    }
+
+    @Test
+    void returnsMysqlFinalFactWhenRedisSnapshotHasBeenPersisted() {
+        RechargeOrderSnapshot redisSnapshot = snapshot("ORDER-1001", "DB_PERSISTED");
+        RechargeOrderSnapshot mysqlSnapshot = new RechargeOrderSnapshot(
+                "ORDER-1001", "OUT-1001", "SUCCESS", "DB_PERSISTED", "PASSED", "", "", true);
+        RecordingQueryPort primary = new RecordingQueryPort(Optional.of(redisSnapshot));
+        RecordingQueryPort fallback = new RecordingQueryPort(Optional.of(mysqlSnapshot));
+        FallbackRechargeOrderQueryAdapter adapter = new FallbackRechargeOrderQueryAdapter(primary, fallback);
+
+        Optional<RechargeOrderSnapshot> result = adapter.findByOrgCodeAndOutOrderSn("A36", "OUT-1001");
+
+        assertThat(result).containsSame(mysqlSnapshot);
+        assertThat(fallback.calls).isEqualTo(1);
+    }
+
+    @Test
+    void retainsPersistedRedisSnapshotWhenMysqlFactIsMissing() {
+        RechargeOrderSnapshot redisSnapshot = snapshot("ORDER-1001", "DB_PERSISTED");
+        RecordingQueryPort fallback = new RecordingQueryPort(Optional.empty());
+        FallbackRechargeOrderQueryAdapter adapter = new FallbackRechargeOrderQueryAdapter(
+                new RecordingQueryPort(Optional.of(redisSnapshot)), fallback);
+
+        assertThat(adapter.findByOrgCodeAndOutOrderSn("A36", "OUT-1001")).containsSame(redisSnapshot);
+        assertThat(fallback.calls).isEqualTo(1);
+    }
+
+    @Test
+    void retainsPersistedRedisSnapshotWhenMysqlOrderIdentityDoesNotMatch() {
+        RechargeOrderSnapshot redisSnapshot = snapshot("ORDER-1001", "DB_PERSISTED");
+        RecordingQueryPort fallback = new RecordingQueryPort(Optional.of(snapshot("OTHER-ORDER", "DB_PERSISTED")));
+        FallbackRechargeOrderQueryAdapter adapter = new FallbackRechargeOrderQueryAdapter(
+                new RecordingQueryPort(Optional.of(redisSnapshot)), fallback);
+
+        assertThat(adapter.findByOrgCodeAndOutOrderSn("A36", "OUT-1001")).containsSame(redisSnapshot);
+        assertThat(fallback.calls).isEqualTo(1);
+    }
+
+    @Test
+    void retainsPersistedRedisSnapshotWhenMysqlExternalOrderDoesNotMatchRequest() {
+        RechargeOrderSnapshot redisSnapshot = snapshot("ORDER-1001", "DB_PERSISTED");
+        RechargeOrderSnapshot mysqlSnapshot = new RechargeOrderSnapshot(
+                "ORDER-1001", "OTHER-OUT", "SUCCESS", "DB_PERSISTED", "PASSED", "", "", true);
+        RecordingQueryPort fallback = new RecordingQueryPort(Optional.of(mysqlSnapshot));
+        FallbackRechargeOrderQueryAdapter adapter = new FallbackRechargeOrderQueryAdapter(
+                new RecordingQueryPort(Optional.of(redisSnapshot)), fallback);
+
+        assertThat(adapter.findByOrgCodeAndOutOrderSn("A36", "OUT-1001")).containsSame(redisSnapshot);
+        assertThat(fallback.calls).isEqualTo(1);
+    }
+
+    @Test
+    void doesNotUseBlankPlatformOrderIdsAsMatchingIdentity() {
+        RechargeOrderSnapshot redisSnapshot = snapshot("", "DB_PERSISTED");
+        RechargeOrderSnapshot mysqlSnapshot = snapshot("", "DB_PERSISTED");
+        RecordingQueryPort fallback = new RecordingQueryPort(Optional.of(mysqlSnapshot));
+        FallbackRechargeOrderQueryAdapter adapter = new FallbackRechargeOrderQueryAdapter(
+                new RecordingQueryPort(Optional.of(redisSnapshot)), fallback);
+
+        assertThat(adapter.findByOrgCodeAndOutOrderSn("A36", "OUT-1001")).containsSame(redisSnapshot);
+        assertThat(fallback.calls).isEqualTo(1);
+    }
+
+    @Test
+    void retainsRedisSnapshotWhenBothSnapshotsBelongToAnotherExternalOrder() {
+        RechargeOrderSnapshot redisSnapshot = new RechargeOrderSnapshot(
+                "ORDER-1001", "OTHER-OUT", "ACCEPTED", "DB_PERSISTED", "PASSED", "", "", true);
+        RechargeOrderSnapshot mysqlSnapshot = new RechargeOrderSnapshot(
+                "ORDER-1001", "OTHER-OUT", "SUCCESS", "DB_PERSISTED", "PASSED", "", "", true);
+        RecordingQueryPort fallback = new RecordingQueryPort(Optional.of(mysqlSnapshot));
+        FallbackRechargeOrderQueryAdapter adapter = new FallbackRechargeOrderQueryAdapter(
+                new RecordingQueryPort(Optional.of(redisSnapshot)), fallback);
+
+        assertThat(adapter.findByOrgCodeAndOutOrderSn("A36", "OUT-1001")).containsSame(redisSnapshot);
         assertThat(fallback.calls).isEqualTo(1);
     }
 

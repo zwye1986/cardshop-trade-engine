@@ -51,8 +51,8 @@ class V1MerchantNotifyPayloadSignerTest {
                 .containsEntry("out_order_sn", "OUT-1")
                 .containsEntry("account", "13800138000")
                 .containsEntry("use_time", "")
-                .containsEntry("state_type", "1")
-                .containsEntry("use_state", "2")
+                .containsEntry("state_type", "2")
+                .containsEntry("use_state", "3")
                 .containsEntry("invalid_time", "2026-07-08 11:20:00");
         assertThat(payload.get("nonce_str")).hasSize(32);
         assertThat(payload.get("sign")).hasSize(64);
@@ -98,6 +98,20 @@ class V1MerchantNotifyPayloadSignerTest {
         var signer = new V1MerchantNotifyPayloadSigner(store);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> signer.signOrderStatus(order(), "12", Instant.now()))
                 .isInstanceOf(IllegalStateException.class);
+    }
+
+    @Test
+    void signsMinisoCancellationAsThreeThreeWithValidSignature() {
+        var base = order();
+        var miniso = new RechargeFulfillmentOrder(base.orderId(), base.outOrderSn(), base.orgCode(),
+                base.account(), base.productId(), base.selectedProductId(), "MINISO", base.orderPrice(),
+                base.notifyUrl(), base.orderStatus(), base.persistStatus(), base.validationStatus(), true, true);
+        var signer = new V1MerchantNotifyPayloadSigner(store());
+        var payload = signer.signWriteOff(miniso, Instant.parse("2026-07-08T03:20:00Z"));
+        assertThat(payload).containsEntry("state_type", "3").containsEntry("use_state", "3")
+                .containsEntry("use_time", "").containsEntry("invalid_time", "2026-07-08 11:20:00");
+        assertThat(V12MessageSignatures.verify(V12MessageSignatures.Operation.WRITEOFF_CALLBACK,
+                payload, store().findCurrent("A36").orElseThrow().signKey())).isTrue();
     }
 
     private static RechargeFulfillmentOrder order() {

@@ -593,7 +593,7 @@ class RechargeOutboxWorkerServiceTest {
     @Test
     void invalidOrderSuccessUpdatesLocalStateCreatesWriteOffNotifyAndCompletesOutbox() {
         FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.INVALID_ORDER));
-        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(dispatchableOrder());
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(successfulOrder());
         FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
                 SupplierGatewayResponse.success("SUP-INVALID-1", "0", "invalid success", "{\"status\":\"SUCCESS\"}"));
         FakeNotifyTaskPort notifyTaskPort = new FakeNotifyTaskPort();
@@ -622,10 +622,12 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(orderPort.statusUpdates)
                 .extracting(OrderFulfillmentStatusUpdate::dispatchStatus)
                 .containsExactly(FulfillmentDispatchStatus.CANCEL_REQUESTED, FulfillmentDispatchStatus.CANCELLED);
-        assertThat(orderPort.statusUpdates.getLast().orderStatus()).isEqualTo(6);
+        assertThat(orderPort.statusUpdates.getLast().orderStatus()).isEqualTo(12);
+        assertThat(orderPort.statusUpdates.getFirst().orderStatus()).isEqualTo(12);
+        assertThat(orderPort.statusUpdates.getLast().invalidTime()).isEqualTo(CLOCK.instant());
         assertThat(notifyTaskPort.createdTasks.getFirst().notifyType()).isEqualTo("VOUCHER_STATE");
         assertThat(notifyTaskPort.createdTasks.getFirst().payload())
-                .containsEntry("useState", "2")
+                .containsEntry("useState", "3")
                 .containsEntry("sign", "signed-write-off");
         assertThat(outboxPort.successes).containsExactly("dispatch-ORDER-1");
         assertThat(balanceReleasePort.commands).singleElement().satisfies(command -> {
@@ -646,7 +648,12 @@ class RechargeOutboxWorkerServiceTest {
     @Test
     void invalidOrderSuccessSkipsWriteOffNotifyWhenOrderNotifyUrlIsBlank() {
         FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.INVALID_ORDER));
-        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(orderWithNotifyUrl(""));
+        var original = successfulOrder();
+        FakeFulfillmentOrderPort orderPort = new FakeFulfillmentOrderPort(new RechargeFulfillmentOrder(
+                original.orderId(), original.outOrderSn(), original.orgCode(), original.account(),
+                original.productId(), original.selectedProductId(), original.supplierChannel(),
+                original.orderPrice(), "", original.orderStatus(), original.persistStatus(),
+                original.validationStatus(), original.dispatchAllowed(), original.balanceReserved()));
         FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
                 SupplierGatewayResponse.success("SUP-INVALID-1", "0", "invalid success", "{\"status\":\"SUCCESS\"}"));
         FakeNotifyTaskPort notifyTaskPort = new FakeNotifyTaskPort();
@@ -1262,6 +1269,71 @@ class RechargeOutboxWorkerServiceTest {
                 "");
     }
 
+    @Test
+    void cancelledSuccessResumesBalanceReleaseWithoutCallingSupplierOrChangingFactTime() {
+        for (var eventType : List.of(OutboxEventType.INVALID_ORDER, OutboxEventType.SUPPLIER_QUERY,
+                OutboxEventType.SUPPLIER_DISPATCH)) {
+            var base = successfulOrder();
+            Instant originalTime = CLOCK.instant().minusSeconds(120);
+            var cancelled = new RechargeFulfillmentOrder(base.orderId(), base.outOrderSn(), base.orgCode(),
+                    base.account(), base.productId(), base.selectedProductId(), base.supplierChannel(),
+                    base.orderPrice(), base.notifyUrl(), 12, base.persistStatus(), base.validationStatus(),
+                    true, true, FulfillmentDispatchStatus.CANCELLED.name(), originalTime);
+            var outbox = new FakeOutboxPort(outbox(eventType));
+            var orders = new FakeFulfillmentOrderPort(cancelled);
+            var gateway = new FakeSupplierGatewayPort(SupplierGatewayResponse.success("unused", "200", "", "{}"));
+            var release = new FakeBalanceReleasePort(BalanceReservationReleaseResult.releasedSuccess());
+            var notify = new FakeNotifyTaskPort();
+            var service = new RechargeOutboxWorkerService(outbox, orders, gateway, new FakeFrequencyPort(true),
+                    new FakeBalanceDeltaOutboxPort(), release, notify, new FixedNotifyPayloadSigner(), CLOCK, settings());
+
+            var result = service.processDue(1, 0, 10, "worker", List.of(eventType), 1);
+
+            assertThat(result.succeeded()).isEqualTo(1);
+            assertThat(cancelled.terminalBalanceReleasePending()).isTrue();
+            assertThat(gateway.invalidRequests).isEmpty();
+            assertThat(gateway.dispatchRequests).isEmpty();
+            assertThat(gateway.queryRequests).isEmpty();
+            assertThat(orders.statusUpdates).isEmpty();
+            assertThat(release.commands).hasSize(1);
+            assertThat(notify.createdTasks.getFirst().payload())
+                    .containsEntry("invalidTime", originalTime.toString());
+            assertThat(notify.createdTasks).noneMatch(task -> "6".equals(task.bizStatus()));
+        }
+    }
+
+    @Test
+    void pendingIssuanceCannotBecomeSuccessThroughInvalidation() {
+        var outbox = new FakeOutboxPort(outbox(OutboxEventType.INVALID_ORDER));
+        var orders = new FakeFulfillmentOrderPort(dispatchableOrder());
+        var gateway = new FakeSupplierGatewayPort(SupplierGatewayResponse.success("unused", "200", "", "{}"));
+        var notify = new FakeNotifyTaskPort();
+        var service = new RechargeOutboxWorkerService(outbox, orders, gateway, new FakeFrequencyPort(true),
+                new FakeBalanceDeltaOutboxPort(), new FakeBalanceReleasePort(BalanceReservationReleaseResult.releasedSuccess()),
+                notify, new FixedNotifyPayloadSigner(), CLOCK, settings());
+        service.processDue(1, 0, 10, "worker", List.of(OutboxEventType.INVALID_ORDER), 1);
+        assertThat(gateway.invalidRequests).isEmpty();
+        assertThat(orders.statusUpdates).isEmpty();
+        assertThat(notify.createdTasks).isEmpty();
+    }
+
+    @Test
+    void supplierProcessingInvalidationKeepsRecoveryTaskAndDoesNotReleaseBalance() {
+        var outbox = new FakeOutboxPort(outbox(OutboxEventType.INVALID_ORDER));
+        var orders = new FakeFulfillmentOrderPort(successfulOrder());
+        var gateway = new FakeSupplierGatewayPort(SupplierGatewayResponse.processing("SUP", "202", "processing", "{}"));
+        var release = new FakeBalanceReleasePort(BalanceReservationReleaseResult.releasedSuccess());
+        var notify = new FakeNotifyTaskPort();
+        var service = new RechargeOutboxWorkerService(outbox, orders, gateway, new FakeFrequencyPort(true),
+                new FakeBalanceDeltaOutboxPort(), release, notify, new FixedNotifyPayloadSigner(), CLOCK, settings());
+        service.processDue(1, 0, 10, "worker", List.of(OutboxEventType.INVALID_ORDER), 1);
+        assertThat(outbox.successes).isEmpty();
+        assertThat(outbox.failures).hasSize(1);
+        assertThat(release.commands).isEmpty();
+        assertThat(notify.createdTasks).isEmpty();
+        assertThat(orders.statusUpdates.getLast().orderStatus()).isEqualTo(12);
+    }
+
     private static RechargeFulfillmentOrder dispatchableOrder() {
         return dispatchableOrder("ORDER-1");
     }
@@ -1772,7 +1844,8 @@ class RechargeOutboxWorkerServiceTest {
             return Map.of(
                     "orderId", order.orderId(),
                     "outOrderSn", order.outOrderSn(),
-                    "useState", "2",
+                    "useState", "3",
+                    "invalidTime", invalidTime.toString(),
                     "sign", "signed-write-off");
         }
     }

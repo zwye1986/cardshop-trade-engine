@@ -11,6 +11,7 @@ import java.util.*;
 
 /** 名创已核销通知独立签名器，不复用作废invalidTime语义；参见docs/交行直充业务系统详细设计.md「9.5」。 */
 public final class V12RedemptionNotifyPayloadSigner {
+    // 名创核销为3/2，作废为3/3，按用户最终确认保留通用券分类；参见详细设计9.6节。
     public static final String STATE_TYPE_GENERAL = "3";
     public static final String USE_STATE_REDEEMED = "2";
     private static final SecureRandom RANDOM = new SecureRandom();
