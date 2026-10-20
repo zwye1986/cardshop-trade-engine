@@ -90,7 +90,10 @@ public final class RechargeRedisKeyBuilder {
      * `persist_status=DB_PERSISTED`，并同时清理 pending 与 org_index，避免补投任务重复投递已经落库的订单。
      */
     public List<String> markDbPersistedKeys(AcceptRechargeOrderCommand command) {
-        return persistCompletionKeys(command);
+        var keys = new java.util.ArrayList<>(persistCompletionKeys(command));
+        // 详细设计9.2：只在末尾追加reservation，保留失败脚本及已有六个KEYS的位置合同。
+        keys.add(reservationKey(command.orgCode(), command.orderId()));
+        return List.copyOf(keys);
     }
 
     /**

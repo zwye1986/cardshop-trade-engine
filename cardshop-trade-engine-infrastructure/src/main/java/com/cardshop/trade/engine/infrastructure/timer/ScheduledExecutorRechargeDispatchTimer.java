@@ -118,8 +118,9 @@ public class ScheduledExecutorRechargeDispatchTimer implements RechargeDispatchT
         try {
             future = executor.schedule(
                     () -> runScheduled(key, handle, normalizedEventId, eventType),
-                    normalizedDelay.toMillis(),
-                    TimeUnit.MILLISECONDS);
+                    // 参见详细设计「9.1 派单 Outbox」：保留剩余延迟精度，避免截断到毫秒后再次早醒。
+                    normalizedDelay.toNanos(),
+                    TimeUnit.NANOSECONDS);
         } catch (RuntimeException ex) {
             futures.remove(key, handle);
             throw ex;

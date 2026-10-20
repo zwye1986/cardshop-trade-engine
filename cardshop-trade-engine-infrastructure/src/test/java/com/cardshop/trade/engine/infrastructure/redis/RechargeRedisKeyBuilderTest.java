@@ -86,7 +86,8 @@ class RechargeRedisKeyBuilderTest {
                         "cardshop:trade:recharge:{A36}:persist:pending",
                         "cardshop:trade:recharge:{A36}:order:event_index:202607051337458961474292",
                         "cardshop:trade:recharge:{A36}:order:event:202607051337458961474292:3",
-                        "cardshop:trade:recharge:persist:pending:org_index:" + bucket);
+                        "cardshop:trade:recharge:persist:pending:org_index:" + bucket,
+                        "cardshop:trade:recharge:{A36}:reservation:202607051337458961474292");
     }
 
     @Test

@@ -109,6 +109,19 @@ public interface McExtDepartMapper extends V1MerchantProfileReader {
             @Param("limit") int limit);
 
     /**
+     * 维修锁和Redis空pending检查后，仅为没有任何新引擎资金历史的商户读取初始化基线。
+     * 参见详细设计「9.2 成功预扣收尾最小修订」；有历史即禁止用单一MySQL余额重建。
+     */
+    @Select("""
+            select id, org_code as orgCode, coalesce(balance, 0) as balance
+            from mc_ext_depart m
+            where org_code = #{orgCode}
+              and not exists (select 1 from recharge_order_ext e where e.org_code = m.org_code)
+              and not exists (select 1 from recharge_balance_delta_outbox b where b.org_code = m.org_code)
+            """)
+    McExtDepartDO selectUnusedMerchantBalance(@Param("orgCode") String orgCode);
+
+    /**
      * 原子增量更新商户最终余额。
      *
      * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「14.7 `mc_ext_depart.balance` 刷账协议」。

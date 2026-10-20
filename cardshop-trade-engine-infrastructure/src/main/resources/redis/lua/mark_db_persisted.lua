@@ -10,6 +10,7 @@
 -- 4 eventIndexKey           recharge:{orgCode}:order:event_index:{orderId}
 -- 5 eventKey                recharge:{orgCode}:order:event:{orderId}:3
 -- 6 orgIndexBucketKey       recharge:persist:pending:org_index:{bucket}
+-- 7 reservationKey          recharge:{orgCode}:reservation:{orderId}，追加不移动旧KEYS
 
 local orgCode = ARGV[1]
 local orderId = ARGV[2]
@@ -98,6 +99,16 @@ redis.call('HSET', KEYS[2],
   'db_persisted_at', now,
   'updated_at', now
 )
+
+-- 详细设计9.2：仅同步持久化状态，不改变资金状态、不重建丢失预扣、不回退已释放记录。
+if KEYS[7] ~= nil and redis.call('EXISTS', KEYS[7]) == 1
+    and redis.call('HGET', KEYS[7], 'order_id') == orderId then
+  local reservationStatus = redis.call('HGET', KEYS[7], 'status') or ''
+  if reservationStatus == 'PENDING_MQ' or reservationStatus == 'PERSIST_QUEUED'
+      or reservationStatus == 'PERSISTING' or reservationStatus == 'DB_PERSISTED' then
+    redis.call('HSET', KEYS[7], 'status', 'DB_PERSISTED', 'updated_at', now)
+  end
+end
 
 if persistStatus ~= 'DB_PERSISTED' then
   redis.call('HSET', KEYS[5],

@@ -233,6 +233,8 @@ redis.call('HSET', KEYS[4],
   'request_hash', requestHash,
   'amount', tostring(amount),
   'status', dispatchAllowed and 'PENDING_MQ' or 'NONE',
+  -- 详细设计9.2：资金状态独立于持久化状态，成功消费确认不得冒充退款释放。
+  'funds_status', balanceReserved and 'RESERVED' or 'NONE',
   'created_at', now,
   'updated_at', now
 )

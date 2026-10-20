@@ -16,6 +16,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePo
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargePersistOutboxAsyncWriter;
 import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
+import com.cardshop.trade.engine.infrastructure.persistence.MinisoReceiptStore;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisBalanceDeltaOutboxWriteAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisBatchRechargeOrderPersistenceAdapter;
@@ -303,17 +304,20 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     @ConditionalOnBean(SqlSessionFactory.class)
     @ConditionalOnMissingBean(RechargeFulfillmentOrderPort.class)
     public RechargeFulfillmentOrderPort rechargeFulfillmentOrderPort(
+            ObjectProvider<MinisoReceiptStore> minisoReceipts,
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper,
             ObjectMapper objectMapper,
             Clock clock) {
+        // 参见详细设计「名创 MINISO 专属协议实施约束」：后置端口也必须接入凭据事务，不能遗漏普通配置的依赖。
         return new MybatisRechargeFulfillmentOrderAdapter(
                 orderMapper,
                 extMapper,
                 flowMapper,
                 objectMapper,
-                clock);
+                clock,
+                minisoReceipts.getIfAvailable());
     }
 
     /**

@@ -57,6 +57,7 @@ class MinisoLocalRedisContractTest {
             script.setResultType(java.util.List.class);
             var result = redis.execute(script,arguments.keys(),arguments.args()).next().block();
             assertThat(result).contains("ACCEPTED");
+            assertThat(redis.opsForHash().get(keys.reservationKey("A39", "ORDER1"), "funds_status").block()).isEqualTo("RESERVED");
             assertThat(redis.opsForHash().get(keys.orderKey("A39","OUT1"),"supplier_batch_id").block()).isEqualTo("100023");
             var reader = new RedisPersistOrderSnapshotAdapter(redis,keys,Duration.ofSeconds(3));
             assertThat(reader.findLatestSnapshot("A39","OUT1","ORDER1").orElseThrow().supplierBatchId()).isEqualTo("100023");

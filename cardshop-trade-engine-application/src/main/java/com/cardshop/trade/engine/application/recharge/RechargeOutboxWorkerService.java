@@ -317,6 +317,14 @@ public class RechargeOutboxWorkerService {
         Objects.requireNonNull(eventType, "eventType must not be null");
         Optional<RechargeOutboxEvent> maybeEvent = outboxPort.findDueByEventId(eventId, eventType);
         if (maybeEvent.isEmpty()) {
+            // 参见详细设计「9.1 派单 Outbox」：秒精度存储可能晚于首次唤醒，按持久 due 续排而非丢弃。
+            Optional<Duration> retryDelay = outboxPort.findPendingRetryDelay(eventId, eventType);
+            if (retryDelay.isPresent()) {
+                scheduleOutboxTimer(eventId, eventType, retryDelay.get());
+                log.debug("供应商履约timer提前唤醒后续排 eventId={}, eventType={}, delay={}",
+                        eventId, eventType, retryDelay.get());
+                return RechargeOutboxBatchResult.Outcome.DEFERRED;
+            }
             return RechargeOutboxBatchResult.Outcome.SKIPPED;
         }
         RechargeOutboxEvent event = maybeEvent.get();
@@ -531,6 +539,9 @@ public class RechargeOutboxWorkerService {
             if (order.terminalBalanceReleasePending()) {
                 return completeTerminalBalanceRelease(event, order, "供应商失败终态补偿释放预扣");
             }
+            if (order.orderStatus() == ORDER_STATUS_SUCCESS) {
+                return completeSuccessfulOrder(event, order);
+            }
             if (order.orderStatus() == ORDER_STATUS_SUPPLIER_ACCEPTED) {
                 /*
                  * 派单返回处理中后，如果应用在“查单事件插入”和“派单事件成功回写”之间宕机，
@@ -660,11 +671,7 @@ public class RechargeOutboxWorkerService {
                         null,
                         null,
                         "供应商充值成功").withMinisoReceipt(response.minisoReceipt()));
-                createOrderStatusNotifyTask(order, LegacyOrderStatusCode.SUCCESS);
-                frequencyPort.releaseIfOwned(
-                        order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
-                outboxPort.markSuccess(event);
-                return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+                return completeSuccessfulOrder(event, order);
             }
             case PROCESSING -> {
                 orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
@@ -766,11 +773,7 @@ public class RechargeOutboxWorkerService {
         }
         if (order.orderStatus() == ORDER_STATUS_SUCCESS) {
             // 终态已写入但回调或 outbox 成功回写可能尚未完成，依赖 notify task/event_id 幂等重放副作用。
-            createOrderStatusNotifyTask(order, LegacyOrderStatusCode.SUCCESS);
-            frequencyPort.releaseIfOwned(
-                    order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
-            outboxPort.markSuccess(event);
-            return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+            return completeSuccessfulOrder(event, order);
         }
         if (order.orderStatus() != ORDER_STATUS_SUPPLIER_ACCEPTED) {
             // 订单已经由其他重试或人工流程推进终态，当前查单事件只需关闭，不能重复调用供应商。
@@ -808,11 +811,7 @@ public class RechargeOutboxWorkerService {
                         response.responseCode(),
                         null,
                         "供应商查单确认成功").withMinisoReceipt(response.minisoReceipt()));
-                createOrderStatusNotifyTask(order, LegacyOrderStatusCode.SUCCESS);
-                frequencyPort.releaseIfOwned(
-                        order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
-                outboxPort.markSuccess(event);
-                return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+                return completeSuccessfulOrder(event, order);
             }
             case FAILED -> {
                 orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
@@ -947,6 +946,23 @@ public class RechargeOutboxWorkerService {
         if (!releaseBalanceReservationAndEnqueueDelta(event, order, reason)) {
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
+        frequencyPort.releaseIfOwned(
+                order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
+        outboxPort.markSuccess(event);
+        return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+    }
+
+    /**
+     * 成功业务事实已提交后补齐消费确认；确认失败保留同一Outbox恢复，不再次请求供应商。
+     * 参见详细设计「9.2 成功预扣收尾最小修订」。确认不退款、不新增扣款delta，后续成功副作用保持原语义。
+     */
+    private RechargeOutboxBatchResult.Outcome completeSuccessfulOrder(
+            RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
+        if (order.balanceReserved() && !balanceReservationReleasePort.confirm(order)) {
+            markFailedOrManualRequired(event, "successful order balance consumption confirmation failed", settings.retryBackoff());
+            return RechargeOutboxBatchResult.Outcome.FAILED;
+        }
+        createOrderStatusNotifyTask(order, LegacyOrderStatusCode.SUCCESS);
         frequencyPort.releaseIfOwned(
                 order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
         outboxPort.markSuccess(event);

@@ -10,7 +10,20 @@ public interface BalanceReservationReleasePort {
 
     BalanceReservationReleaseResult release(BalanceReservationReleaseCommand command);
 
+    /**
+     * 幂等确认已成功订单的预扣已消费，只减少冻结额，不退款也不再次扣款。
+     * 参见详细设计「9.2 成功预扣收尾最小修订」；未实现的端口失败关闭，让原Outbox保留重试入口。
+     */
+    default boolean confirm(RechargeFulfillmentOrder order) {
+        return false;
+    }
+
     static BalanceReservationReleasePort noop() {
-        return command -> BalanceReservationReleaseResult.alreadyReleasedSuccess();
+        return new BalanceReservationReleasePort() {
+            public BalanceReservationReleaseResult release(BalanceReservationReleaseCommand command) {
+                return BalanceReservationReleaseResult.alreadyReleasedSuccess();
+            }
+            public boolean confirm(RechargeFulfillmentOrder order) { return true; }
+        };
     }
 }

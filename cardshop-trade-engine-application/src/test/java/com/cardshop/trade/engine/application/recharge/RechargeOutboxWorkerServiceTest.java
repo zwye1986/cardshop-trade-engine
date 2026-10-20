@@ -31,6 +31,37 @@ class RechargeOutboxWorkerServiceTest {
 
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-07-08T03:20:00Z"), ZoneOffset.UTC);
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = OutboxEventType.class, names = {"SUPPLIER_DISPATCH", "SUPPLIER_QUERY"})
+    void failedConsumptionConfirmationRetriesSuccessfulOrderWithoutCallingSupplierAgain(OutboxEventType type) {
+        var outboxes = new FakeOutboxPort(outbox(type));
+        var orders = type == OutboxEventType.SUPPLIER_DISPATCH
+                ? new SequencedFulfillmentOrderPort(dispatchableOrder(), dispatchableOrder(), successfulOrder(), successfulOrder())
+                : new SequencedFulfillmentOrderPort(supplierAcceptedOrder(), successfulOrder());
+        var gateway = new FakeSupplierGatewayPort(SupplierGatewayResponse.success("SUP-1", "200", "ok", "{}"));
+        var notifications = new FakeNotifyTaskPort();
+        var attempts = new AtomicInteger();
+        var funds = new BalanceReservationReleasePort() {
+            public BalanceReservationReleaseResult release(BalanceReservationReleaseCommand command) {
+                throw new AssertionError("成功确认不得调用退款");
+            }
+            public boolean confirm(RechargeFulfillmentOrder order) { return attempts.incrementAndGet() > 1; }
+        };
+        var service = new RechargeOutboxWorkerService(outboxes, orders, gateway,
+                new FakeFrequencyPort(true), BalanceDeltaFlushOutboxPort.noop(), funds,
+                notifications, new FixedNotifyPayloadSigner(), CLOCK, settings());
+        String eventId = outbox(type).eventId();
+        assertThat(service.processEvent(eventId, type, "worker")).isEqualTo(RechargeOutboxBatchResult.Outcome.FAILED);
+        assertThat(outboxes.successes).isEmpty();
+        assertThat(notifications.createdTasks).isEmpty();
+        assertThat(outboxes.failures).hasSize(1);
+        assertThat(service.processEvent(eventId, type, "worker")).isEqualTo(RechargeOutboxBatchResult.Outcome.SUCCEEDED);
+        assertThat(attempts).hasValue(2);
+        assertThat(gateway.dispatchRequests.size() + gateway.queryRequests.size()).isEqualTo(1);
+        assertThat(notifications.createdTasks).hasSize(1);
+        assertThat(outboxes.successes).containsExactly(eventId);
+    }
+
     @Test
     void confirmedMinisoReceiptReachesTerminalWriteBeforeMerchantNotification() {
         var receipt = new MinisoFulfillmentReceipt("ORDER-1","A36",100023,"TEST-C1","13800138000",
@@ -123,6 +154,55 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(outboxPort.findByEventIds).containsExactly("dispatch-ORDER-1");
         assertThat(outboxPort.claimedOrderIds).containsExactly("ORDER-1");
         assertThat(outboxPort.successes).containsExactly("dispatch-ORDER-1");
+    }
+
+    @Test
+    void earlyTimerWakeupRearmsUntilPersistedDueThenDispatchesOnlyOnce() {
+        FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
+        outboxPort.due = false;
+        // 现场复现：数据库舍入至 16:26:33，16:26:32.815 唤醒还剩 185ms。
+        outboxPort.pendingRetryDelay = Optional.of(Duration.ofMillis(185));
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("SUP-1001", "0", "success", "{}"));
+        FakeDispatchTimerPort timer = new FakeDispatchTimerPort();
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort, new FakeFulfillmentOrderPort(dispatchableOrder()), supplierGateway,
+                new FakeFrequencyPort(true), BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(), new FakeNotifyTaskPort(),
+                new FixedNotifyPayloadSigner(), CLOCK, settings(), timer);
+
+        assertThat(service.processEvent("dispatch-ORDER-1", OutboxEventType.SUPPLIER_DISPATCH, "timer"))
+                .isEqualTo(RechargeOutboxBatchResult.Outcome.DEFERRED);
+        assertThat(timer.calls).containsExactly(new TimerCall(
+                "dispatch-ORDER-1", OutboxEventType.SUPPLIER_DISPATCH, Duration.ofMillis(185)));
+        assertThat(outboxPort.claimedOrderIds).isEmpty();
+        assertThat(outboxPort.failures).isEmpty();
+        assertThat(supplierGateway.dispatchRequests).isEmpty();
+
+        outboxPort.due = true;
+        assertThat(service.processEvent("dispatch-ORDER-1", OutboxEventType.SUPPLIER_DISPATCH, "timer"))
+                .isEqualTo(RechargeOutboxBatchResult.Outcome.SUCCEEDED);
+        assertThat(service.processEvent("dispatch-ORDER-1", OutboxEventType.SUPPLIER_DISPATCH, "timer"))
+                .isEqualTo(RechargeOutboxBatchResult.Outcome.SKIPPED);
+        assertThat(supplierGateway.dispatchRequests).hasSize(1);
+        assertThat(timer.calls).hasSize(1);
+    }
+
+    @Test
+    void timerMissWithoutPendingEventDoesNotCreateAnEndlessWakeup() {
+        FakeDispatchTimerPort timer = new FakeDispatchTimerPort();
+        FakeSupplierGatewayPort gateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("unused", "0", "success", "{}"));
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                new FakeOutboxPort(), new FakeFulfillmentOrderPort(dispatchableOrder()), gateway,
+                new FakeFrequencyPort(true), BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(), new FakeNotifyTaskPort(),
+                new FixedNotifyPayloadSigner(), CLOCK, settings(), timer);
+
+        assertThat(service.processEvent("missing", OutboxEventType.SUPPLIER_QUERY, "timer"))
+                .isEqualTo(RechargeOutboxBatchResult.Outcome.SKIPPED);
+        assertThat(timer.calls).isEmpty();
+        assertThat(gateway.dispatchRequests).isEmpty();
     }
 
     @Test
@@ -1463,6 +1543,8 @@ class RechargeOutboxWorkerServiceTest {
         private final List<String> claimedOrderIds = new ArrayList<>();
         private final List<String> findByEventIds = new ArrayList<>();
         private int scanCount;
+        private boolean due = true;
+        private Optional<Duration> pendingRetryDelay = Optional.empty();
 
         private FakeOutboxPort(RechargeOutboxEvent... events) {
             this.events = List.of(events);
@@ -1487,9 +1569,15 @@ class RechargeOutboxWorkerServiceTest {
         public Optional<RechargeOutboxEvent> findDueByEventId(String eventId, OutboxEventType eventType) {
             findByEventIds.add(eventId);
             return events.stream()
+                    .filter(event -> due && !successes.contains(event.eventId()))
                     .filter(event -> event.eventId().equals(eventId))
                     .filter(event -> event.eventType() == eventType)
                     .findFirst();
+        }
+
+        @Override
+        public Optional<Duration> findPendingRetryDelay(String eventId, OutboxEventType eventType) {
+            return successes.contains(eventId) ? Optional.empty() : pendingRetryDelay;
         }
 
         @Override
@@ -1826,6 +1914,9 @@ class RechargeOutboxWorkerServiceTest {
             commands.add(command);
             return result;
         }
+
+        @Override
+        public boolean confirm(RechargeFulfillmentOrder order) { return true; }
     }
 
     private static final class FixedNotifyPayloadSigner implements MerchantNotifyPayloadSigner {

@@ -122,7 +122,7 @@ public final class MinisoRechargeSupplierGatewayAdapter implements RechargeSuppl
     }
 
     /** 不采用 Jackson 的宽松数值/文本强转，避免把缺失字段或字符串数组当成完整发券证明。 */
-    private Optional<MinisoFulfillmentReceipt> receipt(MinisoApiResponse response, TrustedOrder order, boolean query) {
+    private static Optional<MinisoFulfillmentReceipt> receipt(MinisoApiResponse response, TrustedOrder order, boolean query) {
         if (!successfulEnvelope(response)) return Optional.empty();
         JsonNode data = response.body().path("data");
         if (!data.isArray() || data.size() != order.snapshot().num()) return Optional.empty();
@@ -154,6 +154,23 @@ public final class MinisoRechargeSupplierGatewayAdapter implements RechargeSuppl
             logFailure(order.snapshot().orderId(), query ? "query" : "dispatch", exception);
             return Optional.empty();
         }
+    }
+
+    /**
+     * 无网络地复核已保存的原始发券响应，维护工具与在线发券共用同一严格合同。
+     * 参见详细设计「名创原始成功流水受控恢复」；不适用于缺手机号的查单响应，也不推断券实时状态。
+     */
+    public static Optional<MinisoFulfillmentReceipt> confirmIssuedReceipt(
+            MinisoOrderSnapshot snapshot, MinisoApiResponse response) {
+        if (snapshot == null || response == null || snapshot.num() != SINGLE_COUPON
+                || blank(snapshot.account()) || blank(snapshot.orgCode()) || blank(snapshot.orderId())) {
+            return Optional.empty();
+        }
+        String batch = snapshot.batchId();
+        if (batch == null || !batch.matches("[0-9]+") || batch.length() > 10) return Optional.empty();
+        long value = Long.parseLong(batch);
+        if (value <= 0 || value > Integer.MAX_VALUE) return Optional.empty();
+        return receipt(response, new TrustedOrder(snapshot, (int) value), false);
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 import com.baomidou.mybatisplus.autoconfigure.DdlApplicationRunner;
 import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
@@ -13,6 +14,9 @@ import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersiste
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargePersistOutboxAsyncWriter;
+import com.cardshop.trade.engine.application.recharge.FulfillmentDispatchStatus;
+import com.cardshop.trade.engine.application.recharge.MinisoFulfillmentReceipt;
+import com.cardshop.trade.engine.application.recharge.OrderFulfillmentStatusUpdate;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisBatchRechargeOrderPersistenceAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceDeltaFlushAdapter;
@@ -47,11 +51,15 @@ import org.junit.jupiter.api.Test;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.AutoConfigurationPackages;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
+import org.springframework.boot.autoconfigure.transaction.TransactionAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.context.annotation.Bean;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.AbstractDataSource;
 
 /**
@@ -221,6 +229,76 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                     assertThat(context.getBean(RechargeNotifyTaskPort.class))
                             .isSameAs(context.getBean(RechargeNotifyWorkerTaskPort.class))
                             .isInstanceOf(MybatisRechargeNotifyTaskAdapter.class);
+                });
+    }
+
+    /** 晚扫描必须验证实际终态写入，避免端口存在但凭据依赖丢失；见详细设计名创实施约束。 */
+    @Test
+    void lateConfiguredFulfillmentPortCommitsMinisoReceiptAndSuccessTogether() {
+        new ApplicationContextRunner()
+                .withInitializer(context -> AutoConfigurationPackages.register(
+                        (BeanDefinitionRegistry) context.getBeanFactory(),
+                        "com.cardshop.trade.engine.infrastructure.persistence.mapper"))
+                .withBean(ObjectMapper.class, ObjectMapper::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withPropertyValues(
+                        "spring.datasource.url=jdbc:h2:mem:" + java.util.UUID.randomUUID()
+                                + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE",
+                        "spring.datasource.driver-class-name=org.h2.Driver",
+                        "trade.engine.supplier.miniso.callback.processing-enabled=false")
+                .withConfiguration(AutoConfigurations.of(
+                        DataSourceAutoConfiguration.class,
+                        MybatisPlusDdlRunnerCompatibilityAutoConfiguration.class,
+                        MybatisPlusAutoConfiguration.class,
+                        DataSourceTransactionManagerAutoConfiguration.class,
+                        TransactionAutoConfiguration.class,
+                        TradeEngineMybatisPersistenceAutoConfiguration.class,
+                        MinisoWriteOffAutoConfiguration.class))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var jdbc = new JdbcTemplate(context.getBean(DataSource.class));
+                    jdbc.execute("""
+                            create table mc_order(order_Id varchar(100) primary key, org_code varchar(64),
+                                out_orderId varchar(100), account varchar(64), num int, supplier_channel varchar(32),
+                                order_status int, data_status varchar(32), flow_id bigint, fail_code varchar(100),
+                                fail_reason varchar(1000), remark varchar(1000), edit_time timestamp)
+                            """);
+                    jdbc.execute("""
+                            create table recharge_order_ext(order_id varchar(100) primary key, org_code varchar(64),
+                                out_order_sn varchar(100), supplier_batch_id varchar(64), persist_status varchar(32),
+                                dispatch_status varchar(32), last_error varchar(1000), updated_at timestamp,
+                                voucher_use_state varchar(8))
+                            """);
+                    jdbc.execute("""
+                            create table recharge_miniso_receipt(order_id varchar(100) primary key,
+                                org_code varchar(64), batch_id int, coupon_code varchar(128) unique, phone varchar(64),
+                                begin_time varchar(19), end_time varchar(19), coupon_status int,
+                                created_at timestamp default current_timestamp,
+                                updated_at timestamp default current_timestamp)
+                            """);
+                    jdbc.update("""
+                            insert into mc_order(order_Id, org_code, out_orderId, account, num, supplier_channel,
+                                order_status) values('O-LATE', 'A39', 'OUT-LATE', '13800138000', 1, 'MINISO', 13)
+                            """);
+                    jdbc.update("""
+                            insert into recharge_order_ext(order_id, org_code, out_order_sn, supplier_batch_id,
+                                persist_status) values('O-LATE', 'A39', 'OUT-LATE', '100023', 'DB_PERSISTED')
+                            """);
+                    var receipt = new MinisoFulfillmentReceipt("O-LATE", "A39", 100023, "TEST-LATE-COUPON",
+                            "13800138000", "2026-10-01 00:00:00", "2026-12-01 00:00:00", 0);
+                    var update = new OrderFulfillmentStatusUpdate("O-LATE", FulfillmentDispatchStatus.SUCCESS,
+                            12, "PROCESSED", null, null, null, "confirmed").withMinisoReceipt(receipt);
+                    assertThatCode(() -> context.getBean(RechargeFulfillmentOrderPort.class)
+                            .updateFulfillmentStatus(update)).doesNotThrowAnyException();
+                    assertThat(jdbc.queryForObject(
+                            "select coupon_code from recharge_miniso_receipt where order_id='O-LATE'", String.class))
+                            .isEqualTo("TEST-LATE-COUPON");
+                    assertThat(jdbc.queryForObject(
+                            "select order_status from mc_order where order_Id='O-LATE'", Integer.class)).isEqualTo(12);
+                    assertThat(jdbc.queryForObject(
+                            "select dispatch_status from recharge_order_ext where order_id='O-LATE'", String.class))
+                            .isEqualTo("SUCCESS");
                 });
     }
 

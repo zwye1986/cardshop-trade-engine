@@ -25,6 +25,18 @@ class RedisBalanceReservationReleaseAdapterTest {
 
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-07-08T03:20:00Z"), ZoneOffset.UTC);
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"CONFIRMED", "ALREADY_CONFIRMED", "CONFIRM_FAILED"})
+    void confirmationUsesStableIdAndDoesNotSendRefundOperation(String code) {
+        var sessions = new RecordingSessionFactory(List.of(Mono.just(List.of(List.of("code", code)))));
+        var order = new com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrder(
+                "ORDER-1", "OUT-1", "A36", "13800138000", "P", "SKU", "MINISO", 5200,
+                "", 12, "DB_PERSISTED", "PASSED", true, true);
+        assertThat(adapter(sessions).confirm(order)).isEqualTo(!"CONFIRM_FAILED".equals(code));
+        assertThat(sessions.sessions.getFirst().lastArgs).containsSubsequence("5200", "CONFIRM", "balance-confirm-ORDER-1");
+        assertThat(sessions.sessions.getFirst().closed).isTrue();
+    }
+
     @Test
     void executesReleaseLuaAndMapsReleasedResult() {
         var sessionFactory = new RecordingSessionFactory(List.of(
