@@ -75,6 +75,12 @@ if (text.codePointCount(0, text.length()) > 2500) {
 
 ## Task 2: SDK 可重复安装及离线兼容
 
+**当前阻塞（2026-10-20）：** 安装前只读预检发现 SDK `WebUtils` 静态初始化使用 `DefaultTrustManager`，其 `checkServerTrusted` 直接 return。JDK 21 离线反射探针对该方法传入空 X509Certificate 数组仍正常返回，输出 `SDK_DEFAULT_TRUST_MANAGER_ACCEPTED_EMPTY_SERVER_CERTIFICATE_CHAIN`；未建立网络连接。SDK 默认保留的主机名检查不等于服务器证书信任链校验。官方提供 `DefaultBocomClient.openCertVerify(String certificatePath)`，但实现修改 `WebUtils` 静态信任配置，采用时须增加受控 TLS 证书配置及全局初始化约束。先由用户确认采用官方显式证书校验还是更换传输 seam；在确认前不安装/集成 SDK、不削弱 TLS、不中途改为自研协议。当前 Task 2 尚未完成。
+
+复核方式：对接入包中的 `lib/bocom-openapi-sdk-2.2.6.jar` 执行 `javap -classpath "$SDK" -c -p 'com.bocom.api.utils.WebUtils$DefaultTrustManager'`，可见 `checkServerTrusted` 只有 return；对 `WebUtils` 的 static 初始化核对其默认安装此 TrustManager。离线探针只反射构造该默认 TrustManager 并调用 `checkServerTrusted(new X509Certificate[0], "RSA")`，未调用业务 execute。临时源码 `/tmp/BocomSdkTrustProbe.java`、字节码证据 `/tmp/bocom-webutils-bytecode.txt` 不保证长期留存。
+
+本阶段最终回归：显式 JDK 21，`mvn -B test` 根工程 690 项（跳过 19 项），`mvn -B -f cardshop-trade-engine-simulator/pom.xml test` 模拟器 77 项，均零失败/错误。日志 `/tmp/bocom-stage1-reactor.log`、`/tmp/bocom-stage1-simulator.log`。这是阶段回归，不代表 SDK 或完整银行通知已通过验收。
+
 **Files:**
 - Create: `scripts/install-bocom-sdk.sh`
 - Create: `scripts/bocom-openapi-sdk.pom.xml`
