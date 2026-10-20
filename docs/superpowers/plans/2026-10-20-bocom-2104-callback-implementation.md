@@ -39,7 +39,7 @@ export PATH="$JAVA_HOME/bin:$PATH"
 - Create: `cardshop-trade-engine-application/src/main/java/com/cardshop/trade/engine/application/recharge/Bocom2104PayloadCodec.java`
 - Create: `cardshop-trade-engine-application/src/test/java/com/cardshop/trade/engine/application/recharge/Bocom2104PayloadCodecTest.java`
 
-- [ ] 1. 编写测试，先以反射断言 codec 类型存在，取得编译成功但断言失败的红灯；加入三类通知、固定字段顺序、空值、时间中冒号与机密字段拒绝断言。公开接口为 `String encode(MerchantNotifyOperation operation, Map<String, ?> fields)` 与 `void validate(String encoded)`。
+- [x] 1. 编写测试，先以反射断言 codec 类型存在，取得编译成功但断言失败的红灯；加入三类通知、固定字段顺序、空值、时间中冒号与机密字段拒绝断言。公开接口为 `String encode(MerchantNotifyOperation operation, Map<String, ?> fields)` 与 `void validate(String encoded)`。
 
 ```java
 @Test void codecMustExist() {
@@ -49,8 +49,8 @@ export PATH="$JAVA_HOME/bin:$PATH"
 }
 ```
 
-- [ ] 2. 执行 `mvn -pl cardshop-trade-engine-application -am -Dtest=Bocom2104PayloadCodecTest -Dsurefire.failIfNoSpecifiedTests=false test`，确认失败原因为缺少 codec。
-- [ ] 3. 实现枚举 `ORDER_STATUS("1")/REDEEMED("2")/CANCELLED("3")`，编码固定白名单并拒绝缺字段、未知字段、null、逗号与业务 sign/keyId。金额只接受非负整数，不接受小数/科学记数法。字符校验核心为：
+- [x] 2. 执行 `mvn -pl cardshop-trade-engine-application -am -Dtest=Bocom2104PayloadCodecTest -Dsurefire.failIfNoSpecifiedTests=false test`，确认失败原因为缺少 codec。
+- [x] 3. 实现枚举 `ORDER_STATUS("1")/REDEEMED("2")/CANCELLED("3")`，编码固定白名单并拒绝缺字段、未知字段、null、逗号与业务 sign/keyId。金额只接受非负整数，不接受小数/科学记数法。字符校验核心为：
 
 ```java
 for (int i = 0; i < text.length(); i++) {
@@ -68,8 +68,10 @@ if (text.codePointCount(0, text.length()) > 2500) {
 }
 ```
 
-- [ ] 4. 增加中英文/补充字符及 2499/2500/2501 边界、不可表示字符、意外逗号、整数金额测试，运行同一命令至绿；运行 application 全模块测试。
-- [ ] 5. 提交 `feat: add bocom notification operations and payload codec`。
+- [x] 4. 增加中英文/补充字符及 2499/2500/2501 边界、不可表示字符、意外逗号、整数金额测试，运行同一命令至绿；运行 application 全模块测试。
+- [x] 5. 提交 `feat: add bocom notification operations and payload codec`。
+
+执行证据：`/tmp/bocom-codec-red.log` 首次缺类型为 1 项断言失败；`/tmp/bocom-codec-behavior-red.log` 为未实现行为红灯；`/tmp/bocom-codec-green.log` 为 domain/application 全量绿灯，其中编码器 15 项全部通过。临时日志非长期归档保证。
 
 ## Task 2: SDK 可重复安装及离线兼容
 
