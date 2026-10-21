@@ -43,10 +43,13 @@ public interface RechargeFulfillmentOrderPort {
         throw new UnsupportedOperationException("MINISO release authorization requires persistent adapter");
     }
 
-    /** Redis幂等释放确认后的持久收尾，参见 {@code docs/交行直充业务系统详细设计.md}「9.8」。 */
+    /**
+     * Worker确认Redis RELEASED/ALREADY_RELEASED后调用；同主事务核对RELEASE delta并置释放标记。
+     * 完成标记不表示delta已刷入旧余额；重放仍须验证既有delta。
+     * 参见 {@code docs/交行直充业务系统详细设计.md}「9.8」。
+     */
     default void completeMinisoBalanceRelease(MinisoBalanceReleaseAuthorization authorization) {
-        // TODO: Task 6实现同主事务RELEASE delta核对及balance_reserved收尾，参见详细设计9.8。
-        throw new UnsupportedOperationException("MINISO release completion is not implemented yet");
+        throw new UnsupportedOperationException("MINISO release completion requires persistent adapter");
     }
 
     /**
@@ -55,6 +58,7 @@ public interface RechargeFulfillmentOrderPort {
      * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「14.6 订单最终失败/作废退款协议」。
      * 该动作必须在 Redis release 成功且反向 {@code BALANCE_DELTA_FLUSH} outbox 已写入后执行；
      * 若提前置位，后续 outbox 重试会失去继续补资金动作的判断依据。
+     * MINISO必须改用{@link #completeMinisoBalanceRelease}，不能走此分步入口（详细设计9.8）。
      */
     void markBalanceReleased(String orderId);
 }

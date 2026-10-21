@@ -680,6 +680,7 @@ public class TradeEngineInfrastructureConfiguration {
             McOrderSupplierFlowMapper flowMapper,
             McDepartRecordMapper departRecords,
             RechargeDispatchOutboxMapper dispatchEvents,
+            RechargeBalanceDeltaOutboxMapper balanceDeltas,
             ObjectMapper objectMapper,
             Clock clock) {
         /*
@@ -694,7 +695,8 @@ public class TradeEngineInfrastructureConfiguration {
                 clock,
                 minisoReceipts::getObject,
                 departRecords,
-                dispatchEvents);
+                dispatchEvents,
+                balanceDeltas);
     }
 
     @Bean

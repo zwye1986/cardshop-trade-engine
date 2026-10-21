@@ -16,13 +16,16 @@ import com.cardshop.trade.engine.application.recharge.FulfillmentDispatchStatus;
 import com.cardshop.trade.engine.domain.order.VoucherUseState;
 import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
+import com.cardshop.trade.engine.domain.order.TaskStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McDepartRecordDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeBalanceDeltaOutboxDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeDispatchOutboxDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderSupplierFlowDO;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
@@ -55,6 +58,8 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
     private static final String MINISO_CHANNEL = "MINISO";
     private static final String DB_PERSISTED = "DB_PERSISTED";
     private static final String PRE_DEDUCT_RECORD_TYPE = "1";
+    private static final String DELTA_TYPE_RELEASE = "RELEASE";
+    private static final int DEFAULT_MAX_RETRY_COUNT = 10;
 
     private final McOrderMapper orderMapper;
     private final RechargeOrderExtMapper extMapper;
@@ -64,6 +69,7 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
     private final Supplier<MinisoReceiptStore> minisoReceipts;
     private final McDepartRecordMapper departRecords;
     private final RechargeDispatchOutboxMapper dispatchEvents;
+    private final RechargeBalanceDeltaOutboxMapper balanceDeltas;
 
     public MybatisRechargeFulfillmentOrderAdapter(
             McOrderMapper orderMapper,
@@ -77,7 +83,7 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
     public MybatisRechargeFulfillmentOrderAdapter(McOrderMapper orderMapper, RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper, ObjectMapper objectMapper, Clock clock,
             MinisoReceiptStore minisoReceipts) {
-        this(orderMapper, extMapper, flowMapper, objectMapper, clock, () -> minisoReceipts, null, null);
+        this(orderMapper, extMapper, flowMapper, objectMapper, clock, () -> minisoReceipts, null, null, null);
     }
 
     /**
@@ -87,10 +93,11 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
     public MybatisRechargeFulfillmentOrderAdapter(McOrderMapper orderMapper, RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper, ObjectMapper objectMapper, Clock clock,
             Supplier<MinisoReceiptStore> minisoReceipts, McDepartRecordMapper departRecords,
-            RechargeDispatchOutboxMapper dispatchEvents) {
+            RechargeDispatchOutboxMapper dispatchEvents, RechargeBalanceDeltaOutboxMapper balanceDeltas) {
         this.minisoReceipts = Objects.requireNonNull(minisoReceipts);
         this.departRecords = departRecords;
         this.dispatchEvents = dispatchEvents;
+        this.balanceDeltas = balanceDeltas;
         this.orderMapper = Objects.requireNonNull(orderMapper, "orderMapper must not be null");
         this.extMapper = Objects.requireNonNull(extMapper, "extMapper must not be null");
         this.flowMapper = Objects.requireNonNull(flowMapper, "flowMapper must not be null");
@@ -272,6 +279,70 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
                 order.getOutOrderId(), sourceEventId, amount, authorizedAt));
     }
 
+    /**
+     * Redis已确认RELEASED/ALREADY_RELEASED后的主库收尾，参见
+     * {@code docs/交行直充业务系统详细设计.md}「9.8」。
+     * 只复核冻结许可与归属，不重做核销裁决；delta与释放标记共用主SqlSession事务，禁止专用writer代写。
+     * 完成仅表示delta可靠入库，刷入旧余额仍由异步刷账任务完成。
+     */
+    @Override
+    @Transactional
+    public void completeMinisoBalanceRelease(MinisoBalanceReleaseAuthorization supplied) {
+        Objects.requireNonNull(supplied, "release authorization required");
+        var order = orderMapper.lockFulfillmentOrder(supplied.orderId());
+        var ext = extMapper.lockFulfillmentOrder(supplied.orderId());
+        validateMinisoOwnership(order, ext);
+        var frozen = authorization(order, ext)
+                .orElseThrow(() -> new MinisoWriteOffException(RELEASE_AUTHORIZATION_INCONSISTENT));
+        if (!frozen.equals(supplied)) throw new MinisoWriteOffException(RELEASE_AUTHORIZATION_INCONSISTENT);
+
+        var deltas = Objects.requireNonNull(balanceDeltas, "MINISO main-session balance delta mapper required");
+        String eventId = MybatisBalanceDeltaOutboxWriteAdapter.eventIdFor(DELTA_TYPE_RELEASE, frozen.orderId());
+        var now = now();
+        if (Boolean.TRUE.equals(ext.getBalanceReserved())) {
+            var delta = new RechargeBalanceDeltaOutboxDO();
+            delta.setEventId(eventId);
+            delta.setOrgCode(frozen.orgCode());
+            delta.setOrderId(frozen.orderId());
+            delta.setOutOrderSn(frozen.outOrderSn());
+            delta.setDeltaType(DELTA_TYPE_RELEASE);
+            delta.setDeltaAmount(frozen.amount());
+            delta.setStatus(TaskStatus.INIT.name());
+            delta.setRetryCount(0);
+            delta.setMaxRetryCount(DEFAULT_MAX_RETRY_COUNT);
+            delta.setNextRetryTime(now);
+            delta.setVersion(0L);
+            delta.setLastError("");
+            delta.setCreatedAt(now);
+            delta.setUpdatedAt(now);
+            deltas.insertIfAbsent(delta);
+        }
+        // insert未新增不代表一致；已完成且缺delta也不能重建，避免已刷账事实损坏后再次加款。
+        var persisted = deltas.lockByEventId(eventId);
+        if (persisted == null || !eventId.equals(persisted.getEventId())
+                || !frozen.orgCode().equals(persisted.getOrgCode())
+                || !frozen.orderId().equals(persisted.getOrderId())
+                || !frozen.outOrderSn().equals(persisted.getOutOrderSn())
+                || !DELTA_TYPE_RELEASE.equals(persisted.getDeltaType())
+                || !Objects.equals(frozen.amount(), persisted.getDeltaAmount())) {
+            throw new MinisoWriteOffException(RELEASE_AUTHORIZATION_INCONSISTENT);
+        }
+        if (!Boolean.TRUE.equals(ext.getBalanceReserved())) return;
+        int rows = extMapper.update(null, new LambdaUpdateWrapper<RechargeOrderExtDO>()
+                .eq(RechargeOrderExtDO::getOrderId, frozen.orderId())
+                .eq(RechargeOrderExtDO::getOrgCode, frozen.orgCode())
+                .eq(RechargeOrderExtDO::getOutOrderSn, frozen.outOrderSn())
+                .eq(RechargeOrderExtDO::getBalanceReserved, true)
+                .eq(RechargeOrderExtDO::getBalanceReleaseEventId, frozen.sourceEventId())
+                .eq(RechargeOrderExtDO::getBalanceReleaseAmount, frozen.amount())
+                .eq(RechargeOrderExtDO::getBalanceReleaseAuthorizedAt, ext.getBalanceReleaseAuthorizedAt())
+                .set(RechargeOrderExtDO::getBalanceReserved, false)
+                .set(RechargeOrderExtDO::getUpdatedAt, now));
+        if (rows != 1) throw new MinisoWriteOffException(RELEASE_AUTHORIZATION_INCONSISTENT);
+        log.info("MINISO release delta and completion persisted in transaction: orderId={}, orgCode={}, eventId={}, amount={}",
+                frozen.orderId(), frozen.orgCode(), frozen.sourceEventId(), frozen.amount());
+    }
+
     private Optional<MinisoBalanceReleaseAuthorization> authorization(McOrderDO order, RechargeOrderExtDO ext) {
         var time = ext.getBalanceReleaseAuthorizedAt();
         var event = ext.getBalanceReleaseEventId();
@@ -407,6 +478,11 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
     @Override
     @Transactional
     public void markBalanceReleased(String orderId) {
+        // MINISO禁止走旧分步标记入口，必须携带冻结许可原子核对delta；非MINISO保持原行为，见详细设计9.8。
+        var order = orderMapper.lockFulfillmentOrder(orderId);
+        if (order != null && MINISO_CHANNEL.equals(order.getSupplierChannel())) {
+            throw new MinisoWriteOffException(RELEASE_AUTHORIZATION_INCONSISTENT);
+        }
         extMapper.update(null, new LambdaUpdateWrapper<RechargeOrderExtDO>()
                 .eq(RechargeOrderExtDO::getOrderId, orderId)
                 .set(RechargeOrderExtDO::getBalanceReserved, false)

@@ -259,8 +259,8 @@ void completeMinisoBalanceRelease(MinisoBalanceReleaseAuthorization authorizatio
 
 **Files:** Modify `EI/persistence/MybatisRechargeFulfillmentOrderAdapter.java`、`mapper/RechargeBalanceDeltaOutboxMapper.java`、`config/TradeEngineMybatisPersistenceAutoConfiguration.java`；Test `ET/persistence/RechargeFulfillmentVoucherStatePersistenceTest.java`、`ET/config/TradeEngineMybatisPersistenceAutoConfigurationTest.java`。
 
-- [ ] 1. 在真实事务fixture以已有授权调用新增`completeMinisoBalanceRelease`：故意让ext更新失败，断言不存在孤立delta；反向让delta插入失败，断言balance_reserved仍1。预置错误金额同ID delta时也必须失败。运行`engine_test 'RechargeFulfillmentVoucherStatePersistenceTest,TradeEngineMybatisPersistenceAutoConfigurationTest'`确认红灯。
-- [ ] 2. 实现收尾主事务：锁主单/扩展，校验传入授权与持久字段及可信身份完全一致；按稳定`balance-flush-release-{orderId}`插入/锁读核对delta，最后置balance_reserved=0。不得调用绑定专用outbox DataSource的writer实现本事务；使用同主SqlSession mapper。重复delta不重置任务状态/次数/版本。
+- [x] 1. 在真实事务fixture以已有授权调用新增`completeMinisoBalanceRelease`：故意让ext更新失败，断言不存在孤立delta；反向让delta插入失败，断言balance_reserved仍1。预置错误金额同ID delta时也必须失败。运行`engine_test 'RechargeFulfillmentVoucherStatePersistenceTest,TradeEngineMybatisPersistenceAutoConfigurationTest'`确认红灯。
+- [x] 2. 实现收尾主事务：锁主单/扩展，校验传入授权与持久字段及可信身份完全一致；按稳定`balance-flush-release-{orderId}`插入/锁读核对delta，最后置balance_reserved=0。不得调用绑定专用outbox DataSource的writer实现本事务；使用同主SqlSession mapper。重复delta不重置任务状态/次数/版本。
 
 ```sql
 SELECT event_id,org_code,order_id,out_order_sn,delta_type,delta_amount
@@ -270,9 +270,11 @@ WHERE order_id=? AND org_code=? AND balance_release_event_id=?
   AND balance_release_amount=? AND balance_release_authorized_at IS NOT NULL;
 ```
 
-- [ ] 3. 只有Worker确认Redis RELEASED/ALREADY_RELEASED后才能调用收尾；重放已完成授权时仍验证delta存在且一致，不能凭balance_reserved=0跳过损坏事实。完成只表示delta可靠入库，不能等待或假装已经刷到旧余额。
-- [ ] 4. 同命令转绿，装配测试配置独立writer数据源为失败桩，授权收尾仍使用主连接成功；实际数据库中间状态以事务外连接核对，不只verify调用次数。
-- [ ] 5. 本地提交`fix(miniso): atomically persist release delta and completion`。
+- [x] 3. 只有Worker确认Redis RELEASED/ALREADY_RELEASED后才能调用收尾；重放已完成授权时仍验证delta存在且一致，不能凭balance_reserved=0跳过损坏事实。完成只表示delta可靠入库，不能等待或假装已经刷到旧余额。
+- [x] 4. 同命令转绿，装配测试配置独立writer数据源为失败桩，授权收尾仍使用主连接成功；实际数据库中间状态以事务外连接核对，不只verify调用次数。
+- [x] 5. 本地提交`fix(miniso): atomically persist release delta and completion`。
+
+2026-10-21本地执行：两组基线57项通过；加入收尾反例及真实装配测试后83项中19项断言失败、6项因端口尚未实现报错，原有用例通过；实现后同命令83项全部通过。额外关联七组131项全通过，根reactor773项中753通过/20环境依赖跳过，失败及错误0。独立JDBC核验真实CHECK故障双向回滚、重试补齐、稳定ID事实冲突失败关闭及重复不改刷账进度。MINISO旧分步标记入口拒绝执行，非MINISO语义保留；普通及晚装配均传入主Mapper。第3项的Redis确认是收尾端口调用前置契约，Worker接入仍在Task7，本轮未调用Redis或认定其已释放；已完成标记但缺delta报不一致，不重建可能已刷账的损坏事实。详细证据见《集成测试.md》`MINISO-BRIDGE-RELEASE-COMPLETION-LOCAL-20261021`；真实MySQL/Redis竞争与断点仍待Task17，未push或部署。
 
 ## Task 7: Worker先恢复授权，无凭据不明结果不释放
 

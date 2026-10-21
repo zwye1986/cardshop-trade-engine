@@ -6,6 +6,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import com.baomidou.mybatisplus.core.MybatisConfiguration;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.cardshop.trade.engine.application.recharge.FulfillmentDispatchStatus;
+import com.cardshop.trade.engine.application.recharge.MinisoBalanceReleaseAuthorization;
 import com.cardshop.trade.engine.application.recharge.MinisoFulfillmentReceipt;
 import com.cardshop.trade.engine.application.recharge.MinisoWriteOffException;
 import com.cardshop.trade.engine.application.recharge.OrderFulfillmentStatusUpdate;
@@ -18,6 +19,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoWriteOf
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -114,6 +116,16 @@ class RechargeFulfillmentVoucherStatePersistenceTest {
                 + "event_type varchar(32), org_code varchar(64), order_id varchar(100), out_order_sn varchar(100))");
         jdbc.execute("create table mc_depart_record(id bigint auto_increment primary key, org_code varchar(64),"
                 + "order_id varchar(100), type varchar(1), `value` bigint)");
+        jdbc.execute("""
+                create table recharge_balance_delta_outbox (
+                    id bigint auto_increment primary key, event_id varchar(128) not null unique,
+                    org_code varchar(64), order_id varchar(100), out_order_sn varchar(100),
+                    delta_type varchar(32), delta_amount bigint, status varchar(32),
+                    retry_count int, max_retry_count int, next_retry_time timestamp(3),
+                    locked_by varchar(64), locked_until timestamp(3), version bigint, last_error varchar(512),
+                    created_at timestamp(3), updated_at timestamp(3)
+                )
+                """);
         jdbc.update("insert into mc_order(order_Id, order_status, data_status, remark) values (?, 12, ?, ?)",
                 ORDER_ID, "PROCESSED", "before-update");
         jdbc.update("""
@@ -131,6 +143,7 @@ class RechargeFulfillmentVoucherStatePersistenceTest {
         configuration.addMapper(MinisoWriteOffEventMapper.class);
         configuration.addMapper(McDepartRecordMapper.class);
         configuration.addMapper(RechargeDispatchOutboxMapper.class);
+        configuration.addMapper(RechargeBalanceDeltaOutboxMapper.class);
         var factory = new MybatisSqlSessionFactoryBean();
         factory.setDataSource(dataSource);
         factory.setConfiguration(configuration);
@@ -149,6 +162,7 @@ class RechargeFulfillmentVoucherStatePersistenceTest {
                 session.getMapper(McOrderSupplierFlowMapper.class),
                 beans.getBeanProvider(MinisoReceiptStore.class),
                 session.getMapper(McDepartRecordMapper.class), session.getMapper(RechargeDispatchOutboxMapper.class),
+                session.getMapper(RechargeBalanceDeltaOutboxMapper.class),
                 new ObjectMapper(), CLOCK);
         // 直接调用端口代理，确保生产@Transactional生效，而不是由测试事务掩盖提交边界。
         var proxyFactory = new ProxyFactory(target);
@@ -492,6 +506,187 @@ class RechargeFulfillmentVoucherStatePersistenceTest {
         jdbc.update("update mc_order set order_status=13");
         assertThatThrownBy(() -> port.findMinisoReleaseAuthorization(ORDER_ID))
                 .isInstanceOf(MinisoWriteOffException.class).hasMessage("RELEASE_AUTHORIZATION_INCONSISTENT");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"CANCELLED", "FAILED"})
+    void completionPersistsOnePositiveReleaseAndClearsReservationDespiteLateRedemption(String terminal) {
+        seedMiniso();
+        var authorization = port.authorizeMinisoTerminalRelease(
+                update(FulfillmentDispatchStatus.valueOf(terminal)).withInvalidTime(FIRST_INVALID_TIME),
+                "event-A").orElseThrow();
+        jdbc.update("insert into mc_miniso_callback_inbox values('late','C1',?,'MANUAL_REQUIRED')",
+                Timestamp.from(CLOCK.instant()));
+
+        port.completeMinisoBalanceRelease(authorization);
+
+        var delta = jdbc.queryForMap("select event_id,org_code,order_id,out_order_sn,delta_type,delta_amount,"
+                + "status,retry_count,max_retry_count,version from recharge_balance_delta_outbox");
+        assertThat(delta).containsEntry("event_id", "balance-flush-release-" + ORDER_ID)
+                .containsEntry("org_code", "A39").containsEntry("order_id", ORDER_ID)
+                .containsEntry("out_order_sn", "EXT-1").containsEntry("delta_type", "RELEASE")
+                .containsEntry("delta_amount", 137L).containsEntry("status", "INIT")
+                .containsEntry("retry_count", 0).containsEntry("max_retry_count", 10).containsEntry("version", 0L);
+        assertThat(balanceReserved()).isFalse();
+        assertThat(port.findMinisoReleaseAuthorization(ORDER_ID)).contains(authorization);
+        assertThat(dispatchStatus()).isEqualTo(terminal);
+        assertThat(orderStatus()).isEqualTo("FAILED".equals(terminal) ? 6 : 12);
+        assertThat(jdbc.queryForObject("select status from mc_miniso_callback_inbox", String.class))
+                .isEqualTo("MANUAL_REQUIRED");
+    }
+
+    @Test
+    void completionExtUpdateFailureRollsBackNewDeltaAndPreservesAuthorizationForRetry() {
+        seedMiniso();
+        var authorization = port.authorizeMinisoTerminalRelease(cancellation(), "event-A").orElseThrow();
+        jdbc.execute("alter table recharge_order_ext add constraint reject_release_completion check (balance_reserved)");
+
+        assertThatThrownBy(() -> port.completeMinisoBalanceRelease(authorization))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        assertNoReleaseDelta();
+        assertThat(balanceReserved()).isTrue();
+        assertThat(port.findMinisoReleaseAuthorization(ORDER_ID)).contains(authorization);
+        jdbc.execute("alter table recharge_order_ext drop constraint reject_release_completion");
+        port.completeMinisoBalanceRelease(authorization);
+        assertThat(balanceReserved()).isFalse();
+        assertThat(jdbc.queryForObject("select count(*) from recharge_balance_delta_outbox", Integer.class)).isOne();
+    }
+
+    @Test
+    void completionDeltaInsertFailureKeepsReservationAndFrozenAuthorizationForRetry() {
+        seedMiniso();
+        var authorization = port.authorizeMinisoTerminalRelease(cancellation(), "event-A").orElseThrow();
+        jdbc.execute("alter table recharge_balance_delta_outbox add constraint reject_release_delta "
+                + "check (delta_type <> 'RELEASE')");
+
+        assertThatThrownBy(() -> port.completeMinisoBalanceRelease(authorization))
+                .isInstanceOf(DataIntegrityViolationException.class);
+
+        assertNoReleaseDelta();
+        assertThat(balanceReserved()).isTrue();
+        assertThat(port.findMinisoReleaseAuthorization(ORDER_ID)).contains(authorization);
+        jdbc.execute("alter table recharge_balance_delta_outbox drop constraint reject_release_delta");
+        port.completeMinisoBalanceRelease(authorization);
+        assertThat(balanceReserved()).isFalse();
+        assertThat(jdbc.queryForObject("select delta_amount from recharge_balance_delta_outbox", Long.class))
+                .isEqualTo(137L);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"org_code='OTHER'", "order_id='OTHER'", "out_order_sn='OTHER'",
+            "delta_type='PRE_DEDUCT'", "delta_amount=139"})
+    void sameEventIdWithDifferentReleaseFactsFailsWithoutClearingReservation(String corruptAssignment) {
+        seedMiniso();
+        var authorization = port.authorizeMinisoTerminalRelease(cancellation(), "event-A").orElseThrow();
+        seedReleaseDelta();
+        jdbc.update("update recharge_balance_delta_outbox set " + corruptAssignment);
+        var before = jdbc.queryForMap("select * from recharge_balance_delta_outbox");
+
+        assertThatThrownBy(() -> port.completeMinisoBalanceRelease(authorization))
+                .isInstanceOf(MinisoWriteOffException.class).hasMessage("RELEASE_AUTHORIZATION_INCONSISTENT");
+
+        assertThat(balanceReserved()).isTrue();
+        assertThat(jdbc.queryForMap("select * from recharge_balance_delta_outbox")).isEqualTo(before);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"INIT", "PROCESSING", "SUCCESS", "MANUAL_REQUIRED"})
+    void completionAndCompletedReplayNeverResetExistingDeltaProgress(String status) {
+        seedMiniso();
+        var authorization = port.authorizeMinisoTerminalRelease(cancellation(), "event-A").orElseThrow();
+        seedReleaseDelta();
+        jdbc.update("update recharge_balance_delta_outbox set status=?", status);
+        var before = jdbc.queryForMap("select * from recharge_balance_delta_outbox");
+
+        port.completeMinisoBalanceRelease(authorization);
+        port.completeMinisoBalanceRelease(authorization);
+
+        assertThat(balanceReserved()).isFalse();
+        assertThat(jdbc.queryForMap("select * from recharge_balance_delta_outbox")).isEqualTo(before);
+        assertThat(port.findMinisoReleaseAuthorization(ORDER_ID)).contains(authorization);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"missing", "amount"})
+    void completedFlagCannotHideMissingOrCorruptedReleaseDelta(String damage) {
+        seedMiniso();
+        var authorization = port.authorizeMinisoTerminalRelease(cancellation(), "event-A").orElseThrow();
+        seedReleaseDelta();
+        jdbc.update("update recharge_order_ext set balance_reserved=false");
+        if ("missing".equals(damage)) {
+            jdbc.update("delete from recharge_balance_delta_outbox");
+        } else {
+            jdbc.update("update recharge_balance_delta_outbox set delta_amount=139");
+        }
+
+        assertThatThrownBy(() -> port.completeMinisoBalanceRelease(authorization))
+                .isInstanceOf(MinisoWriteOffException.class).hasMessage("RELEASE_AUTHORIZATION_INCONSISTENT");
+
+        assertThat(balanceReserved()).isFalse();
+        if ("missing".equals(damage)) assertNoReleaseDelta();
+        else assertThat(jdbc.queryForObject("select delta_amount from recharge_balance_delta_outbox", Long.class))
+                .isEqualTo(139L);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"order", "org", "outOrder", "event", "amount", "time", "absent"})
+    void completionRejectsAnyAuthorizationMismatchBeforeWritingMoney(String damage) {
+        seedMiniso();
+        port.authorizeMinisoTerminalRelease(cancellation(), "event-A").orElseThrow();
+        var supplied = new MinisoBalanceReleaseAuthorization("order".equals(damage) ? "OTHER" : ORDER_ID,
+                "org".equals(damage) ? "OTHER" : "A39", "outOrder".equals(damage) ? "OTHER" : "EXT-1",
+                "event".equals(damage) ? "event-B" : "event-A", "amount".equals(damage) ? 139L : 137L,
+                "time".equals(damage) ? AUTHORIZED_AT.plusMillis(1) : AUTHORIZED_AT);
+        if ("absent".equals(damage)) jdbc.update("update recharge_order_ext set balance_release_event_id=null,"
+                + "balance_release_amount=null,balance_release_authorized_at=null");
+
+        assertThatThrownBy(() -> port.completeMinisoBalanceRelease(supplied))
+                .isInstanceOf(MinisoWriteOffException.class);
+
+        assertThat(balanceReserved()).isTrue();
+        assertNoReleaseDelta();
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void oldMarkReleasedEntrypointCannotBypassAtomicMinisoCompletion(boolean authorized) {
+        seedMiniso();
+        if (authorized) port.authorizeMinisoTerminalRelease(cancellation(), "event-A");
+
+        assertThatThrownBy(() -> port.markBalanceReleased(ORDER_ID))
+                .isInstanceOf(MinisoWriteOffException.class).hasMessage("RELEASE_AUTHORIZATION_INCONSISTENT");
+
+        assertThat(balanceReserved()).isTrue();
+        assertNoReleaseDelta();
+    }
+
+    @Test
+    void oldMarkReleasedEntrypointKeepsNonMinisoBehavior() {
+        jdbc.update("update recharge_order_ext set balance_reserved=true");
+        port.markBalanceReleased(ORDER_ID);
+        assertThat(balanceReserved()).isFalse();
+        assertNoReleaseDelta();
+    }
+
+    private void seedReleaseDelta() {
+        jdbc.update("""
+                insert into recharge_balance_delta_outbox(event_id,org_code,order_id,out_order_sn,delta_type,
+                    delta_amount,status,retry_count,max_retry_count,next_retry_time,locked_by,locked_until,
+                    version,last_error,created_at,updated_at)
+                values(?,'A39',?,'EXT-1','RELEASE',137,'PROCESSING',4,10,'2026-10-20 10:00:00',
+                    'flush-worker','2026-10-20 10:05:00',7,'previous failure','2026-10-18 08:00:00',
+                    '2026-10-20 09:59:00')
+                """, "balance-flush-release-" + ORDER_ID, ORDER_ID);
+    }
+
+    private boolean balanceReserved() {
+        return jdbc.queryForObject("select balance_reserved from recharge_order_ext where order_id=?",
+                Boolean.class, ORDER_ID);
+    }
+
+    private void assertNoReleaseDelta() {
+        assertThat(jdbc.queryForObject("select count(*) from recharge_balance_delta_outbox", Integer.class)).isZero();
     }
 
     private static OrderFulfillmentStatusUpdate cancellation() {
