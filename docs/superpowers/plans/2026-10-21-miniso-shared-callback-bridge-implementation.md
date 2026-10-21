@@ -280,7 +280,7 @@ WHERE order_id=? AND org_code=? AND balance_release_event_id=?
 
 **Files:** Modify `EA/RechargeOutboxWorkerService.java`及`E/cardshop-trade-engine-application/src/test/java/com/cardshop/trade/engine/application/recharge/RechargeOutboxWorkerServiceTest.java`；必要时在现有供应商响应分类中保留明确证据，不凭status=FAILED增加白名单。
 
-- [ ] 1. 扩展既有Worker公开批处理测试：DISPATCH/QUERY/INVALID三种任务遇已有授权＋迟到核销，均完成137分一次释放及delta；当前event-B必须使用冻结event-A。原任务不能因核销人工或通知创建失败被提前SUCCESS。运行：
+- [x] 1. 扩展既有Worker公开批处理测试：DISPATCH/QUERY/INVALID三种任务遇已有授权＋迟到核销，均完成137分一次释放及delta；当前event-B必须使用冻结event-A。原任务不能因核销人工或通知创建失败被提前SUCCESS。运行：
 
 ```bash
 JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -B -f "$E/pom.xml" \
@@ -289,7 +289,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -B -f "$E/pom.xml" \
 ```
 
 预期红灯：当前先核销门禁/当前eventId/分步收尾不符合合同。
-- [ ] 2. 在所有三种终态恢复分支先读取授权，存在则从冻结字段构造既有释放命令；先执行资金恢复，再完成其余可重试通知与原任务。无授权不能依据CANCELLED/FAILED直接释放，也不能被普通非派单状态分支标SUCCESS。新终态走任务5的事务授权入口；前后`blockInvalidation`不是授权依据。
+- [x] 2. 在所有三种终态恢复分支先读取授权，存在则从冻结字段构造既有释放命令；先执行资金恢复，再完成其余可重试通知与原任务。无授权不能依据CANCELLED/FAILED直接释放，也不能被普通非派单状态分支标SUCCESS。新终态走任务5的事务授权入口；前后`blockInvalidation`不是授权依据。
 
 ```java
 var command = new BalanceReservationReleaseCommand(
@@ -301,9 +301,11 @@ if (result.succeeded()) {
 }
 ```
 
-- [ ] 3. 加入MINISO可能已发券但本地无receipt、查询null/空data/网络失败的测试：先用原orderId查单、未确认保持重试/人工，余额及delta不变；次数耗尽也不授权。只有任务1已核验的“未发券”证据才能走例外，若尚无该证据则不实现例外。非MINISO FAILED及原频控回归保持不变。
-- [ ] 4. 同命令转绿；对授权前、授权后未Redis、Redis响应丢失、delta失败、任务收尾失败注入故障并重跑，业务断言为余额只增加137、仅一条RELEASE且身份正确、授权不变。真实Redis验证留任务17，不用mock结果声称Lua通过。
-- [ ] 5. 本地提交`fix(miniso): recover authorized releases before redemption arbitration`。
+- [x] 3. 加入MINISO可能已发券但本地无receipt、查询null/空data/网络失败的测试：先用原orderId查单、未确认保持重试/人工，余额及delta不变；次数耗尽也不授权。只有任务1已核验的“未发券”证据才能走例外，若尚无该证据则不实现例外。非MINISO FAILED及原频控回归保持不变。
+- [x] 4. 同命令转绿；对授权前、授权后未Redis、Redis响应丢失、delta失败、任务收尾失败注入故障并重跑，业务断言为余额只增加137、仅一条RELEASE且身份正确、授权不变。真实Redis验证留任务17，不用mock结果声称Lua通过。
+- [x] 5. 本地提交`fix(miniso): recover authorized releases before redemption arbitration`。
+
+2026-10-21本地执行：基线32项通过；首轮42项出现10项预期断言失败、错误0，接入后转绿。随后完成标记/持久凭据反例48项中5项、授权后快照反例49项中1项、作废补凭据反例51项中2项、非履约事件边界反例54项中3项均先红后绿。最终Worker54项及关联六组195项全部通过；根reactor795项中775通过、20环境依赖跳过，失败/错误0。三类履约任务先读冻结授权，恢复137分及同主事务收尾后才创建通知/关闭任务；资金已完成时仍核对delta，不重新依赖Redis。无授权历史终态转人工，不从FAILED猜未发券；派单缺证据转原订单号查单，作废缺凭据/归属未确认只在原INVALID任务内查单补证据并退避，不绕过门禁作废，也不重开已完成的稳定查单事件。查询确认发券不等于确认可退款，仍须后续作废及事务授权。补齐读授权后重载稳定终态，避免旧SUCCESS快照误发失败通知。所有金额/幂等断点结果均为应用端口合同模拟；真实MySQL/Redis组合验收仍待Task17，迟到核销接收/处理修改仍待Task8。证据见《集成测试.md》`MINISO-BRIDGE-WORKER-RECOVERY-LOCAL-20261021`；本地提交，不push、部署或改共享配置。
 
 ## Task 8: 新端直接回调及核销处理遵守授权优先级
 

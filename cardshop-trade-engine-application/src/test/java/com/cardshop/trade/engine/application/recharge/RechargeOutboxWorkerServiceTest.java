@@ -15,6 +15,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -30,6 +32,349 @@ import org.junit.jupiter.api.Test;
 class RechargeOutboxWorkerServiceTest {
 
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-07-08T03:20:00Z"), ZoneOffset.UTC);
+
+    @ParameterizedTest
+    @EnumSource(value = OutboxEventType.class, names = {"BALANCE_DELTA_FLUSH", "BALANCE_RELEASE", "CACHE_REPAIR"})
+    void minisoAuthorizationDoesNotMakeUnrelatedEventTypesFulfillmentTasks(OutboxEventType type) {
+        var orders = new FakeFulfillmentOrderPort(minisoOrder(6, true, "FAILED"));
+        orders.authorization = minisoAuthorization();
+        var outbox = new FakeOutboxPort(outbox(type));
+        var release = new IdempotentBalanceReleasePort();
+        var notifications = new FakeNotifyTaskPort();
+        var service = minisoWorker(outbox, orders,
+                new FakeSupplierGatewayPort(SupplierGatewayResponse.success("unused", "200", "", "{}")),
+                release, notifications, new FakeBalanceDeltaOutboxPort(), true);
+
+        assertThat(service.processDue(1, 0, 10, "worker", List.of(type), 1).failed()).isEqualTo(1);
+        assertThat(outbox.successes).isEmpty();
+        assertThat(release.balanceIncrease).isZero();
+        assertThat(orders.completedReleaseDeltas).isEmpty();
+        assertThat(notifications.createdTasks).isEmpty();
+    }
+
+    @Test
+    void authorizationCommittedAfterOrderSnapshotStillCreatesCancelledNotificationNotFailure() {
+        var orders = new FakeFulfillmentOrderPort(minisoOrder(12, true, "SUCCESS"));
+        orders.onAuthorizationRead = () -> {
+            orders.authorization = minisoAuthorization();
+            orders.ordersById.put("ORDER-1", minisoOrder(12, true, "CANCELLED"));
+        };
+        var outbox = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_QUERY));
+        var notifications = new FakeNotifyTaskPort();
+        var service = minisoWorker(outbox, orders,
+                new FakeSupplierGatewayPort(SupplierGatewayResponse.success("unused", "200", "", "{}")),
+                new IdempotentBalanceReleasePort(), notifications, new FakeBalanceDeltaOutboxPort(), true);
+
+        assertThat(service.processDue(1, 0, 10, "worker", List.of(OutboxEventType.SUPPLIER_QUERY), 1).succeeded()).isEqualTo(1);
+        assertThat(notifications.createdTasks).singleElement().satisfies(task -> {
+            assertThat(task.bizStatus()).isEqualTo("CANCELLED");
+            assertThat(task.payload()).containsEntry("invalidTime", CLOCK.instant().minusSeconds(120).toString());
+        });
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = OutboxEventType.class,
+            names = {"SUPPLIER_DISPATCH", "SUPPLIER_QUERY", "INVALID_ORDER"})
+    void authorizedMinisoReleaseSurvivesLateRedemptionAndNotificationFailure(OutboxEventType type) {
+        for (boolean cancelled : List.of(true, false)) {
+            var orders = new FakeFulfillmentOrderPort(minisoOrder(cancelled ? 12 : 6, true,
+                    cancelled ? "CANCELLED" : "FAILED"));
+            orders.authorization = minisoAuthorization();
+            var outbox = new FakeOutboxPort(outbox(type));
+            var release = new IdempotentBalanceReleasePort();
+            var notifications = new FakeNotifyTaskPort();
+            notifications.failuresRemaining = 1;
+            var gateway = new FakeSupplierGatewayPort(SupplierGatewayResponse.success("unused", "200", "", "{}"));
+            var deltas = new FakeBalanceDeltaOutboxPort();
+            var service = minisoWorker(outbox, orders, gateway, release, notifications, deltas, true);
+
+            assertThat(service.processDue(1, 0, 10, "worker", List.of(type), 1).failed()).isEqualTo(1);
+            assertThat(release.balanceIncrease).isEqualTo(137);
+            assertThat(release.firstCommand.releaseEventId()).isEqualTo("event-A");
+            assertThat(release.firstCommand.orgCode()).isEqualTo("A36");
+            assertThat(release.firstCommand.orderId()).isEqualTo("ORDER-1");
+            assertThat(release.firstCommand.outOrderSn()).isEqualTo("OUT-1");
+            assertThat(release.firstCommand.releaseType()).isEqualTo("RELEASE");
+            assertThat(orders.completedReleaseDeltas).containsOnlyKeys("balance-flush-release-ORDER-1");
+            assertThat(outbox.successes).isEmpty();
+            assertThat(outbox.manualRequired).isEmpty();
+
+            assertThat(service.processDue(1, 0, 10, "worker", List.of(type), 1).succeeded()).isEqualTo(1);
+            assertThat(release.balanceIncrease).isEqualTo(137);
+            assertThat(orders.completedReleaseDeltas.get("balance-flush-release-ORDER-1"))
+                    .isEqualTo(new BalanceDeltaFlushOutboxCommand("A36", "ORDER-1", "OUT-1", 137, "RELEASE", ""));
+            assertThat(orders.authorization).isEqualTo(minisoAuthorization());
+            assertThat(orders.findByOrderId("ORDER-1").orElseThrow().balanceReserved()).isFalse();
+            assertThat(notifications.createdTasks).singleElement().satisfies(task -> {
+                assertThat(task.bizStatus()).isEqualTo(cancelled ? "CANCELLED" : "6");
+                if (cancelled) assertThat(task.payload()).containsEntry("invalidTime", CLOCK.instant().minusSeconds(120).toString());
+            });
+            assertThat(outbox.successes).containsExactly("dispatch-ORDER-1");
+            assertThat(gateway.dispatchRequests).isEmpty();
+            assertThat(gateway.queryRequests).isEmpty();
+            assertThat(gateway.invalidRequests).isEmpty();
+            assertThat(deltas.commands).isEmpty();
+            assertThat(orders.balanceReleasedOrderIds).isEmpty();
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = OutboxEventType.class,
+            names = {"SUPPLIER_DISPATCH", "SUPPLIER_QUERY", "INVALID_ORDER"})
+    void minisoTerminalWithoutAuthorizationCannotReleaseOrSilentlyComplete(OutboxEventType type) {
+        for (boolean reserved : List.of(true, false)) {
+            for (boolean cancelled : List.of(true, false)) {
+                var orders = new FakeFulfillmentOrderPort(minisoOrder(cancelled ? 12 : 6, reserved,
+                        cancelled ? "CANCELLED" : "FAILED"));
+                var outbox = new FakeOutboxPort(outbox(type));
+                var release = new IdempotentBalanceReleasePort();
+                var notifications = new FakeNotifyTaskPort();
+                var service = minisoWorker(outbox, orders,
+                        new FakeSupplierGatewayPort(SupplierGatewayResponse.success("unused", "200", "", "{}")),
+                        release, notifications, new FakeBalanceDeltaOutboxPort(), false);
+
+                assertThat(service.processDue(1, 0, 10, "worker", List.of(type), 1).failed()).isEqualTo(1);
+                assertThat(outbox.successes).isEmpty();
+                assertThat(outbox.manualRequired).hasSize(1);
+                assertThat(release.balanceIncrease).isZero();
+                assertThat(orders.completedReleaseDeltas).isEmpty();
+                assertThat(orders.authorization).isNull();
+                assertThat(notifications.createdTasks).isEmpty();
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = OutboxEventType.class,
+            names = {"SUPPLIER_DISPATCH", "SUPPLIER_QUERY", "INVALID_ORDER"})
+    void minisoNewTerminalUsesAtomicAuthorizationAndRecoversEveryFailureWindow(OutboxEventType type) {
+        // 端口故障只模拟其合同；真实MySQL事务及Redis Lua断点由Task17验证（详细设计9.8）。
+        for (String fault : List.of("before-authorization", "after-authorization", "redis-unavailable",
+                "redis-response-lost", "completion", "outbox-success")) {
+            var orders = new FakeFulfillmentOrderPort(minisoOrder(type == OutboxEventType.INVALID_ORDER ? 12
+                    : type == OutboxEventType.SUPPLIER_QUERY ? 13 : 2, true, ""));
+            orders.authorizationFault = fault;
+            orders.completionFailures = fault.equals("completion") ? 1 : 0;
+            var outbox = new FakeOutboxPort(outbox(type));
+            outbox.successFailures = fault.equals("outbox-success") ? 1 : 0;
+            var release = new IdempotentBalanceReleasePort();
+            release.fault = fault;
+            var response = (type == OutboxEventType.INVALID_ORDER
+                    ? SupplierGatewayResponse.success("ORDER-1", "200", "ok", "{}")
+                    : SupplierGatewayResponse.failed("ORDER-1", "UNVERIFIED", "failed with void receipt", "{}"))
+                    .withMinisoReceipt(new MinisoFulfillmentReceipt("ORDER-1", "A36", 123, "TEST-C1",
+                            "13800138000", "2026-07-01 00:00:00", "2026-12-01 00:00:00", 3));
+            var gateway = new FakeSupplierGatewayPort(response);
+            var service = minisoWorker(outbox, orders, gateway, release, new FakeNotifyTaskPort(),
+                    new FakeBalanceDeltaOutboxPort(), false);
+
+            assertThat(service.processDue(1, 0, 10, "worker", List.of(type), 1).failed()).isEqualTo(1);
+            assertThat(outbox.successes).isEmpty();
+            if (fault.equals("before-authorization")) {
+                assertThat(orders.authorization).isNull();
+                assertThat(release.balanceIncrease).isZero();
+                assertThat(orders.completedReleaseDeltas).isEmpty();
+            } else {
+                assertThat(orders.authorization.sourceEventId()).isEqualTo("dispatch-ORDER-1");
+                assertThat(orders.authorization.amount()).isEqualTo(137);
+            }
+            // 授权已提交的恢复中加入迟到核销；授权前故障则仍允许本次首次裁决。
+            service = minisoWorker(outbox, orders, gateway, release, new FakeNotifyTaskPort(),
+                    new FakeBalanceDeltaOutboxPort(), orders.authorization != null);
+            assertThat(service.processDue(1, 0, 10, "worker", List.of(type), 1).succeeded()).isEqualTo(1);
+            String sourceEventId = "dispatch-ORDER-1";
+            if (type == OutboxEventType.SUPPLIER_DISPATCH && fault.equals("before-authorization")) {
+                // 没有提交许可但已有调用流水，只能交接查单，不能重派；查单以自己的事件首次授权。
+                assertThat(orders.authorization).isNull();
+                assertThat(release.balanceIncrease).isZero();
+                var queryEvent = new RechargeOutboxEvent("query-ORDER-1", OutboxEventType.SUPPLIER_QUERY,
+                        "A36", "ORDER-1", "OUT-1", "{}", 0, 10, 0, LocalDateTime.now(CLOCK), "");
+                service = minisoWorker(new FakeOutboxPort(queryEvent), orders, gateway, release,
+                        new FakeNotifyTaskPort(), new FakeBalanceDeltaOutboxPort(), false);
+                assertThat(service.processDue(1, 0, 10, "worker", List.of(queryEvent.eventType()), 1).succeeded()).isEqualTo(1);
+                sourceEventId = "query-ORDER-1";
+            }
+            assertThat(release.balanceIncrease).isEqualTo(137);
+            assertThat(orders.completedReleaseDeltas).hasSize(1);
+            assertThat(orders.authorization.amount()).isEqualTo(137);
+            assertThat(orders.authorization.sourceEventId()).isEqualTo(sourceEventId);
+            assertThat(orders.findByOrderId("ORDER-1").orElseThrow().balanceReserved()).isFalse();
+            assertThat(outbox.manualRequired).isEmpty();
+        }
+    }
+
+    @Test
+    void unprovenMinisoDispatchFailureQueriesOriginalOrderAndUnknownQueriesNeverAuthorizeEvenAtExhaustion() {
+        for (SupplierGatewayResponse unknown : java.util.Arrays.asList(null,
+                SupplierGatewayResponse.retryableFailed("ORDER-1", "UNKNOWN", "null body", "null"),
+                SupplierGatewayResponse.retryableFailed("ORDER-1", "UNKNOWN", "empty data", "{\"data\":[]}"),
+                SupplierGatewayResponse.retryableFailed("ORDER-1", "NETWORK", "network failed", ""),
+                SupplierGatewayResponse.failed("ORDER-1", "UNVERIFIED", "unverified failure", "{}"))) {
+            var orders = new FakeFulfillmentOrderPort(minisoOrder(2, true, ""));
+            var outbox = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
+            var gateway = new FakeSupplierGatewayPort(
+                    SupplierGatewayResponse.failed("ORDER-1", "UNVERIFIED", "not proof of no issuance", "{}"), unknown);
+            var queries = new FakeSupplierQueryOutboxPort();
+            var release = new IdempotentBalanceReleasePort();
+            var notifications = new FakeNotifyTaskPort();
+            var service = new RechargeOutboxWorkerService(outbox, orders, gateway, queries, new FakeFrequencyPort(true),
+                    new FakeBalanceDeltaOutboxPort(), release, notifications, new FixedNotifyPayloadSigner(), CLOCK, settings());
+
+            assertThat(service.processDue(1, 0, 10, "worker").succeeded()).isEqualTo(1);
+            assertThat(queries.commands).singleElement().satisfies(query -> assertThat(query.orderId()).isEqualTo("ORDER-1"));
+            assertThat(orders.statusUpdates).noneMatch(update -> update.dispatchStatus() == FulfillmentDispatchStatus.FAILED);
+
+            orders.ordersById.put("ORDER-1", minisoOrder(13, true, "SUPPLIER_ACCEPTED"));
+            for (var event : List.of(outbox(OutboxEventType.SUPPLIER_QUERY), lastRetryOutbox(OutboxEventType.SUPPLIER_QUERY))) {
+                var queryOutbox = new FakeOutboxPort(event);
+                var queryWorker = minisoWorker(queryOutbox, orders, gateway, release, notifications,
+                        new FakeBalanceDeltaOutboxPort(), false);
+                assertThat(queryWorker.processDue(1, 0, 10, "worker", List.of(event.eventType()), 1).failed()).isEqualTo(1);
+                assertThat(queryOutbox.successes).isEmpty();
+                assertThat(queryOutbox.manualRequired).hasSize(event.nextFailureReachesMaxRetry() ? 1 : 0);
+            }
+            assertThat(gateway.queryRequests).allSatisfy(request -> assertThat(request.orderId()).isEqualTo("ORDER-1"));
+            assertThat(orders.authorization).isNull();
+            assertThat(orders.completedReleaseDeltas).isEmpty();
+            assertThat(release.balanceIncrease).isZero();
+            assertThat(notifications.createdTasks).isEmpty();
+        }
+    }
+
+    @Test
+    void invalidationWithoutMinisoReceiptQueriesOriginalOrderAndRetainsItsRecoveryTask() {
+        for (int status : List.of(2, 12)) {
+            for (String raw : List.of("null", "{\"code\":200,\"data\":[]}", "network-unavailable")) {
+                var orders = new FakeFulfillmentOrderPort(minisoOrder(status, true, ""));
+                var outbox = new FakeOutboxPort(lastRetryOutbox(OutboxEventType.INVALID_ORDER));
+                var unknown = SupplierGatewayResponse.retryableFailed("ORDER-1", "UNKNOWN", "unconfirmed", raw);
+                var gateway = new FakeSupplierGatewayPort(unknown);
+                var release = new IdempotentBalanceReleasePort();
+                var notifications = new FakeNotifyTaskPort();
+                // 真实保护器在本地缺凭据时返回归属冲突，Worker仍只能查单补证据，不能绕过门禁作废/退款。
+                var service = new RechargeOutboxWorkerService(outbox, orders, gateway, new FakeSupplierQueryOutboxPort(),
+                        new FakeFrequencyPort(true), new FakeBalanceDeltaOutboxPort(), release, notifications,
+                        new FixedNotifyPayloadSigner(), RechargeDispatchTimerPort.noop(), CLOCK, settings(),
+                        () -> new MinisoWriteOffProtection() {
+                            public boolean blockInvalidation(String eventId, String orderId) {
+                                throw new MinisoWriteOffException(MinisoWriteOffException.Reason.OWNERSHIP_CONFLICT);
+                            }
+                            public void assertVoidAllowed(String orderId) { }
+                        });
+
+                assertThat(service.processDue(1, 0, 10, "worker", List.of(OutboxEventType.INVALID_ORDER), 1).failed()).isEqualTo(1);
+                assertThat(gateway.queryRequests).singleElement().satisfies(query -> assertThat(query.orderId()).isEqualTo("ORDER-1"));
+                assertThat(outbox.successes).isEmpty();
+                assertThat(outbox.manualRequired).hasSize(1);
+                assertThat(orders.authorization).isNull();
+                assertThat(orders.completedReleaseDeltas).isEmpty();
+                assertThat(release.balanceIncrease).isZero();
+                assertThat(notifications.createdTasks).isEmpty();
+            }
+        }
+    }
+
+    @Test
+    void invalidationCanRecoverMissingMinisoReceiptButQueryConfirmationAloneDoesNotRelease() {
+        var orders = new FakeFulfillmentOrderPort(minisoOrder(12, true, "SUCCESS"));
+        var outbox = new FakeOutboxPort(outbox(OutboxEventType.INVALID_ORDER));
+        var receipt = new MinisoFulfillmentReceipt("ORDER-1", "A36", 123, "TEST-C1", "13800138000",
+                "2026-07-01 00:00:00", "2026-12-01 00:00:00", 0);
+        var gateway = new FakeSupplierGatewayPort(SupplierGatewayResponse.retryableFailed("ORDER-1", "UNKNOWN", "no receipt", ""),
+                SupplierGatewayResponse.success("ORDER-1", "200", "ok", "{}").withMinisoReceipt(receipt));
+        var release = new IdempotentBalanceReleasePort();
+        var notifications = new FakeNotifyTaskPort();
+        var service = minisoWorker(outbox, orders, gateway, release, notifications, new FakeBalanceDeltaOutboxPort(), false);
+
+        assertThat(service.processDue(1, 0, 10, "worker", List.of(OutboxEventType.INVALID_ORDER), 1).failed()).isEqualTo(1);
+        assertThat(orders.statusUpdates.getLast().minisoReceipt()).isEqualTo(receipt);
+        assertThat(orders.authorization).isNull();
+        assertThat(release.balanceIncrease).isZero();
+        assertThat(notifications.createdTasks).isEmpty();
+        assertThat(outbox.successes).isEmpty();
+
+        var voidReceipt = new MinisoFulfillmentReceipt(receipt.orderId(), receipt.orgCode(), receipt.batchId(),
+                receipt.couponCode(), receipt.phone(), receipt.beginTime(), receipt.endTime(), 3);
+        service = minisoWorker(outbox, orders, new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("ORDER-1", "200", "void confirmed", "{}").withMinisoReceipt(voidReceipt)),
+                release, notifications, new FakeBalanceDeltaOutboxPort(), false);
+        assertThat(service.processDue(1, 0, 10, "worker", List.of(OutboxEventType.INVALID_ORDER), 1).succeeded()).isEqualTo(1);
+        assertThat(release.balanceIncrease).isEqualTo(137);
+        assertThat(orders.completedReleaseDeltas).hasSize(1);
+        assertThat(notifications.createdTasks).singleElement().satisfies(task -> assertThat(task.bizStatus()).isEqualTo("CANCELLED"));
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = OutboxEventType.class,
+            names = {"SUPPLIER_DISPATCH", "SUPPLIER_QUERY", "INVALID_ORDER"})
+    void completedMinisoAuthorizationVerifiesCompletionWithoutDependingOnRedisAgain(OutboxEventType type) {
+        var orders = new FakeFulfillmentOrderPort(minisoOrder(6, false, "FAILED"));
+        orders.authorization = minisoAuthorization();
+        orders.completedReleaseDeltas.put("balance-flush-release-ORDER-1",
+                new BalanceDeltaFlushOutboxCommand("A36", "ORDER-1", "OUT-1", 137, "RELEASE", ""));
+        orders.completionFailures = 1;
+        var outbox = new FakeOutboxPort(outbox(type));
+        var release = new FakeBalanceReleasePort(BalanceReservationReleaseResult.failed("DOWN", "unavailable"));
+        var notifications = new FakeNotifyTaskPort();
+        var service = minisoWorker(outbox, orders,
+                new FakeSupplierGatewayPort(SupplierGatewayResponse.success("unused", "200", "", "{}")),
+                release, notifications, new FakeBalanceDeltaOutboxPort(), true);
+
+        assertThat(service.processDue(1, 0, 10, "worker", List.of(type), 1).failed()).isEqualTo(1);
+        assertThat(outbox.successes).isEmpty();
+        assertThat(notifications.createdTasks).isEmpty();
+        assertThat(service.processDue(1, 0, 10, "worker", List.of(type), 1).succeeded()).isEqualTo(1);
+        assertThat(release.commands).isEmpty();
+        assertThat(orders.completedReleaseDeltas).hasSize(1);
+        assertThat(orders.authorization).isEqualTo(minisoAuthorization());
+    }
+
+    @ParameterizedTest
+    @EnumSource(value = OutboxEventType.class,
+            names = {"SUPPLIER_DISPATCH", "SUPPLIER_QUERY", "INVALID_ORDER"})
+    void minisoTerminalReliesOnPersistentEvidenceAndNeverInventsReleaseForUnreservedOrder(OutboxEventType type) {
+        for (boolean reserved : List.of(true, false)) {
+            var orders = new FakeFulfillmentOrderPort(minisoOrder(type == OutboxEventType.INVALID_ORDER ? 12
+                    : type == OutboxEventType.SUPPLIER_QUERY ? 13 : 2, reserved, ""));
+            orders.hasTrustedVoidReceipt = true;
+            var outbox = new FakeOutboxPort(outbox(type));
+            var response = type == OutboxEventType.INVALID_ORDER
+                    ? SupplierGatewayResponse.success("ORDER-1", "200", "ok", "{}")
+                    : SupplierGatewayResponse.failed("ORDER-1", "UNVERIFIED", "failed", "{}");
+            var release = new IdempotentBalanceReleasePort();
+            var service = minisoWorker(outbox, orders, new FakeSupplierGatewayPort(response), release,
+                    new FakeNotifyTaskPort(), new FakeBalanceDeltaOutboxPort(), false);
+
+            assertThat(service.processDue(1, 0, 10, "worker", List.of(type), 1).succeeded()).isEqualTo(1);
+            assertThat(release.balanceIncrease).isEqualTo(reserved ? 137 : 0);
+            assertThat(orders.completedReleaseDeltas).hasSize(reserved ? 1 : 0);
+            assertThat(orders.authorization != null).isEqualTo(reserved);
+            assertThat(orders.statusUpdates.getLast().dispatchStatus()).isEqualTo(type == OutboxEventType.INVALID_ORDER
+                    ? FulfillmentDispatchStatus.CANCELLED : FulfillmentDispatchStatus.FAILED);
+        }
+    }
+
+    private static RechargeFulfillmentOrder minisoOrder(int status, boolean reserved, String dispatchStatus) {
+        return new RechargeFulfillmentOrder("ORDER-1", "OUT-1", "A36", "13800138000", "P", "SKU", "MINISO",
+                137, "https://merchant.example/notify", status, "DB_PERSISTED", "PASSED", true, reserved,
+                dispatchStatus, dispatchStatus.equals("CANCELLED") ? CLOCK.instant().minusSeconds(120) : null);
+    }
+
+    private static MinisoBalanceReleaseAuthorization minisoAuthorization() {
+        return new MinisoBalanceReleaseAuthorization("ORDER-1", "A36", "OUT-1", "event-A", 137,
+                CLOCK.instant().minusSeconds(120));
+    }
+
+    private static RechargeOutboxWorkerService minisoWorker(FakeOutboxPort outbox, FakeFulfillmentOrderPort orders,
+            RechargeSupplierGatewayPort gateway, BalanceReservationReleasePort release, RechargeNotifyTaskPort notifications,
+            BalanceDeltaFlushOutboxPort deltas, boolean redeemed) {
+        return new RechargeOutboxWorkerService(outbox, orders, gateway, new FakeSupplierQueryOutboxPort(),
+                new FakeFrequencyPort(true), deltas, release, notifications, new FixedNotifyPayloadSigner(),
+                RechargeDispatchTimerPort.noop(), CLOCK, settings(), () -> new MinisoWriteOffProtection() {
+                    public boolean blockInvalidation(String eventId, String orderId) { return redeemed; }
+                    public void assertVoidAllowed(String orderId) { }
+                });
+    }
 
     @Test
     void confirmedMinisoReceiptReachesTerminalWriteBeforeMerchantNotification() {
@@ -1463,6 +1808,7 @@ class RechargeOutboxWorkerServiceTest {
         private final List<String> claimedOrderIds = new ArrayList<>();
         private final List<String> findByEventIds = new ArrayList<>();
         private int scanCount;
+        private int successFailures;
 
         private FakeOutboxPort(RechargeOutboxEvent... events) {
             this.events = List.of(events);
@@ -1500,6 +1846,7 @@ class RechargeOutboxWorkerServiceTest {
 
         @Override
         public void markSuccess(RechargeOutboxEvent event) {
+            if (successFailures-- > 0) throw new IllegalStateException("outbox completion unavailable");
             successes.add(event.eventId());
         }
 
@@ -1522,13 +1869,19 @@ class RechargeOutboxWorkerServiceTest {
         private final List<OrderFulfillmentStatusUpdate> statusUpdates = new ArrayList<>();
         private final List<String> balanceReleasedOrderIds = new ArrayList<>();
         private final Map<String, SupplierFlowSnapshot> latestSupplierFlowsByOrderId = new HashMap<>();
+        private MinisoBalanceReleaseAuthorization authorization;
+        private Runnable onAuthorizationRead = () -> { };
+        private boolean hasTrustedVoidReceipt;
+        private String authorizationFault = "";
+        private int completionFailures;
+        private final Map<String, BalanceDeltaFlushOutboxCommand> completedReleaseDeltas = new HashMap<>();
 
         private FakeFulfillmentOrderPort(RechargeFulfillmentOrder order) {
             this(Map.of(order.orderId(), order));
         }
 
         private FakeFulfillmentOrderPort(Map<String, RechargeFulfillmentOrder> ordersById) {
-            this.ordersById = ordersById;
+            this.ordersById = new HashMap<>(ordersById);
         }
 
         @Override
@@ -1556,6 +1909,51 @@ class RechargeOutboxWorkerServiceTest {
         @Override
         public void updateFulfillmentStatus(OrderFulfillmentStatusUpdate update) {
             statusUpdates.add(update);
+            var order = ordersById.get(update.orderId());
+            if (order != null && "MINISO".equals(order.supplierChannel())) {
+                ordersById.put(order.orderId(), new RechargeFulfillmentOrder(order.orderId(), order.outOrderSn(),
+                        order.orgCode(), order.account(), order.productId(), order.selectedProductId(), order.supplierChannel(),
+                        order.orderPrice(), order.notifyUrl(), update.orderStatus(), order.persistStatus(), order.validationStatus(),
+                        order.dispatchAllowed(), order.balanceReserved(), update.dispatchStatus().name(), update.invalidTime()));
+            }
+        }
+
+        @Override
+        public Optional<MinisoBalanceReleaseAuthorization> findMinisoReleaseAuthorization(String orderId) {
+            onAuthorizationRead.run();
+            return Optional.ofNullable(authorization);
+        }
+
+        @Override
+        public Optional<MinisoBalanceReleaseAuthorization> authorizeMinisoTerminalRelease(
+                OrderFulfillmentStatusUpdate update, String sourceEventId) {
+            String fault = authorizationFault;
+            authorizationFault = "";
+            if (fault.equals("before-authorization")) throw new IllegalStateException("authorization unavailable");
+            if (update.minisoReceipt() == null && !hasTrustedVoidReceipt) {
+                throw new MinisoWriteOffException(MinisoWriteOffException.Reason.RELEASE_EVIDENCE_MISSING);
+            }
+            var order = ordersById.get(update.orderId());
+            updateFulfillmentStatus(update);
+            if (!order.balanceReserved()) return Optional.empty();
+            authorization = new MinisoBalanceReleaseAuthorization(order.orderId(), order.orgCode(), order.outOrderSn(),
+                    sourceEventId, order.orderPrice(), CLOCK.instant());
+            if (fault.equals("after-authorization")) throw new IllegalStateException("authorization response lost");
+            return Optional.of(authorization);
+        }
+
+        @Override
+        public void completeMinisoBalanceRelease(MinisoBalanceReleaseAuthorization supplied) {
+            if (completionFailures-- > 0) throw new IllegalStateException("release completion unavailable");
+            assertThat(supplied).isEqualTo(authorization);
+            completedReleaseDeltas.putIfAbsent("balance-flush-release-" + supplied.orderId(),
+                    new BalanceDeltaFlushOutboxCommand(supplied.orgCode(), supplied.orderId(), supplied.outOrderSn(),
+                            supplied.amount(), "RELEASE", ""));
+            var order = ordersById.get(supplied.orderId());
+            ordersById.put(order.orderId(), new RechargeFulfillmentOrder(order.orderId(), order.outOrderSn(),
+                    order.orgCode(), order.account(), order.productId(), order.selectedProductId(), order.supplierChannel(),
+                    order.orderPrice(), order.notifyUrl(), order.orderStatus(), order.persistStatus(), order.validationStatus(),
+                    order.dispatchAllowed(), false, order.dispatchStatus(), order.invalidTime()));
         }
 
         @Override
@@ -1795,9 +2193,11 @@ class RechargeOutboxWorkerServiceTest {
     private static final class FakeNotifyTaskPort implements RechargeNotifyTaskPort {
 
         private final List<RechargeNotifyTaskDraft> createdTasks = new ArrayList<>();
+        private int failuresRemaining;
 
         @Override
         public void insertIfAbsent(RechargeNotifyTaskDraft task) {
+            if (failuresRemaining-- > 0) throw new IllegalStateException("notify creation unavailable");
             createdTasks.add(task);
         }
     }
@@ -1825,6 +2225,32 @@ class RechargeOutboxWorkerServiceTest {
         public BalanceReservationReleaseResult release(BalanceReservationReleaseCommand command) {
             commands.add(command);
             return result;
+        }
+    }
+
+    /** 仅模拟释放端口的幂等合同，不代表执行或验证真实Redis Lua。 */
+    private static final class IdempotentBalanceReleasePort implements BalanceReservationReleasePort {
+        private long balanceIncrease;
+        private BalanceReservationReleaseCommand firstCommand;
+        private String fault = "";
+
+        @Override
+        public BalanceReservationReleaseResult release(BalanceReservationReleaseCommand command) {
+            String currentFault = fault;
+            fault = "";
+            if (currentFault.equals("redis-unavailable")) return BalanceReservationReleaseResult.failed("DOWN", "unavailable");
+            if (firstCommand != null) {
+                assertThat(command.orgCode()).isEqualTo(firstCommand.orgCode());
+                assertThat(command.orderId()).isEqualTo(firstCommand.orderId());
+                assertThat(command.outOrderSn()).isEqualTo(firstCommand.outOrderSn());
+                assertThat(command.releaseEventId()).isEqualTo(firstCommand.releaseEventId());
+                assertThat(command.amount()).isEqualTo(firstCommand.amount());
+                return BalanceReservationReleaseResult.alreadyReleasedSuccess();
+            }
+            firstCommand = command;
+            balanceIncrease += command.amount();
+            if (currentFault.equals("redis-response-lost")) throw new IllegalStateException("redis response lost");
+            return BalanceReservationReleaseResult.releasedSuccess();
         }
     }
 
