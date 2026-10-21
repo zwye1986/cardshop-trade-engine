@@ -3,13 +3,16 @@
 -- 资金以独立reservation及同订单操作凭证为准；业务快照失效不阻断消费确认/退款。
 -- KEYS: balance, order(可缺失), reservation, eventIndex, event4, releaseEvent
 -- ARGV: orgCode, orderId, outOrderSn, amount, operation, operationId, reason, now,
---       expectedFundsStatus(可信MySQL业务资格), alreadyReleasedOnly(已有Delta时禁止再次加钱)
+--       expectedFundsStatus(可信MySQL业务资格), alreadyReleasedOnly(已有Delta时禁止再次加钱),
+--       allowLegacyCancelledRefund(已扣款且已作废的旧单兼容授权，默认关闭)
 local orgCode, orderId, outOrderSn = ARGV[1], ARGV[2], ARGV[3]
 local operation, operationId, reason, now = ARGV[5], ARGV[6], ARGV[7], ARGV[8]
 local expectedFundsStatus = ARGV[9] or ''
 local alreadyReleasedOnly = ARGV[10] == '1'
+local allowLegacyCancelledRefund = ARGV[11] == '1'
 local CONFIRM = 'CONFIRM'
 local RESERVED, CONSUMED, REFUNDED = 'RESERVED', 'CONSUMED', 'REFUNDED'
+local LEGACY_CANCELLED = 'LEGACY_CANCELLED'
 -- Lua number为double，拒绝超过精确整数范围的资金值，避免精度损失或后置HINCRBY失败。
 local MAX_SAFE_INTEGER = 9007199254740991
 local function result(code, failCode, failReason)
@@ -67,7 +70,24 @@ if integer(redis.call('HGET', KEYS[3], 'amount')) ~= amount then
 end
 local status = redis.call('HGET', KEYS[3], 'status') or ''
 local funds = redis.call('HGET', KEYS[3], 'funds_status') or ''
-if funds == '' then return failed('RESERVATION_FUNDS_STATUS_MISSING', '旧预扣缺少资金标记，须人工核查') end
+local legacyCancelledRefund = false
+if funds == '' then
+  -- 详细设计「历史已作废订单退款最小兼容」：只有MySQL已核实扣款成功及作废事实的入口可授权。
+  -- 不将聚合frozen当成本单资金证据，也不补造CONSUMED或消费确认凭证；其他入口仍失败关闭。
+  if not allowLegacyCancelledRefund or operation ~= 'RELEASE' or expectedFundsStatus ~= CONSUMED then
+    return failed('RESERVATION_FUNDS_STATUS_MISSING', '旧预扣缺少资金标记，须人工核查')
+  end
+  if status ~= 'PENDING_MQ' and status ~= 'PERSIST_QUEUED'
+      and status ~= 'PERSISTING' and status ~= 'DB_PERSISTED' then
+    return failed('RESERVATION_NOT_RELEASABLE', '旧预扣持久化状态不允许兼容退款')
+  end
+  if (redis.call('HGET', KEYS[3], 'release_event_id') or '') ~= ''
+      or (redis.call('HGET', KEYS[3], 'release_type') or '') ~= ''
+      or (redis.call('HGET', KEYS[3], 'confirm_event_id') or '') ~= '' then
+    return failed('RELEASE_EVIDENCE_MISSING', '旧预扣存在消费或退款凭证冲突，禁止兼容回补')
+  end
+  legacyCancelledRefund = true
+end
 local marker = redis.call('GET', KEYS[6])
 local markerValue = cjson.encode({orgCode, orderId, outOrderSn, ARGV[4], operationId})
 if operation == CONFIRM then
@@ -109,12 +129,16 @@ if funds == REFUNDED and status == 'RELEASED' then
   return result('ALREADY_RELEASED')
 end
 if marker or alreadyReleasedOnly then return failed('RELEASE_EVIDENCE_MISSING', '已有退款事实与资金状态冲突，禁止再次回补') end
-if funds ~= RESERVED and funds ~= CONSUMED then return failed('RESERVATION_FUNDS_STATUS_INVALID', '资金标记与未释放记录矛盾') end
+if not legacyCancelledRefund and funds ~= RESERVED and funds ~= CONSUMED then
+  return failed('RESERVATION_FUNDS_STATUS_INVALID', '资金标记与未释放记录矛盾')
+end
 if funds == CONSUMED and redis.call('HGET', KEYS[3], 'confirm_event_id') ~= 'balance-confirm-' .. orderId then
   return failed('CONFIRM_EVIDENCE_MISSING', '消费标记缺少本订单确认凭证，禁止自动退款')
 end
-if status ~= 'DB_PERSISTED' then return failed('RESERVATION_NOT_RELEASABLE', '预扣尚无可信落库事实') end
-if expectedFundsStatus ~= '' and funds ~= expectedFundsStatus then
+if not legacyCancelledRefund and status ~= 'DB_PERSISTED' then
+  return failed('RESERVATION_NOT_RELEASABLE', '预扣尚无可信落库事实')
+end
+if not legacyCancelledRefund and expectedFundsStatus ~= '' and funds ~= expectedFundsStatus then
   return failed('RESERVATION_FUNDS_STATUS_INVALID', '资金状态与MySQL业务终态不匹配')
 end
 if funds == RESERVED and frozen < amount then return failed('FROZEN_BALANCE_NOT_ENOUGH', '冻结余额不足，禁止自动释放') end
@@ -123,7 +147,8 @@ redis.call('HINCRBY', KEYS[1], 'available', amount)
 if funds == RESERVED then redis.call('HINCRBY', KEYS[1], 'frozen', -amount) end
 if reservationOrg == orgCode then redis.call('PERSIST', KEYS[3]) end
 redis.call('HSET', KEYS[3], 'status', 'RELEASED', 'funds_status', REFUNDED, 'release_type', operation,
-    'release_event_id', operationId, 'release_reason', reason, 'refunded_from', funds,
+    'release_event_id', operationId, 'release_reason', reason,
+    'refunded_from', legacyCancelledRefund and LEGACY_CANCELLED or funds,
     'released_at', now, 'updated_at', now)
 redis.call('SET', KEYS[6], markerValue)
 if snapshotExists then

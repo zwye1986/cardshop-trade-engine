@@ -105,6 +105,119 @@ class BalanceReservationLocalRedisContractTest {
         assertBalance("900", "100");
     }
 
+    /** 最新业务合同只允许可信已作废退款；参见详细设计「历史已作废订单退款最小兼容」。 */
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"PENDING_MQ,0", "PERSIST_QUEUED,200", "PERSISTING,0", "DB_PERSISTED,200"})
+    void authorizedLegacyCancellationRefundsWithoutSnapshotOrConsumingFrozen(String status, String frozen) {
+        prepareLegacyReservation(status, frozen);
+
+        assertThat(executeLegacy("RELEASE", "balance-flush-release-O1", "CONSUMED", false)).contains("RELEASED");
+        assertBalance("1000", frozen);
+        assertThat(field(KEYS.reservationKey("A35", "O1"), "funds_status")).isEqualTo("REFUNDED");
+        assertThat(field(KEYS.reservationKey("A35", "O1"), "refunded_from")).isEqualTo("LEGACY_CANCELLED");
+        assertThat(redis.opsForHash().hasKey(KEYS.reservationKey("A35", "O1"), "confirm_event_id").block()).isFalse();
+        assertThat(redis.opsForHash().hasKey(KEYS.reservationKey("A35", "O1"), "org_code").block()).isFalse();
+        assertThat(redis.hasKey(KEYS.orderKey("A35", "OUT1")).block()).isFalse();
+
+        assertThat(executeLegacy("RELEASE", "balance-flush-release-O1", "CONSUMED", false)).contains("ALREADY_RELEASED");
+        assertThat(executeLegacy("RELEASE", "different-recovery-event", "CONSUMED", false)).contains("ALREADY_RELEASED");
+        assertBalance("1000", frozen);
+    }
+
+    @Test
+    void legacyAuthorizationCannotConfirmOrReleaseFailedOrder() {
+        prepareLegacyReservation("PENDING_MQ", "0");
+        assertThat(executeLegacy("CONFIRM", "balance-confirm-O1", "CONSUMED", false))
+                .contains("RESERVATION_FUNDS_STATUS_MISSING");
+        assertThat(executeLegacy("RELEASE", "failed-O1", "RESERVED", false))
+                .contains("RESERVATION_FUNDS_STATUS_MISSING");
+        assertBalance("900", "0");
+    }
+
+    @Test
+    void legacyAuthorizationCannotOverrideExistingMysqlRefund() {
+        prepareLegacyReservation("PENDING_MQ", "0");
+        assertThat(executeLegacy("RELEASE", "balance-flush-release-O1", "CONSUMED", true))
+                .contains("RELEASE_EVIDENCE_MISSING");
+        assertBalance("900", "0");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"NONE", "RELEASED", "UNKNOWN", ""})
+    void legacyAuthorizationRejectsContradictoryPersistenceStatus(String status) {
+        prepareLegacyReservation(status, "0");
+        assertThat(executeLegacy("RELEASE", "balance-flush-release-O1", "CONSUMED", false))
+                .contains("RESERVATION_NOT_RELEASABLE");
+        assertBalance("900", "0");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"release_event_id", "release_type", "confirm_event_id"})
+    void legacyAuthorizationCannotDiscardExistingOperationEvidence(String evidence) {
+        prepareLegacyReservation("PENDING_MQ", "0");
+        redis.opsForHash().put(KEYS.reservationKey("A35", "O1"), evidence, "conflicting-evidence").block();
+        assertThat(executeLegacy("RELEASE", "balance-flush-release-O1", "CONSUMED", false))
+                .contains("RELEASE_EVIDENCE_MISSING");
+        assertBalance("900", "0");
+    }
+
+    @Test
+    void concurrentAuthorizedLegacyRefundsCreditOnce() throws Exception {
+        prepareLegacyReservation("PENDING_MQ", "200");
+        try (var pool = java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor()) {
+            var first = pool.submit(() -> executeLegacy("RELEASE", "balance-flush-release-O1", "CONSUMED", false));
+            var second = pool.submit(() -> executeLegacy("RELEASE", "different-recovery-event", "CONSUMED", false));
+            var results = List.of(first.get(), second.get());
+            assertThat(results.stream().filter(r -> r.contains("RELEASED")).count()).isEqualTo(1);
+            assertThat(results.stream().filter(r -> r.contains("ALREADY_RELEASED")).count()).isEqualTo(1);
+        }
+        assertBalance("1000", "200");
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"org_code,OTHER", "order_id,OTHER", "out_order_sn,OTHER", "amount,101"})
+    void legacyAuthorizationPreservesIdentityAndAmountChecks(String name, String value) {
+        prepareLegacyReservation("PENDING_MQ", "0");
+        redis.opsForHash().put(KEYS.reservationKey("A35", "O1"), name, value).block();
+        assertThat(executeLegacy("RELEASE", "balance-flush-release-O1", "CONSUMED", false)).contains("RELEASE_FAILED");
+        assertBalance("900", "0");
+        assertThat(redis.hasKey(KEYS.releaseBalanceReservationKeys(new BalanceReservationReleaseCommand(
+                "A35", "O1", "OUT1", 100, "RELEASE", "balance-flush-release-O1", "test")).getLast()).block()).isFalse();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"balance", "reservation"})
+    void legacyAuthorizationCannotInventMissingFundsKeys(String missing) {
+        prepareLegacyReservation("PENDING_MQ", "0");
+        String key = missing.equals("balance") ? KEYS.balanceKey("A35") : KEYS.reservationKey("A35", "O1");
+        redis.delete(key).block();
+        assertThat(executeLegacy("RELEASE", "balance-flush-release-O1", "CONSUMED", false)).contains("RELEASE_FAILED");
+        assertThat(redis.hasKey(key).block()).isFalse();
+    }
+
+    @Test
+    void legacyAuthorizationCannotIgnoreExistingRefundMarker() {
+        prepareLegacyReservation("PENDING_MQ", "0");
+        var command = new BalanceReservationReleaseCommand("A35", "O1", "OUT1", 100,
+                "RELEASE", "balance-flush-release-O1", "test");
+        redis.opsForValue().set(KEYS.releaseBalanceReservationKeys(command).getLast(), "RELEASED").block();
+        assertThat(executeLegacy("RELEASE", "balance-flush-release-O1", "CONSUMED", false))
+                .contains("RELEASE_EVIDENCE_MISSING");
+        assertBalance("900", "0");
+    }
+
+    @Test
+    void legacyAuthorizationDoesNotRelaxNewReservationConsumptionContract() {
+        assertThat(executeLegacy("RELEASE", "balance-flush-release-O1", "CONSUMED", false))
+                .contains("RESERVATION_FUNDS_STATUS_INVALID");
+        assertBalance("900", "100");
+        execute("CONFIRM", "balance-confirm-O1", 100);
+        redis.opsForHash().put(KEYS.balanceKey("A35"), "frozen", "200").block();
+        assertThat(executeLegacy("RELEASE", "balance-flush-release-O1", "CONSUMED", false)).contains("RELEASED");
+        assertThat(field(KEYS.reservationKey("A35", "O1"), "refunded_from")).isEqualTo("CONSUMED");
+        assertBalance("1000", "200");
+    }
+
     @Test
     void insufficientFrozenAndWrongAmountCannotBeConfirmed() {
         redis.opsForHash().put(KEYS.balanceKey("A35"), "frozen", "0").block();
@@ -400,6 +513,21 @@ class BalanceReservationLocalRedisContractTest {
 
     private RedisRechargeCacheRepairAdapter cache(com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper mapper) {
         return new RedisRechargeCacheRepairAdapter(mapper, redis, KEYS, java.time.Duration.ofSeconds(30), java.time.Duration.ofSeconds(3));
+    }
+
+    private void prepareLegacyReservation(String status, String frozen) {
+        redis.opsForHash().remove(KEYS.reservationKey("A35", "O1"), "funds_status", "org_code").block();
+        redis.opsForHash().put(KEYS.reservationKey("A35", "O1"), "status", status).block();
+        redis.opsForHash().put(KEYS.balanceKey("A35"), "frozen", frozen).block();
+        redis.delete(KEYS.orderKey("A35", "OUT1")).block();
+    }
+
+    private List<String> executeLegacy(String operation, String event, String expected, boolean alreadyReleasedOnly) {
+        var command = new BalanceReservationReleaseCommand("A35", "O1", "OUT1", 100, operation, event, "旧单退款");
+        List<?> result = redis.execute(new RechargeRedisScriptLoader().releaseBalanceReservationScript(),
+                KEYS.releaseBalanceReservationKeys(command), List.of("A35", "O1", "OUT1", "100", operation,
+                        event, "旧单退款", "1000", expected, alreadyReleasedOnly ? "1" : "0", "1")).next().block();
+        return result.stream().map(String::valueOf).toList();
     }
 
     private List<String> execute(String operation, String event, long amount) {

@@ -135,7 +135,8 @@ public class RedisBalanceReservationReleaseAdapter implements BalanceReservation
                 command.reason() == null ? "" : command.reason(),
                 Long.toString(clock.instant().toEpochMilli()),
                 command.expectedFundsStatus() == null ? "" : command.expectedFundsStatus(),
-                command.alreadyReleasedOnly() ? "1" : "0");
+                command.alreadyReleasedOnly() ? "1" : "0",
+                command.allowLegacyCancelledRefund() ? "1" : "0");
     }
 
     private static BalanceReservationReleaseResult toResult(Map<String, String> fields) {

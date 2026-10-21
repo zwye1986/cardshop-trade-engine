@@ -39,12 +39,21 @@ public final class RechargeOrderFundsService implements RechargeOrderFundsPort {
     /** 已有MySQL退款Delta时只允许Redis确认已退款，不能再增加一次余额。 */
     public BalanceReservationReleaseResult release(
             RechargeFulfillmentOrder order, String reason, boolean alreadyReleasedOnly) {
+        return release(order, reason, alreadyReleasedOnly, false);
+    }
+
+    /**
+     * 兼容授权只能由已核实扣款及作废事实的持久化入口传入，默认调用保持原资金校验。
+     * 参见 docs/交行直充业务系统详细设计.md「历史已作废订单退款最小兼容」。
+     */
+    public BalanceReservationReleaseResult release(RechargeFulfillmentOrder order, String reason,
+            boolean alreadyReleasedOnly, boolean allowLegacyCancelledRefund) {
         String expectedFunds = order.orderStatus() == LegacyOrderStatusCode.SUCCESS.code()
                 ? FUNDS_CONSUMED : FUNDS_RESERVED;
         var result = redis.release(new BalanceReservationReleaseCommand(
                 order.orgCode(), order.orderId(), order.outOrderSn(), order.orderPrice(),
                 RELEASE_OPERATION, RELEASE_EVENT_PREFIX + order.orderId(), reason == null ? "" : reason,
-                expectedFunds, alreadyReleasedOnly));
+                expectedFunds, alreadyReleasedOnly, allowLegacyCancelledRefund));
         if (result.succeeded()) {
             deltas.enqueueBalanceDeltaFlush(new BalanceDeltaFlushOutboxCommand(
                     order.orgCode(), order.orderId(), order.outOrderSn(), order.orderPrice(),

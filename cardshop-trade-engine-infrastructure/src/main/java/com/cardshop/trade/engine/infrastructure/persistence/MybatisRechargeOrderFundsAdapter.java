@@ -3,6 +3,7 @@ package com.cardshop.trade.engine.infrastructure.persistence;
 import com.cardshop.trade.engine.application.recharge.*;
 import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.cardshop.trade.engine.domain.order.PersistStatus;
+import com.cardshop.trade.engine.domain.order.TaskStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeBalanceDeltaOutboxDO;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
@@ -17,7 +18,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  *
  * <p>参见 docs/交行直充业务系统详细设计.md「2026-10-21 订单快照失效后的独立资金协议」。
  * 复用主单→扩展→凭据→核销事件锁序，保护锁持续覆盖有界Redis调用；Redis成功后SQL回滚
- * 不会撤销Redis，只能由同订单资金凭证幂等恢复。这里不重建历史快照、资金标记或余额。
+ * 不会撤销Redis，只能由同订单资金凭证幂等恢复。这里不重建历史快照、消费事实或余额；
+ * 历史无资金标记的作废退款由已核实的扣款及作废事实授权，见同文档「历史已作废订单退款最小兼容」。
  */
 public final class MybatisRechargeOrderFundsAdapter implements RechargeOrderFundsPort {
     public static final int DEFAULT_TRANSACTION_TIMEOUT_SECONDS = 5;
@@ -80,13 +82,16 @@ public final class MybatisRechargeOrderFundsAdapter implements RechargeOrderFund
                 // assertVoidAllowed复用当前事务的凭据及事件锁，不释放保护后再调用Redis。
                 guard.assertVoidAllowed(order.orderId());
             }
-            verifyDelta(deltaMapper.selectFundsEventForUpdate(PRE_DEDUCT_EVENT_PREFIX + order.orderId()),
-                    order, PRE_DEDUCT, -order.orderPrice());
+            var preDeduct = deltaMapper.selectFundsEventForUpdate(PRE_DEDUCT_EVENT_PREFIX + order.orderId());
+            verifyDelta(preDeduct, order, PRE_DEDUCT, -order.orderPrice());
             var previous = deltaMapper.selectFundsEventForUpdate(RechargeOrderFundsService.RELEASE_EVENT_PREFIX + order.orderId());
             if (previous != null) verifyDelta(previous, order, RELEASE, order.orderPrice());
             if (!order.balanceReserved() && previous == null)
                 throw new IllegalStateException("released order has no matching release delta");
-            var result = service.release(order, reason, previous != null);
+            // 详细设计「历史已作废订单退款最小兼容」：资金约束只对已刷账扣款的作废单放宽。
+            // 未成功的预扣仍走原严格协议；不能仅凭订单12或聚合frozen=0推断已扣款。
+            boolean allowLegacyCancelledRefund = cancelled && TaskStatus.SUCCESS.name().equals(preDeduct.getStatus());
+            var result = service.release(order, reason, previous != null, allowLegacyCancelledRefund);
             if (result.succeeded()) {
                 verifyDelta(deltaMapper.selectFundsEventForUpdate(RechargeOrderFundsService.RELEASE_EVENT_PREFIX + order.orderId()),
                         order, RELEASE, order.orderPrice());

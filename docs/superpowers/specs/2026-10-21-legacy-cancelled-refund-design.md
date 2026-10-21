@@ -1,0 +1,23 @@
+# 历史已作废订单退款最小兼容
+
+状态：用户已确认最小方案并要求实施代码；本轮不部署、不重置远端任务、不执行真实退款。
+
+实施结果：四个既有Java文件及一个Lua脚本已完成修改；最终根工程clean package共899项、881通过、18项既有外部中间件测试跳过、0失败/错误。真实Redis资金合同61项及H2/MyBatis与真实Redis联用均执行，具体证据见《集成测试.md》2026-10-21历史作废退款兼容记录。
+
+## 业务合同
+
+保留现有独立资金协议和装配修复，仅放宽已成功扣款且已作废旧单的资金标记前提。MySQL资金入口复核SUCCESS/CANCELLED、非空invalidTime、同身份同金额的PRE_DEDUCT/SUCCESS及核销保护后，传递内部allowLegacyCancelledRefund授权。未成功扣款不授权；普通调用和消费确认默认false。
+
+Lua只在授权、RELEASE、expectedFundsStatus=CONSUMED且funds_status缺失时进入旧记录分支。仅接受PENDING_MQ/PERSIST_QUEUED/PERSISTING/DB_PERSISTED；身份、金额、余额基线、键类型及重复退款保护不放宽。旧记录若含矛盾的消费或释放字段，仍拒绝；不猜测缺失资金记录或余额。
+
+旧单只回补available，frozen保持原值（包括0或其他订单冻结额）；写REFUNDED/RELEASED和refunded_from=LEGACY_CANCELLED，不伪造CONSUMED或confirm_event_id。按订单稳定退款ID、已有MySQL退款只认Redis既有凭证、MySQL Delta/清标记收尾和Outbox租约沿用现有代码。
+
+## 修改范围
+
+四个Java文件：BalanceReservationReleaseCommand增加默认false兼容参数；RechargeOrderFundsService透传；MybatisRechargeOrderFundsAdapter依据MySQL事实授权；RedisBalanceReservationReleaseAdapter追加Lua参数。现有release_balance_reservation.lua增加受限分支。既有Worker与自动配置不改，不新增表、Bean、Job、接口、Nacos开关或恢复工具。
+
+## 验证与边界
+
+本机真实Redis验证旧无标记及快照缺失退款、冻结0/其他冻结额、重放/不同事件并发/真实执行后回包丢失、错配/缺资金记录/已有退款凭证冲突拒绝。H2/MyBatis验证资格授权、原扣款SUCCESS门禁、核销冲突、MySQL回滚恢复及唯一Delta最终刷账；既有Worker恢复测试证明不重复请求供应商。完整回归不得用跳过Redis用例代替验证。
+
+本轮不增加原子协议，也不拆除现有Lua及事务。此前历史单未修复结论保留；新兼容上线后可按原流程对指定MANUAL_REQUIRED任务做独立CAS恢复，该操作不在本轮执行范围。

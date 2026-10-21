@@ -70,6 +70,7 @@ class RedisBalanceReservationReleaseAdapterTest {
                         "supplier failed",
                         "1783480800000",
                         "",
+                        "0",
                         "0");
     }
 
@@ -83,6 +84,18 @@ class RedisBalanceReservationReleaseAdapterTest {
 
         assertThat(result.alreadyReleased()).isTrue();
         assertThat(result.succeeded()).isTrue();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void explicitlyTransmitsLegacyAuthorizationOnlyWhenRequested(boolean allowed) {
+        var sessions = new RecordingSessionFactory(List.of(Mono.just(List.of("code", "RELEASED"))));
+        var base = command();
+        var value = new BalanceReservationReleaseCommand(base.orgCode(), base.orderId(), base.outOrderSn(),
+                base.amount(), base.releaseType(), base.releaseEventId(), base.reason(), "CONSUMED", false, allowed);
+        assertThat(adapter(sessions).release(value).succeeded()).isTrue();
+        assertThat(sessions.sessions.getFirst().lastArgs).hasSize(11);
+        assertThat(sessions.sessions.getFirst().lastArgs.getLast()).isEqualTo(allowed ? "1" : "0");
     }
 
     @Test
