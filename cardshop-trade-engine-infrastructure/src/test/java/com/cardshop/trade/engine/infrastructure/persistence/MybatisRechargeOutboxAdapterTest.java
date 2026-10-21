@@ -1,6 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.persistence;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -18,12 +19,10 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.UUID;
-import org.apache.ibatis.session.Configuration;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
-import org.mybatis.spring.SqlSessionFactoryBean;
 import org.mybatis.spring.SqlSessionTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 
@@ -192,6 +191,36 @@ class MybatisRechargeOutboxAdapterTest {
                 .isEqualTo(LocalDateTime.of(2099, 1, 1, 16, 1, 1));
     }
 
+    @Test
+    void staleWorkerCannotFinishOrOverwriteAReclaimedLease() throws Exception {
+        var fixture = dispatchFixture(OutboxEventType.INVALID_ORDER);
+        var clock = Clock.fixed(Instant.parse("2026-10-20T08:26:33Z"), ZoneOffset.UTC);
+        var old = new MybatisRechargeDispatchOutboxAdapter(fixture.mapper(), new ObjectMapper(), clock);
+        var event = old.findDueByEventId("E1", OutboxEventType.INVALID_ORDER).orElseThrow();
+        var first = old.claim(event, "old-worker", Duration.ofSeconds(1)).orElseThrow();
+        var newer = new MybatisRechargeDispatchOutboxAdapter(fixture.mapper(), new ObjectMapper(), Clock.offset(clock, Duration.ofSeconds(2)));
+        var due = newer.findDueByEventId("E1", OutboxEventType.INVALID_ORDER).orElseThrow();
+        var second = newer.claim(due, "new-worker", Duration.ofSeconds(60)).orElseThrow();
+        assertThatThrownBy(() -> old.markSuccess(first)).isInstanceOf(IllegalStateException.class);
+        old.markFailed(first, "late failure", Duration.ofSeconds(30));
+        old.markManualRequired(first, "late manual");
+        assertThat(fixture.jdbc().queryForObject("select status from recharge_dispatch_outbox", String.class)).isEqualTo("PROCESSING");
+        assertThat(fixture.jdbc().queryForObject("select locked_by from recharge_dispatch_outbox", String.class)).isEqualTo("new-worker");
+        newer.markSuccess(second);
+        assertThat(fixture.jdbc().queryForObject("select status from recharge_dispatch_outbox", String.class)).isEqualTo("SUCCESS");
+    }
+
+    @Test
+    void expiredLeaseCannotBeCompletedEvenBeforeAnotherWorkerClaims() throws Exception {
+        var fixture = dispatchFixture(OutboxEventType.INVALID_ORDER);
+        var clock = Clock.fixed(Instant.parse("2026-10-20T08:26:33Z"), ZoneOffset.UTC);
+        var owner = new MybatisRechargeDispatchOutboxAdapter(fixture.mapper(), new ObjectMapper(), clock);
+        var claimed = owner.claim(owner.findDueByEventId("E1", OutboxEventType.INVALID_ORDER).orElseThrow(), "worker", Duration.ofSeconds(1)).orElseThrow();
+        var expired = new MybatisRechargeDispatchOutboxAdapter(fixture.mapper(), new ObjectMapper(), Clock.offset(clock, Duration.ofSeconds(2)));
+        assertThatThrownBy(() -> expired.markSuccess(claimed)).isInstanceOf(IllegalStateException.class);
+        assertThat(fixture.jdbc().queryForObject("select status from recharge_dispatch_outbox", String.class)).isEqualTo("PROCESSING");
+    }
+
     /**
      * 本地真实 MyBatis SQL 验证，不连接共享中间件；参见详细设计「9.1 派单 Outbox」。
      * 显式存入秒级 due，不把 H2 的舍入方式当作真实 MySQL 精度证据。
@@ -218,10 +247,10 @@ class MybatisRechargeOutboxAdapterTest {
                   payload,status,retry_count,max_retry_count,next_retry_time,version,last_error,shard_key)
                 values(1,'E1',?,'A35','O1','OUT1','{}','INIT',0,3,'2026-10-20 16:26:33',0,'','E1')
                 """, eventType.name());
-        var config = new Configuration();
+        var config = new com.baomidou.mybatisplus.core.MybatisConfiguration();
         config.setMapUnderscoreToCamelCase(true);
         config.addMapper(RechargeDispatchOutboxMapper.class);
-        var factory = new SqlSessionFactoryBean();
+        var factory = new com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean();
         factory.setDataSource(dataSource);
         factory.setConfiguration(config);
         var mapper = new SqlSessionTemplate(factory.getObject()).getMapper(RechargeDispatchOutboxMapper.class);

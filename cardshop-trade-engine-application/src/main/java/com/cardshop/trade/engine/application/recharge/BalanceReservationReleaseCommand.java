@@ -12,8 +12,10 @@ package com.cardshop.trade.engine.application.recharge;
  * @param outOrderSn 商户订单号
  * @param amount 本次释放金额，单位分
  * @param releaseType 释放类型，例如 {@code RELEASE}、{@code REFUND}
- * @param releaseEventId 触发释放的可靠事件 ID，用于 Redis 幂等
+ * @param releaseEventId 按订单固定的资金操作ID，用于Redis幂等
  * @param reason 释放原因
+ * @param expectedFundsStatus 经MySQL业务资格确定的退款来源资金状态
+ * @param alreadyReleasedOnly 是否仅允许确认既有退款，防止已有Delta时再次增加余额
  */
 public record BalanceReservationReleaseCommand(
         String orgCode,
@@ -22,5 +24,12 @@ public record BalanceReservationReleaseCommand(
         long amount,
         String releaseType,
         String releaseEventId,
-        String reason) {
+        String reason,
+        String expectedFundsStatus,
+        boolean alreadyReleasedOnly) {
+    /** 低层协议测试及消费确认兼容入口；运行时退款由独立资金服务明确传入资格。 */
+    public BalanceReservationReleaseCommand(String orgCode, String orderId, String outOrderSn,
+            long amount, String releaseType, String releaseEventId, String reason) {
+        this(orgCode, orderId, outOrderSn, amount, releaseType, releaseEventId, reason, "", false);
+    }
 }

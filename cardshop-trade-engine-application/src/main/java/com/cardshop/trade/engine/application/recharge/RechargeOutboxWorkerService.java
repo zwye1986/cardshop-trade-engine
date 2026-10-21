@@ -56,8 +56,7 @@ public class RechargeOutboxWorkerService {
     private final RechargeSupplierGatewayPort supplierGatewayPort;
     private final SupplierQueryOutboxPort supplierQueryOutboxPort;
     private final DirectRechargeFrequencyPort frequencyPort;
-    private final BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort;
-    private final BalanceReservationReleasePort balanceReservationReleasePort;
+    private final RechargeOrderFundsPort orderFunds;
     private final RechargeNotifyTaskPort notifyTaskPort;
     private final MerchantNotifyPayloadSigner notifyPayloadSigner;
     private final MerchantNotifyPreparationService notifyPreparation;
@@ -212,6 +211,20 @@ public class RechargeOutboxWorkerService {
             Clock clock,RechargeOutboxWorkerSettings settings,
             java.util.function.Supplier<MinisoWriteOffProtection> minisoWriteOffProtection,
             MerchantNotifyPreparationService notifyPreparation) {
+        this(outboxPort, orderPort, supplierGatewayPort, supplierQueryOutboxPort, frequencyPort,
+                balanceDeltaFlushOutboxPort, balanceReservationReleasePort, notifyTaskPort, notifyPayloadSigner,
+                dispatchTimerPort, clock, settings, minisoWriteOffProtection, notifyPreparation, null);
+    }
+
+    /** 运行时必须传入带持久资格校验及事务收尾的资金端口；参见详细设计独立资金协议。 */
+    public RechargeOutboxWorkerService(RechargeOutboxPort outboxPort, RechargeFulfillmentOrderPort orderPort,
+            RechargeSupplierGatewayPort supplierGatewayPort, SupplierQueryOutboxPort supplierQueryOutboxPort,
+            DirectRechargeFrequencyPort frequencyPort, BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
+            BalanceReservationReleasePort balanceReservationReleasePort, RechargeNotifyTaskPort notifyTaskPort,
+            MerchantNotifyPayloadSigner notifyPayloadSigner, RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock, RechargeOutboxWorkerSettings settings,
+            java.util.function.Supplier<MinisoWriteOffProtection> minisoWriteOffProtection,
+            MerchantNotifyPreparationService notifyPreparation, RechargeOrderFundsPort orderFunds) {
         this.minisoWriteOffProtection = Objects.requireNonNull(minisoWriteOffProtection);
         this.outboxPort = Objects.requireNonNull(outboxPort, "outboxPort must not be null");
         this.orderPort = Objects.requireNonNull(orderPort, "orderPort must not be null");
@@ -219,10 +232,9 @@ public class RechargeOutboxWorkerService {
         this.supplierQueryOutboxPort = Objects.requireNonNull(
                 supplierQueryOutboxPort, "supplierQueryOutboxPort must not be null");
         this.frequencyPort = Objects.requireNonNull(frequencyPort, "frequencyPort must not be null");
-        this.balanceDeltaFlushOutboxPort = Objects.requireNonNull(
-                balanceDeltaFlushOutboxPort, "balanceDeltaFlushOutboxPort must not be null");
-        this.balanceReservationReleasePort = Objects.requireNonNull(
-                balanceReservationReleasePort, "balanceReservationReleasePort must not be null");
+        this.orderFunds = orderFunds == null
+                ? new RechargeOrderFundsService(balanceReservationReleasePort, orderPort, balanceDeltaFlushOutboxPort)
+                : orderFunds;
         this.notifyTaskPort = Objects.requireNonNull(notifyTaskPort, "notifyTaskPort must not be null");
         this.notifyPayloadSigner = Objects.requireNonNull(notifyPayloadSigner, "notifyPayloadSigner must not be null");
         this.notifyPreparation = notifyPreparation == null
@@ -976,7 +988,7 @@ public class RechargeOutboxWorkerService {
      */
     private RechargeOutboxBatchResult.Outcome completeSuccessfulOrder(
             RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
-        if (order.balanceReserved() && !balanceReservationReleasePort.confirm(order)) {
+        if (order.balanceReserved() && !orderFunds.confirm(order)) {
             markFailedOrManualRequired(event, "successful order balance consumption confirmation failed", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
@@ -991,30 +1003,20 @@ public class RechargeOutboxWorkerService {
             RechargeOutboxEvent event,
             RechargeFulfillmentOrder order,
             String reason) {
-        /*
-         * docs/交行直充业务系统高可用方案设计.md「14.6 订单最终失败/作废退款协议」
-         * 要求终态失败后释放 Redis reservation，并生成正向 BALANCE_DELTA_FLUSH 沉淀回旧表余额。
-         * releaseEventId 使用当前 outbox 事件 ID 保证 Redis Lua 幂等；若 Redis 回补失败，不能先写
-         * MySQL 余额反向事件，否则 Redis 与旧表会继续扩大偏差，因此保留当前 outbox 重试入口。
-         */
-        BalanceReservationReleaseResult releaseResult = balanceReservationReleasePort.release(
-                new BalanceReservationReleaseCommand(
-                        order.orgCode(),
-                        order.orderId(),
-                        order.outOrderSn(),
-                        order.orderPrice(),
-                        "RELEASE",
-                        event.eventId(),
-                        reason == null ? "" : reason));
+        // 独立资金入口负责可信订单锁、Redis幂等及Delta/预扣标记的原子收尾，见详细设计独立资金协议。
+        BalanceReservationReleaseResult releaseResult = orderFunds.release(order, reason);
         if (!releaseResult.succeeded()) {
+            // 证据不足属于预期资金保护，高频重试按失败类别采样warn，避免故障期间日志风暴。
+            if (errorLogs.shouldLog("funds.release." + releaseResult.failCode()).shouldLog()) {
+                log.warn("订单资金释放被拒绝 eventId={}, orgCode={}, orderId={}, failCode={}",
+                        event.eventId(), order.orgCode(), order.orderId(), releaseResult.failCode());
+            }
             String failReason = releaseResult.failReason().isBlank()
                     ? releaseResult.failCode()
                     : releaseResult.failReason();
             markFailedOrManualRequired(event, "release balance reservation failed: " + failReason, settings.retryBackoff());
             return false;
         }
-        enqueueReleaseBalanceDelta(order, reason);
-        orderPort.markBalanceReleased(order.orderId());
         return true;
     }
 
@@ -1065,22 +1067,6 @@ public class RechargeOutboxWorkerService {
             return "outbox retry exhausted";
         }
         return "outbox retry exhausted: " + event.lastError();
-    }
-
-    private void enqueueReleaseBalanceDelta(RechargeFulfillmentOrder order, String reason) {
-        /*
-         * docs/交行直充业务系统详细设计.md「9.2 余额 Delta 刷账 Outbox」要求作废/失败完成后
-         * 写入 delta_type=RELEASE 的刷账事件（event_id=balance-flush-release-{orderId}）。
-         * 这里仅写可靠事件，不在 Worker 线程直接改 mc_ext_depart.balance，
-         * 保持余额刷账的 CAS 抢占、按 org 聚合和重试语义（高可用「14.7」）。
-         */
-        balanceDeltaFlushOutboxPort.enqueueBalanceDeltaFlush(new BalanceDeltaFlushOutboxCommand(
-                order.orgCode(),
-                order.orderId(),
-                order.outOrderSn(),
-                order.orderPrice(),
-                "RELEASE",
-                reason == null ? "" : reason));
     }
 
     /** 三个入口共用通道准备规则，银行空URL仍建任务；参见详细设计「交行 2104 通知实施细化」。 */

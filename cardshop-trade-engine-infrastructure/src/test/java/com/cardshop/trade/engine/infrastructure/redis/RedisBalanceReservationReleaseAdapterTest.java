@@ -68,7 +68,9 @@ class RedisBalanceReservationReleaseAdapterTest {
                         "RELEASE",
                         "dispatch-ORDER-1",
                         "supplier failed",
-                        "1783480800000");
+                        "1783480800000",
+                        "",
+                        "0");
     }
 
     @Test

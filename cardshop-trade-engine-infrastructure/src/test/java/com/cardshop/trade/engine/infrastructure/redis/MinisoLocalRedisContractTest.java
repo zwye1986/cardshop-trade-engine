@@ -58,9 +58,32 @@ class MinisoLocalRedisContractTest {
             var result = redis.execute(script,arguments.keys(),arguments.args()).next().block();
             assertThat(result).contains("ACCEPTED");
             assertThat(redis.opsForHash().get(keys.reservationKey("A39", "ORDER1"), "funds_status").block()).isEqualTo("RESERVED");
+            assertThat(redis.opsForHash().get(keys.reservationKey("A39", "ORDER1"), "org_code").block()).isEqualTo("A39");
+            assertThat(redis.getExpire(keys.reservationKey("A39", "ORDER1")).block()).isEqualTo(Duration.ZERO);
+            assertThat(redis.getExpire(keys.orderKey("A39", "OUT1")).block()).isPositive();
             assertThat(redis.opsForHash().get(keys.orderKey("A39","OUT1"),"supplier_batch_id").block()).isEqualTo("100023");
             var reader = new RedisPersistOrderSnapshotAdapter(redis,keys,Duration.ofSeconds(3));
             assertThat(reader.findLatestSnapshot("A39","OUT1","ORDER1").orElseThrow().supplierBatchId()).isEqualTo("100023");
+            // 独立资金协议端到端：真实accept→落库标记→业务快照过期→消费确认→作废退款及重放。
+            var loader = new RechargeRedisScriptLoader();
+            redis.execute(loader.markDbPersistedScript(), keys.markDbPersistedKeys(command),
+                    java.util.List.of("A39", "ORDER1", "1", Long.toString(now.toEpochMilli()), "28800")).next().block();
+            redis.expire(keys.orderKey("A39", "OUT1"), Duration.ofMillis(1)).block();
+            for (int i = 0; i < 100 && Boolean.TRUE.equals(redis.hasKey(keys.orderKey("A39", "OUT1")).block()); i++) Thread.sleep(2);
+            assertThat(redis.hasKey(keys.orderKey("A39", "OUT1")).block()).isFalse();
+            var confirm = new com.cardshop.trade.engine.application.recharge.BalanceReservationReleaseCommand(
+                    "A39", "ORDER1", "OUT1", 100, "CONFIRM", "balance-confirm-ORDER1", "test");
+            assertThat(redis.execute(loader.releaseBalanceReservationScript(), keys.releaseBalanceReservationKeys(confirm),
+                    java.util.List.of("A39", "ORDER1", "OUT1", "100", "CONFIRM", "balance-confirm-ORDER1", "test", "1000")).next().block())
+                    .contains("CONFIRMED");
+            var release = new com.cardshop.trade.engine.application.recharge.BalanceReservationReleaseCommand(
+                    "A39", "ORDER1", "OUT1", 100, "RELEASE", "balance-flush-release-ORDER1", "test");
+            var releaseArgs = java.util.List.of("A39", "ORDER1", "OUT1", "100", "RELEASE", "balance-flush-release-ORDER1", "test", "1000", "CONSUMED", "0");
+            assertThat(redis.execute(loader.releaseBalanceReservationScript(), keys.releaseBalanceReservationKeys(release), releaseArgs).next().block()).contains("RELEASED");
+            assertThat(redis.execute(loader.releaseBalanceReservationScript(), keys.releaseBalanceReservationKeys(release), releaseArgs).next().block()).contains("ALREADY_RELEASED");
+            assertThat(redis.opsForHash().get(keys.balanceKey("A39"), "available").block()).isEqualTo("1000");
+            assertThat(redis.opsForHash().get(keys.balanceKey("A39"), "frozen").block()).isEqualTo("0");
+            assertThat(redis.hasKey(keys.orderKey("A39", "OUT1")).block()).isFalse();
         } finally {
             if (factory!=null) factory.destroy();
             process.destroy();

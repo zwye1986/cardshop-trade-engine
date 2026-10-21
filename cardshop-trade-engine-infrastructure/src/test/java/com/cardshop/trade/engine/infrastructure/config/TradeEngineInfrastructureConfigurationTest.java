@@ -588,6 +588,8 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(SupplierQueryOutboxPort.class, () -> interfaceProxy(SupplierQueryOutboxPort.class))
                 .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
                 .withBean(BalanceDeltaFlushOutboxPort.class, BalanceDeltaFlushOutboxPort::noop)
+                .withBean(com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort.class,
+                        () -> interfaceProxy(com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort.class))
                 .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
                 .withBean(MerchantNotifyPayloadSigner.class, () -> interfaceProxy(MerchantNotifyPayloadSigner.class))
                 .run(context -> {
@@ -606,6 +608,8 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(SupplierQueryOutboxPort.class, () -> interfaceProxy(SupplierQueryOutboxPort.class))
                 .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
                 .withBean(BalanceDeltaFlushOutboxPort.class, BalanceDeltaFlushOutboxPort::noop)
+                .withBean(com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort.class,
+                        () -> interfaceProxy(com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort.class))
                 .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
                 .withBean(V1MerchantProfilePort.class, () -> interfaceProxy(V1MerchantProfilePort.class))
                 .run(context -> assertThat(context).hasSingleBean(RechargeOutboxWorkerService.class));
@@ -621,6 +625,8 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(SupplierQueryOutboxPort.class, () -> interfaceProxy(SupplierQueryOutboxPort.class))
                 .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
                 .withBean(BalanceDeltaFlushOutboxPort.class, BalanceDeltaFlushOutboxPort::noop)
+                .withBean(com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort.class,
+                        () -> interfaceProxy(com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort.class))
                 .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
                 .withBean(V1MerchantProfilePort.class, () -> interfaceProxy(V1MerchantProfilePort.class))
                 .run(context -> {
@@ -640,6 +646,8 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(SupplierQueryOutboxPort.class, () -> interfaceProxy(SupplierQueryOutboxPort.class))
                 .withBean(DirectRechargeFrequencyPort.class, () -> interfaceProxy(DirectRechargeFrequencyPort.class))
                 .withBean(BalanceDeltaFlushOutboxPort.class, BalanceDeltaFlushOutboxPort::noop)
+                .withBean(com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort.class,
+                        () -> interfaceProxy(com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort.class))
                 .withBean(RechargeNotifyTaskPort.class, () -> interfaceProxy(RechargeNotifyTaskPort.class))
                 .withBean(V1MerchantProfilePort.class, () -> interfaceProxy(V1MerchantProfilePort.class))
                 .run(context -> {

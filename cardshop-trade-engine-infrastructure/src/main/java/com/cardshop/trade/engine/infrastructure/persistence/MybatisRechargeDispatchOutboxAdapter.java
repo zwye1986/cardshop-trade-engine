@@ -113,14 +113,19 @@ public class MybatisRechargeDispatchOutboxAdapter
 
     @Override
     public void markSuccess(RechargeOutboxEvent event) {
-        requireMapper().update(null, new LambdaUpdateWrapper<RechargeDispatchOutboxDO>()
+        // 独立资金协议：收尾提交后也不能由过期/被接管Worker结束新任务，CAS miss必须显式失败。
+        LocalDateTime now = now();
+        int updated = requireMapper().update(null, new LambdaUpdateWrapper<RechargeDispatchOutboxDO>()
                 .eq(RechargeDispatchOutboxDO::getEventId, event.eventId())
                 .eq(RechargeDispatchOutboxDO::getVersion, event.version())
+                .eq(RechargeDispatchOutboxDO::getStatus, TaskStatus.PROCESSING.name())
+                .ge(RechargeDispatchOutboxDO::getLockedUntil, now)
                 .set(RechargeDispatchOutboxDO::getStatus, TaskStatus.SUCCESS.name())
                 .set(RechargeDispatchOutboxDO::getLockedUntil, null)
                 .set(RechargeDispatchOutboxDO::getLastError, "")
-                .set(RechargeDispatchOutboxDO::getUpdatedAt, now())
+                .set(RechargeDispatchOutboxDO::getUpdatedAt, now)
                 .setSql("version = version + 1"));
+        if (updated != 1) throw new IllegalStateException("outbox claim lost before success: " + event.eventId());
     }
 
     @Override

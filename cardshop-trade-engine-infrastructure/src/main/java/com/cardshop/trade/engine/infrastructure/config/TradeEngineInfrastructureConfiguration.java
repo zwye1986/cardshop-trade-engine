@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderFundsAdapter;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort;
 import com.cardshop.trade.engine.infrastructure.persistence.MinisoReceiptStore;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper;
 import com.cardshop.trade.engine.infrastructure.supplier.MinisoRoutingSupplierGateway;
@@ -804,6 +806,25 @@ public class TradeEngineInfrastructureConfiguration {
         return new MinisoRoutingSupplierGateway(miniso, fallback);
     }
 
+    /** 独立资金入口必须具备真实SQL事务；缺依赖时不启用可写Worker，见详细设计独立资金协议。 */
+    @Bean
+    @ConditionalOnBean({PlatformTransactionManager.class,
+            MinisoReceiptMapper.class,
+            RechargeBalanceDeltaOutboxMapper.class,
+            RechargeFulfillmentOrderPort.class, BalanceDeltaFlushOutboxPort.class, BalanceReservationReleasePort.class})
+    @ConditionalOnMissingBean(RechargeOrderFundsPort.class)
+    public RechargeOrderFundsPort rechargeOrderFundsPort(
+            BalanceReservationReleasePort redis, RechargeFulfillmentOrderPort orders,
+            BalanceDeltaFlushOutboxPort deltas,
+            RechargeBalanceDeltaOutboxMapper deltaMapper,
+            MinisoReceiptMapper receipts,
+            ObjectProvider<com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection> protection,
+            PlatformTransactionManager transactionManager) {
+        return new MybatisRechargeOrderFundsAdapter(
+                redis, orders, deltas, deltaMapper, receipts, protection::getIfAvailable, transactionManager,
+                MybatisRechargeOrderFundsAdapter.DEFAULT_TRANSACTION_TIMEOUT_SECONDS);
+    }
+
     @Bean
     @ConditionalOnBean({
             RechargeOutboxPort.class,
@@ -813,6 +834,7 @@ public class TradeEngineInfrastructureConfiguration {
             DirectRechargeFrequencyPort.class,
             BalanceDeltaFlushOutboxPort.class,
             BalanceReservationReleasePort.class,
+            RechargeOrderFundsPort.class,
             RechargeNotifyTaskPort.class,
             V1MerchantProfilePort.class
     })
@@ -825,6 +847,7 @@ public class TradeEngineInfrastructureConfiguration {
             DirectRechargeFrequencyPort frequencyPort,
             BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
             BalanceReservationReleasePort balanceReservationReleasePort,
+            RechargeOrderFundsPort orderFunds,
             RechargeNotifyTaskPort notifyTaskPort,
             ObjectProvider<MerchantNotifyPayloadSigner> payloadSignerProvider,
             ObjectProvider<V12SigningCredentialStorePort> credentialStoreProvider,
@@ -851,7 +874,7 @@ public class TradeEngineInfrastructureConfiguration {
                 RechargeFulfillmentConfigurationSupport.deferredRechargeDispatchTimerPort(dispatchTimerPortProvider),
                 clock,
                 RechargeFulfillmentConfigurationSupport.workerSettings(fulfillment),
-                minisoProtection::getIfAvailable,notifyPreparation.getIfAvailable());
+                minisoProtection::getIfAvailable,notifyPreparation.getIfAvailable(),orderFunds);
     }
 
     /**

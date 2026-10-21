@@ -622,7 +622,7 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(notifyTaskPort.createdTasks).singleElement().satisfies(task ->
                 assertThat(task.taskId()).isEqualTo("notify-order-ORDER-1-6"));
         assertThat(balanceReleasePort.commands).singleElement().satisfies(command -> {
-            assertThat(command.releaseEventId()).isEqualTo("supplier-query-ORDER-1");
+            assertThat(command.releaseEventId()).isEqualTo("balance-flush-release-ORDER-1");
             assertThat(command.amount()).isEqualTo(5200L);
         });
         assertThat(balanceDeltaOutboxPort.commands).singleElement().satisfies(command -> {
@@ -744,7 +744,7 @@ class RechargeOutboxWorkerServiceTest {
             assertThat(command.outOrderSn()).isEqualTo("OUT-1");
             assertThat(command.amount()).isEqualTo(5200L);
             assertThat(command.releaseType()).isEqualTo("RELEASE");
-            assertThat(command.releaseEventId()).isEqualTo("dispatch-ORDER-1");
+            assertThat(command.releaseEventId()).isEqualTo("balance-flush-release-ORDER-1");
         });
         assertThat(balanceDeltaOutboxPort.commands).singleElement().satisfies(command -> {
             assertThat(command.orderId()).isEqualTo("ORDER-1");
@@ -790,6 +790,36 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(balanceReleasePort.commands).hasSize(1);
         assertThat(balanceDeltaOutboxPort.commands).hasSize(1);
         assertThat(notifyTaskPort.createdTasks).isEmpty();
+    }
+
+    @Test
+    void failedTaskCompletionAfterRefundCommitRetriesWithoutSupplierOrSecondFundsOperation() {
+        var original = successfulOrder();
+        var outstanding = new RechargeFulfillmentOrder(original.orderId(), original.outOrderSn(), original.orgCode(),
+                original.account(), original.productId(), original.selectedProductId(), original.supplierChannel(),
+                original.orderPrice(), "", 12, "DB_PERSISTED", "PASSED", true, true, "CANCELLED", CLOCK.instant());
+        var committed = new RechargeFulfillmentOrder(original.orderId(), original.outOrderSn(), original.orgCode(),
+                original.account(), original.productId(), original.selectedProductId(), original.supplierChannel(),
+                original.orderPrice(), "", 12, "DB_PERSISTED", "PASSED", true, false, "CANCELLED", CLOCK.instant());
+        var outboxes = new FakeOutboxPort(outbox(OutboxEventType.INVALID_ORDER));
+        outboxes.failNextSuccess = true;
+        var orders = new FakeFulfillmentOrderPort(new HashMap<>(Map.of(outstanding.orderId(), outstanding)));
+        var deltas = new FakeBalanceDeltaOutboxPort();
+        var funds = new FakeBalanceReleasePort(BalanceReservationReleaseResult.releasedSuccess());
+        var gateway = new FakeSupplierGatewayPort(SupplierGatewayResponse.failed("", "unexpected", "must not call", ""));
+        var worker = new RechargeOutboxWorkerService(outboxes, orders, gateway, new FakeFrequencyPort(true),
+                deltas, funds, new FakeNotifyTaskPort(), new FixedNotifyPayloadSigner(), CLOCK, settings());
+        assertThat(worker.processEvent(outbox(OutboxEventType.INVALID_ORDER).eventId(), OutboxEventType.INVALID_ORDER, "worker"))
+                .isEqualTo(RechargeOutboxBatchResult.Outcome.FAILED);
+        assertThat(funds.commands).hasSize(1);
+        assertThat(deltas.commands).hasSize(1);
+        orders.ordersById.put(committed.orderId(), committed);
+        assertThat(worker.processEvent(outbox(OutboxEventType.INVALID_ORDER).eventId(), OutboxEventType.INVALID_ORDER, "worker"))
+                .isEqualTo(RechargeOutboxBatchResult.Outcome.SUCCEEDED);
+        assertThat(funds.commands).hasSize(1);
+        assertThat(deltas.commands).hasSize(1);
+        assertThat(gateway.invalidRequests).isEmpty();
+        assertThat(gateway.dispatchRequests).isEmpty();
     }
 
     @Test
@@ -1573,6 +1603,7 @@ class RechargeOutboxWorkerServiceTest {
         private final List<String> findByEventIds = new ArrayList<>();
         private int scanCount;
         private boolean due = true;
+        private boolean failNextSuccess;
         private Optional<Duration> pendingRetryDelay = Optional.empty();
 
         private FakeOutboxPort(RechargeOutboxEvent... events) {
@@ -1617,6 +1648,7 @@ class RechargeOutboxWorkerServiceTest {
 
         @Override
         public void markSuccess(RechargeOutboxEvent event) {
+            if (failNextSuccess) { failNextSuccess = false; throw new IllegalStateException("injected failure after funds commit"); }
             successes.add(event.eventId());
         }
 

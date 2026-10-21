@@ -107,6 +107,11 @@ if KEYS[7] ~= nil and redis.call('EXISTS', KEYS[7]) == 1
   if reservationStatus == 'PENDING_MQ' or reservationStatus == 'PERSIST_QUEUED'
       or reservationStatus == 'PERSISTING' or reservationStatus == 'DB_PERSISTED' then
     redis.call('HSET', KEYS[7], 'status', 'DB_PERSISTED', 'updated_at', now)
+    -- 仅保全新协议且身份匹配的资金记录，不批量迁移缺标记的历史记录。
+    if redis.call('HGET', KEYS[7], 'org_code') == orgCode
+        and redis.call('HGET', KEYS[7], 'funds_status') == 'RESERVED' then
+      redis.call('PERSIST', KEYS[7])
+    end
   end
 end
 

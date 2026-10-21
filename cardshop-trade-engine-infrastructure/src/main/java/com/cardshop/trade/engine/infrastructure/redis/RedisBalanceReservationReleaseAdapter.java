@@ -133,7 +133,9 @@ public class RedisBalanceReservationReleaseAdapter implements BalanceReservation
                 normalize(command.releaseType(), "RELEASE"),
                 command.releaseEventId() == null ? "" : command.releaseEventId(),
                 command.reason() == null ? "" : command.reason(),
-                Long.toString(clock.instant().toEpochMilli()));
+                Long.toString(clock.instant().toEpochMilli()),
+                command.expectedFundsStatus() == null ? "" : command.expectedFundsStatus(),
+                command.alreadyReleasedOnly() ? "1" : "0");
     }
 
     private static BalanceReservationReleaseResult toResult(Map<String, String> fields) {
