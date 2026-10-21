@@ -12,7 +12,7 @@
 
 ## 0. 执行状态、授权与不可变合同
 
-2026-10-21用户已整稿评审通过。已批准规格为`docs/superpowers/specs/2026-10-20-miniso-shared-callback-bridge-design.md`，契约`MINISO-SHARED-CALLBACK-V1`；主详细设计9.8及高可用设计同名章节同步。用户随后授权在当前会话按任务顺序实施、分阶段验收。**下列勾选只表示对应本地步骤完成，不代表整套实现或发布完成。** 不连接远端、不运行共享DDL、不改Nacos、不部署、不push/PR/merge。
+2026-10-21用户已整稿评审通过。已批准规格为`docs/superpowers/specs/2026-10-20-miniso-shared-callback-bridge-design.md`，契约`MINISO-SHARED-CALLBACK-V1`；主详细设计9.8及高可用设计同名章节同步。用户随后授权在当前会话按任务顺序实施、分阶段验收，并单独授权只读核验test188所连MySQL版本及默认隔离级别。**下列勾选只表示对应本地步骤完成，不代表整套实现或发布完成。** 远端仅执行该项获授权的只读核验，不运行共享DDL、不改Nacos、不部署、不push/PR/merge。
 
 执行位置：
 
@@ -64,6 +64,7 @@ legacy_test() (
 - 已读MCUtils.queryGrand、新MINISO适配及固定测试；本机未找到供应商V1.5原始PDF，现有准备报告只注明文件名/正文版本差异。无权威“明确未发券”失败码证据，任务7不实现无券码自动退款例外。
 - 新增0023合同测试先出现1项预期断言失败（独立变更不存在），追加结构后转绿。关联新端模块共528项：509通过、19项既有环境依赖测试跳过，失败0、错误0；其中迁移合同4项全通过。实体仅增加映射；三授权字段一致性由任务5的实际读写入口校验，当前无资金授权实现。
 - **任务3前置条件未满足**：Docker daemon可用，本机已有mysql:8.4镜像，但未核实test188所连MySQL具体版本和默认隔离级别；未设置MINISO_MYSQL_IMAGE，未创建容器或执行MySQL迁移，不能把本地镜像当作现场版本。第一阶段仅验收源码基线及DDL解析合同，等待版本证据后继续任务3，不跳到资金实现。
+- **同日10:21 CST只读核验补充，解除上述版本未知阻断**：用户单独授权后，按JVM PID18924的本地数据库端口49250匹配PROCESSLIST会话12637338，确认实际schema仍为cardshop_test_new。SELECT VERSION()=8.0.28、@@version_comment=Source distribution、@@GLOBAL.transaction_isolation=READ-COMMITTED，本次新会话亦为RC。performance_schema会话变量查询因1142权限不足，未直接测得旧JVM既有会话隔离级别；不扩大权限或混同全局默认。任务3选择MySQL8.0.28基线（镜像/平台可用性仍待验证），显式测试RC/RR，不用本机8.4替代。尚未创建容器或执行迁移，完整证据见《集成测试.md》同日补充。
 - 详细命令与实际测试结果统一追加`docs/集成测试.md`；真实MySQL双跑、RC/RR并发、Redis恢复及发布均未验收。
 
 ## 1. 文件职责图
