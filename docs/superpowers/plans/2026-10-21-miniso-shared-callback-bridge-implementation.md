@@ -17,7 +17,7 @@
 执行位置：
 
 - `E=/Users/mac/codespace/cardshop-trade-engine-1020_MINISO_SHARE_DB`：当前新引擎隔离工作区，分支`1020_MINISO_SHARE_DB`，计划编写时基线为`5271fcf`。
-- `L=/Users/mac/Documents/codeSpace/cardshop`：旧卡管，计划编写时分支`dev`、基线`34eadb29ed00a10e528915dc32982cff674fa58e`。执行前按using-git-worktrees检查隔离；若创建旧端工作树，后续`L`和脚本参数必须指向该工作树，保留原仓库未跟踪接入说明。
+- 旧卡管计划编写时位于`/Users/mac/Documents/codeSpace/cardshop`，本地`dev`基线`34eadb29ed00a10e528915dc32982cff674fa58e`。用户同意独立工作树后，已从该本地基线创建`L=/Users/mac/Documents/codeSpace/cardshop/.worktrees/miniso-shared-callback`，分支`miniso-shared-callback`；后续旧端执行及脚本参数均使用此`L`。原`dev`不切换，用户未跟踪接入说明保留原处，不复制或覆盖。
 - 上述是本地基线，不声称等于`origin`或远端运行版本。不能跨工作树覆盖未提交文件。
 
 先后依赖：任务1—8交付新端持久保护；任务9—16交付旧桥接及所有旧写入者保护；任务17做跨JVM并发和恢复验收；任务18—19交付调度、文档、回归及待授权发布检查。全部属于同一资金合同，不能只部署“能收回调”的半套实现。顺序实施，默认不分派同一文件给多个代理。
@@ -36,7 +36,7 @@
 
 ```bash
 export E=/Users/mac/codespace/cardshop-trade-engine-1020_MINISO_SHARE_DB
-export L=/Users/mac/Documents/codeSpace/cardshop
+export L=/Users/mac/Documents/codeSpace/cardshop/.worktrees/miniso-shared-callback
 engine_test() (
   export JAVA_HOME=$(/usr/libexec/java_home -v 21)
   export PATH="$JAVA_HOME/bin:$PATH"
@@ -166,8 +166,10 @@ ALTER TABLE recharge_order_ext
 
 **Files:** Create `E/scripts/test-miniso-shared-callback.sh`、`ET/persistence/MinisoBridgeMysqlContractTest.java`、`LT/MinisoBridgeMysqlContractTest.java`；Create `E/cardshop-trade-engine-infrastructure/src/test/resources/miniso-bridge/legacy-baseline.sql`，只供可丢弃schema初始化。旧端测试通过脚本提供的同一schema消费结构，不复制发布DDL。不新增共享运行时模块。
 
-- [ ] 1. 脚本先只支持`--schema`：要求显式`MINISO_MYSQL_IMAGE`（先核验测试目标版本再选镜像，不把任意8.x冒充现场），仅使用Docker新建容器、随机回环端口和本次随机凭据。数据库名固定前缀`miniso_bridge_it_`加随机后缀；不接受任意远端JDBC URL。无Docker、镜像或JDK直接非零，不报告跳过为通过。
-- [ ] 2. 用测试资源建最小legacy表前置结构，再通过真实Liquibase加载新端master changelog；旧端只消费迁移后的结构。记录`SELECT VERSION(), DATABASE(), @@transaction_isolation`及迁移checksum。给测试用户仅本次schema权限。脚本退出仅清理自己创建的容器/临时文件，不执行共享schema DROP。
+2026-10-21执行结果：用户同意后创建上述旧工作树，基线36项全通过；旧端消费合同已在Java8.0_491及项目既有Connector/J8.0.33上运行。新端脚本以MySQL8.0.28（linux/amd64，本机仿真）分别在RC/RR执行真实master全部25项及无变更重跑，随后旧JVM只读消费同一schema中的guard、接收事实、冻结通知及历史空授权。两级隔离×新旧两端共4次显式MySQL合同全通过、无跳过；两个schema分别为`miniso_bridge_it_34a0737db382c5b5`、`miniso_bridge_it_79a9f9926a547edc`，容器均已清理。缺配置/无法连接显式非零；默认回归新端509通过/20跳过，旧端36通过/1跳过，失败/错误均0。旧端本地提交`d5a5b5bfa3f6f95318a05b8f450adf7947b7b66f`仅含Java8测试；新端源码/执行记录随本任务一起本地提交，不push或部署。任务3只交付结构夹具，未实现生产路由/资金事务，后续实际mapper/adapter、Spring事务代理及锁竞争仍按任务4—17验证；本次停在阶段验收，不直接执行任务4。完整命令、checksum、反例及限制见《集成测试.md》`MINISO-BRIDGE-MYSQL-SCHEMA-LOCAL-20261021`补充。
+
+- [x] 1. 脚本先只支持`--schema`：要求显式`MINISO_MYSQL_IMAGE`（先核验测试目标版本再选镜像，不把任意8.x冒充现场），仅使用Docker新建容器、随机回环端口和本次随机凭据。数据库名固定前缀`miniso_bridge_it_`加随机后缀；不接受任意远端JDBC URL。无Docker、镜像或JDK直接非零，不报告跳过为通过。
+- [x] 2. 用测试资源建最小legacy表前置结构，再通过真实Liquibase加载新端master changelog；旧端只消费迁移后的结构。记录`SELECT VERSION(), DATABASE(), @@transaction_isolation`及迁移checksum。给测试用户仅本次schema权限。脚本退出仅清理自己创建的容器/临时文件，不执行共享schema DROP。
 
 ```sql
 SELECT VERSION(), DATABASE(), @@transaction_isolation;
@@ -177,9 +179,9 @@ WHERE table_schema=DATABASE()
                     'mc_miniso_legacy_notify_task');
 ```
 
-- [ ] 3. `MinisoBridgeMysqlContractTest`显式开启时必须连接成功；普通单测默认不连接外部。参数为`-Dminiso.mysqlTests=true`，连接由脚本注入本次本地测试环境；缺配置是测试失败。事务使用实际生产mapper/adapter及Spring事务代理，不能用重写生产算法的JDBC假实现取代。
-- [ ] 4. 执行`MINISO_MYSQL_IMAGE="$MINISO_MYSQL_IMAGE" bash "$E/scripts/test-miniso-shared-callback.sh" --schema`；预期三表为InnoDB、迁移幂等、无历史授权回填。执行前如果变量为空则明确失败。
-- [ ] 5. 本地提交`test: add disposable mysql bridge contract fixture`；此提交交付数据库验证能力，不声称并发合同已通过。
+- [x] 3. `MinisoBridgeMysqlContractTest`显式开启时必须连接成功；普通单测默认不连接外部。参数为`-Dminiso.mysqlTests=true`，连接由脚本注入本次本地测试环境；缺配置是测试失败。本任务只验证结构；后续业务事务测试必须使用实际生产mapper/adapter及Spring事务代理，不能用重写生产算法的JDBC假实现取代。
+- [x] 4. 执行`MINISO_MYSQL_IMAGE="$MINISO_MYSQL_IMAGE" bash "$E/scripts/test-miniso-shared-callback.sh" --schema`；预期三表为InnoDB、迁移幂等、无历史授权回填。执行前如果变量为空则明确失败。
+- [x] 5. 本地提交`test: add disposable mysql bridge contract fixture`；此提交交付数据库验证能力，不声称并发合同已通过。旧端测试独立提交到旧工作树分支，两端均不推送。
 
 ## Task 4: 新端统一guard及共享证据当前读
 

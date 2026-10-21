@@ -56,6 +56,13 @@
             <artifactId>spring-boot-starter-test</artifactId>
             <scope>test</scope>
         </dependency>
+        <!-- 真实MySQL结构夹具复用唯一发布入口，不复制DDL或引入运行时迁移依赖；参见详细设计9.8。 -->
+        <dependency>
+            <groupId>com.cardshop</groupId>
+            <artifactId>cardshop-trade-engine-migration</artifactId>
+            <version>${project.version}</version>
+            <scope>test</scope>
+        </dependency>
         <!--
             Testcontainers 仅用于 Redis Lua 原子性与补热逻辑的真实集成测试，默认不随 `mvn test` 运行；
             需通过 `-DredisTestcontainers.enabled=true` 显式开启，并要求本机可用 Docker。
