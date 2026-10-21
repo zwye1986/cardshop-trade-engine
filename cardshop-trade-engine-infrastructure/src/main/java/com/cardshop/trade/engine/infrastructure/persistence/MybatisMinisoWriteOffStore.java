@@ -105,7 +105,10 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
         return LocalDateTime.ofInstant(clock.instant(), ZONE);
     }
 
-    /** T1只保存已认证事件；接收方法返回时独立事务已经提交，重复事实不重置处理进度。 */
+    /**
+     * T1只保存已认证事件；接收方法返回时独立事务已经提交，重复事实不重置处理进度。
+     * 已有释放许可的新事件直接保留人工证据，不修改原履约/资金任务，参见详细设计9.8。
+     */
     @Override
     public void accept(MinisoWriteOffNotification notice) {
         try {
@@ -118,9 +121,11 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
                                         Owned owned =
                                                 candidate == null
                                                         ? null
-                                                        : lockOwned(candidate.orderId());
+                                                        : lockOwned(candidate.orderId(), notice.couponCode());
                                         // 未知归属只能锁同券guard及事件；凭据即使随后出现也留待下一事务定位。
                                         if (owned == null) guards.lockInTransaction(notice.couponCode(), now());
+                                        boolean authorized = owned != null
+                                                && events.releaseAuthorizationPresent(owned.order().orderId());
                                         var previous = events.lock(notice.eventId());
                                         events.insertIfAbsent(
                                                 notice.eventId(),
@@ -128,12 +133,17 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
                                                 notice.useTime(),
                                                 owned == null ? null : owned.order().orderId(),
                                                 owned == null ? null : owned.order().orgCode(),
+                                                authorized ? MANUAL : INIT,
+                                                authorized ? REDEEM_VOID_CONFLICT.name() : "",
                                                 now());
                                         var saved = events.lock(notice.eventId());
                                         if (saved == null
                                                 || !saved.couponCode().equals(notice.couponCode())
                                                 || !saved.useTime().equals(notice.useTime()))
                                             throw new MinisoWriteOffException(CONFLICT);
+                                        if (previous == null && authorized)
+                                            report(REDEEM_VOID_CONFLICT.name(), saved,
+                                                    new MinisoWriteOffException(REDEEM_VOID_CONFLICT), true);
                                         return previous != null;
                                     }));
             observer.event(duplicate ? "duplicate" : "accepted");
@@ -172,7 +182,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
                 // 多节点抢同单属于预期竞争，采样warn保留安全栈，不消耗业务重试次数。
                 report(
                         "LOCK_BUSY",
-                        candidate.eventId(),
+                        candidate,
                         new MinisoWriteOffException(ORDER_PENDING),
                         true);
                 deferred++;
@@ -185,7 +195,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
                 boolean isManual = !reason.retryable() || candidate.retryCount() + 1 >= maxRetries;
                 report(
                         reason.name(),
-                        candidate.eventId(),
+                        candidate,
                         safe,
                         reason.retryable() && reason != DB_UNAVAILABLE);
                 try {
@@ -207,7 +217,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
                 } catch (RuntimeException retryFailure) {
                     report(
                             "RETRY_WRITE_FAILED",
-                            candidate.eventId(),
+                            candidate,
                             MinisoWriteOffFailures.storage(retryFailure),
                             false);
                     failed++;
@@ -224,7 +234,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
     /** T2只做本地事实/任务原子提交；任何失败先回滚，再由外层T3按version退避。 */
     private boolean process(Event candidate) {
         var initial = receipts.selectByCoupon(candidate.couponCode());
-        Owned owned = initial == null ? null : lockOwned(initial.orderId());
+        Owned owned = initial == null ? null : lockOwned(initial.orderId(), candidate.couponCode());
         if (owned == null) guards.lockInTransaction(candidate.couponCode(), now());
         var event = events.lock(candidate.eventId());
         if (event == null
@@ -236,6 +246,10 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
             throw new MinisoWriteOffException(OWNERSHIP_CONFLICT);
         var order = owned.order();
         var receipt = owned.receipt();
+        // 许可一旦提交，迟到核销只能转人工；即使凭据状态被迟到写入污染，也不重新核销。
+        // 只让外层T3更新核销事件，不调用stopInvalidation截断已授权资金恢复，参见详细设计9.8。
+        if (events.releaseAuthorizationPresent(order.orderId()))
+            throw new MinisoWriteOffException(REDEEM_VOID_CONFLICT);
         if (receipt.couponStatus() == VOID) throw new MinisoWriteOffException(REDEEM_VOID_CONFLICT);
         if (order.orderStatus()
                         == com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode.FAILED
@@ -324,25 +338,29 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
                         now()));
     }
 
-    /** 定位后重新核验，顺序与履约事务一致；参见docs/交行直充业务系统详细设计.md「9.5」。 */
-    private Owned lockOwned(String id) {
-        return orderLocks.lock(id, now());
+    /** 定位后重新核验通知券码与归属，顺序与履约事务一致；参见docs/交行直充业务系统详细设计.md「9.8」。 */
+    private Owned lockOwned(String id, String coupon) {
+        return orderLocks.lock(id, coupon, now());
     }
 
-    private void report(String category, String event, RuntimeException safe, boolean expected) {
+    private void report(String category, Event event, RuntimeException safe, boolean expected) {
         var decision = logs.shouldLog("miniso.writeoff." + category);
         if (decision.shouldLog()) {
             if (expected)
                 LOG.warn(
-                        "名创核销暂缓 eventId={}, category={}, occurrence={}",
-                        event,
+                        "名创核销暂缓 eventId={}, orderId={}, orgCode={}, category={}, occurrence={}",
+                        event.eventId(),
+                        event.orderId(),
+                        event.orgCode(),
                         category,
                         decision.occurrence(),
                         safe);
             else
                 LOG.error(
-                        "名创核销处理失败 eventId={}, category={}, occurrence={}",
-                        event,
+                        "名创核销处理失败 eventId={}, orderId={}, orgCode={}, category={}, occurrence={}",
+                        event.eventId(),
+                        event.orderId(),
+                        event.orgCode(),
                         category,
                         decision.occurrence(),
                         safe);

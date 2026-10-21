@@ -21,12 +21,21 @@ final class MinisoWriteOffOrderLocks {
     }
 
     Owned lock(String id, LocalDateTime now) {
+        return lock(id, null, now);
+    }
+
+    /**
+     * 候选只定位订单；锁后券码已变时不锁另一券的guard，也不绑定原候选订单。
+     * 接收方只能继续按原通知券码锁guard及事件，不在持guard后寻找其它主单，参见详细设计9.8。
+     */
+    Owned lock(String id, String expectedCoupon, LocalDateTime now) {
         var order = events.lockOrder(id);
         var ext = receipts.lockFrozen(id);
         var receipt = receipts.lockReceipt(id);
         if (order == null
                 || ext == null
                 || receipt == null
+                || (expectedCoupon != null && !expectedCoupon.equals(receipt.couponCode()))
                 || !"MINISO".equals(order.channel())
                 || order.num() != 1
                 || !"DB_PERSISTED".equals(ext.persistStatus())

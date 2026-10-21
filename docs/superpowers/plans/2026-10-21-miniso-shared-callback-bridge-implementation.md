@@ -311,11 +311,13 @@ if (result.succeeded()) {
 
 **Files:** Modify `EI/persistence/MybatisMinisoWriteOffStore.java`、`MinisoWriteOffOrderLocks.java`、`mapper/MinisoWriteOffEventMapper.java`；Test `ET/persistence/MinisoWriteOffPersistenceTest.java`。
 
-- [ ] 1. 在真实事务fixture加入授权后直接accept/共享事件process，以及未知券首次接收后再发凭据场景；断言迟到事实保留、转MANUAL_REQUIRED，不改已授权终态/凭据、不建正常核销通知，不改资金授权或原履约任务。运行`engine_test MinisoWriteOffPersistenceTest`红灯。
-- [ ] 2. 已知订单接收从主单锁开始、未知仅guard→事件；候选查询后发现凭据改变仍不得锁序倒置。处理Job取得可信归属和guard后检查持久授权；冲突保存人工事实，不把该状态传播为资金任务人工。禁止重投重置已完成/人工事件进度。
-- [ ] 3. 共享及直接事件ID同算法，首次received_at保持首次接收时间。现有事件version=0保持不变；需要分离receivedAt与updatedAt时扩展mapper参数，不用投递时间覆盖年龄。
-- [ ] 4. 同命令及`engine_test RechargeFulfillmentVoucherStatePersistenceTest`转绿；原已核销/已作废/重复券冲突测试不删不改弱。
-- [ ] 5. 本地提交`fix(miniso): retain late redemption as manual evidence`。
+- [x] 1. 在真实事务fixture加入授权后直接accept/共享事件process，以及未知券首次接收后再发凭据场景；断言迟到事实保留、转MANUAL_REQUIRED，不改已授权终态/凭据、不建正常核销通知，不改资金授权或原履约任务。运行`engine_test MinisoWriteOffPersistenceTest`红灯。
+- [x] 2. 已知订单接收从主单锁开始、未知仅guard→事件；候选查询后发现凭据改变仍不得锁序倒置。处理Job取得可信归属和guard后检查持久授权；冲突保存人工事实，不把该状态传播为资金任务人工。禁止重投重置已完成/人工事件进度。
+- [x] 3. 共享及直接事件ID同算法，首次received_at保持首次接收时间。现有事件version=0保持不变；需要分离receivedAt与updatedAt时扩展mapper参数，不用投递时间覆盖年龄。
+- [x] 4. 同命令及`engine_test RechargeFulfillmentVoucherStatePersistenceTest`转绿；原已核销/已作废/重复券冲突测试不删不改弱。
+- [x] 5. 本地提交`fix(miniso): retain late redemption as manual evidence`。
+
+2026-10-21本地执行：基线两组101项通过；新增授权优先级反例后核销37项中4项预期断言失败，再增加锁后候选变化反例，38项中5项预期断言失败，错误均0。实现后核销38＋履约事务72共110项通过，最终关联六组188项通过；根reactor804项中784通过、20环境依赖跳过，失败/错误0。已知归属锁主单→扩展→凭据→guard后当前读授权，任一授权字段存在即禁止自动核销；新接收直接插入MANUAL_REQUIRED/version0，已有待处理事件按T3版本CAS转人工，不改资金许可、终态、凭据或原履约任务。重投保留INIT/RETRY及PROCESSED/MANUAL_REQUIRED进度和首次时间，旧共享事件received_at早于投递一小时仍保持；当前直接入口没有异步转投，未无需求扩展receivedAt参数，旧桥接独立写入留Task14。H2两连接受控竞争确认候选C1在等主单时变为C2后，不绑定旧订单、不锁C2 guard；真实MySQL RC/RR证明仍归Task17。共享Job尚未实现，本轮按表合同构造输入，不冒称已跑旧端。完整记录见《集成测试.md》`MINISO-BRIDGE-LATE-REDEMPTION-LOCAL-20261021`；仅本地提交，不push、部署或写共享环境。
 
 ## Task 9: 旧端独立配置、主连接与严格验签
 
