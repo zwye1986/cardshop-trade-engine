@@ -4,16 +4,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
 import com.cardshop.trade.engine.application.recharge.*;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
-import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderFundsAdapter;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.*;
 import java.time.Clock;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.test.util.ReflectionTestUtils;
-import org.springframework.transaction.PlatformTransactionManager;
 
-/** 后置依赖必须装配真实事务资金入口；参见详细设计独立资金协议。 */
+/** 履约Worker必须使用独立资金端口，不能在缺端口时静默降级；参见详细设计独立资金协议。 */
 class TradeEngineOrderFundsConfigurationTest {
     private ApplicationContextRunner runner() {
         return new ApplicationContextRunner()
@@ -30,14 +27,10 @@ class TradeEngineOrderFundsConfigurationTest {
                 .withBean(RechargeNotifyTaskPort.class, () -> mock(RechargeNotifyTaskPort.class))
                 .withBean(V1MerchantProfilePort.class, () -> mock(V1MerchantProfilePort.class));
     }
-    @Test void lateConfigurationInjectsTransactionalFundsAdapterIntoWorker() {
-        runner().withBean(PlatformTransactionManager.class, () -> mock(PlatformTransactionManager.class))
-                .withBean(MinisoReceiptMapper.class, () -> mock(MinisoReceiptMapper.class))
-                .withBean(RechargeBalanceDeltaOutboxMapper.class, () -> mock(RechargeBalanceDeltaOutboxMapper.class))
+    @Test void workerInjectsRequiredFundsPort() {
+        runner().withBean(RechargeOrderFundsPort.class, () -> mock(RechargeOrderFundsPort.class))
                 .run(context -> {
-                    assertThat(context).hasNotFailed().hasSingleBean(RechargeOrderFundsPort.class)
-                            .hasSingleBean(RechargeOutboxWorkerService.class);
-                    assertThat(context.getBean(RechargeOrderFundsPort.class)).isInstanceOf(MybatisRechargeOrderFundsAdapter.class);
+                    assertThat(context).hasNotFailed().hasSingleBean(RechargeOutboxWorkerService.class);
                     assertThat(ReflectionTestUtils.getField(context.getBean(RechargeOutboxWorkerService.class), "orderFunds"))
                             .isSameAs(context.getBean(RechargeOrderFundsPort.class));
                 });

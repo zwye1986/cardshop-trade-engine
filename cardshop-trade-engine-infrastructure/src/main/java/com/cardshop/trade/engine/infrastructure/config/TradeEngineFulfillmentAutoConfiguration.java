@@ -1,10 +1,6 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
-import org.springframework.transaction.PlatformTransactionManager;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper;
-import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderFundsAdapter;
-import com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort;
+import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort;
 import com.cardshop.trade.engine.application.recharge.BalanceReservationReleasePort;
 import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
@@ -18,6 +14,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerSettin
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort;
 import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
 import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.recharge.V1MerchantNotifyPayloadSigner;
@@ -30,6 +27,8 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
+import org.springframework.boot.autoconfigure.transaction.TransactionAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 
 /**
@@ -45,30 +44,17 @@ import org.springframework.context.annotation.Bean;
  * <p>本类只在所有真实端口存在时创建 worker，不注册 noop worker。这样 SUP/INV/CB 联调缺任一真实依赖时会
  * 暴露为入口不可用或启动依赖错误，避免把“没有处理能力”伪装成“扫描为空”。
  */
-@AutoConfiguration(afterName = {
-        "com.cardshop.trade.engine.infrastructure.config.TradeEngineMybatisPersistenceAutoConfiguration",
-        "com.cardshop.trade.engine.infrastructure.config.TradeEngineRedisPendingAutoConfiguration"
-})
+@AutoConfiguration(
+        after = {
+                MybatisPlusAutoConfiguration.class,
+                DataSourceTransactionManagerAutoConfiguration.class,
+                TransactionAutoConfiguration.class
+        },
+        afterName = {
+                "com.cardshop.trade.engine.infrastructure.config.TradeEngineMybatisPersistenceAutoConfiguration",
+                "com.cardshop.trade.engine.infrastructure.config.TradeEngineRedisPendingAutoConfiguration"
+        })
 public class TradeEngineFulfillmentAutoConfiguration {
-
-    /** 独立资金入口必须具备真实SQL事务；缺依赖时不启用可写Worker，见详细设计独立资金协议。 */
-    @Bean
-    @ConditionalOnBean({PlatformTransactionManager.class,
-            MinisoReceiptMapper.class,
-            RechargeBalanceDeltaOutboxMapper.class,
-            RechargeFulfillmentOrderPort.class, BalanceDeltaFlushOutboxPort.class, BalanceReservationReleasePort.class})
-    @ConditionalOnMissingBean(RechargeOrderFundsPort.class)
-    public RechargeOrderFundsPort rechargeOrderFundsPort(
-            BalanceReservationReleasePort redis, RechargeFulfillmentOrderPort orders,
-            BalanceDeltaFlushOutboxPort deltas,
-            RechargeBalanceDeltaOutboxMapper deltaMapper,
-            MinisoReceiptMapper receipts,
-            ObjectProvider<com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection> protection,
-            PlatformTransactionManager transactionManager) {
-        return new MybatisRechargeOrderFundsAdapter(
-                redis, orders, deltas, deltaMapper, receipts, protection::getIfAvailable, transactionManager,
-                MybatisRechargeOrderFundsAdapter.DEFAULT_TRANSACTION_TIMEOUT_SECONDS);
-    }
 
     /**
      * 创建供应商派单/作废 outbox worker。
