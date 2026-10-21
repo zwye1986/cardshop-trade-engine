@@ -381,8 +381,10 @@ String eventId = "miniso-redeemed-" + hex;
 
 **Files:** Modify `LM/service/impl/McOrderServiceImpl.java`、`McOrderV2ServiceImpl.java`、`LM/mapper/McOrderMapper.java`、`L/cardShop-admin/src/main/resources/mapper.system/McOrderMapper.xml`、`LB/MinisoLegacyOrderTransactions.java`；Extend旧`McOrderServiceImplTest.java`、`McOrderV2ServiceImplTest.java`及`LT/MinisoBridgeMysqlContractTest.java`。
 
-- [ ] 1. 从任务1清单逐个覆盖定时、单笔、V2、内部可调用入口；新单FAILED、非MINISO新单、损坏persist_status、有ext但balance_reserved=0均应不改余额/流水/退款状态。运行`legacy_test 'McOrderServiceImplTest,McOrderV2ServiceImplTest'`，确认旧行为红灯。
-- [ ] 2. 候选查询排除新扩展，不能仅在MINISO分支排除；最终任何资金/退款状态写入前仍在主单锁内复核扩展存在。SQL使用参数绑定，排除无额外状态条件：
+实际清单补充：旧`web/movie/service/MovieLxOrderService.java`及`MovieLxOrderRefundTest`、`MovieFailedRefundCompatibilityTest`；新增`LT/LegacyRefundFixture.java`和`LegacyRefundSqlTest.java`。新端扩充`ET/persistence/MinisoBridgeMysqlContractTest.java`及`src/test/resources/miniso-bridge/legacy-baseline.sql`，仅用于真实迁移后的资金/首发事务验证。
+
+- [x] 1. 从任务1清单逐个覆盖定时、单笔、V2、内部可调用入口；新单FAILED、非MINISO新单、损坏persist_status、有ext但balance_reserved=0均应不改余额/流水/退款状态。运行`legacy_test 'McOrderServiceImplTest,McOrderV2ServiceImplTest'`，确认旧行为红灯。
+- [x] 2. 候选查询排除新扩展，不能仅在MINISO分支排除；最终任何资金/退款状态写入前仍在主单锁内复核扩展存在。SQL使用参数绑定，排除无额外状态条件：
 
 ```sql
 SELECT o.order_Id FROM mc_order o
@@ -392,9 +394,11 @@ SELECT order_Id FROM mc_order WHERE order_Id=? FOR UPDATE;
 SELECT order_id FROM recharge_order_ext WHERE order_id=? FOR UPDATE;
 ```
 
-- [ ] 3. 外层批量不持整批事务；逐单最终事务拒绝新归属，无支付记录的状态更新也不能绕过。独立采购总单/充值/转账不泛化改造；对于`zfbOrderRefund`等按共享mc_order退款的可达分支同样加归属最终门禁，但不改其金额/部分退款协议。
-- [ ] 4. 加入候选读取后ext归属发布的真实事务竞争：最终写前检查必须阻止旧回补；并验证新引擎主单/扩展首次发布同事务。不能用只verify候选filter代替最终状态断言。两组单测转绿，MySQL用例纳入任务17。
-- [ ] 5. 本地提交`fix(refund): exclude engine-owned orders from legacy writers`。
+- [x] 3. 外层批量不持整批事务；逐单最终事务拒绝新归属，无支付记录的状态更新也不能绕过。独立采购总单/充值/转账不泛化改造；对于`zfbOrderRefund`等按共享mc_order退款的可达分支同样加归属最终门禁，但不改其金额/部分退款协议。
+- [x] 4. 加入候选读取后ext归属发布的真实事务竞争：最终写前检查必须阻止旧回补；并验证新引擎主单/扩展首次发布同事务。不能用只verify候选filter代替最终状态断言。两组单测转绿，MySQL用例纳入任务17。
+- [x] 5. 本地提交`fix(refund): exclude engine-owned orders from legacy writers`。
+
+2026-10-21本地执行：旧端两组基线36项通过；新增实际入口资金断言后46项中10项预期失败，随后转绿。候选真实XML过滤和最终主连接主单/扩展锁覆盖通用、V2、内部单笔、支付宝及电影售后；外层无整批事务，逐单REQUIRES_NEW原子回补。数字状态及流水列兼容测试另出现2项预期失败，文本语义归一后通过。最终11组201项，失败/错误/跳过均0。真实MySQL8.0.28在RC/RR下分别跑新端1项＋旧端3项：候选后归属发布及主单锁等待后，最终余额100/流水1/状态6不变；新端实际落库事务代理与真实Mapper验证主单/扩展同连接提交、半单外部不可见、异常整体回滚。旧端本地提交`f390a59e`；新端仅追加测试夹具、原子性验证及记录。证据见《集成测试.md》`MINISO-BRIDGE-LEGACY-REFUND-LOCAL-20261021`。Task12及Task17整体验收仍未完成；不push、部署或写共享DDL/Nacos。
 
 ## Task 12: 旧MINISO作废及退款按单原子保护
 

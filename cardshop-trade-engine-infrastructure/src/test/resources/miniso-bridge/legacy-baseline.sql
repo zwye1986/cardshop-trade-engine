@@ -15,6 +15,20 @@ CREATE TABLE mc_order (
     remark varchar(500) DEFAULT NULL,
     flow_id bigint DEFAULT NULL,
     edit_time datetime DEFAULT NULL,
+    create_time datetime DEFAULT NULL,
+    end_time datetime DEFAULT NULL,
+    product_name varchar(255),
+    product_price bigint,
+    product_value bigint,
+    out_order_no varchar(100),
+    order_price bigint,
+    refund_order_price bigint DEFAULT 0,
+    callback_url varchar(500),
+    request_ip varchar(64),
+    res_data longtext,
+    parent_id varchar(100),
+    coupon_type varchar(32),
+    order_type varchar(32),
     PRIMARY KEY (order_Id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -64,7 +78,26 @@ CREATE TABLE mc_depart_record (
     id bigint NOT NULL AUTO_INCREMENT COMMENT '表主键',
     order_id varchar(100) DEFAULT NULL COMMENT '平台订单号',
     type varchar(8) DEFAULT NULL COMMENT '流水类型',
+    org_code varchar(64),
+    value bigint,
+    create_time datetime,
     before_balance decimal(20, 2) DEFAULT NULL COMMENT '变动前余额',
     balance decimal(20, 2) DEFAULT NULL COMMENT '变动后余额',
     PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Task11退款生产事务所需旧表投影；只用于本次随机schema，不是发布迁移。
+CREATE TABLE mc_ext_depart (
+    org_code varchar(64) PRIMARY KEY,
+    balance bigint,
+    credit_status varchar(8),
+    depart_status int DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+CREATE TABLE mc_redpacket_record (
+    id bigint AUTO_INCREMENT PRIMARY KEY,
+    order_id varchar(100),
+    request_channel varchar(64),
+    channel varchar(64),
+    state varchar(8),
+    value bigint
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

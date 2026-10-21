@@ -113,6 +113,78 @@ class MinisoBridgeMysqlContractTest {
             assertThat(checksums(jdbc)).isEqualTo(checksums);
             assertThat(evidence(jdbc)).isEqualTo(evidence);
             assertHistoricalAuthorizationAbsent(jdbc);
+            assertInitialOwnershipPublicationAtomic(dataSource, jdbc);
+        }
+    }
+
+    /**
+     * Task11：实际单笔落库适配器的@Transactional代理与真实Mapper同连接提交主单/扩展。
+     * 暂停于两次真实SQL之间，从第二连接确认没有可供旧退款扫描的半单；扩展失败必须回滚主单。
+     * 参见详细设计9.8；本用例不把无事务直接new适配器当成生产事务边界。
+     */
+    private void assertInitialOwnershipPublicationAtomic(javax.sql.DataSource source, JdbcTemplate jdbc) throws Exception {
+        var config = new org.apache.ibatis.session.Configuration();
+        config.addMapper(com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper.class);
+        config.addMapper(com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper.class);
+        var factory = new org.mybatis.spring.SqlSessionFactoryBean();
+        factory.setDataSource(source); factory.setConfiguration(config);
+        var session = new org.mybatis.spring.SqlSessionTemplate(factory.getObject());
+        var orders = session.getMapper(com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper.class);
+        var extensions = session.getMapper(com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper.class);
+        var paused = new java.util.concurrent.CountDownLatch(1);
+        var resume = new java.util.concurrent.CountDownLatch(1);
+        var fail = new java.util.concurrent.atomic.AtomicBoolean();
+        var orderConnection = new java.util.concurrent.atomic.AtomicReference<Connection>();
+        var target = new MybatisRechargeOrderPersistenceAdapter(row -> {
+            orderConnection.set(org.springframework.jdbc.datasource.DataSourceUtils.getConnection(source));
+            int count = orders.insertIfAbsent(row);
+            if (!fail.get()) {
+                paused.countDown();
+                try { assertThat(resume.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue(); }
+                catch (InterruptedException ex) { Thread.currentThread().interrupt(); throw new IllegalStateException(ex); }
+            }
+            return count;
+        }, row -> {
+            assertThat(org.springframework.jdbc.datasource.DataSourceUtils.getConnection(source)).isSameAs(orderConnection.get());
+            int count = extensions.insertOrUpdatePersistState(row);
+            if (fail.get()) throw new IllegalStateException("fixture failure after extension write");
+            return count;
+        }, row -> { throw new AssertionError("failed validation must not dispatch"); },
+        row -> { throw new AssertionError("unreserved order must not flush balance"); },
+        row -> { throw new AssertionError("unreserved order must not write debit"); }, new com.fasterxml.jackson.databind.ObjectMapper());
+        var proxy = new org.springframework.aop.framework.ProxyFactory(target);
+        proxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(
+                new org.springframework.jdbc.datasource.DataSourceTransactionManager(source),
+                new org.springframework.transaction.annotation.AnnotationTransactionAttributeSource()));
+        var port = (com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort) proxy.getProxy();
+        var pool = java.util.concurrent.Executors.newSingleThreadExecutor();
+        String order = "task11-initial-order";
+        try {
+            var snapshot = new com.cardshop.trade.engine.application.recharge.PersistOrderSnapshot(
+                    "TASK11", "fixture-app", order, "task11-initial-out", "parent", "sku", "10000000000",
+                    "https://fixture.invalid/callback", 1, 70L, "fixture", 100L, 1, "codekey", "OTHER",
+                    "fixture-hash", "V1", "SHA-256", "VALIDATION_FAILED", "FAILED", "fixture-fail", "fixture",
+                    false, false, "PERSIST_QUEUED", 1L, 0L, 1);
+            var aggregate = new com.cardshop.trade.engine.application.recharge.OrderPersistAggregate(
+                    "task11-initial-message", snapshot, com.cardshop.trade.engine.application.recharge.PersistSource.MQ_SNAPSHOT_FALLBACK,
+                    java.time.Instant.parse("2026-10-21T01:00:00Z"));
+            var publishing = pool.submit(() -> port.persist(aggregate));
+            assertThat(paused.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            assertThat(jdbc.queryForObject("select count(*) from mc_order where order_Id=?", Integer.class, order)).isZero();
+            assertThat(jdbc.queryForObject("select count(*) from recharge_order_ext where order_id=?", Integer.class, order)).isZero();
+            resume.countDown(); publishing.get(5, java.util.concurrent.TimeUnit.SECONDS);
+            assertThat(jdbc.queryForObject("select count(*) from mc_order o join recharge_order_ext e on e.order_id=o.order_Id where o.order_Id=?", Integer.class, order)).isEqualTo(1);
+            jdbc.update("delete from recharge_order_ext where order_id=?", order);
+            jdbc.update("delete from mc_order where order_Id=?", order);
+            fail.set(true);
+            assertThatThrownBy(() -> port.persist(aggregate)).isInstanceOf(IllegalStateException.class);
+            assertThat(jdbc.queryForObject("select count(*) from mc_order where order_Id=?", Integer.class, order)).isZero();
+            assertThat(jdbc.queryForObject("select count(*) from recharge_order_ext where order_id=?", Integer.class, order)).isZero();
+            System.out.println("MINISO Task11 engine initial ownership publication: real Mapper/proxy, invisible half-order, same connection, rollback verified");
+        } finally {
+            resume.countDown(); pool.shutdownNow(); assertThat(pool.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            jdbc.update("delete from recharge_order_ext where order_id=?", order);
+            jdbc.update("delete from mc_order where order_Id=?", order);
         }
     }
 
