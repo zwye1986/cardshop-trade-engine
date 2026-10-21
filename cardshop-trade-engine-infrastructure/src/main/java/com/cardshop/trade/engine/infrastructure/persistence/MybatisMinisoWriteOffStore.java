@@ -19,7 +19,9 @@ import java.time.*;
 import java.time.format.*;
 import java.util.*;
 
-/** 名创持久接收T1、原子处理T2及独立退避T3；参见docs/交行直充业务系统详细设计.md「9.5」。 统一按主单、扩展、凭据、事件、任务加锁；无凭据事务只锁事件，不再升级主单锁。 */
+/** 名创持久接收T1、原子处理T2及独立退避T3；参见docs/交行直充业务系统详细设计.md「9.8」。
+ * 已知归属按主单、扩展、凭据、guard、事件、任务加锁；未知接收仅guard及事件，不再升级主单锁。
+ */
 public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
     private static final Logger LOG = LoggerFactory.getLogger(MybatisMinisoWriteOffStore.class);
     private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
@@ -36,6 +38,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
     private final MinisoWriteOffObserver observer;
     private final MinisoWriteOffEventMapper events;
     private final MinisoReceiptMapper receipts;
+    private final MinisoCouponGuardMapper guards;
     private final RechargeNotifyTaskPort tasks;
     private final V12RedemptionNotifyPayloadSigner signer;
     private final TransactionTemplate tx;
@@ -47,6 +50,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
     public MybatisMinisoWriteOffStore(
             MinisoWriteOffEventMapper events,
             MinisoReceiptMapper receipts,
+            MinisoCouponGuardMapper guards,
             RechargeNotifyTaskPort tasks,
             V12RedemptionNotifyPayloadSigner signer,
             PlatformTransactionManager tm,
@@ -57,6 +61,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
         this(
                 events,
                 receipts,
+                guards,
                 tasks,
                 signer,
                 tm,
@@ -70,6 +75,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
     public MybatisMinisoWriteOffStore(
             MinisoWriteOffEventMapper events,
             MinisoReceiptMapper receipts,
+            MinisoCouponGuardMapper guards,
             RechargeNotifyTaskPort tasks,
             V12RedemptionNotifyPayloadSigner signer,
             PlatformTransactionManager tm,
@@ -80,7 +86,8 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
             MinisoWriteOffObserver observer) {
         this.observer = Objects.requireNonNull(observer);
         this.events = Objects.requireNonNull(events);
-        this.orderLocks = new MinisoWriteOffOrderLocks(events, receipts);
+        this.guards = Objects.requireNonNull(guards);
+        this.orderLocks = new MinisoWriteOffOrderLocks(events, receipts, guards);
         this.receipts = Objects.requireNonNull(receipts);
         this.tasks = Objects.requireNonNull(tasks);
         this.signer = Objects.requireNonNull(signer);
@@ -112,6 +119,8 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
                                                 candidate == null
                                                         ? null
                                                         : lockOwned(candidate.orderId());
+                                        // 未知归属只能锁同券guard及事件；凭据即使随后出现也留待下一事务定位。
+                                        if (owned == null) guards.lockInTransaction(notice.couponCode(), now());
                                         var previous = events.lock(notice.eventId());
                                         events.insertIfAbsent(
                                                 notice.eventId(),
@@ -216,6 +225,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
     private boolean process(Event candidate) {
         var initial = receipts.selectByCoupon(candidate.couponCode());
         Owned owned = initial == null ? null : lockOwned(initial.orderId());
+        if (owned == null) guards.lockInTransaction(candidate.couponCode(), now());
         var event = events.lock(candidate.eventId());
         if (event == null
                 || event.version() != candidate.version()
@@ -316,7 +326,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
 
     /** 定位后重新核验，顺序与履约事务一致；参见docs/交行直充业务系统详细设计.md「9.5」。 */
     private Owned lockOwned(String id) {
-        return orderLocks.lock(id);
+        return orderLocks.lock(id, now());
     }
 
     private void report(String category, String event, RuntimeException safe, boolean expected) {

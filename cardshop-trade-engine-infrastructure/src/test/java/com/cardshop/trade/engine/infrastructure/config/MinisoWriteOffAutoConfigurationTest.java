@@ -92,6 +92,8 @@ class MinisoWriteOffAutoConfigurationTest {
                         org.apache.ibatis.session.SqlSessionFactory.class,
                         () -> mock(org.apache.ibatis.session.SqlSessionFactory.class))
                 .withBean(MinisoReceiptMapper.class, () -> mock(MinisoReceiptMapper.class))
+                .withBean(MinisoCouponGuardMapper.class, () -> mock(MinisoCouponGuardMapper.class))
+                .withBean(MinisoSharedCallbackInboxMapper.class, () -> mock(MinisoSharedCallbackInboxMapper.class))
                 .withBean(
                         MinisoWriteOffEventMapper.class,
                         () -> mock(MinisoWriteOffEventMapper.class))

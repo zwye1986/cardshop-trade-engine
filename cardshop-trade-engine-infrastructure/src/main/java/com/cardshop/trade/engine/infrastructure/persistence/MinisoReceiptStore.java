@@ -1,30 +1,40 @@
 package com.cardshop.trade.engine.infrastructure.persistence;
 
 import com.cardshop.trade.engine.application.recharge.MinisoFulfillmentReceipt;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoCouponGuardMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper;
+import java.time.Clock;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Objects;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 /**
  * 名创履约凭据保存，参与订单终态的同一事务，不提供独立库存能力。
- * 参见详细设计「名创 MINISO 专属协议实施约束（2026-10-17）」。异常直接抛回事务边界，不吞错。
+ * 参见docs/交行直充业务系统详细设计.md「9.8」。异常直接抛回事务边界，不吞错。
  */
 public final class MinisoReceiptStore {
+    private static final int USED = 1, VOID = 3;
+    private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
     private final MinisoReceiptMapper mapper;
+    private final MinisoCouponGuardMapper guards;
+    private final Clock clock;
     private final java.util.function.Supplier<
                     com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection>
             protection;
 
-    public MinisoReceiptStore(MinisoReceiptMapper mapper) {
-        this(mapper, () -> null);
-    }
-
     public MinisoReceiptStore(
             MinisoReceiptMapper mapper,
+            MinisoCouponGuardMapper guards,
+            Clock clock,
             java.util.function.Supplier<
                             com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection>
-                    protection) { this.mapper = Objects.requireNonNull(mapper);
-        this.protection = Objects.requireNonNull(protection); }
+                    protection) {
+        this.mapper = Objects.requireNonNull(mapper);
+        this.guards = Objects.requireNonNull(guards);
+        this.clock = Objects.requireNonNull(clock);
+        this.protection = Objects.requireNonNull(protection);
+    }
 
     private static boolean sameBatch(int batchId, String frozen) {
         // 名创batchId为Integer，冻结源为旧表字符串；前导零不改变批次身份，与Gateway数值转换一致。
@@ -53,12 +63,16 @@ public final class MinisoReceiptStore {
                 || !sameBatch(receipt.batchId(), snapshot.batchId())) {
             throw new IllegalStateException("MINISO receipt ownership or frozen snapshot mismatch");
         }
-        var existing = mapper.selectReceipt(receipt.orderId());
-        if (receipt.couponStatus() == 3 && protection.get() != null) {
-            // 在同一主单事务内检查已接收事件，堵住作废HTTP返回到终态落库之间的竞态；参见详细设计9.5。
-            protection.get().assertVoidAllowed(receipt.orderId());
+        var existing = mapper.lockReceipt(receipt.orderId());
+        if (existing != null && (!existing.orgCode().equals(receipt.orgCode())
+                || existing.batchId() != receipt.batchId()
+                || !existing.phone().equals(receipt.phone()) || !existing.couponCode().equals(receipt.couponCode())
+                || !existing.beginTime().equals(receipt.beginTime()) || !existing.endTime().equals(receipt.endTime()))) {
+            throw new IllegalStateException("MINISO immutable receipt conflict");
         }
-        if (existing != null && existing.couponStatus() == 1 && receipt.couponStatus() == 3) {
+        // 已有凭据先锁凭据，首次发布先锁同券guard再insert；锁与终态共用主事务，参见详细设计9.8。
+        guards.lockInTransaction(receipt.couponCode(), LocalDateTime.ofInstant(clock.instant(), ZONE));
+        if (existing != null && existing.couponStatus() == USED && receipt.couponStatus() == VOID) {
             throw new com.cardshop.trade.engine.application.recharge.MinisoWriteOffException(
                     com.cardshop.trade.engine.application.recharge.MinisoWriteOffException.Reason
                             .REDEEM_VOID_CONFLICT);
@@ -66,16 +80,17 @@ public final class MinisoReceiptStore {
         if (existing == null) {
             // 券码全局唯一约束阻止另一订单盗用券码；冲突使订单终态事务整体回滚。
             if (mapper.insert(receipt) != 1) throw new IllegalStateException("MINISO receipt insert failed");
-            return;
         }
-        if (!existing.orgCode().equals(receipt.orgCode()) || existing.batchId() != receipt.batchId()
-                || !existing.phone().equals(receipt.phone()) || !existing.couponCode().equals(receipt.couponCode())
-                || !existing.beginTime().equals(receipt.beginTime()) || !existing.endTime().equals(receipt.endTime())) {
-            throw new IllegalStateException("MINISO immutable receipt conflict");
+        if (receipt.couponStatus() == VOID) {
+            // 首次作废凭据也先在本事务内发布，随后可按订单定位券码；证据冲突使insert一并回滚。
+            // 保护缺失不能降级放行。独立blockInvalidation仅为前置提示，不授予资金许可；参见详细设计9.8。
+            Objects.requireNonNull(protection.get(), "MINISO void protection required")
+                    .assertVoidAllowed(receipt.orderId());
         }
+        if (existing == null) return;
         // 状态3作废终态优先；已使用不能退回未使用/过期。迟到查询只补证据，不回退已知终态。
-        int next = existing.couponStatus() == 3 || receipt.couponStatus() == 3 ? 3
-                : existing.couponStatus() == 1 || receipt.couponStatus() == 1 ? 1
+        int next = existing.couponStatus() == VOID || receipt.couponStatus() == VOID ? VOID
+                : existing.couponStatus() == USED || receipt.couponStatus() == USED ? USED
                 : existing.couponStatus() == 2 ? 2 : receipt.couponStatus();
         if (next != existing.couponStatus() && mapper.updateStatus(receipt.orderId(), next) != 1) {
             throw new IllegalStateException("MINISO receipt status update failed");

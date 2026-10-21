@@ -43,10 +43,12 @@ public class MinisoWriteOffAutoConfiguration {
     public com.cardshop.trade.engine.infrastructure.persistence.MinisoReceiptStore
             minisoReceiptStore(
                     MinisoReceiptMapper receipts,
+                    MinisoCouponGuardMapper guards,
+                    Clock clock,
                     org.springframework.beans.factory.ObjectProvider<MinisoWriteOffProtection>
                             protection) {
         return new com.cardshop.trade.engine.infrastructure.persistence.MinisoReceiptStore(
-                receipts, protection::getIfAvailable);
+                receipts, guards, clock, protection::getObject);
     }
 
     /** 作废保护随真实持久化装配，关闭恢复Job不能绕过既有事件；参见docs/交行直充业务系统详细设计.md「9.5」。 */
@@ -56,12 +58,14 @@ public class MinisoWriteOffAutoConfiguration {
     public MinisoWriteOffProtection minisoWriteOffProtection(
             MinisoWriteOffEventMapper events,
             MinisoReceiptMapper receipts,
+            MinisoCouponGuardMapper guards,
+            MinisoSharedCallbackInboxMapper inbox,
             PlatformTransactionManager tm,
             Clock clock,
             MinisoWriteOffProperties settings) {
         return new com.cardshop.trade.engine.infrastructure.persistence
                 .MybatisMinisoWriteOffProtection(
-                events, receipts, tm, clock, settings.getTransactionTimeoutSeconds());
+                events, receipts, guards, inbox, tm, clock, settings.getTransactionTimeoutSeconds());
     }
 
     @Bean
@@ -72,6 +76,7 @@ public class MinisoWriteOffAutoConfiguration {
     public MybatisMinisoWriteOffStore minisoWriteOffStore(
             MinisoWriteOffEventMapper events,
             MinisoReceiptMapper receipts,
+            MinisoCouponGuardMapper guards,
             RechargeNotifyTaskPort tasks,
             V12SigningCredentialStorePort credentials,
             PlatformTransactionManager tm,
@@ -84,6 +89,7 @@ public class MinisoWriteOffAutoConfiguration {
         return new MybatisMinisoWriteOffStore(
                 events,
                 receipts,
+                guards,
                 tasks,
                 new V12RedemptionNotifyPayloadSigner(credentials),
                 tm,

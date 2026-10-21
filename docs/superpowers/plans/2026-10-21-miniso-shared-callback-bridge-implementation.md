@@ -185,9 +185,11 @@ WHERE table_schema=DATABASE()
 
 ## Task 4: 新端统一guard及共享证据当前读
 
-**Files:** Create `EI/persistence/mapper/MinisoCouponGuardMapper.java`、`MinisoSharedCallbackInboxMapper.java`；Modify `MinisoReceiptStore.java`、`MinisoWriteOffOrderLocks.java`、`MybatisMinisoWriteOffProtection.java`、`mapper/MinisoReceiptMapper.java`；Test `ET/persistence/MinisoReceiptPersistenceTest.java`、`MinisoWriteOffPersistenceTest.java`。
+**Files:** Create `EI/persistence/mapper/MinisoCouponGuardMapper.java`、`MinisoSharedCallbackInboxMapper.java`；Modify `MinisoReceiptStore.java`、`MinisoWriteOffOrderLocks.java`、`MybatisMinisoWriteOffProtection.java`、`mapper/MinisoReceiptMapper.java`；Test `ET/persistence/MinisoReceiptPersistenceTest.java`、`MinisoWriteOffPersistenceTest.java`。统一guard还须同步`MybatisMinisoWriteOffStore.java`的直接接收/处理调用，以及`MinisoWriteOffAutoConfiguration.java`、`TradeEngineInfrastructureConfiguration.java`和既有装配测试，避免构造器兼容路径绕过保护；不提前实现任务8的释放授权优先级。
 
-- [ ] 1. 在真实事务测试中插入任意状态共享inbox（包括MANUAL_REQUIRED、TRANSFERRED_NEW），通过现有作废写入口断言不能提交；只有guard无inbox应不阻止。用不同券码及不同状态作反例，避免测成“有guard就一律拦截”。运行`engine_test 'MinisoWriteOffPersistenceTest,MinisoReceiptPersistenceTest'`得到红灯。
+2026-10-21执行结果：基线22项通过；补齐两套H2最小schema后，先观察共享证据/首次凭据/缺guard等11项行为失败，再补直接接收/处理入口反例得到37项中14项预期失败、错误0。接入同主事务guard与共享证据当前读后，同两组37项全通过；关联模块544项中524通过/20跳过，全根reactor707项中687通过/20跳过，均失败0、错误0。只完成本地Task4；共享inbox六状态均阻止作废，guard自身/不同券不阻止，失败时凭据、主单、扩展及新建guard随调用事务回滚。首次作废凭据在guard后临时insert再按订单复核，冲突时整体回滚；不跳过缺凭据时的同券证据。RC/RR当前读和缺行锁竞争仍待任务17使用真实InnoDB验证；任务5—8授权及恢复尚未实现，不构成可发布半套方案。执行证据见《集成测试.md》`MINISO-BRIDGE-GUARD-LOCAL-20261021`；本任务按下面标题本地提交，不push、部署或改共享配置。
+
+- [x] 1. 在真实事务测试中插入任意状态共享inbox（包括MANUAL_REQUIRED、TRANSFERRED_NEW），通过现有作废写入口断言不能提交；只有guard无inbox应不阻止。用不同券码及不同状态作反例，避免测成“有guard就一律拦截”。运行`engine_test 'MinisoWriteOffPersistenceTest,MinisoReceiptPersistenceTest'`得到红灯。
 
 先将两个H2 fixture的最小schema增加本任务实际查询的guard/inbox及授权列，mapper加入同一SqlSession配置，再加入下面测试。这样红灯来自未保护，而非缺表异常；InnoDB语义仍在任务17验证。`seed/receipt/notice/status/USED`均复用现有`MinisoWriteOffPersistenceTest`成员。
 
@@ -207,7 +209,7 @@ void sharedManualEvidenceBlocksVoidEvenWithoutNewEngineEvent() {
 }
 ```
 
-- [ ] 2. 实体guard只在调用方实际事务中幂等建行并锁定；用下面精确键语句，不用`INSERT IGNORE`吞其他错误。新端首次凭据insert前锁guard，更新已有凭据先锁凭据再锁guard；未知接收不能反向拿主单锁。
+- [x] 2. 实体guard只在调用方实际事务中幂等建行并锁定；用下面精确键语句，不用`INSERT IGNORE`吞其他错误。新端首次凭据insert前锁guard，更新已有凭据先锁凭据再锁guard；未知接收不能反向拿主单锁。
 
 ```sql
 INSERT INTO mc_miniso_coupon_guard(coupon_code,created_at)
@@ -219,9 +221,9 @@ SELECT event_id,use_time,status FROM mc_miniso_callback_inbox
 WHERE coupon_code=? FOR UPDATE;
 ```
 
-- [ ] 3. 调用方必须先锁主单/扩展/凭据；guard后不用早先快照当“无核销”。`blockInvalidation`只作前置提示，不能授予资金许可；最终保护参与终态调用方事务。读/锁异常直接抛出，绝不返回无证据。
-- [ ] 4. 同命令转绿，扩展事务中断断言凭据/主单全部回滚；任务17再以RC/RR证明缺行竞争。
-- [ ] 5. 本地提交`fix(miniso): serialize receipt publication and callback evidence`。
+- [x] 3. 调用方必须先锁主单/扩展/凭据；guard后不用早先快照当“无核销”。`blockInvalidation`只作前置提示，不能授予资金许可；最终保护参与终态调用方事务。读/锁异常直接抛出，绝不返回无证据。
+- [x] 4. 同命令转绿，扩展事务中断断言凭据/主单全部回滚；任务17再以RC/RR证明缺行竞争。
+- [x] 5. 本地提交`fix(miniso): serialize receipt publication and callback evidence`。
 
 ## Task 5: 新端终态与首次持久授权原子提交
 
