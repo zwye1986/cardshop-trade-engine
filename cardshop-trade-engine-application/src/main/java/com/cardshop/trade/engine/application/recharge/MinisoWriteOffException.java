@@ -14,6 +14,9 @@ public final class MinisoWriteOffException extends RuntimeException {
         USE_TIME_CONFLICT,
         USE_TIME_OUT_OF_RANGE,
         REDEEM_VOID_CONFLICT,
+        RELEASE_AUTHORIZATION_INCONSISTENT,
+        RELEASE_TERMINAL_CONFLICT,
+        RELEASE_EVIDENCE_MISSING,
         NOTIFY_TASK_CONFLICT;
 
         public boolean retryable() {

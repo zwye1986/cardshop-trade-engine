@@ -168,6 +168,14 @@ public interface McOrderMapper extends BaseMapper<McOrderDO> {
                 .last("limit 1"));
     }
 
+    /** 履约写前先锁主单；显式只读裁决字段，不依赖锁外快照。参见详细设计9.8。 */
+    default McOrderDO lockFulfillmentOrder(String orderId) {
+        return selectOne(new LambdaQueryWrapper<McOrderDO>()
+                .select(McOrderDO::getOrderId, McOrderDO::getOrgCode, McOrderDO::getOutOrderId,
+                        McOrderDO::getSupplierChannel, McOrderDO::getOrderPrice, McOrderDO::getOrderStatus)
+                .eq(McOrderDO::getOrderId, orderId).last("for update"));
+    }
+
     /**
      * 按商户订单号读取直充订单事实。
      */

@@ -306,6 +306,9 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper,
+            ObjectProvider<com.cardshop.trade.engine.infrastructure.persistence.MinisoReceiptStore> minisoReceipts,
+            McDepartRecordMapper departRecords,
+            RechargeDispatchOutboxMapper dispatchEvents,
             ObjectMapper objectMapper,
             Clock clock) {
         return new MybatisRechargeFulfillmentOrderAdapter(
@@ -313,7 +316,10 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
                 extMapper,
                 flowMapper,
                 objectMapper,
-                clock);
+                clock,
+                minisoReceipts::getObject,
+                departRecords,
+                dispatchEvents);
     }
 
     /**

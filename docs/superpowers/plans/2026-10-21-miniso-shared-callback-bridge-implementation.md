@@ -229,8 +229,14 @@ WHERE coupon_code=? FOR UPDATE;
 
 **Files:** Create `EA/MinisoBalanceReleaseAuthorization.java`；Modify `EA/RechargeFulfillmentOrderPort.java`、`EI/persistence/MybatisRechargeFulfillmentOrderAdapter.java`、`EI/persistence/entity/RechargeOrderExtDO.java`及现有mapper；Test `ET/persistence/RechargeFulfillmentVoucherStatePersistenceTest.java`。
 
-- [ ] 1. 在现有生产事务代理测试中加入“CANCELLED更新不带receipt仍有inbox”“FAILED已收到核销”“授权字段写失败”的三个判别输入；断言分别无授权/不覆盖核销、无授权、终态及授权整体回滚。运行`engine_test RechargeFulfillmentVoucherStatePersistenceTest`，确认现有边界会失败。
-- [ ] 2. 扩展原履约端口，不新增通用退款接口。新增类型/方法如下；实现类中文注释说明仅MINISO使用，原非MINISO端口语义不变。
+2026-10-21执行结果：在本地Task4提交`0138744`之后，仅实施Task5。基线两组15项全通过；原终态旁路先出现2项预期断言失败，新增许可接口尚未实现时41项中30项断言失败、4项因明确拒绝的占位接口报错，未把编译/缺表故障当作行为红灯。补充历史终态重开及两套状态错配反例后45项中4项预期失败，再转绿；最后补充仅修改主单6/11却伪装派单SUCCESS的2项旁路反例，先红后绿。最终五组目标测试99项全通过；根reactor747项中727通过/20项既有环境依赖测试跳过，失败/错误均0。
+
+生产晚装配工厂＋真实主SqlSession Mapper＋Spring事务代理证明：终态、凭据及首次授权整体提交/回滚，任意核销证据阻止首次许可；event-A/137分/首次毫秒时间冻结，event-B和迟到证据不重写，历史无授权终态不能补认或被SUCCESS重新打开。金额核对锁定的`mc_depart_record(type=1,正数value)`原预扣事实，源事件校验本订单现存履约outbox身份/类型。实体三列已在Task2映射，本轮无新增DDL或字段；正常/晚装配均传入主Mapper并延迟解析凭据Store，未改专用outbox写连接。仅可信作废凭据可证明已发券路径具备释放资格，无券码/未使用券及未经核验的失败码不放行。
+
+端口`completeMinisoBalanceRelease`明确TODO并拒绝执行，留Task6；Worker接入及恢复留Task7—8，InnoDB RC/RR并发留Task17。证据见《集成测试.md》`MINISO-BRIDGE-AUTHORIZATION-LOCAL-20261021`；仅本地提交，不push、部署或改共享配置。
+
+- [x] 1. 在现有生产事务代理测试中加入“CANCELLED更新不带receipt仍有inbox”“FAILED已收到核销”“授权字段写失败”的三个判别输入；断言分别无授权/不覆盖核销、无授权、终态及授权整体回滚。运行`engine_test RechargeFulfillmentVoucherStatePersistenceTest`，确认现有边界会失败。
+- [x] 2. 扩展原履约端口，不新增通用退款接口。新增类型/方法如下；实现类中文注释说明仅MINISO使用，原非MINISO端口语义不变。
 
 ```java
 public record MinisoBalanceReleaseAuthorization(
@@ -245,9 +251,9 @@ void completeMinisoBalanceRelease(MinisoBalanceReleaseAuthorization authorizatio
 ```
 
 `findMinisoReleaseAuthorization`无授权返回empty，三字段部分为空必须抛不一致异常。`authorizeMinisoTerminalRelease`返回empty只表示可信订单原本未预扣，不制造退款；身份损坏、缺证据或核销冲突必须分类抛出，不与“无需退款”混同。新端MINISO所有CANCELLED/可退款FAILED写入由该事务入口承接；原`updateFulfillmentStatus`也必须识别已授权及终态门禁，不能让另一调用者绕过。扩展现有fixture的MINISO专用数据及mapper装配，不把原GENERIC订单改成MINISO导致非MINISO旧测试语义变化。
-- [ ] 3. 首次授权锁主单/扩展，核验DB_PERSISTED、预扣身份/金额、可信receipt或已核验未发券事实；锁guard后当前读两种证据，无核销才同时写终态及三个授权字段。金额从锁定原预扣事实核对，首次sourceEventId必须对应本订单现存履约outbox；不是HTTP请求自报金额。已有完整授权只核对并返回冻结值，不重写时间、eventId或金额；历史终态无授权不自动补认。
-- [ ] 4. 用源event-A/重试event-B、137分/错误139分的非对称输入断言冻结值仍为A/137；部分授权、商户/外部单号错配均失败。已有授权后迟到SUCCESS只能形成冲突，不能把主单恢复可派单。运行同一测试及`MinisoReceiptPersistenceTest`转绿。
-- [ ] 5. 本地提交`feat(miniso): persist terminal release authorization atomically`。
+- [x] 3. 首次授权锁主单/扩展，核验DB_PERSISTED、预扣身份/金额、可信receipt或已核验未发券事实；锁guard后当前读两种证据，无核销才同时写终态及三个授权字段。金额从锁定原预扣事实核对，首次sourceEventId必须对应本订单现存履约outbox；不是HTTP请求自报金额。已有完整授权只核对并返回冻结值，不重写时间、eventId或金额；历史终态无授权不自动补认。
+- [x] 4. 用源event-A/重试event-B、137分/错误139分的非对称输入断言冻结值仍为A/137；部分授权、商户/外部单号错配均失败。已有授权后迟到SUCCESS只能形成冲突，不能把主单恢复可派单。运行同一测试及`MinisoReceiptPersistenceTest`转绿。
+- [x] 5. 本地提交`feat(miniso): persist terminal release authorization atomically`。
 
 ## Task 6: 新端RELEASE delta与释放标记原子收尾
 

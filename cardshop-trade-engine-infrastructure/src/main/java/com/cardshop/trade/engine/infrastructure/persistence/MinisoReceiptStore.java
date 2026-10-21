@@ -53,6 +53,38 @@ public final class MinisoReceiptStore {
         }
     }
 
+    /**
+     * 首次资金许可的凭据及核销门禁，必须参与主单/扩展已锁定的调用方事务。
+     * 参见docs/交行直充业务系统详细设计.md「9.8」：缺凭据不能猜测未发券；当前仅可信作废凭据
+     * 证明已发行券不再有效，未核验的供应商失败码不提供无券码放行例外。
+     */
+    public void assertTerminalReleaseAllowed(String orderId) {
+        if (!TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("MINISO release check requires order transaction");
+        }
+        var snapshot = mapper.lockSnapshot(orderId);
+        if (snapshot == null) {
+            throw new com.cardshop.trade.engine.application.recharge.MinisoWriteOffException(
+                    com.cardshop.trade.engine.application.recharge.MinisoWriteOffException.Reason.OWNERSHIP_CONFLICT);
+        }
+        var local = mapper.lockReceipt(orderId);
+        if (local == null) {
+            throw new com.cardshop.trade.engine.application.recharge.MinisoWriteOffException(
+                    com.cardshop.trade.engine.application.recharge.MinisoWriteOffException.Reason.RECEIPT_PENDING);
+        }
+        if (!snapshot.orgCode().equals(local.orgCode()) || !snapshot.account().equals(local.phone())
+                || snapshot.num() != 1 || !sameBatch(local.batchId(), snapshot.batchId())) {
+            throw new com.cardshop.trade.engine.application.recharge.MinisoWriteOffException(
+                    com.cardshop.trade.engine.application.recharge.MinisoWriteOffException.Reason.OWNERSHIP_CONFLICT);
+        }
+        // 此保护内部按凭据→guard→新事件→inbox当前读，不另开REQUIRES_NEW事务。
+        Objects.requireNonNull(protection.get(), "MINISO release protection required").assertVoidAllowed(orderId);
+        if (local.couponStatus() != VOID) {
+            throw new com.cardshop.trade.engine.application.recharge.MinisoWriteOffException(
+                    com.cardshop.trade.engine.application.recharge.MinisoWriteOffException.Reason.RELEASE_EVIDENCE_MISSING);
+        }
+    }
+
     private void saveWithinOrderTransaction(MinisoFulfillmentReceipt receipt) {
         if (!TransactionSynchronizationManager.isActualTransactionActive()) {
             throw new IllegalStateException("MINISO receipt requires order transaction");

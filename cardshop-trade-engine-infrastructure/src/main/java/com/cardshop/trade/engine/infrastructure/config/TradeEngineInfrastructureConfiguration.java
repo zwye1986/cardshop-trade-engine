@@ -678,6 +678,8 @@ public class TradeEngineInfrastructureConfiguration {
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper,
+            McDepartRecordMapper departRecords,
+            RechargeDispatchOutboxMapper dispatchEvents,
             ObjectMapper objectMapper,
             Clock clock) {
         /*
@@ -690,7 +692,9 @@ public class TradeEngineInfrastructureConfiguration {
                 flowMapper,
                 objectMapper,
                 clock,
-                minisoReceipts.getIfAvailable());
+                minisoReceipts::getObject,
+                departRecords,
+                dispatchEvents);
     }
 
     @Bean

@@ -223,6 +223,18 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
                 .last("limit 1"));
     }
 
+    /** 主单锁后读取归属、券事实及授权，三授权字段由事务边界整体校验。参见详细设计9.8。 */
+    default RechargeOrderExtDO lockFulfillmentOrder(String orderId) {
+        return selectOne(new LambdaQueryWrapper<RechargeOrderExtDO>()
+                .select(RechargeOrderExtDO::getOrderId, RechargeOrderExtDO::getOrgCode,
+                        RechargeOrderExtDO::getOutOrderSn, RechargeOrderExtDO::getPersistStatus,
+                        RechargeOrderExtDO::getBalanceReserved, RechargeOrderExtDO::getDispatchStatus,
+                        RechargeOrderExtDO::getVoucherUseState, RechargeOrderExtDO::getVoucherUseTime,
+                        RechargeOrderExtDO::getBalanceReleaseAuthorizedAt,
+                        RechargeOrderExtDO::getBalanceReleaseEventId, RechargeOrderExtDO::getBalanceReleaseAmount)
+                .eq(RechargeOrderExtDO::getOrderId, orderId).last("for update"));
+    }
+
     /**
      * 按商户订单号读取扩展状态。
      */
