@@ -363,13 +363,19 @@ String eventId = "miniso-redeemed-" + hex;
 
 ## Task 10: 旧端凭据首次发布及相关事实写入统一锁序
 
-**Files:** Create `LB/MinisoLegacyOrderTransactions.java`；Modify `LM/api/service/impl/MINISOSupplierTradeServiceImpl.java`、`LM/service/impl/McOrderServiceImpl.java`中`extProductRechargeMc`及任务1发现的MINISO首次/状态写入路径；Create `LT/MinisoLegacyOrderTransactionsTest.java`，Extend `LT/MinisoBridgeMysqlContractTest.java`。
+**Files:** Create `LB/MinisoLegacyOrderTransactions.java`；Modify `LM/api/service/impl/MINISOSupplierTradeServiceImpl.java`、`LM/service/impl/McOrderServiceImpl.java`中`extProductRechargeMc`及任务1发现的MINISO首次/状态写入路径；Create `LT/MinisoLegacyOrderTransactionsTest.java`，Extend `LT/MinisoBridgeMysqlContractTest.java`。 实际调用链同时修改`LM/api/ExtCommonApi.java`、`LM/service/impl/McVoucherListOutServiceImpl.java`、`LM/service/impl/McOrderCustomerReissueServiceImpl.java`及其单测、旧`McOrderMapper.xml`的奈雪渠道条件；移除`MCUtils`及`HttpUtils`本次链路的敏感日志。新端仅扩可丢弃MySQL旧表投影，不改发布迁移。
 
-- [ ] 1. 针对两个实际发券入口分别模拟远端成功返回两个券、第二券insert失败：断言主单成功状态和全部新凭据一起回滚，不能吞异常后返回发券成功。同原订单号查单补证据必须保存所有券，不能再次发券。运行`legacy_test MinisoLegacyOrderTransactionsTest`确认红灯。
-- [ ] 2. 远端调用保持锁外；从可信响应构造完整券集合后进入`MinisoLegacyOrderTransactions`主事务，锁主单、复核无新归属、锁已有凭据，按券码固定顺序建/锁全部guard，再提交本次凭据/主单事实。库存业务规则不重做，但原有相关数据库写入不能在凭据失败后独立成功。多券先锁完全部凭据再锁guard，不逐券交替两种锁。
-- [ ] 3. 删除本次MINISO凭据写入处的吞错成功路径；已可能发券且保存失败/结果未知，回原orderNo查询，仍不明转人工，不改成可自动退款的“明确失败”。核销/作废/查询补状态所有可达写入同样遵守guard协议；遇其他供应商路径保持原行为。
-- [ ] 4. 同测试转绿，任务17以真实MySQL＋已认证未知inbox的相反顺序竞争证明发布不会漏保护。若发现无法证明完整券/金额对应的旧历史单，保守人工，不按首券放行整单。
-- [ ] 5. 本地提交`fix(miniso): publish legacy receipts under coupon guards`。
+2026-10-21范围确认：用户明确386人工库存券不使用本次MINISO核销入口，`ownCartOrder`及对应人工库存写入保持原行为。两条MINISO远端发券入口请求前短事务记处理中13并冻结商品/渠道，重入只查原订单号；可能已发券或保存失败先查单补齐全部凭据，仍不明转存疑18，不恢复库存、不自动退款、不继续候选渠道。完整凭据、主单成功和真实库存扣减同主连接事务提交，查询幂等不重复扣库存；历史成功单凭据不全时不猜测库存断点。该实施细化已同步主详细设计9.8及高可用设计同名章节。原Amp会话中断时，两条真实入口的第二券插入失败测试均为预期断言失败；此记录不代表实现或后续并发验收已完成。
+
+归属探测按两主设计的Task10细化：本服务复制专属主库模板并设置RC，不改Task9及旧业务默认模板；主单→扩展→本单全凭据→全guard后，跨单旧/新凭据归属使用RC已提交读复查，不持guard反向锁其他订单凭据。事件/inbox/历史核销证据仍当前锁定读。等待guard期间的新发布归属必须被发现，不能只在guard之前探测一次或依赖缺行gap锁。删除本次实际调用链既有签名原文/签名及完整供应商响应日志，不改变主动签名协议或密钥来源。
+
+- [x] 1. 针对两个实际发券入口分别模拟远端成功返回两个券、第二券insert失败：断言主单成功状态和全部新凭据一起回滚，不能吞异常后返回发券成功。同原订单号查单补证据必须保存所有券，不能再次发券。运行`legacy_test MinisoLegacyOrderTransactionsTest`确认红灯。
+- [x] 2. 远端调用保持锁外；从可信响应构造完整券集合后进入`MinisoLegacyOrderTransactions`主事务，锁主单、复核无新归属、锁已有凭据，按券码固定顺序建/锁全部guard，再提交本次凭据/主单事实。库存业务规则不重做，但原有相关数据库写入不能在凭据失败后独立成功。多券先锁完全部凭据再锁guard，不逐券交替两种锁。
+- [x] 3. 删除本次MINISO凭据写入处的吞错成功路径；已可能发券且保存失败/结果未知，回原orderNo查询，仍不明转人工，不改成可自动退款的“明确失败”。核销/作废/查询补状态所有可达写入同样遵守guard协议；遇其他供应商路径保持原行为。
+- [x] 4. 同测试转绿，任务17以真实MySQL＋已认证未知inbox的相反顺序竞争证明发布不会漏保护。若发现无法证明完整券/金额对应的旧历史单，保守人工，不按首券放行整单。
+- [x] 5. 本地提交`fix(miniso): publish legacy receipts under coupon guards`。
+
+2026-10-21本地执行完成：沿用Amp中断草稿恢复两个实际发券入口红灯（2断言失败/0错误），逐步修复并补全主事务49项、一键补发13项；最终旧端15组208项全部通过，失败/错误/跳过0。MySQL8.0.28真实生产publisher首轮RC暴露Connector/J通用DATETIME返回LocalDateTime，显式getTimestamp后RC/RR各跑新端迁移1项＋旧端探针/生产publisher2项全部通过，三次运行容器均清理。原单重入、查询不二扣库存、第二券失败连同主单/流水回滚、历史损坏转18、guard后跨单归属、旧retry最终CAS、限频及一键补发等待快照、实际回调/同步/作废旁路和日志脱敏均纳入测试。386人工库存按stock主单精确同步，不依赖批次默认值且不建guard；ownCartOrder不改。独立规格及代码质量审查均通过；旧端本地提交`3d66d0bb`，新端仅同步两主设计/计划/集成测试记录及可丢弃schema旧表投影。完整证据见《集成测试.md》`MINISO-BRIDGE-LEGACY-PUBLISH-LOCAL-20261021`。H2两连接仅证明本地可见性，跨JVM未知inbox相反顺序竞争及Redis断点仍归Task17；Task11未开始，不push/部署/共享DDL或Nacos，不可单独启用BRIDGE。
 
 ## Task 11: 所有旧退款入口排除新引擎所有权
 
