@@ -323,7 +323,7 @@ if (result.succeeded()) {
 
 **Files:** Create `LB/MinisoCallbackBridgeProperties.java`、`MinisoBridgeConfiguration.java`、`MinisoCallbackAuthenticator.java`、`MinisoCallbackFact.java`；Create `LT/MinisoCallbackAuthenticatorTest.java`、`MinisoBridgeConfigurationTest.java`；Read旧`MCUtils`，不借此修改主动发券密钥。
 
-- [ ] 1. 定义Java8公开合同：`new MinisoCallbackAuthenticator(String key2)`，方法`MinisoCallbackFact authenticate(byte[] utf8Body, Map<String,List<String>> headers)`；事实是不可变普通Java8类，提供`getCouponCode()/getUseTime()/getEventId()`，useTime为LocalDateTime。先加可编译但抛UnsupportedOperationException的最小骨架，再写下面行为测试；编译缺类型不算行为红灯。运行`legacy_test 'MinisoCallbackAuthenticatorTest,MinisoBridgeConfigurationTest'`。
+- [x] 1. 定义Java8公开合同：`new MinisoCallbackAuthenticator(String key2)`，方法`MinisoCallbackFact authenticate(byte[] utf8Body, Map<String,List<String>> headers)`；事实是不可变普通Java8类，提供`getCouponCode()/getUseTime()/getEventId()`，useTime为LocalDateTime。先加可编译但抛UnsupportedOperationException的最小骨架，再写下面行为测试；编译缺类型不算行为红灯。运行`legacy_test 'MinisoCallbackAuthenticatorTest,MinisoBridgeConfigurationTest'`。
 
 ```java
 @Test
@@ -343,7 +343,7 @@ void acceptsFixedLegacyVectorAndKeepsStableEventIdentity() {
 }
 ```
 
-- [ ] 2. 使用现有Jackson严格流读取完成重复键/尾随token检查，再由Fastjson2序列化TreeMap签名；不能先绑定JSONObject丢掉重复键。UTF-8用REPORT拒绝坏字节；仅两字符串、不trim券码、严格日期和Unicode、4096字节、唯一头、大小写规范，tenant/version如给须匹配，常量时间比较MD5。独立key2不回退旧配置；不调用会打印签名原文的`MCUtils.getSign2`。
+- [x] 2. 使用现有Jackson严格流读取完成重复键/尾随token检查，再由Fastjson2序列化TreeMap签名；不能先绑定JSONObject丢掉重复键。UTF-8用REPORT拒绝坏字节；仅两字符串、不trim券码、严格日期和Unicode、4096字节、唯一头、大小写规范，tenant/version如给须匹配，常量时间比较MD5。独立key2不回退旧配置；不调用会打印签名原文的`MCUtils.getSign2`。
 
 ```java
 // Java8；MessageDigest/UTF_8从JDK获取，摘要固定64位小写hex，含前导零。
@@ -355,9 +355,11 @@ for (byte b : digest) hex.append(String.format(Locale.ROOT, "%02x", b & 0xff));
 String eventId = "miniso-redeemed-" + hex;
 ```
 
-- [ ] 3. 绑定`@Qualifier("masterDataSource")`创建桥接JdbcTemplate和同DataSource的TransactionTemplate；不修改全局DruidConfig。保护相关SQL必须同连接；旧Mapper若仍绑定dynamicDataSource不能混入该模板宣称原子，需要在本服务用主JdbcTemplate完成受影响SQL或验证同一连接绑定后复用。
-- [ ] 4. 配置实现规格10所有默认值及非法组合校验，含LEGACY模式下routing/notify不得开启，BRIDGE接收暂停为503；保护bean不以receive/routing开关为条件。缺表/列结构不兼容在升级保护装配时失败关闭。加入4096/4097、重复头/键、数字couponCode、错签名/错tenant、错误UTF-8及密钥toString脱敏断言，同命令转绿。
-- [ ] 5. 本地提交`feat(miniso): add isolated legacy bridge configuration and authentication`。旧端本地分支中提交，不修改生产配置。
+- [x] 3. 绑定`@Qualifier("masterDataSource")`创建桥接JdbcTemplate和同DataSource的TransactionTemplate；不修改全局DruidConfig。保护相关SQL必须同连接；旧Mapper若仍绑定dynamicDataSource不能混入该模板宣称原子，需要在本服务用主JdbcTemplate完成受影响SQL或验证同一连接绑定后复用。
+- [x] 4. 配置实现规格10所有默认值及非法组合校验，含LEGACY模式下routing/notify不得开启，BRIDGE接收暂停为503；保护bean不以receive/routing开关为条件。缺表/列结构不兼容在升级保护装配时失败关闭。加入4096/4097、重复头/键、数字couponCode、错签名/错tenant、错误UTF-8及密钥toString脱敏断言，同命令转绿。
+- [x] 5. 本地提交`feat(miniso): add isolated legacy bridge configuration and authentication`。旧端本地分支中提交，不修改生产配置。
+
+2026-10-21本地执行：旧端既有三组38项基线通过；可编译骨架下60项出现42项断言失败及7项明确缺实现的UnsupportedOperationException，随后同组60项转绿。另加装配反例复现新增桥接模板导致Boot不再创建默认transactionTemplate（22项中1项断言失败）；显式保留全局TM的Primary默认模板，桥接模板只经限定名称使用，不改DruidConfig或旧Mapper。最终旧端12组144项全部通过（验签39、装配23、既有订单/滴滴/电影等82），新端验签/核销两组42项通过，失败/错误/跳过均0。生产只读探针已加入旧端同schema消费测试；真实MySQL8.0.28首轮暴露Connector/J8.0.33对DATETIME(3)返回getScale=0，改为同连接读取information_schema.DATETIME_PRECISION后，RC/RR各跑新端迁移1项＋旧端消费1项全部通过，本次容器均已删除。H2额外验证毫秒精度降级、缺表/列、错类型/宽度和缺唯一键在全部开关关闭时仍阻止启动。HTTP暂停503保留为Task13明确TODO，本轮仅验证BRIDGE接收关闭时Job配置仍可开启；旧资金写入保护按Task10—12接入，不能将基础设施bean已装配宣称为旧保护已完成。完整命令和证据见《集成测试.md》`MINISO-BRIDGE-LEGACY-AUTH-CONFIG-LOCAL-20261021`；仅两仓库本地提交，不push、部署或写共享DDL/Nacos，Task10未开始。
 
 ## Task 10: 旧端凭据首次发布及相关事实写入统一锁序
 
