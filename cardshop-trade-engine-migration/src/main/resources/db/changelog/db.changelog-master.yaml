@@ -696,3 +696,101 @@ databaseChangeLog:
       rollback:
         - sql:
             sql: SELECT 1
+
+  # 共库桥接唯一发布入口，参见 docs/交行直充业务系统详细设计.md「9.8 名创单入口、共库核销分流」。
+  # 已存在的结构（包括上次DDL中断的部分结构）需核查后前向修复，禁止MARK_RAN掩盖不兼容。
+  - changeSet:
+      id: 0023-miniso-shared-callback-bridge
+      author: codex
+      preConditions:
+        - onFail: HALT
+        - onError: HALT
+        - tableExists:
+            tableName: recharge_order_ext
+        - not:
+            tableExists:
+              tableName: mc_miniso_callback_inbox
+        - not:
+            tableExists:
+              tableName: mc_miniso_legacy_notify_task
+        - not:
+            tableExists:
+              tableName: mc_miniso_coupon_guard
+        - not:
+            columnExists:
+              tableName: recharge_order_ext
+              columnName: balance_release_authorized_at
+        - not:
+            columnExists:
+              tableName: recharge_order_ext
+              columnName: balance_release_event_id
+        - not:
+            columnExists:
+              tableName: recharge_order_ext
+              columnName: balance_release_amount
+      changes:
+        - sql:
+            stripComments: false
+            sql: |
+              CREATE TABLE mc_miniso_callback_inbox (
+                event_id varchar(96) NOT NULL COMMENT '核销事件编号',
+                coupon_code varchar(128) COLLATE utf8mb4_bin NOT NULL COMMENT '名创券码',
+                use_time datetime NOT NULL COMMENT '核销时间',
+                status varchar(32) NOT NULL DEFAULT 'INIT' COMMENT '接收事件状态',
+                route_target varchar(16) NULL COMMENT '可信处理归属',
+                order_id varchar(100) COLLATE utf8mb4_bin NULL COMMENT '可信平台订单号',
+                org_code varchar(64) NULL COMMENT '可信商户编码',
+                retry_count int NOT NULL DEFAULT 0 COMMENT '失败处理次数',
+                next_retry_time datetime(3) NOT NULL COMMENT '下次处理时间',
+                lock_owner varchar(128) NULL COMMENT '任务租约持有者',
+                locked_until datetime(3) NULL COMMENT '任务租约截止时间',
+                version bigint NOT NULL DEFAULT 1 COMMENT '事件版本',
+                last_error varchar(500) NULL COMMENT '脱敏失败摘要',
+                received_at datetime(3) NOT NULL COMMENT '首次接收时间',
+                routed_at datetime(3) NULL COMMENT '归属处理完成时间',
+                updated_at datetime(3) NOT NULL COMMENT '更新时间',
+                PRIMARY KEY (event_id),
+                UNIQUE KEY uk_miniso_inbox_coupon (coupon_code),
+                KEY idx_miniso_inbox_due (status, next_retry_time),
+                KEY idx_miniso_inbox_lease (status, locked_until),
+                KEY idx_miniso_inbox_order (order_id),
+                KEY idx_miniso_inbox_org (org_code)
+              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='名创共享核销接收表';
+
+              CREATE TABLE mc_miniso_legacy_notify_task (
+                task_id varchar(96) NOT NULL COMMENT '任务编号',
+                event_id varchar(96) NOT NULL COMMENT '核销事件编号',
+                order_id varchar(100) COLLATE utf8mb4_bin NOT NULL COMMENT '平台订单号',
+                org_code varchar(64) NOT NULL COMMENT '商户编码',
+                notify_url varchar(1024) NOT NULL COMMENT '核销通知地址',
+                payload longtext NOT NULL COMMENT '冻结通知报文',
+                status varchar(32) NOT NULL DEFAULT 'INIT' COMMENT '通知任务状态',
+                retry_count int NOT NULL DEFAULT 0 COMMENT '失败处理次数',
+                max_retry_count int NOT NULL DEFAULT 10 COMMENT '最大失败处理次数',
+                next_retry_time datetime(3) NOT NULL COMMENT '下次发送时间',
+                lock_owner varchar(128) NULL COMMENT '任务租约持有者',
+                locked_until datetime(3) NULL COMMENT '任务租约截止时间',
+                version bigint NOT NULL DEFAULT 1 COMMENT '任务版本',
+                last_error varchar(500) NULL COMMENT '脱敏失败摘要',
+                created_at datetime(3) NOT NULL COMMENT '创建时间',
+                updated_at datetime(3) NOT NULL COMMENT '更新时间',
+                PRIMARY KEY (task_id),
+                UNIQUE KEY uk_miniso_legacy_notify_event (event_id),
+                KEY idx_miniso_legacy_notify_due (status, next_retry_time),
+                KEY idx_miniso_legacy_notify_lease (status, locked_until)
+              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='名创旧核销通知任务表';
+
+              CREATE TABLE mc_miniso_coupon_guard (
+                coupon_code varchar(128) COLLATE utf8mb4_bin NOT NULL COMMENT '名创券码',
+                created_at datetime(3) NOT NULL COMMENT '创建时间',
+                PRIMARY KEY (coupon_code)
+              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='名创券码事务互斥表';
+
+              ALTER TABLE recharge_order_ext
+                ADD COLUMN balance_release_authorized_at datetime(3) NULL COMMENT '余额释放授权时间',
+                ADD COLUMN balance_release_event_id varchar(100) NULL COMMENT '余额释放授权事件编号',
+                ADD COLUMN balance_release_amount bigint NULL COMMENT '余额释放授权金额，单位分';
+      # 回滚应用保留已认证证据、冻结通知和资金授权；不得清表或回填历史终态的授权。
+      rollback:
+        - sql:
+            sql: SELECT 1

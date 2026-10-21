@@ -12,7 +12,7 @@
 
 ## 0. 执行状态、授权与不可变合同
 
-2026-10-21用户已整稿评审通过。已批准规格为`docs/superpowers/specs/2026-10-20-miniso-shared-callback-bridge-design.md`，契约`MINISO-SHARED-CALLBACK-V1`；主详细设计9.8及高可用设计同名章节同步。**本文件是待执行计划，不是实现、测试通过或发布记录。** 本轮只编写文档；不连接远端、不运行共享DDL、不改Nacos、不部署、不push/PR/merge。
+2026-10-21用户已整稿评审通过。已批准规格为`docs/superpowers/specs/2026-10-20-miniso-shared-callback-bridge-design.md`，契约`MINISO-SHARED-CALLBACK-V1`；主详细设计9.8及高可用设计同名章节同步。用户随后授权在当前会话按任务顺序实施、分阶段验收。**下列勾选只表示对应本地步骤完成，不代表整套实现或发布完成。** 不连接远端、不运行共享DDL、不改Nacos、不部署、不push/PR/merge。
 
 执行位置：
 
@@ -44,7 +44,8 @@ engine_test() (
     -Dtest="$1" -Dsurefire.failIfNoSpecifiedTests=false test
 )
 legacy_test() (
-  export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
+  # 本机java_home -v 1.8会优先选中JavaAppletPlugin JRE，必须显式使用带javac的JDK8。
+  export JAVA_HOME=/Library/Java/JavaVirtualMachines/jdk-1.8.jdk/Contents/Home
   export PATH="$JAVA_HOME/bin:$PATH"
   mvn -B -f "$L/pom.xml" -pl cardShop-admin -am \
     -Dmaven.test.skip=false -DskipTests=false \
@@ -53,6 +54,17 @@ legacy_test() (
 ```
 
 每个行为任务按“加失败测试→运行确认失败原因→最小实现→同一测试转绿→关联回归→本地小提交”执行。编译/环境失败不能冒充行为红灯。下文代码块给出接口、关键SQL和判别断言；测试放进列出的真实事务夹具，不为每个内部方法新建测试。提交时只stage本任务文件，禁止`git add .`。本地提交不授权push或部署。
+
+### 2026-10-21第一阶段执行记录
+
+- 新端基线为本地`07ec488`，当前隔离工作树无他人未提交修改；旧端仍为`dev`、`34eadb29`，保留用户未跟踪接入说明，未创建旧工作树或改旧代码。相关目录未发现额外AGENTS。
+- 基线真实运行：新端三组持久化测试29项、旧端两组订单测试36项，均失败0、错误0、跳过0。旧端首次因JRE缺编译器失败，指定上面JDK8后通过，不将环境失败计为TDD红灯。
+- 写入者复核：除原列出的两条MINISO发券和通用/V2/支付宝退款外，`ExtCommonApi.monisoAbandon`可绕过订单作废边界；`McVoucherListOutServiceImpl.syncState`手工BATCH会话提交且按券码覆盖状态；奈雪回调更新SQL缺渠道限制。任务10/12必须消除这些可写MINISO凭据的旁路。386品牌库存路径需先证明channel/state_type及可信凭据来源，不能仅凭品牌名当作MINISO通道。
+- `MovieLxOrderService.refundLocal`虽属于独立电影业务，却实际写共享mc_order、企业余额及流水，因此任务11必须纳入新归属最终门禁，不重做电影退款金额/售后模型。独立采购总单、充值及转账不据同名余额SQL扩大改造。`singleRefundMethod`调用均已注释，但保留为待保护残留；V2公有入口同样不因标注“未用”豁免。
+- 已读MCUtils.queryGrand、新MINISO适配及固定测试；本机未找到供应商V1.5原始PDF，现有准备报告只注明文件名/正文版本差异。无权威“明确未发券”失败码证据，任务7不实现无券码自动退款例外。
+- 新增0023合同测试先出现1项预期断言失败（独立变更不存在），追加结构后转绿。关联新端模块共528项：509通过、19项既有环境依赖测试跳过，失败0、错误0；其中迁移合同4项全通过。实体仅增加映射；三授权字段一致性由任务5的实际读写入口校验，当前无资金授权实现。
+- **任务3前置条件未满足**：Docker daemon可用，本机已有mysql:8.4镜像，但未核实test188所连MySQL具体版本和默认隔离级别；未设置MINISO_MYSQL_IMAGE，未创建容器或执行MySQL迁移，不能把本地镜像当作现场版本。第一阶段仅验收源码基线及DDL解析合同，等待版本证据后继续任务3，不跳到资金实现。
+- 详细命令与实际测试结果统一追加`docs/集成测试.md`；真实MySQL双跑、RC/RR并发、Redis恢复及发布均未验收。
 
 ## 1. 文件职责图
 
@@ -95,8 +107,8 @@ legacy_test() (
 
 **Files:** Read `E/AGENTS.md`、`L/AGENTS.md`、已批准规格、两份主设计；执行记录更新目标为`E/docs/集成测试.md`，只在实际测试发生后追加。
 
-- [ ] 1. 在两个仓库分别运行`git status --short`、`git branch --show-current`、`git log -3 --oneline`；记录原有变化。确认JDK8/21和Maven3.9，读取子目录AGENTS。旧端`docs/名创单入口共库核销分流接入说明.md`已有用户文件，未读未协调前不覆盖。
-- [ ] 2. 用以下精确搜索建立“全部相关写入者→实际调用入口→主数据源/事务→后续改造任务”的清单；不能靠任务开关排除可调用路径。只扩大到按共享mc_order执行资金或MINISO事实写入的路径。
+- [x] 1. 在两个仓库分别运行`git status --short`、`git branch --show-current`、`git log -3 --oneline`；记录原有变化。确认JDK8/21和Maven3.9，读取子目录AGENTS。旧端`docs/名创单入口共库核销分流接入说明.md`已只读检查，不覆盖。
+- [x] 2. 用以下精确搜索建立“全部相关写入者→实际调用入口→主数据源/事务→后续改造任务”的清单（补充见第一阶段执行记录）；不能靠任务开关排除可调用路径。只扩大到按共享mc_order执行资金或MINISO事实写入的路径。
 
 ```bash
 rg -n 'refundExtDepartBalance|singleRefundMethod|void orderRefund|insertMcBatchRecord|upBatchRecord|updateMcBatchRecordByOrderIdAndCode|extProductRechargeMc' "$L/cardShop-admin/src/main"
@@ -104,15 +116,15 @@ rg -n 'markBalanceReleased|updateFulfillmentStatus|terminalBalanceReleasePending
 rg -n 'id: 002[0-9]' "$E/cardshop-trade-engine-migration/src/main/resources/db/changelog/db.changelog-master.yaml"
 ```
 
-- [ ] 3. 读取供应商原始文档、`MCUtils.queryGrand`、现有新端MINISO响应分类和固定测试，核对能证明“未发券”的具体业务失败；仅凭非200/空data/超时不得认定。没有权威失败码证据时，无券码分支保持查单/人工，停止实现任何自动放行例外，不阻塞其他任务。
-- [ ] 4. 运行基线：`engine_test 'MinisoWriteOffPersistenceTest,MinisoReceiptPersistenceTest,RechargeFulfillmentVoucherStatePersistenceTest'`及`legacy_test 'McOrderServiceImplTest,McOrderV2ServiceImplTest'`。记录失败/缺依赖，先区分既有故障，不修改无关业务制造绿灯。
-- [ ] 5. 先不做业务提交；将基线证据与后续首个相关实现提交一起记录。非测试的只读发现不能写成联调通过。
+- [ ] 3. 原始供应商PDF尚缺，未确认任何可证明“未发券”的失败码。已核对`MCUtils.queryGrand`、新端响应分类和固定测试；无权威证据时保持查单/人工，不实现自动放行例外，不阻塞其他任务。
+- [x] 4. 运行基线：`engine_test 'MinisoWriteOffPersistenceTest,MinisoReceiptPersistenceTest,RechargeFulfillmentVoucherStatePersistenceTest'`及`legacy_test 'McOrderServiceImplTest,McOrderV2ServiceImplTest'`。记录失败/缺依赖，先区分既有故障，不修改无关业务制造绿灯。
+- [x] 5. 不做独立业务提交；基线证据与首个结构实现一起记录。非测试的只读发现不写成联调通过。
 
 ## Task 2: 新增桥接结构，冻结DDL合同
 
 **Files:** Modify `E/cardshop-trade-engine-migration/src/main/resources/db/changelog/db.changelog-master.yaml`、`E/cardshop-trade-engine-migration/src/test/java/com/cardshop/trade/engine/migration/RechargeD2ChangelogContractTest.java`；Modify `EI/persistence/entity/RechargeOrderExtDO.java`。
 
-- [ ] 1. 扩展既有迁移合同测试，读取新增changeSet并断言三张表、主键/唯一键/重试索引、binary券码、order_id长度100和全部中文COMMENT。新增ext三个字段必须可空；不能给历史数据自动回填授权。先运行：
+- [x] 1. 扩展既有迁移合同测试，读取新增changeSet并按表断言主键/唯一键/重试索引、binary券码、order_id长度100和全部中文COMMENT。新增ext三个字段必须可空；不能给历史数据自动回填授权。先运行：
 
 ```java
 @Test
@@ -131,7 +143,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -B -f "$E/pom.xml" \
 ```
 
 预期红灯：桥接结构不存在；不是修改旧changeSet断言放行。
-- [ ] 2. 核验编号仍空闲后追加`0023-miniso-shared-callback-bridge`；完整列/默认值/索引按规格5、6.1、8.3、9节逐项落实。关键DDL如下，其余接收/通知列使用规格的明确清单，不修改0020—0022：
+- [x] 2. 核验编号仍空闲后追加`0023-miniso-shared-callback-bridge`；完整列/默认值/索引按规格5、6.1、8.3、9节逐项落实。关键DDL如下，其余接收/通知列使用规格的明确清单，不修改0020—0022：
 
 ```sql
 CREATE TABLE mc_miniso_coupon_guard (
@@ -145,9 +157,9 @@ ALTER TABLE recharge_order_ext
   ADD COLUMN balance_release_amount bigint NULL COMMENT '余额释放授权金额，单位分';
 ```
 
-- [ ] 3. 实体追加对应`LocalDateTime`/`String`/`Long`字段，注释与DDL一致；授权三字段全空或全非空在写/读边界均校验。迁移遇已存在但不兼容结构应HALT，不用MARK_RAN掩盖。无自动删表/删列回滚；只允许保留证据的前向修复。
-- [ ] 4. 同命令转绿；真实MySQL迁移两遍的验收在紧接的任务3执行，未执行前本任务只有解析/合同证据。第二遍须无新增执行且数据保留，核对information_schema。H2解析不是发布证明。
-- [ ] 5. 本地提交`feat(migration): add miniso bridge evidence and release authorization`。
+- [x] 3. 实体追加对应`LocalDateTime`/`String`/`Long`字段，注释与DDL一致。迁移遇已有结构HALT，不用MARK_RAN掩盖；无自动删表/删列回滚，只允许保留证据的前向修复。授权三字段全空或全非空的读写校验属于任务5的生产事务边界，当前尚未实现，不由逐字段实体setter承担。
+- [x] 4. 同命令转绿；真实MySQL迁移两遍的验收在紧接的任务3执行，未执行前本任务只有解析/合同证据。第二遍须无新增执行且数据保留，核对information_schema。解析不是发布证明。
+- [x] 5. 本地提交`feat(migration): add miniso bridge evidence and release authorization`，包含本阶段源码核对及实际测试记录；不代表MySQL验收或可单独部署。
 
 ## Task 3: 建立可丢弃MySQL测试环境
 
