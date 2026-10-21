@@ -427,6 +427,11 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         }
 
         @Bean
+        com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyAttemptMapper rechargeNotifyAttemptMapper() {
+            return mapperProxy(com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyAttemptMapper.class);
+        }
+
+        @Bean
         RechargeNotifyTaskMapper rechargeNotifyTaskMapper() {
             return mapperProxy(RechargeNotifyTaskMapper.class);
         }

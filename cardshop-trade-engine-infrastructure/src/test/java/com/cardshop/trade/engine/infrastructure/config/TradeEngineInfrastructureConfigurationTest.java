@@ -103,6 +103,27 @@ import reactor.core.publisher.Mono;
  * local profile 排除 Redis 自动配置时不能因为缺少客户端导致应用启动失败。
  */
 class TradeEngineInfrastructureConfigurationTest {
+    @Test void bindsBankRegistrationAndPreparesTaskWithSendingDisabledAndNoMerchantSigningStore() {
+        new ApplicationContextRunner().withUserConfiguration(TradeEngineInfrastructureConfiguration.class)
+                .withPropertyValues(
+                    "trade.engine.notify.bocom.merchants[A35].route-version=r1",
+                    "trade.engine.notify.bocom.merchants[A35].gateway-url=https://bank.invalid/api/trade/J_IEP_001_2104/v1",
+                    "trade.engine.notify.bocom.merchants[A35].protocol=contract",
+                    "trade.engine.notify.bocom.merchants[A35].app-id=app",
+                    "trade.engine.notify.bocom.merchants[A35].private-key-ref=pk1",
+                    "trade.engine.notify.bocom.merchants[A35].bank-public-key-ref=bk1")
+                .run(context->{
+                    assertThat(context).hasNotFailed();
+                    var preparation=context.getBean(com.cardshop.trade.engine.application.recharge.MerchantNotifyPreparationService.class);
+                    var order=new com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrder("O1","OUT1","A35","synthetic",
+                            "P","C","MINISO",100,"",12,"DB_PERSISTED","PASSED",true,true);
+                    var task=preparation.orderStatus(order,"12",10).orElseThrow();
+                    assertThat(task.deliveryChannel()).isEqualTo(com.cardshop.trade.engine.application.recharge.NotifyDeliveryChannel.BOCOM_OPENAPI);
+                    assertThat(task.payload()).doesNotContainKeys("sign","keyId");
+                    assertThat(context.getBean(com.cardshop.trade.engine.application.recharge.MerchantNotifyClientPort.class))
+                            .isInstanceOf(com.cardshop.trade.engine.infrastructure.notify.RoutingMerchantNotifyClientAdapter.class);
+                });
+    }
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withUserConfiguration(TradeEngineInfrastructureConfiguration.class);

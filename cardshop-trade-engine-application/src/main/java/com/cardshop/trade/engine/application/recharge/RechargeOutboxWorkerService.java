@@ -60,6 +60,7 @@ public class RechargeOutboxWorkerService {
     private final BalanceReservationReleasePort balanceReservationReleasePort;
     private final RechargeNotifyTaskPort notifyTaskPort;
     private final MerchantNotifyPayloadSigner notifyPayloadSigner;
+    private final MerchantNotifyPreparationService notifyPreparation;
     private final RechargeDispatchTimerPort dispatchTimerPort;
     private final Clock clock;
     private final RechargeOutboxWorkerSettings settings;
@@ -197,6 +198,20 @@ public class RechargeOutboxWorkerService {
             Clock clock,
             RechargeOutboxWorkerSettings settings,
             java.util.function.Supplier<MinisoWriteOffProtection> minisoWriteOffProtection) {
+        this(outboxPort,orderPort,supplierGatewayPort,supplierQueryOutboxPort,frequencyPort,balanceDeltaFlushOutboxPort,
+                balanceReservationReleasePort,notifyTaskPort,notifyPayloadSigner,dispatchTimerPort,clock,settings,
+                minisoWriteOffProtection,null);
+    }
+
+    /** 银行任务统一准备，旧构造入口保持直连；参见详细设计「交行 2104 通知实施细化」。 */
+    public RechargeOutboxWorkerService(RechargeOutboxPort outboxPort,RechargeFulfillmentOrderPort orderPort,
+            RechargeSupplierGatewayPort supplierGatewayPort,SupplierQueryOutboxPort supplierQueryOutboxPort,
+            DirectRechargeFrequencyPort frequencyPort,BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
+            BalanceReservationReleasePort balanceReservationReleasePort,RechargeNotifyTaskPort notifyTaskPort,
+            MerchantNotifyPayloadSigner notifyPayloadSigner,RechargeDispatchTimerPort dispatchTimerPort,
+            Clock clock,RechargeOutboxWorkerSettings settings,
+            java.util.function.Supplier<MinisoWriteOffProtection> minisoWriteOffProtection,
+            MerchantNotifyPreparationService notifyPreparation) {
         this.minisoWriteOffProtection = Objects.requireNonNull(minisoWriteOffProtection);
         this.outboxPort = Objects.requireNonNull(outboxPort, "outboxPort must not be null");
         this.orderPort = Objects.requireNonNull(orderPort, "orderPort must not be null");
@@ -210,6 +225,9 @@ public class RechargeOutboxWorkerService {
                 balanceReservationReleasePort, "balanceReservationReleasePort must not be null");
         this.notifyTaskPort = Objects.requireNonNull(notifyTaskPort, "notifyTaskPort must not be null");
         this.notifyPayloadSigner = Objects.requireNonNull(notifyPayloadSigner, "notifyPayloadSigner must not be null");
+        this.notifyPreparation = notifyPreparation == null
+                ? new MerchantNotifyPreparationService(MerchantNotifyRoutePort.directOnly(),notifyPayloadSigner,null,clock)
+                : notifyPreparation;
         this.dispatchTimerPort = Objects.requireNonNull(dispatchTimerPort, "dispatchTimerPort must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.settings = Objects.requireNonNull(settings, "settings must not be null");
@@ -1065,46 +1083,17 @@ public class RechargeOutboxWorkerService {
                 reason == null ? "" : reason));
     }
 
+    /** 三个入口共用通道准备规则，银行空URL仍建任务；参见详细设计「交行 2104 通知实施细化」。 */
     private void createOrderStatusNotifyTask(RechargeFulfillmentOrder order, LegacyOrderStatusCode orderStatus) {
-        if (!hasNotifyUrl(order)) {
-            return;
-        }
-        String orderStatusCode = Integer.toString(orderStatus.code());
-        Map<String, String> payload = notifyPayloadSigner.signOrderStatus(order, orderStatusCode, clock.instant());
-        notifyTaskPort.insertIfAbsent(new RechargeNotifyTaskDraft(
-                "notify-order-" + order.orderId() + "-" + orderStatusCode,
-                "ORDER_STATUS",
-                order.orgCode(),
-                order.orderId(),
-                order.outOrderSn(),
-                order.notifyUrl(),
-                orderStatusCode,
-                payload,
-                DEFAULT_NOTIFY_MAX_RETRY_COUNT,
-                LocalDateTime.now(clock)));
+        notifyPreparation.orderStatus(order,Integer.toString(orderStatus.code()),DEFAULT_NOTIFY_MAX_RETRY_COUNT)
+                .ifPresent(notifyTaskPort::insertIfAbsent);
     }
 
     private void createWriteOffNotifyTask(RechargeFulfillmentOrder order, java.time.Instant invalidTime) {
-        if (!hasNotifyUrl(order)) {
-            return;
-        }
-        Map<String, String> payload = notifyPayloadSigner.signWriteOff(order, invalidTime);
-        notifyTaskPort.insertIfAbsent(new RechargeNotifyTaskDraft(
-                "notify-writeoff-" + order.orderId() + "-cancelled",
-                "VOUCHER_STATE",
-                order.orgCode(),
-                order.orderId(),
-                order.outOrderSn(),
-                order.notifyUrl(),
-                "CANCELLED",
-                payload,
-                DEFAULT_NOTIFY_MAX_RETRY_COUNT,
-                LocalDateTime.now(clock)));
+        notifyPreparation.cancelled(order,invalidTime,DEFAULT_NOTIFY_MAX_RETRY_COUNT)
+                .ifPresent(notifyTaskPort::insertIfAbsent);
     }
 
-    private static boolean hasNotifyUrl(RechargeFulfillmentOrder order) {
-        return order.notifyUrl() != null && !order.notifyUrl().isBlank();
-    }
 
     private static SupplierDispatchGatewayRequest dispatchRequest(RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
         return new SupplierDispatchGatewayRequest(

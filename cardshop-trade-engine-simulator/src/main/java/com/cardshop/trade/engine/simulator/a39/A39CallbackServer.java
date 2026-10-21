@@ -68,9 +68,9 @@ public final class A39CallbackServer implements AutoCloseable {
     /** 仅登记本商户可信的旧直连凭证；历史密钥规则参见详细设计3.1，银行目标见文末认证修订。 */
     public void registerCredentials(Credentials credential) {
         if (credential.keyId() == null || credential.keyId().isBlank()) {
-            // TODO：完成2104银行通知接收认证，参见详细设计「交行开放平台通知认证修订 2026-10-19」。
+            // 2104使用独立Bocom2104GatewayServer，本入口仍为直连HMAC；参见详细设计「交行 2104 通知实施细化」。
             // 新接口不返回keyId，不能从外部回调学习版本或回退为无签名接收；业务请求发送前明确拒绝旧场景。
-            throw new IllegalStateException("Legacy callback requires trusted keyId; bank 2104 callback is not implemented");
+            throw new IllegalStateException("Legacy callback requires trusted keyId; use Bocom2104GatewayServer for bank 2104");
         }
         keys.compute(credential.keyId(), (id, existing) -> {
             if (existing != null && !existing.signKey().equals(credential.signKey())) {

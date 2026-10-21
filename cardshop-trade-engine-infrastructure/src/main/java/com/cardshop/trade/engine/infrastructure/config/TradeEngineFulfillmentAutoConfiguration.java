@@ -81,6 +81,7 @@ public class TradeEngineFulfillmentAutoConfiguration {
             ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
             ObjectProvider<com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection>
                     minisoProtection,
+            ObjectProvider<com.cardshop.trade.engine.application.recharge.MerchantNotifyPreparationService> notifyPreparation,
             V1MerchantProfilePort merchantProfilePort,
             Clock clock,
             TradeEngineProperties properties) {
@@ -100,7 +101,7 @@ public class TradeEngineFulfillmentAutoConfiguration {
                 RechargeFulfillmentConfigurationSupport.deferredRechargeDispatchTimerPort(dispatchTimerPortProvider),
                 clock,
                 RechargeFulfillmentConfigurationSupport.workerSettings(fulfillment),
-                minisoProtection::getIfAvailable);
+                minisoProtection::getIfAvailable,notifyPreparation.getIfAvailable());
     }
 
     /**

@@ -73,12 +73,14 @@ public class MinisoWriteOffAutoConfiguration {
             MinisoWriteOffEventMapper events,
             MinisoReceiptMapper receipts,
             RechargeNotifyTaskPort tasks,
-            V12SigningCredentialStorePort credentials,
+            org.springframework.beans.factory.ObjectProvider<V12SigningCredentialStorePort> credentialProvider,
+            org.springframework.beans.factory.ObjectProvider<MerchantNotifyPreparationService> preparation,
             PlatformTransactionManager tm,
             Clock clock,
             MinisoWriteOffProperties settings,
             MinisoWriteOffObserver observer) {
-        if (!credentials.available())
+        var credentials=credentialProvider.getIfAvailable(V12SigningCredentialStorePort::unavailable);
+        if (preparation.getIfAvailable()==null && !credentials.available())
             throw new IllegalStateException(
                     "MINISO processing requires persistent merchant signing-key store");
         return new MybatisMinisoWriteOffStore(
@@ -91,7 +93,7 @@ public class MinisoWriteOffAutoConfiguration {
                 settings.getMaxRetryCount(),
                 Duration.ofSeconds(settings.getRetryBackoffSeconds()),
                 settings.getTransactionTimeoutSeconds(),
-                observer);
+                observer,preparation.getIfAvailable());
     }
 
     /** 启动后校验0021关键列并初始化积压指标；只读，不标记一次Job成功。 */

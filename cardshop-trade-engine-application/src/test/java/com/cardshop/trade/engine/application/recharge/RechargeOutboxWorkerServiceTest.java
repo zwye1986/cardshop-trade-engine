@@ -311,6 +311,35 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(notifyTaskPort.createdTasks).isEmpty();
     }
 
+    @Test void bankDispatchAndCancellationCreateTasksWithEmptyOriginalUrlWithoutMerchantKey() {
+        for (var type : List.of(OutboxEventType.SUPPLIER_DISPATCH,OutboxEventType.INVALID_ORDER)) {
+            var original=orderWithNotifyUrl("");
+            var order=type==OutboxEventType.SUPPLIER_DISPATCH ? original : new RechargeFulfillmentOrder(
+                    original.orderId(),original.outOrderSn(),original.orgCode(),original.account(),original.productId(),
+                    original.selectedProductId(),"MINISO",original.orderPrice(),"",12,"DB_PERSISTED","PASSED",true,true);
+            var outbox=new FakeOutboxPort(outbox(type));
+            var orders=new FakeFulfillmentOrderPort(order);
+            var supplier=new FakeSupplierGatewayPort(SupplierGatewayResponse.success("SUP","200","ok","{}"));
+            var tasks=new FakeNotifyTaskPort();
+            var route=new MerchantNotifyRoute(NotifyDeliveryChannel.BOCOM_OPENAPI,"A36","r1",
+                    "https://bank.invalid/api/trade/J_IEP_001_2104/v1","protocol","app","RSA","key1","bank1");
+            MerchantNotifyPayloadSigner signer=new MerchantNotifyPayloadSigner() {
+                public Map<String,String> signOrderStatus(RechargeFulfillmentOrder o,String s,Instant t) {throw new AssertionError("no HMAC");}
+                public Map<String,String> signWriteOff(RechargeFulfillmentOrder o,Instant t) {throw new AssertionError("no HMAC");}
+            };
+            var preparation=new MerchantNotifyPreparationService((org,url)->java.util.Optional.of(route),signer,null,CLOCK);
+            var service=new RechargeOutboxWorkerService(outbox,orders,supplier,command -> {},
+                    new FakeFrequencyPort(true),BalanceDeltaFlushOutboxPort.noop(),BalanceReservationReleasePort.noop(),
+                    tasks,signer,RechargeDispatchTimerPort.noop(),CLOCK,settings(),()->null,preparation);
+            var result=service.processDue(1,0,10,"worker",List.of(type),1);
+            assertThat(result.succeeded()).isEqualTo(1);
+            assertThat(tasks.createdTasks).hasSize(1);
+            assertThat(tasks.createdTasks.getFirst().encodedPayload()).startsWith(
+                    type==OutboxEventType.SUPPLIER_DISPATCH ? "operate_type:1," : "operate_type:3,");
+            assertThat(tasks.createdTasks.getFirst().payload()).doesNotContainKeys("sign","keyId");
+        }
+    }
+
     @Test
     void dispatchIsDelayedWhenSameAccountFrequencyLockAlreadyExists() {
         FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));

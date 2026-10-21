@@ -1,6 +1,6 @@
 # Bocom 2104 Callback Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 将订单、核销和作废通知通过官方 SDK 可靠投递到交行 2104，保留直连兼容且不访问真实银行。
 
@@ -11,6 +11,8 @@
 ---
 
 ## 执行约束与文件职责
+
+2026-10-21继续实施：托管隔离目录在沙箱可写范围外，本轮在当前授权工作区`/Users/mac/codespace/cardshop-trade-engine`推进，保留已有JMeter手册修改。使用TDD及子代理开发技能逐项实施和审查。用户已确认官方`openCertVerify`方案，Task2历史阻塞解除；两份主设计与规格已同步JVM单一X.509信任证书、初始化失败禁止发送及本地TLS验证约束。下述工作区及无子代理说明是历史记录。
 
 在 `/Users/mac/codespace/cardshop-trade-engine/.worktrees/feat/bocom-callback` 执行全部命令。每次 Maven 命令前设置：
 
@@ -90,8 +92,8 @@ if (text.codePointCount(0, text.length()) > 2500) {
 - Create: `cardshop-trade-engine-infrastructure/src/main/java/com/cardshop/trade/engine/infrastructure/notify/bocom/Bocom2104Response.java`
 - Create: `cardshop-trade-engine-infrastructure/src/test/java/com/cardshop/trade/engine/infrastructure/notify/bocom/BocomSdkCompatibilityTest.java`
 
-- [ ] 1. Python 测试先断言安装脚本存在，运行 `python3 -m unittest discover -s scripts/tests -p 'test_install_bocom_sdk.py'`，确认缺脚本红灯。随后覆盖缺文件和 SHA 不符必须非零退出、成功时固定 Maven 坐标且不输出 jar 内容。
-- [ ] 2. 实现安装脚本，仅接受自备 jar 或接入包目录。校验固定 SHA `8df82ae2931dd5cc52fcbbea5643cd6819412f27f9cf64478b476c2e53120fad`；不匹配时绝不执行 Maven 安装。使用脚本所在目录解析 POM，不依赖 cwd。
+- [x] 1. Python 测试先断言安装脚本存在，运行 `python3 -m unittest discover -s scripts/tests -p 'test_install_bocom_sdk.py'`，确认缺脚本红灯。随后覆盖缺文件和 SHA 不符必须非零退出、成功时固定 Maven 坐标且不输出 jar 内容。
+- [x] 2. 实现安装脚本，仅接受自备 jar 或接入包目录。校验固定 SHA `8df82ae2931dd5cc52fcbbea5643cd6819412f27f9cf64478b476c2e53120fad`；不匹配时绝不执行 Maven 安装。使用脚本所在目录解析 POM，不依赖 cwd。
 
 ```sh
 mvn install:install-file -Dfile="$sdk_jar" \
@@ -99,9 +101,9 @@ mvn install:install-file -Dfile="$sdk_jar" \
 ```
 
 POM 使用 `com.bocom:bocom-openapi-sdk:2.2.6`，依赖 Apache HttpClient 4.5.14、Commons IO 2.17.0、Commons Logging 1.3.4、Jackson、SLF4J 和 BC；项目侧保留 Boot 管理的版本。先用 `jdeps` 确认 SDK 实际需要的包，只有确有引用才加依赖，不复制整个 lib 目录。
-- [ ] 3. Python 测试至绿，然后用用户给的 jar 安装本地 Maven 制品。基础设施增加该固定依赖，DTO 继承 SDK AbstractBocomRequest/BocomResponse，结构严格为 head/body，`isNeedEncrypt=false`、`getMethod=POST`，body 中 trx_data_imprt/protocol 都是字符串。
-- [ ] 4. SDK 测试通过实际 `DefaultBocomClient` 构造业务 JSON（测试子类只暴露 protected buildBizContentStr），断言外层编码保留字符串，并用 SDK 原生签名实现与生成密钥验证 RSA/SM2。测试先以缺类型/缺行为红灯，后补 DTO；禁止以 mock 成功代替密码兼容证据。
-- [ ] 5. 运行 `mvn -pl cardshop-trade-engine-infrastructure -am -Dtest=BocomSdkCompatibilityTest -Dsurefire.failIfNoSpecifiedTests=false test` 和 `mvn -pl cardshop-trade-engine-infrastructure -am dependency:tree`，核对未降级受管依赖；提交 `build: integrate verified bocom sdk artifact`。
+- [x] 3. Python 测试至绿，然后用用户给的 jar 安装本地 Maven 制品。基础设施增加该固定依赖，DTO 继承 SDK AbstractBocomRequest/BocomResponse，结构严格为 head/body，`isNeedEncrypt=false`、`getMethod=POST`，body 中 trx_data_imprt/protocol 都是字符串。
+- [x] 4. SDK 测试通过实际 `DefaultBocomClient` 构造业务 JSON（测试子类只暴露 protected buildBizContentStr），断言外层编码保留字符串，并用 SDK 原生签名实现与生成密钥验证 RSA/SM2。测试先以缺类型/缺行为红灯，后补 DTO；禁止以 mock 成功代替密码兼容证据。
+- [x] 5. 运行 `mvn -pl cardshop-trade-engine-infrastructure -am -Dtest=BocomSdkCompatibilityTest -Dsurefire.failIfNoSpecifiedTests=false test` 和 `mvn -pl cardshop-trade-engine-infrastructure -am dependency:tree`，核对未降级受管依赖；提交 `build: integrate verified bocom sdk artifact`。
 
 ## Task 3: 显式路由与业务事实准备
 
@@ -112,10 +114,10 @@ POM 使用 `com.bocom:bocom-openapi-sdk:2.2.6`，依赖 Apache HttpClient 4.5.14
 - Create infrastructure `notify/bocom/ConfiguredMerchantNotifyRouteAdapter.java`
 - Modify `cardshop-trade-engine-infrastructure/src/main/java/com/cardshop/trade/engine/infrastructure/config/TradeEngineProperties.java`
 
-- [ ] 1. 编写不带商户 HMAC 密钥的银行准备测试：空下单 URL 仍得到 `BOCOM_OPENAPI` 任务，冻结 protocol/网关，正文无 sign/keyId；直连空地址仍跳过。运行精确测试观察红灯。
-- [ ] 2. 定义 route record，含 channel/orgCode/routeVersion/gatewayUrl/protocol/appId/signatureAlgorithm/privateKeyRef/bankPublicKeyRef。route port 用可信 orgCode 与下单 URL 解析 Optional route，注册银行商户但缺配置时抛出可恢复配置异常，不返回 Optional.empty。enabled 只控制发送，不控制分类。
-- [ ] 3. 准备模块接受 route port、旧直连 signer、Clock；订单/作废/核销统一从可信订单事实生成 draft。银行分支使用 codec，使用 SecureRandom 16 字节 nonce，订单金额以 long 保存，核销实际时间/作废事实时间保持原语义。旧直连 signer 只在 DIRECT_JSON 分支调用。draft 新字段为 channel/routeSnapshot/encodedPayload，旧构造方法明确默认 DIRECT_JSON，避免历史测试和调用方被静默改通道。
-- [ ] 4. 增加重复 prepare 后写库幂等由原 taskId 保证的断言，以及缺路由、跨商户 route、含逗号、直连签名行为测试。运行准备模块及原 `V1MerchantNotifyPayloadSignerTest`；提交 `feat: prepare frozen bank notifications by merchant route`。
+- [x] 1. 编写不带商户 HMAC 密钥的银行准备测试：空下单 URL 仍得到 `BOCOM_OPENAPI` 任务，冻结 protocol/网关，正文无 sign/keyId；直连空地址仍跳过。运行精确测试观察红灯。
+- [x] 2. 定义 route record，含 channel/orgCode/routeVersion/gatewayUrl/protocol/appId/signatureAlgorithm/privateKeyRef/bankPublicKeyRef。route port 用可信 orgCode 与下单 URL 解析 Optional route，注册银行商户但缺配置时抛出可恢复配置异常，不返回 Optional.empty。enabled 只控制发送，不控制分类。
+- [x] 3. 准备模块接受 route port、旧直连 signer、Clock；订单/作废/核销统一从可信订单事实生成 draft。银行分支使用 codec，使用 SecureRandom 16 字节 nonce，订单金额以 long 保存，核销实际时间/作废事实时间保持原语义。旧直连 signer 只在 DIRECT_JSON 分支调用。draft 新字段为 channel/routeSnapshot/encodedPayload，旧构造方法明确默认 DIRECT_JSON，避免历史测试和调用方被静默改通道。
+- [x] 4. 增加重复 prepare 后写库幂等由原 taskId 保证的断言，以及缺路由、跨商户 route、含逗号、直连签名行为测试。运行准备模块及原 `V1MerchantNotifyPayloadSignerTest`；提交 `feat: prepare frozen bank notifications by merchant route`。
 
 ## Task 4: 数据库、领取代次与尝试审计
 
@@ -126,9 +128,9 @@ POM 使用 `com.bocom:bocom-openapi-sdk:2.2.6`，依赖 Apache HttpClient 4.5.14
 - Create infrastructure persistence `entity/RechargeNotifyAttemptDO.java`, `mapper/RechargeNotifyAttemptMapper.java`
 - Create test `cardshop-trade-engine-infrastructure/src/test/java/com/cardshop/trade/engine/infrastructure/persistence/RechargeNotifyClaimCasTest.java`
 
-- [ ] 1. 先写 H2/MyBatis 真实 SQL 竞争测试：Worker A 租约过期、B 重领后，A 的 SUCCESS/FAILED/MANUAL_REQUIRED 均更新零行；B 正常成功。增加银行空目标不得被旧清理成功的失败测试。
-- [ ] 2. 追加 changeset 增加 delivery_channel（DIRECT_JSON 默认）、route_snapshot、encoded_payload、claim_version（0 默认）及 recharge_notify_attempt 表。新增 DTO/DDL 注释完全一致。attempt 以 msg_id 唯一，按 task_id+created_at 查询。
-- [ ] 3. claim 原子更新 `claim_version=claim_version+1`，返回持有者、截止时间与新版本；结果端口返回 boolean 表示 CAS 命中。每次结果更新 where 条件为：
+- [x] 1. 先写 H2/MyBatis 真实 SQL 竞争测试：Worker A 租约过期、B 重领后，A 的 SUCCESS/FAILED/MANUAL_REQUIRED 均更新零行；B 正常成功。增加银行空目标不得被旧清理成功的失败测试。
+- [x] 2. 追加 changeset 增加 delivery_channel（DIRECT_JSON 默认）、route_snapshot、encoded_payload、claim_version（0 默认）及 recharge_notify_attempt 表。新增 DTO/DDL 注释完全一致。attempt 以 msg_id 唯一，按 task_id+created_at 查询。
+- [x] 3. claim 原子更新 `claim_version=claim_version+1`，返回持有者、截止时间与新版本；结果端口返回 boolean 表示 CAS 命中。每次结果更新 where 条件为：
 
 ```sql
 where task_id = :taskId and status = 'PROCESSING'
@@ -137,7 +139,7 @@ where task_id = :taskId and status = 'PROCESSING'
 ```
 
 尝试登记必须使用同一领取条件核验后写入；网络返回仅修改自己的 msgId 记录。bank 空目标转故障恢复，不执行直连清理规则。
-- [ ] 4. 运行 CAS 测试、迁移测试及现有 notify persistence 测试；验证过期领取不误报成功、计数不重复递增；提交 `feat: persist notify routes and fence worker results`。
+- [x] 4. 运行 CAS 测试、迁移测试及现有 notify persistence 测试；验证过期领取不误报成功、计数不重复递增；提交 `feat: persist notify routes and fence worker results`。
 
 ## Task 5: 接入三个事实生成入口
 
@@ -147,9 +149,9 @@ where task_id = :taskId and status = 'PROCESSING'
 - Modify infrastructure config `TradeEngineInfrastructureConfiguration.java`, `TradeEngineFulfillmentAutoConfiguration.java`, `MinisoWriteOffAutoConfiguration.java`
 - Extend existing tests `RechargeOutboxWorkerServiceTest`, Miniso write-off persistence tests
 
-- [ ] 1. 三个入口分别新增空 notify_url 的银行场景红灯；缺路由时可靠 Outbox/核销事件仍可恢复；无商户 HMAC 密钥不阻止银行通知。
-- [ ] 2. 注入 Task 3 准备模块，取代入口中的全局 URL 跳过及银行签名依赖；保留直接构造调用的兼容构造方法。名创任务、凭据和事件完成仍在同一事务提交。已有任务比对可信事实与冻结目标，不因重试重建 nonce 或改正文。
-- [ ] 3. 覆盖重复事件、不重复供应商履约/退款、名创 3/2 与 3/3 和事实时间一致性；原直连用例不变。运行精确测试至绿；提交 `feat: enqueue all bocom callback operations reliably`。
+- [x] 1. 三个入口分别新增空 notify_url 的银行场景红灯；缺路由时可靠 Outbox/核销事件仍可恢复；无商户 HMAC 密钥不阻止银行通知。
+- [x] 2. 注入 Task 3 准备模块，取代入口中的全局 URL 跳过及银行签名依赖；保留直接构造调用的兼容构造方法。名创任务、凭据和事件完成仍在同一事务提交。已有任务比对可信事实与冻结目标，不因重试重建 nonce 或改正文。
+- [x] 3. 覆盖重复事件、不重复供应商履约/退款、名创 3/2 与 3/3 和事实时间一致性；原直连用例不变。运行精确测试至绿；提交 `feat: enqueue all bocom callback operations reliably`。
 
 ## Task 6: 银行投递、结果分类与 Worker
 
@@ -160,11 +162,11 @@ where task_id = :taskId and status = 'PROCESSING'
 - Create infrastructure test `notify/bocom/BocomMerchantNotifyClientAdapterTest.java`
 - Extend application `recharge/RechargeNotifyWorkerServiceTest.java`
 
-- [ ] 1. 先写 SDK 响应判定、发送暂停、缺凭据版本、不可识别通道和 CAS 未命中不算成功的失败测试。
-- [ ] 2. result 分类为 SUCCESS/RETRYABLE/DEFERRED/MANUAL_REQUIRED，兼容旧静态 success/failed 工厂。DEFERRED 释放租约并推迟下次扫描，不消耗物理发送次数。网络超时和 P 走 RETRYABLE，验签异常/报文错误走 MANUAL_REQUIRED；不把异常原文落 last_error。
-- [ ] 3. 银行 adapter 复核可信任务身份和 route 后，先保存新的 msgId 关联记录，再调用 SDK；验签通过且 S+200 才 SUCCESS。各次请求保持 frozen encodedPayload/protocol。路由 adapter 只看冻结 channel，不按当前商户配置换通道。
-- [ ] 4. Worker 用新 CAS 返回值统计，不把未持有租约的回写算成功。校验连接+读取总预算小于租约；SDK/Apache wire 报文日志默认禁用，业务异常日志使用 LogStormGuard 并脱敏。
-- [ ] 5. 运行新增 adapter/worker 与原直连 guard 测试，审查所有 catch 是否有日志或立即重抛；提交 `feat: deliver bocom notifications with verified acknowledgements`。
+- [x] 1. 先写 SDK 响应判定、发送暂停、缺凭据版本、不可识别通道和 CAS 未命中不算成功的失败测试。
+- [x] 2. result 分类为 SUCCESS/RETRYABLE/DEFERRED/MANUAL_REQUIRED，兼容旧静态 success/failed 工厂。DEFERRED 释放租约并推迟下次扫描，不消耗物理发送次数。网络超时和 P 走 RETRYABLE，验签异常/报文错误走 MANUAL_REQUIRED；不把异常原文落 last_error。
+- [x] 3. 银行 adapter 复核可信任务身份和 route 后，先保存新的 msgId 关联记录，再调用 SDK；验签通过且 S+200 才 SUCCESS。各次请求保持 frozen encodedPayload/protocol。路由 adapter 只看冻结 channel，不按当前商户配置换通道。
+- [x] 4. Worker 用新 CAS 返回值统计，不把未持有租约的回写算成功。校验连接+读取总预算小于租约；SDK/Apache wire 报文日志默认禁用，业务异常日志使用 LogStormGuard 并脱敏。
+- [x] 5. 运行新增 adapter/worker 与原直连 guard 测试，审查所有 catch 是否有日志或立即重抛；提交 `feat: deliver bocom notifications with verified acknowledgements`。
 
 ## Task 7: 离线银行桩、集成证据与回归
 
@@ -175,12 +177,12 @@ where task_id = :taskId and status = 'PROCESSING'
 - Create `scripts/bocom-2104-example.py`, `docs/交行2104回调接入指引.md`
 - Modify `docs/集成测试.md`, both main design docs, this plan
 
-- [ ] 1. 先写本地生成 RSA/SM2 测试密钥的 SDK↔loopback 桩闭环测试。断言 form 和 SDK 网关签名，通过可验签响应完成 S+200；覆盖业务失败、P、空响应、非 2xx、响应篡改、错误公钥和超时。
-- [ ] 2. simulator 支持选定的成功/失败响应模式、首冒号解析、业务事件去重测试与请求关联查询。不把测试银行私钥写入仓库；使用随机 loopback 端口，不配置可访问真实银行的默认地址。
-- [ ] 3. 可执行示例只生成合成业务正文并校验长度，不默认发网路请求。指引写明 SDK 校验/安装、冻结路由、私钥安全注入、仅 dev/test、实际 protocol 由银行提供与旧直连验收不等同银行验收。
-- [ ] 4. 在《集成测试.md》追加本地集成的日期、profile、Nacos DataIds（未使用）、中间件（无外部）、合成订单范围、命令、结果和局限。更新两个主设计的“尚未实现”表述，仅在实际通过验证后更新，不声称部署或真实银行通过。
-- [ ] 5. 执行 `mvn test`、`mvn -f cardshop-trade-engine-simulator/pom.xml test`、Python 脚本测试、`git diff --check`。逐条核对 spec 第 8 节测试清单，未覆盖项目明确列为剩余而不宣称完成。
-- [ ] 6. 自审金额/时间/密钥/路由/CAS/日志，记录测试数量、跳过项与证据。提交 `test: verify bocom callbacks offline and document integration`，在不自动合并或推送的前提下向用户报告。
+- [x] 1. 先写本地生成 RSA/SM2 测试密钥的 SDK↔loopback 桩闭环测试。断言 form 和 SDK 网关签名，通过可验签响应完成 S+200；覆盖业务失败、P、空响应、非 2xx、响应篡改、错误公钥和超时。
+- [x] 2. simulator 支持选定的成功/失败响应模式、首冒号解析、业务事件去重测试与请求关联查询。不把测试银行私钥写入仓库；使用随机 loopback 端口，不配置可访问真实银行的默认地址。
+- [x] 3. 可执行示例只生成合成业务正文并校验长度，不默认发网路请求。指引写明 SDK 校验/安装、冻结路由、私钥安全注入、仅 dev/test、实际 protocol 由银行提供与旧直连验收不等同银行验收。
+- [x] 4. 在《集成测试.md》追加本地集成的日期、profile、Nacos DataIds（未使用）、中间件（无外部）、合成订单范围、命令、结果和局限。更新两个主设计的“尚未实现”表述，仅在实际通过验证后更新，不声称部署或真实银行通过。
+- [x] 5. 执行 `mvn test`、`mvn -f cardshop-trade-engine-simulator/pom.xml test`、Python 脚本测试、`git diff --check`。逐条核对 spec 第 8 节测试清单，未覆盖项目明确列为剩余而不宣称完成。
+- [x] 6. 自审金额/时间/密钥/路由/CAS/日志，记录测试数量、跳过项与证据。提交 `test: verify bocom callbacks offline and document integration`，在不自动合并或推送的前提下向用户报告。
 
 ## 计划自审
 
@@ -189,3 +191,13 @@ where task_id = :taskId and status = 'PROCESSING'
 - 三入口、可靠事务与无密钥生成：Task 5；ACK、重试分类与日志：Task 6。
 - 实际 SDK 传输闭环、模拟器、操作示例和执行证据：Task 7。
 - 不部署、不使用生产数据、不覆盖用户未提交文件的约束适用于所有任务。
+
+## 2026-10-21最终实施结果
+
+Task2—7代码与离线验证已完成，按用户继续指令以单一整合提交交付；历史分阶段提交步骤合并执行。未自动合并、推送或部署，用户已有JMeter手册变更未改写且不纳入本次提交。
+
+实施差异：官方SDK WebUtils会递归转发307/308，已先同步两份主设计再将唯一HTTP步骤替换为严格JDK21 HttpClient，仍使用SDK prepareParams/buildQuery/parse构造和签验；Redirect.NEVER、TLS1.2/主机名验证、完整响应期限及超时取消。SDK工厂预检RSA/SM2密钥格式，证书按JVM单一信任锚初始化。审计HTTP码来自受控传输，未收到响应时0。新DDL使用0024（0023保留共享核销桥接设计）；尝试持久化采用专用Mapper和应用结果record，没有创建未被使用的DO。
+
+验证：主工程JDK21 `mvn -B clean package` 全9模块成功，812项/781通过/31条件跳过/0失败错误；模拟器 `mvn -B -f cardshop-trade-engine-simulator/pom.xml clean test` 79项全部通过；Python安装/示例4项通过。实际Liquibase/H2执行0024并验证历史DIRECT_JSON、claim_version=0和msg_id唯一约束；全链路HTTPS真实SDK覆盖RSA/SM2×三类操作×字符串/数字200、业务/平台失败、P、空报文/空body、HTTP500、超时、篡改/错误银行公钥/畸形签名、非法状态脱敏和重定向阻断。多个Worker CAS、暂停不计物理次数、原文及路由冻结、核销事务恢复均通过。
+
+代码经独立规格与质量审查，发现的时区、重定向、验签异常分类和审计字段长度问题均已通过反例修复。日志及详细边界见《集成测试.md》，操作见《交行2104回调接入指引.md》。真实银行参数、业务幂等及dev/test联调仍待后续验收；共享名创核销桥接不在本次实现范围。

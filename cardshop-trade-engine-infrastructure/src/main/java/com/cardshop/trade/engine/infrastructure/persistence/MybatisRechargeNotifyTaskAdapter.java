@@ -5,6 +5,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeNotifyTask;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskDraft;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort;
+import com.cardshop.trade.engine.application.recharge.NotifyDeliveryChannel;
 import com.cardshop.trade.engine.domain.order.TaskStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeNotifyTaskDO;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper;
@@ -47,7 +48,8 @@ public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort,
          * 订单 notify_url 为空时不落 recharge_notify_task，与详细设计「9.3 回调设计」一致。
          * Outbox Worker 已有前置跳过；此处再拦截一层，避免防御缺口写入空 URL 任务。
          */
-        if (task.notifyUrl() == null || task.notifyUrl().isBlank()) {
+        if (task.deliveryChannel() == NotifyDeliveryChannel.DIRECT_JSON
+                && (task.notifyUrl() == null || task.notifyUrl().isBlank())) {
             log.warn("跳过空notify_url回调任务写入 taskId={}, orderId={}, notifyType={}",
                     task.taskId(), task.orderId(), task.notifyType());
             return;
@@ -61,6 +63,10 @@ public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort,
         entity.setNotifyUrl(task.notifyUrl());
         entity.setBizStatus(task.bizStatus());
         entity.setPayload(json(task.payload()));
+        entity.setDeliveryChannel(task.deliveryChannel().name());
+        entity.setRouteSnapshot(task.routeSnapshot() == null ? null : json(task.routeSnapshot()));
+        entity.setEncodedPayload(task.encodedPayload());
+        entity.setClaimVersion(0L);
         entity.setStatus(TaskStatus.INIT.name());
         entity.setRetryCount(0);
         entity.setMaxRetryCount(task.maxRetryCount());
@@ -75,13 +81,14 @@ public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort,
 
     @Override
     public List<RechargeNotifyTask> selectDueTasks(int limit) {
-        return mapper.selectDueTasks(limit).stream().map(this::toTask).toList();
+        return mapper.selectDueTasks(limit,now()).stream().map(this::toTask).toList();
     }
 
     @Override
     public int closeBlankNotifyUrlTasks() {
         LocalDateTime now = now();
         return mapper.update(null, new LambdaUpdateWrapper<RechargeNotifyTaskDO>()
+                .eq(RechargeNotifyTaskDO::getDeliveryChannel, NotifyDeliveryChannel.DIRECT_JSON.name())
                 .and(blank -> blank
                         .isNull(RechargeNotifyTaskDO::getNotifyUrl)
                         .or()
@@ -105,6 +112,7 @@ public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort,
                 .eq(RechargeNotifyTaskDO::getTaskId, task.taskId())
                 // 次数随失败递增，旧扫描快照不能在新一轮失败后继续发送；参见详细设计9.5。
                 .eq(RechargeNotifyTaskDO::getRetryCount, task.retryCount())
+                .eq(RechargeNotifyTaskDO::getClaimVersion, task.claimVersion())
                 .and(wrapper -> wrapper
                         .and(due -> due
                                 .in(RechargeNotifyTaskDO::getStatus, TaskStatus.INIT.name(), TaskStatus.FAILED.name())
@@ -118,43 +126,62 @@ public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort,
                 .set(RechargeNotifyTaskDO::getStatus, TaskStatus.PROCESSING.name())
                 .set(RechargeNotifyTaskDO::getLockedBy, workerId)
                 .set(RechargeNotifyTaskDO::getLockedUntil, now.plusNanos(lease.toNanos()))
+                .setSql("claim_version = claim_version + 1")
                 .set(RechargeNotifyTaskDO::getUpdatedAt, now));
-        return updated == 1 ? Optional.of(task) : Optional.empty();
+        return updated == 1 ? Optional.of(task.claimed(task.claimVersion()+1,workerId,now.plusNanos(lease.toNanos()))) : Optional.empty();
     }
 
     @Override
-    public void markManualRequired(RechargeNotifyTask task, String reason) {
-        mapper.update(
+    public boolean markManualRequired(RechargeNotifyTask task, String reason) {
+        return mapper.update(
                 null,
-                new LambdaUpdateWrapper<RechargeNotifyTaskDO>()
-                        .eq(RechargeNotifyTaskDO::getTaskId, task.taskId())
+                owned(task)
                         .set(RechargeNotifyTaskDO::getStatus, TaskStatus.MANUAL_REQUIRED.name())
                         .set(RechargeNotifyTaskDO::getLockedBy, null)
                         .set(RechargeNotifyTaskDO::getLockedUntil, null)
                         .set(RechargeNotifyTaskDO::getLastError, reason)
-                        .set(RechargeNotifyTaskDO::getUpdatedAt, now()));
+                        .set(RechargeNotifyTaskDO::getUpdatedAt, now())) == 1;
     }
 
     @Override
-    public void markSuccess(RechargeNotifyTask task) {
-        mapper.update(null, new LambdaUpdateWrapper<RechargeNotifyTaskDO>()
-                .eq(RechargeNotifyTaskDO::getTaskId, task.taskId())
+    public boolean markSuccess(RechargeNotifyTask task) {
+        return mapper.update(null, owned(task)
                 .set(RechargeNotifyTaskDO::getStatus, TaskStatus.SUCCESS.name())
+                .set(RechargeNotifyTaskDO::getLockedBy, null)
                 .set(RechargeNotifyTaskDO::getLockedUntil, null)
                 .set(RechargeNotifyTaskDO::getLastError, "")
-                .set(RechargeNotifyTaskDO::getUpdatedAt, now()));
+                .set(RechargeNotifyTaskDO::getUpdatedAt, now())) == 1;
     }
 
     @Override
-    public void markFailed(RechargeNotifyTask task, String errorMessage, Duration nextRetryDelay) {
-        mapper.update(null, new LambdaUpdateWrapper<RechargeNotifyTaskDO>()
-                .eq(RechargeNotifyTaskDO::getTaskId, task.taskId())
+    public boolean markFailed(RechargeNotifyTask task, String errorMessage, Duration nextRetryDelay) {
+        return mapper.update(null, owned(task)
                 .set(RechargeNotifyTaskDO::getStatus, TaskStatus.FAILED.name())
+                .set(RechargeNotifyTaskDO::getLockedBy, null)
                 .set(RechargeNotifyTaskDO::getNextRetryTime, now().plusNanos(nextRetryDelay.toNanos()))
                 .set(RechargeNotifyTaskDO::getLockedUntil, null)
                 .set(RechargeNotifyTaskDO::getLastError, truncate(errorMessage, 1000))
                 .set(RechargeNotifyTaskDO::getUpdatedAt, now())
-                .setSql("retry_count = retry_count + 1"));
+                .setSql("retry_count = retry_count + 1")) == 1;
+    }
+
+    @Override
+    public boolean defer(RechargeNotifyTask task, String reason, Duration delay) {
+        return mapper.update(null, owned(task).set(RechargeNotifyTaskDO::getStatus,TaskStatus.FAILED.name())
+                .set(RechargeNotifyTaskDO::getNextRetryTime,now().plusNanos(delay.toNanos()))
+                .set(RechargeNotifyTaskDO::getLockedBy,null).set(RechargeNotifyTaskDO::getLockedUntil,null)
+                .set(RechargeNotifyTaskDO::getLastError,truncate(reason,1000))
+                .set(RechargeNotifyTaskDO::getUpdatedAt,now())) == 1;
+    }
+
+    /** 所有结果回写均隔离旧租约；参见详细设计「交行 2104 通知实施细化」。 */
+    private LambdaUpdateWrapper<RechargeNotifyTaskDO> owned(RechargeNotifyTask task) {
+        return new LambdaUpdateWrapper<RechargeNotifyTaskDO>()
+                .eq(RechargeNotifyTaskDO::getTaskId,task.taskId())
+                .eq(RechargeNotifyTaskDO::getStatus,TaskStatus.PROCESSING.name())
+                .eq(RechargeNotifyTaskDO::getClaimVersion,task.claimVersion())
+                .eq(RechargeNotifyTaskDO::getLockedBy,task.lockedBy())
+                .gt(RechargeNotifyTaskDO::getLockedUntil,now());
     }
 
     private RechargeNotifyTask toTask(RechargeNotifyTaskDO entity) {
@@ -170,7 +197,11 @@ public class MybatisRechargeNotifyTaskAdapter implements RechargeNotifyTaskPort,
                 entity.getRetryCount() == null ? 0 : entity.getRetryCount(),
                 entity.getMaxRetryCount() == null ? 10 : entity.getMaxRetryCount(),
                 entity.getNextRetryTime(),
-                entity.getLastError());
+                entity.getLastError(),
+                java.util.Arrays.stream(NotifyDeliveryChannel.values()).filter(c -> c.name().equals(entity.getDeliveryChannel()))
+                        .findFirst().orElse(null),
+                entity.getRouteSnapshot(),entity.getEncodedPayload(),
+                entity.getClaimVersion() == null ? 0 : entity.getClaimVersion(),entity.getLockedBy(),entity.getLockedUntil());
     }
 
     private String json(Object value) {

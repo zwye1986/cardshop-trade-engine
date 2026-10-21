@@ -4,6 +4,7 @@ import java.time.Clock;
 import java.util.Objects;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
 
 /**
  * 商户回调重试 Worker。
@@ -14,6 +15,8 @@ import org.slf4j.LoggerFactory;
 public class RechargeNotifyWorkerService {
 
     private static final Logger log = LoggerFactory.getLogger(RechargeNotifyWorkerService.class);
+    private final LogStormGuard logs = LogStormGuard.defaultGuard();
+    private enum Outcome { SUCCESS, FAILED, SKIPPED }
 
     private final RechargeNotifyWorkerTaskPort taskPort;
     private final MerchantNotifyClientPort notifyClientPort;
@@ -49,46 +52,60 @@ public class RechargeNotifyWorkerService {
                 continue;
             }
             result = result.claimedOne();
-            result = handle(claimed.get()) ? result.succeededOne() : result.failedOne();
+            result = switch (handle(claimed.get())) {
+                case SUCCESS -> result.succeededOne();
+                case FAILED -> result.failedOne();
+                case SKIPPED -> result.skippedOne();
+            };
         }
         return result;
     }
 
-    private boolean handle(RechargeNotifyTask task) {
+    private Outcome handle(RechargeNotifyTask task) {
         /*
          * 订单 notify_url 为空时本不应创建回调任务；若历史脏数据或防御缺口写入了空 URL 任务，
          * 直接终态成功并跳过 HTTP，避免 URI.create("") 异常和对空地址的无效重试。
          * 参见 docs/交行直充业务系统详细设计.md「9.3 回调设计」。
          */
         if (!hasNotifyUrl(task)) {
+            if (task.deliveryChannel() != NotifyDeliveryChannel.DIRECT_JSON)
+                return updated(taskPort.markManualRequired(task,"BANK_TARGET_MISSING"),Outcome.FAILED);
             log.warn("商户回调任务notify_url为空，跳过发送并标记成功 taskId={}, orderId={}, notifyType={}",
                     task.taskId(), task.orderId(), task.notifyType());
-            taskPort.markSuccess(task);
-            return true;
+            return updated(taskPort.markSuccess(task),Outcome.SUCCESS);
         }
+        if (task.deliveryChannel() == null)
+            return updated(taskPort.markManualRequired(task,"UNKNOWN_NOTIFY_CHANNEL"),Outcome.FAILED);
         // 次数达到上限后不再发HTTP，避免持久任务变成无限重试；参见详细设计9.5。
         if (task.retryCount() >= task.maxRetryCount()) {
-            taskPort.markManualRequired(task, "RETRY_EXHAUSTED");
-            return false;
+            return updated(taskPort.markManualRequired(task, "RETRY_EXHAUSTED"),Outcome.FAILED);
         }
+        MerchantNotifySendResult sendResult;
         try {
-            MerchantNotifySendResult sendResult = notifyClientPort.send(new MerchantNotifyRequest(
-                    task.taskId(),
-                    task.notifyUrl(),
-                    task.payload(), task.orgCode(), task.orderId(), task.outOrderSn()));
-            if (sendResult.success()) {
-                taskPort.markSuccess(task);
-                return true;
-            }
-            taskPort.markFailed(task, failureMessage(sendResult), settings.retryBackoff());
-            return false;
+            sendResult = notifyClientPort.send(MerchantNotifyRequest.from(task));
         } catch (Exception ex) {
-            log.error("商户回调发送异常 taskId={}, orderId={}, notifyType={}",
-                    task.taskId(), task.orderId(), task.notifyType(), ex);
-            taskPort.markFailed(task, ex.getMessage(), settings.retryBackoff());
-            return false;
+            // 逐任务高频重试可能放大日志，且SDK异常可能含原文；保留栈帧、丢弃message/cause并采样。
+            var sample=logs.shouldLog("merchant-notify.worker.exception");
+            if (sample.shouldLog()) {
+                var safe=new IllegalStateException("notify client failed: "+ex.getClass().getSimpleName());
+                safe.setStackTrace(ex.getStackTrace());
+                log.error("商户回调发送异常 taskId={}, orderId={}, notifyType={}, occurrence={}",
+                        task.taskId(),task.orderId(),task.notifyType(),sample.occurrence(),safe);
+            }
+            sendResult=MerchantNotifySendResult.failed(0,"NOTIFY_CLIENT_EXCEPTION");
         }
+        if (sendResult == null) sendResult=MerchantNotifySendResult.failed(0,"EMPTY_NOTIFY_RESULT");
+        return switch (sendResult.disposition()) {
+            case SUCCESS -> updated(taskPort.markSuccess(task),Outcome.SUCCESS);
+            case RETRYABLE -> updated(taskPort.markFailed(task,failureMessage(sendResult),settings.retryBackoff()),Outcome.FAILED);
+            case MANUAL_REQUIRED -> updated(taskPort.markManualRequired(task,failureMessage(sendResult)),Outcome.FAILED);
+            case DEFERRED -> {
+                taskPort.defer(task,failureMessage(sendResult),settings.retryBackoff());
+                yield Outcome.SKIPPED;
+            }
+        };
     }
+    private static Outcome updated(boolean hit,Outcome result) { return hit ? result : Outcome.SKIPPED; }
 
     private static boolean hasNotifyUrl(RechargeNotifyTask task) {
         return task.notifyUrl() != null && !task.notifyUrl().isBlank();

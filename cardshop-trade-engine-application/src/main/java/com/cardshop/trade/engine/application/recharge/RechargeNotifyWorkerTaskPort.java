@@ -15,7 +15,7 @@ public interface RechargeNotifyWorkerTaskPort {
     List<RechargeNotifyTask> selectDueTasks(int limit);
 
     /**
-     * 将历史空 {@code notify_url} 的非终态任务批量标记为 SUCCESS。
+     * 仅将历史直连空 {@code notify_url} 的非终态任务批量标记为 SUCCESS，银行任务不得被清理。
      *
      * <p>空 URL 本不应写入 {@code recharge_notify_task}；本方法用于清理防御缺口或旧版本
      * 残留脏数据，避免 XXL-Job 持续扫描制造无效回调噪声。
@@ -28,9 +28,12 @@ public interface RechargeNotifyWorkerTaskPort {
     Optional<RechargeNotifyTask> claim(RechargeNotifyTask task, String workerId, Duration lease);
 
     /** 次数耗尽后转人工并清理租约；参见详细设计9.4、9.5。 */
-    void markManualRequired(RechargeNotifyTask task, String reason);
+    boolean markManualRequired(RechargeNotifyTask task, String reason);
 
-    void markSuccess(RechargeNotifyTask task);
+    boolean markSuccess(RechargeNotifyTask task);
 
-    void markFailed(RechargeNotifyTask task, String errorMessage, Duration nextRetryDelay);
+    boolean markFailed(RechargeNotifyTask task, String errorMessage, Duration nextRetryDelay);
+
+    /** 配置暂不可用时保留任务，不消耗物理发送重试次数；参见详细设计2104实施细化。 */
+    boolean defer(RechargeNotifyTask task, String reason, Duration delay);
 }

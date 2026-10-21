@@ -82,6 +82,14 @@ import org.springframework.transaction.PlatformTransactionManager;
 })
 @ConditionalOnClass({MybatisPlusAutoConfiguration.class, MybatisRechargeOrderPersistenceAdapter.class})
 public class TradeEngineMybatisPersistenceAutoConfiguration {
+    /** 请求身份必须在发送前可靠登记；参见详细设计「交行 2104 通知实施细化」。 */
+    @Bean
+    @ConditionalOnBean(SqlSessionFactory.class)
+    @ConditionalOnMissingBean(com.cardshop.trade.engine.application.recharge.MerchantNotifyAttemptPort.class)
+    public com.cardshop.trade.engine.application.recharge.MerchantNotifyAttemptPort merchantNotifyAttemptPort(
+            com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyAttemptMapper mapper, Clock clock) {
+        return new com.cardshop.trade.engine.infrastructure.persistence.MybatisMerchantNotifyAttemptAdapter(mapper,clock);
+    }
 
     /** 密钥持久化依赖MySQL；未提供独立主密钥时装配不可用端口，入口拒绝签发，参见详细设计3.1。 */
     @Bean

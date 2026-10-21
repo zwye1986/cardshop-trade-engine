@@ -1,4 +1,5 @@
 databaseChangeLog:
+  # 0024必须在原始通知表创建之后执行，include位于本文件末尾。
   - changeSet:
       id: 0000-d1-baseline
       author: cardshop
@@ -696,3 +697,7 @@ databaseChangeLog:
       rollback:
         - sql:
             sql: SELECT 1
+
+  - include:
+      file: 0024-bocom-notify.yaml
+      relativeToChangelogFile: true

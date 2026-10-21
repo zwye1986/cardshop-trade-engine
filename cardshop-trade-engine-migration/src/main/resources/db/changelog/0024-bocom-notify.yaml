@@ -1,0 +1,39 @@
+databaseChangeLog:
+  # 新增而不修改历史校验和；参见详细设计「交行 2104 通知实施细化」。
+  - changeSet:
+      id: 0024-bocom-notify-route-and-attempt
+      author: codex
+      changes:
+        - sql:
+            sql: |
+              ALTER TABLE recharge_notify_task
+                ADD COLUMN delivery_channel varchar(32) NOT NULL DEFAULT 'DIRECT_JSON' COMMENT '投递通道';
+              ALTER TABLE recharge_notify_task
+                ADD COLUMN route_snapshot text NULL COMMENT '通知路由快照';
+              ALTER TABLE recharge_notify_task
+                ADD COLUMN encoded_payload text CHARACTER SET utf8mb4 NULL COMMENT '银行通知编码正文';
+              ALTER TABLE recharge_notify_task
+                ADD COLUMN claim_version bigint NOT NULL DEFAULT 0 COMMENT '领取租约代次';
+              ALTER TABLE recharge_notify_task
+                MODIFY COLUMN notify_url varchar(500) NOT NULL COMMENT '通知目标地址';
+              CREATE TABLE recharge_notify_attempt (
+                id bigint NOT NULL AUTO_INCREMENT COMMENT '主键',
+                task_id varchar(100) NOT NULL COMMENT '回调任务唯一ID',
+                claim_version bigint NOT NULL COMMENT '领取租约代次',
+                msg_id varchar(32) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT '银行请求消息ID',
+                started_at datetime(3) NOT NULL COMMENT '请求登记时间',
+                status varchar(32) NOT NULL COMMENT '请求结果分类',
+                http_status int NOT NULL DEFAULT 0 COMMENT 'HTTP状态码',
+                biz_state varchar(8) NULL COMMENT '银行平台状态',
+                rsp_code varchar(64) NULL COMMENT '银行平台返回码',
+                business_code varchar(32) NULL COMMENT '银行业务返回码',
+                ref_msg_id varchar(64) NULL COMMENT '银行关联消息ID',
+                finished_at datetime(3) NULL COMMENT '请求完成时间',
+                PRIMARY KEY (id),
+                UNIQUE KEY uk_notify_attempt_msg (msg_id),
+                KEY idx_notify_attempt_task (task_id, started_at)
+              ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='银行通知请求尝试表';
+      # 回滚应用保留通知原文及投递证据，禁止删除可靠任务。
+      rollback:
+        - sql:
+            sql: SELECT 1

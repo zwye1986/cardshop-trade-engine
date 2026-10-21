@@ -22,6 +22,38 @@ class RechargeNotifyWorkerServiceTest {
 
     private static final Clock CLOCK = Clock.fixed(Instant.parse("2026-07-08T03:20:00Z"), ZoneOffset.UTC);
 
+    @Test void configurationWaitUsesDeferWithoutConsumingFailureRetry() {
+        var port = new FakeNotifyWorkerTaskPort(task());
+        var service = worker(port, request -> MerchantNotifySendResult.deferred("BANK_PAUSED"));
+        service.processDue(1,"worker");
+        assertThat(port.deferred).isEqualTo(1);
+        assertThat(port.failures).isEmpty();
+    }
+    @Test void staleWorkerCannotReportSuccessfulCasAsOwnSuccess() {
+        var port = new FakeNotifyWorkerTaskPort(task()); port.cas=false;
+        var result=worker(port,request -> MerchantNotifySendResult.success(200,"")).processDue(1,"worker");
+        assertThat(result.succeeded()).isZero();
+        assertThat(result.skipped()).isEqualTo(1);
+    }
+    @Test void verificationFailureRequiresManualInsteadOfAutomaticRetry() {
+        var port=new FakeNotifyWorkerTaskPort(task());
+        worker(port,request -> MerchantNotifySendResult.manual("BANK_VERIFY_FAILED")).processDue(1,"worker");
+        assertThat(port.manual).hasSize(1);
+        assertThat(port.failures).isEmpty();
+    }
+    @Test void bankBlankTargetMustNotBeMarkedAsSuccessfulLegacySkip() {
+        var base=taskWithNotifyUrl("");
+        var bank=new RechargeNotifyTask(base.taskId(),base.notifyType(),base.orgCode(),base.orderId(),base.outOrderSn(),
+                "",base.bizStatus(),base.payload(),0,10,base.nextRetryTime(),"",NotifyDeliveryChannel.BOCOM_OPENAPI,"{}","text",1,"worker",LocalDateTime.now(CLOCK).plusMinutes(1));
+        var port=new FakeNotifyWorkerTaskPort(bank);
+        var result=worker(port,request -> {throw new AssertionError("no send on invalid target");}).processDue(1,"worker");
+        assertThat(result.succeeded()).isZero();
+        assertThat(port.manual).hasSize(1);
+    }
+    private static RechargeNotifyWorkerService worker(FakeNotifyWorkerTaskPort port,MerchantNotifyClientPort client) {
+        return new RechargeNotifyWorkerService(port,client,CLOCK,new RechargeNotifyWorkerSettings(Duration.ofMinutes(1),Duration.ofSeconds(10)));
+    }
+
     @Test
     void marksNotifyTaskSuccessWhenMerchantReturns200() {
         FakeNotifyWorkerTaskPort taskPort = new FakeNotifyWorkerTaskPort(task());
@@ -155,9 +187,12 @@ class RechargeNotifyWorkerServiceTest {
         private final List<String> successes = new ArrayList<>();
         private final List<NotifyFailure> failures = new ArrayList<>();
         private final List<String> manual = new ArrayList<>();
+        private boolean cas=true;
+        private int deferred;
 
-        public void markManualRequired(RechargeNotifyTask task, String reason) {
+        public boolean markManualRequired(RechargeNotifyTask task, String reason) {
             manual.add(task.taskId());
+            return cas;
         }
 
         private int blankClosedCount;
@@ -184,14 +219,18 @@ class RechargeNotifyWorkerServiceTest {
         }
 
         @Override
-        public void markSuccess(RechargeNotifyTask task) {
+        public boolean markSuccess(RechargeNotifyTask task) {
             successes.add(task.taskId());
+            return cas;
         }
 
         @Override
-        public void markFailed(RechargeNotifyTask task, String errorMessage, Duration nextRetryDelay) {
+        public boolean markFailed(RechargeNotifyTask task, String errorMessage, Duration nextRetryDelay) {
             failures.add(new NotifyFailure(task.taskId(), errorMessage, nextRetryDelay));
+            return cas;
         }
+
+        public boolean defer(RechargeNotifyTask task, String reason, Duration delay) { deferred++; return cas; }
     }
 
     private record NotifyFailure(String taskId, String error, Duration nextRetryDelay) {
