@@ -28,6 +28,8 @@ import java.util.concurrent.LinkedBlockingQueue;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.slf4j.LoggerFactory;
 
 /** 真实本地 HTTP 验证名创保守归一化和精准作废；参见详细设计「名创 MINISO 专属协议实施约束」。 */
@@ -250,14 +252,10 @@ class MinisoRechargeSupplierGatewayAdapterTest {
     }
 
     @Test
-    void invalidRejectsEveryImmutablePersistedReceiptMismatchBeforeAbandon() {
+    void invalidRejectsVoucherIdentityOrOrderOwnershipMismatchBeforeAbandon() {
         for (MinisoFulfillmentReceipt local : List.of(
                 new MinisoFulfillmentReceipt(ORDER, ORG, 123, "OTHER-COUPON", PHONE,
                         "2026-10-01 00:00:00", "2026-12-01 00:00:00", 0),
-                new MinisoFulfillmentReceipt(ORDER, ORG, 123, COUPON, PHONE,
-                        "2026-10-02 00:00:00", "2026-12-01 00:00:00", 0),
-                new MinisoFulfillmentReceipt(ORDER, ORG, 123, COUPON, PHONE,
-                        "2026-10-01 00:00:00", "2026-12-02 00:00:00", 0),
                 new MinisoFulfillmentReceipt("OTHER-ORDER", ORG, 123, COUPON, PHONE,
                         "2026-10-01 00:00:00", "2026-12-01 00:00:00", 0),
                 new MinisoFulfillmentReceipt(ORDER, "OTHER-ORG", 123, COUPON, PHONE,
@@ -273,6 +271,50 @@ class MinisoRechargeSupplierGatewayAdapterTest {
             replies.clear();
             calls.clear();
         }
+    }
+
+    /** 作废身份只比较券码/手机号/批次，时间沿用本地事实；参见详细设计「名创作废凭据匹配修订」。 */
+    @ParameterizedTest
+    @ValueSource(strings = {"begin-differs", "end-differs", "missing", "malformed"})
+    void invalidIgnoresRemoteValidityAndPreservesPersistedDates(String variant) throws Exception {
+        reply(envelope(couponWithUntrustedValidity(0, variant)));
+        reply("{\"code\":200,\"data\":{\"succeed\":[{\"couponCode\":\"COUPON-1\",\"msg\":\"成功\"}],\"failed\":[]}}");
+
+        SupplierGatewayResponse response = adapter().invalid(invalid());
+
+        assertSuccess(response, 3);
+        assertThat(response.minisoReceipt()).isEqualTo(localReceipt(3));
+        assertThat(calls.remove().path()).endsWith("/queryGrand");
+        Call abandon = calls.remove();
+        assertThat(abandon.path()).endsWith("/abandonUserCoupon");
+        assertThat(abandon.body().path("couponCodes").asText()).isEqualTo(COUPON);
+        assertThat(calls).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"begin-differs", "end-differs", "missing", "malformed"})
+    void alreadyVoidIgnoresRemoteValidityWithoutRepeatingAbandon(String variant) throws Exception {
+        reply(envelope(couponWithUntrustedValidity(3, variant)));
+
+        SupplierGatewayResponse response = adapter().invalid(invalid());
+
+        assertSuccess(response, 3);
+        assertThat(response.minisoReceipt()).isEqualTo(localReceipt(3));
+        assertThat(calls.remove().path()).endsWith("/queryGrand");
+        assertThat(calls).isEmpty();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"couponCode", "phone", "batchId"})
+    void invalidRejectsMissingVoucherIdentityBeforeAbandon(String field) throws Exception {
+        var remote = (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(coupon(0));
+        remote.remove(field);
+        reply(envelope(remote.toString()));
+
+        assertUnknown(adapter().invalid(invalid()));
+
+        assertThat(calls.remove().path()).endsWith("/queryGrand");
+        assertThat(calls).isEmpty();
     }
 
     @Test
@@ -378,6 +420,20 @@ class MinisoRechargeSupplierGatewayAdapterTest {
         return "{\"batchId\":123,\"phone\":\"" + PHONE + "\",\"couponCode\":\"" + COUPON
                 + "\",\"beginTime\":\"2026-10-01 00:00:00\",\"endTime\":\"2026-12-01 00:00:00\""
                 + (status == null ? "" : ",\"status\":" + status) + "}";
+    }
+    private static String couponWithUntrustedValidity(int status, String variant) throws Exception {
+        var coupon = (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(coupon(status));
+        switch (variant) {
+            case "begin-differs" -> coupon.put("beginTime", "2026-10-01 00:00:01");
+            case "end-differs" -> coupon.put("endTime", "2026-12-02 00:00:00");
+            case "missing" -> coupon.remove(List.of("beginTime", "endTime"));
+            case "malformed" -> {
+                coupon.put("beginTime", "2026-02-30 00:00:00");
+                coupon.putNull("endTime");
+            }
+            default -> throw new IllegalArgumentException("Unknown validity fixture");
+        }
+        return coupon.toString();
     }
     private static void assertUnknown(SupplierGatewayResponse response) {
         assertThat(response.status()).isEqualTo(SupplierGatewayStatus.RETRYABLE_FAILED);
