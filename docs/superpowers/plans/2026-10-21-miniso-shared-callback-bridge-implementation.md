@@ -404,8 +404,10 @@ SELECT order_id FROM recharge_order_ext WHERE order_id=? FOR UPDATE;
 
 **Files:** Modify `LB/MinisoLegacyOrderTransactions.java`、`LM/api/service/impl/MINISOSupplierTradeServiceImpl.java`、`LM/service/impl/McOrderV2ServiceImpl.java`、`McOrderServiceImpl.java`及相关mapper；Extend `LT/MinisoLegacyOrderTransactionsTest.java`、`LT/MinisoBridgeMysqlContractTest.java`。
 
-- [ ] 1. 写旧端行为红灯：两券仅第二券已核销、共享inbox已接收但未路由、远端作废成功但本券不在succeed、批次更新0行、退款流水insert异常。期望整单不回补；最后一项余额/流水/退款状态全回滚。运行`legacy_test MinisoLegacyOrderTransactionsTest`。
-- [ ] 2. MINISO adapter只检查本次请求券确在远端succeed并返回结果，移除adapter直接批次UPDATE。作废前短事务复核→锁外远端→最终短事务再复核，固定先锁完整凭据再全部guard再事件/inbox。最终条件更新同时限制order/channel/state_type/原未使用状态；主单按旧FAILED语义更新，不套新CANCELLED。
+实际清单补充：`LM/api/ExtCommonApi.java`、`LM/api/utils/MCUtils.java`、`LB/MinisoCallbackAuthenticator.java`，以及旁路`LM/service/impl/McVoucherListOutServiceImpl.java`、`McOrderCustomerReissueServiceImpl.java`。Task11的`McOrderServiceImpl`已统一委派主库退款服务，本任务不为重复接线改大类；生产受影响SQL均在同一JdbcTemplate内，不混用动态Mapper。新端仅更新两主设计、计划及集成记录。
+
+- [x] 1. 写旧端行为红灯：两券仅第二券已核销、共享inbox已接收但未路由、远端作废成功但本券不在succeed、批次更新0行、退款流水insert异常。期望整单不回补；最后一项余额/流水/退款状态全回滚。运行`legacy_test MinisoLegacyOrderTransactionsTest`。
+- [x] 2. MINISO adapter只检查本次请求券确在远端succeed并返回结果，移除adapter直接批次UPDATE。作废前短事务复核→锁外远端→最终短事务再复核，固定先锁完整凭据再全部guard再事件/inbox。最终条件更新同时限制order/channel/state_type/原未使用状态；主单按旧FAILED语义更新，不套新CANCELLED。
 
 ```sql
 UPDATE mc_batch_record SET state='3',invalid_time=?
@@ -413,9 +415,11 @@ WHERE order_no=? AND coupon_code=? AND channel='MINISO'
   AND state_type='3' AND state='1';
 ```
 
-- [ ] 3. 旧退款逐单主事务内重新锁主单、归属、全部凭据/guard及核销证据，验证完整金额对应，再同时写mc_ext_depart余额、mc_depart_record退款流水及主单退款状态。查不到凭据/任一已核销/证据不一致均不放行。去掉受影响逐单事务的`noRollbackFor`和吞流水异常，外层循环只在事务已回滚后记录脱敏采样错误并继续下一单；不能在catch里再提交半套退款状态。
-- [ ] 4. 同测试转绿；加入先退款完成再来核销转人工及其他旧供应商金额语义回归。SQL异常必须保留安全栈，不把含券码的数据库原始message直接写last_error。
-- [ ] 5. 本地提交`fix(miniso): atomically guard legacy invalidation and refunds`。
+- [x] 3. 旧退款逐单主事务内重新锁主单、归属、全部凭据/guard及核销证据，验证完整金额对应，再同时写mc_ext_depart余额、mc_depart_record退款流水及主单退款状态。查不到凭据/任一已核销/证据不一致均不放行。去掉受影响逐单事务的`noRollbackFor`和吞流水异常，外层循环只在事务已回滚后记录脱敏采样错误并继续下一单；不能在catch里再提交半套退款状态。
+- [x] 4. 同测试转绿；加入先退款完成再来核销转人工及其他旧供应商金额语义回归。SQL异常必须保留安全栈，不把含券码的数据库原始message直接写last_error。
+- [x] 5. 本地提交`fix(miniso): atomically guard legacy invalidation and refunds`。
+
+2026-10-22本地执行：基线4组102项通过。首次新增作废/退款场景59项中9项预期失败；随后主单最终写0行、HTTP期间金额变化各1项红灯，出库/专用补发旁路2项红灯，补发旧券被误当原单可退凭据1项红灯，均修复转绿。最终12组241项通过；加强外层补发事务真实回滚断言后，凭据事务76项另行通过，均无失败/错误/跳过。真实MySQL8.0.28在RC/RR下各新端1项＋旧端4项通过：NOWAIT证明模拟HTTP期间主单及guard可由第二连接取得，两券作废条件写失败整体回滚，真实退款流水SQL错误回滚余额/状态，第二券guard竞争后当前读inbox阻止退款，已退款后迟到核销保存MANUAL_REQUIRED并保留首次时间，补发标记阻止旧券再次用于退款。首轮真实MySQL发现无时区useTime经Timestamp绑定产生8小时偏移，改严格日期文本写入后两轮通过。V2/V3、直接券码、出库直充及专用补发均复用完整协议；人工库存及其他供应商保留金额模型。旧端本地提交`22c5dc50`；详见《集成测试.md》`MINISO-BRIDGE-LEGACY-VOID-REFUND-LOCAL-20261022`。Task13及Task17完整验收未完成，不单独启用BRIDGE；未push、部署或改共享配置。
 
 ## Task 13: 旧唯一HTTP入口持久接收后确认
 
