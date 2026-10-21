@@ -51,7 +51,7 @@ public class MinisoWriteOffPersistenceTest {
                         + " varchar(64),out_orderId varchar(100),account varchar(64),num"
                         + " int,supplier_channel varchar(32),order_status int,callback_url"
                         + " varchar(500),data_status varchar(32),remark varchar(100),edit_time"
-                        + " timestamp)");
+                        + " timestamp,data clob)");
         jdbc.execute(
                 "create table recharge_order_ext(order_id varchar(100) primary key,org_code"
                         + " varchar(64),out_order_sn varchar(100),supplier_batch_id"

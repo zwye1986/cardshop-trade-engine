@@ -3,6 +3,7 @@ package com.cardshop.trade.engine.infrastructure.maintenance;
 import com.cardshop.trade.engine.application.recharge.MinisoFulfillmentReceipt;
 import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.cardshop.trade.engine.domain.order.VoucherUseState;
+import com.cardshop.trade.engine.infrastructure.persistence.MinisoLegacyOrderData;
 import com.cardshop.trade.engine.infrastructure.supplier.miniso.MinisoApiResponse;
 import com.cardshop.trade.engine.infrastructure.supplier.miniso.MinisoOrderSnapshot;
 import com.cardshop.trade.engine.infrastructure.supplier.miniso.MinisoRechargeSupplierGatewayAdapter;
@@ -156,6 +157,9 @@ public final class MinisoOriginalResponseRecovery {
                     && number(order, "flow_id") == r.sourceFlowId() && SUCCESS.equals(query.get("status"))
                     && number(query, "version") == r.queryVersion() + 1 && audit.equals(query.get("last_error")),
                     "COMPLETED_STATE_CONFLICT");
+            // 旧恢复可能已成功但漏写卡管data；全部证据再次校验后只补投影，不重做履约和资金动作。
+            // 参见详细设计「名创卡密导出兼容修复（2026-10-21）」。
+            fillLegacyData(c, order, receipt, apply);
             return Result.ALREADY_RECOVERED;
         }
         require(number(order, "order_status") == LegacyOrderStatusCode.SUPPLIER_ACCEPTED.code()
@@ -163,12 +167,14 @@ public final class MinisoOriginalResponseRecovery {
                 && receipts.isEmpty(), "ORDER_STATE_OR_RECEIPT_CONFLICT");
         require(MANUAL.equals(query.get("status")) && number(query, "version") == r.queryVersion()
                 && number(query, "retry_count") == number(query, "max_retry_count"), "QUERY_STATE_OR_VERSION_CONFLICT");
+        MinisoLegacyOrderData.requireCompatible(order.get("data"), receipt);
         if (!apply) return Result.VERIFIED;
 
         LocalDateTime now = LocalDateTime.now(DATABASE_ZONE);
         changed(c, "insert into recharge_miniso_receipt(order_id,org_code,batch_id,coupon_code,phone,begin_time,end_time,coupon_status,created_at,updated_at) values(?,?,?,?,?,?,?,?,?,?)",
                 receipt.orderId(), receipt.orgCode(), receipt.batchId(), receipt.couponCode(), receipt.phone(),
                 receipt.beginTime(), receipt.endTime(), receipt.couponStatus(), now, now);
+        fillLegacyData(c, order, receipt, true);
         changed(c, "update mc_order set order_status=?,data_status='PROCESSED',flow_id=?,fail_code=null,fail_reason=null,remark=?,edit_time=? where order_Id=? and order_status=?",
                 LegacyOrderStatusCode.SUCCESS.code(), r.sourceFlowId(), audit, now, r.orderId(), LegacyOrderStatusCode.SUPPLIER_ACCEPTED.code());
         changed(c, "update recharge_order_ext set dispatch_status='SUCCESS',voucher_use_state=?,last_error='',updated_at=? where order_id=? and dispatch_status=?",
@@ -187,6 +193,16 @@ public final class MinisoOriginalResponseRecovery {
         } catch (java.io.IOException failure) {
             // 原始JSON异常含业务原文，立即安全包装重抛，不把cause带入维护日志。
             throw rejected("EVIDENCE_JSON_INVALID");
+        }
+    }
+
+    private static void fillLegacyData(Connection c, Map<String, String> order,
+            MinisoFulfillmentReceipt receipt, boolean apply) throws SQLException {
+        MinisoLegacyOrderData.requireCompatible(order.get("data"), receipt);
+        if (apply && blank(order.get("data"))) {
+            changed(c, "update mc_order set data=? where order_Id=? and org_code=? and (data is null or trim(data)='')",
+                    MinisoLegacyOrderData.fromReceipt(receipt),
+                    receipt.orderId(), receipt.orgCode());
         }
     }
 

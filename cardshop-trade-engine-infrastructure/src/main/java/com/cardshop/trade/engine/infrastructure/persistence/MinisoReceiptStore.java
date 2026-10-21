@@ -35,6 +35,15 @@ public final class MinisoReceiptStore {
     public void save(MinisoFulfillmentReceipt receipt) {
         try {
             saveWithinOrderTransaction(receipt);
+            // 可信凭据和旧卡管导出投影必须一起提交；重放同样补齐缺失投影，不覆盖已有冲突数据。
+            // 参见详细设计「名创卡密导出兼容修复（2026-10-21）」。主单归属锁仍由上一步持有。
+            String existing = mapper.selectLegacyData(receipt.orderId(), receipt.orgCode());
+            MinisoLegacyOrderData.requireCompatible(existing, receipt);
+            if ((existing == null || existing.isBlank())
+                    && mapper.fillLegacyData(receipt.orderId(), receipt.orgCode(),
+                            MinisoLegacyOrderData.fromReceipt(receipt)) != 1) {
+                throw new IllegalStateException("LEGACY_DATA_WRITE_CONFLICT");
+            }
         } catch (com.cardshop.trade.engine.application.recharge.MinisoWriteOffException ex) {
             throw ex;
         } catch (RuntimeException ex) {

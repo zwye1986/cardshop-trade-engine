@@ -26,7 +26,7 @@ class MinisoReceiptPersistenceTest {
         jdbc.execute(
                 "create table mc_order(order_Id varchar(100) primary key,org_code"
                     + " varchar(64),out_orderId varchar(100),account varchar(64),num"
-                    + " int,supplier_channel varchar(32),order_status int)");
+                    + " int,supplier_channel varchar(32),order_status int,data clob)");
         jdbc.execute(
                 "create table recharge_order_ext(order_id varchar(100) primary key,org_code"
                     + " varchar(64),out_order_sn varchar(100),supplier_batch_id"
@@ -38,7 +38,7 @@ class MinisoReceiptPersistenceTest {
                     + " int,created_at timestamp default current_timestamp,updated_at timestamp"
                     + " default current_timestamp)");
         for (var id : new String[]{"O1", "O2"}) {
-            jdbc.update("insert into mc_order values(?, 'A39', ?, '13800138000', 1, 'MINISO', 13)",id,id);
+            jdbc.update("insert into mc_order values(?, 'A39', ?, '13800138000', 1, 'MINISO', 13, null)",id,id);
             jdbc.update("insert into recharge_order_ext values(?, 'A39', ?, '100023', 'DB_PERSISTED')",id,id);
         }
         var cfg = new Configuration();
@@ -47,6 +47,51 @@ class MinisoReceiptPersistenceTest {
         store = new MinisoReceiptStore(new SqlSessionTemplate(factory.getObject()).getMapper(MinisoReceiptMapper.class));
         tx = new TransactionTemplate(new DataSourceTransactionManager(ds));
     }
+    @Test void confirmedReceiptPopulatesLegacyExportDataAndReplayPreservesIt() throws Exception {
+        tx.executeWithoutResult(s -> store.save(receipt("O1", "TEST-COUPON", 0)));
+        String data = jdbc.queryForObject("select data from mc_order where order_Id='O1'", String.class);
+        assertThat(data).isNotBlank();
+        var rows = new com.fasterxml.jackson.databind.ObjectMapper().readTree(data);
+        assertThat(rows.isArray()).isTrue();
+        assertThat(rows.size()).isOne();
+        assertThat(rows.get(0).path("couponCode").asText()).isEqualTo("TEST-COUPON");
+        assertThat(rows.get(0).path("couponKey").asText()).isEqualTo("TEST-COUPON");
+        assertThat(rows.get(0).path("validTime").asText()).isEqualTo("2026-12-01 00:00:00");
+        tx.executeWithoutResult(s -> store.save(receipt("O1", "TEST-COUPON", 0)));
+        assertThat(jdbc.queryForObject("select data from mc_order where order_Id='O1'", String.class)).isEqualTo(data);
+        jdbc.update("update mc_order set data=null where order_Id='O1'");
+        tx.executeWithoutResult(s -> store.save(receipt("O1", "TEST-COUPON", 0)));
+        assertThat(jdbc.queryForObject("select data from mc_order where order_Id='O1'", String.class)).isEqualTo(data);
+    }
+
+    @Test void conflictingLegacyDataRejectsReceiptAndPreservesOriginal() {
+        String conflicting = "[{\"couponCode\":\"FOREIGN-COUPON\"}]";
+        jdbc.update("update mc_order set data=? where order_Id='O1'", conflicting);
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.save(receipt("O1", "TEST-COUPON", 0))))
+                .isInstanceOf(IllegalStateException.class).hasMessageNotContaining("TEST-COUPON").hasMessageNotContaining("FOREIGN-COUPON");
+        assertThat(jdbc.queryForObject("select count(*) from recharge_miniso_receipt", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("select data from mc_order where order_Id='O1'", String.class)).isEqualTo(conflicting);
+    }
+
+    @Test void legacyDataWriteFailureRollsBackReceipt() {
+        jdbc.execute("alter table mc_order add constraint fail_legacy_data check(data is null)");
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.save(receipt("O1", "TEST-COUPON", 0))))
+                .isInstanceOf(IllegalStateException.class).hasNoCause().hasMessageNotContaining("TEST-COUPON");
+        assertThat(jdbc.queryForObject("select count(*) from recharge_miniso_receipt", Integer.class)).isZero();
+    }
+
+    @Test void equivalentExistingLegacyDataIsPreservedAndInvalidJsonIsRejected() {
+        String existing = "[{\"validTime\":\"2026-12-01 00:00:00\",\"couponKey\":\"C1\",\"couponCode\":\"C1\",\"productName\":\"原展示字段\"}]";
+        jdbc.update("update mc_order set data=? where order_Id='O1'", existing);
+        tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 0)));
+        assertThat(jdbc.queryForObject("select data from mc_order where order_Id='O1'", String.class)).isEqualTo(existing);
+        for (String invalid : java.util.List.of("not-json", "[]", "[{\"couponCode\":\"C1\",\"couponCode\":\"OTHER\"}]", existing + "[]")) {
+            jdbc.update("update mc_order set data=? where order_Id='O1'", invalid);
+            assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 0))))
+                    .isInstanceOf(IllegalStateException.class).hasNoCause().hasMessageNotContaining(invalid);
+        }
+    }
+
     @Test void receiptAndStatusParticipateInSameTransactionAndRollbackOnFailure() {
         assertThatThrownBy(() -> tx.executeWithoutResult(s -> {
             store.save(receipt("O1", "C1", 0));
@@ -55,6 +100,7 @@ class MinisoReceiptPersistenceTest {
         })).isInstanceOf(IllegalStateException.class);
         assertThat(jdbc.queryForObject("select count(*) from recharge_miniso_receipt",Integer.class)).isZero();
         assertThat(jdbc.queryForObject("select order_status from mc_order where order_Id='O1'",Integer.class)).isEqualTo(13);
+        assertThat(jdbc.queryForObject("select data from mc_order where order_Id='O1'",String.class)).isNull();
     }
     @Test void duplicateRetryIsIdempotentButForeignCouponAndMerchantAreRejected() {
         tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 0)));
@@ -89,6 +135,7 @@ class MinisoReceiptPersistenceTest {
         assertThatThrownBy(() -> port.updateFulfillmentStatus(update)).isInstanceOf(IllegalStateException.class);
         assertThat(jdbc.queryForObject("select count(*) from recharge_miniso_receipt",Integer.class)).isZero();
         assertThat(jdbc.queryForObject("select order_status from mc_order where order_Id='O1'",Integer.class)).isEqualTo(13);
+        assertThat(jdbc.queryForObject("select data from mc_order where order_Id='O1'",String.class)).isNull();
     }
 
     @Test void leadingZeroInFrozenNumericBatchDoesNotBreakConfirmedIssuance() {

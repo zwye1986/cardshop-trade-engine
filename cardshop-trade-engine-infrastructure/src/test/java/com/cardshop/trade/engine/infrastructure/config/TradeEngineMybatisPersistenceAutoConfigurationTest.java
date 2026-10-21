@@ -262,7 +262,7 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                             create table mc_order(order_Id varchar(100) primary key, org_code varchar(64),
                                 out_orderId varchar(100), account varchar(64), num int, supplier_channel varchar(32),
                                 order_status int, data_status varchar(32), flow_id bigint, fail_code varchar(100),
-                                fail_reason varchar(1000), remark varchar(1000), edit_time timestamp)
+                                fail_reason varchar(1000), remark varchar(1000), edit_time timestamp, data clob)
                             """);
                     jdbc.execute("""
                             create table recharge_order_ext(order_id varchar(100) primary key, org_code varchar(64),
@@ -296,6 +296,8 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                             .isEqualTo("TEST-LATE-COUPON");
                     assertThat(jdbc.queryForObject(
                             "select order_status from mc_order where order_Id='O-LATE'", Integer.class)).isEqualTo(12);
+                    assertThat(jdbc.queryForObject("select data from mc_order where order_Id='O-LATE'", String.class))
+                            .contains("TEST-LATE-COUPON", "couponCode", "couponKey", "validTime");
                     assertThat(jdbc.queryForObject(
                             "select dispatch_status from recharge_order_ext where order_id='O-LATE'", String.class))
                             .isEqualTo("SUCCESS");

@@ -22,6 +22,8 @@ class MinisoOriginalResponseRecoveryTest {
             assertThat(f.recover(false)).isEqualTo(MinisoOriginalResponseRecovery.Result.VERIFIED);
             assertUnchanged(f);
             assertThat(f.recover(true)).isEqualTo(MinisoOriginalResponseRecovery.Result.RECOVERED);
+            assertThat(f.jdbc.queryForObject("select data from mc_order",String.class))
+                    .contains("TEST-COUPON", "couponCode", "couponKey", "validTime");
             assertThat(f.jdbc.queryForObject("select count(*) from recharge_miniso_receipt", Integer.class)).isOne();
             assertThat(f.jdbc.queryForObject("select order_status from mc_order", Integer.class)).isEqualTo(12);
             assertThat(f.jdbc.queryForObject("select flow_id from mc_order", Long.class)).isEqualTo(10016L);
@@ -34,6 +36,31 @@ class MinisoOriginalResponseRecoveryTest {
             assertThat(f.jdbc.queryForObject("select count(*) from recharge_miniso_receipt", Integer.class)).isOne();
             assertThat(f.jdbc.queryForObject("select delta_amount from recharge_balance_delta_outbox", Long.class)).isEqualTo(-100L);
             assertThat(f.jdbc.queryForObject("select count(*) from recharge_notify_task", Integer.class)).isZero();
+        }
+    }
+
+    @Test
+    void alreadyRecoveredOrderCanFillMissingLegacyDataWithoutRepeatingRecovery() throws Exception {
+        try (var f = fixture()) {
+            f.recover(true);
+            String data = f.jdbc.queryForObject("select data from mc_order", String.class);
+            f.jdbc.update("update mc_order set data=null");
+            assertThat(f.recover(false)).isEqualTo(MinisoOriginalResponseRecovery.Result.ALREADY_RECOVERED);
+            assertThat(f.jdbc.queryForObject("select data from mc_order", String.class)).isNull();
+            assertThat(f.recover(true)).isEqualTo(MinisoOriginalResponseRecovery.Result.ALREADY_RECOVERED);
+            assertThat(f.jdbc.queryForObject("select data from mc_order", String.class)).isEqualTo(data);
+            assertThat(f.jdbc.queryForObject("select count(*) from recharge_miniso_receipt", Integer.class)).isOne();
+            assertThat(f.jdbc.queryForObject("select version from recharge_dispatch_outbox where event_type='SUPPLIER_QUERY'", Long.class)).isEqualTo(8L);
+        }
+    }
+
+    @Test
+    void conflictingLegacyDataCannotBeOverwrittenByOriginalRecovery() throws Exception {
+        try (var f = fixture()) {
+            f.jdbc.update("update mc_order set data='[]'");
+            assertThatThrownBy(() -> f.recover(true)).hasMessage("LEGACY_DATA_CONFLICT");
+            assertThat(f.jdbc.queryForObject("select count(*) from recharge_miniso_receipt", Integer.class)).isZero();
+            assertThat(f.jdbc.queryForObject("select order_status from mc_order", Integer.class)).isEqualTo(13);
         }
     }
 
@@ -131,6 +158,7 @@ class MinisoOriginalResponseRecoveryTest {
 
     private static void assertUnchanged(Fixture f) {
         assertThat(f.jdbc.queryForObject("select count(*) from recharge_miniso_receipt", Integer.class)).isZero();
+        assertThat(f.jdbc.queryForObject("select data from mc_order", String.class)).isNull();
         assertThat(f.jdbc.queryForObject("select order_status from mc_order", Integer.class)).isEqualTo(13);
         assertThat(f.jdbc.queryForObject("select dispatch_status from recharge_order_ext", String.class)).isEqualTo("SUPPLIER_ACCEPTED");
         assertThat(f.jdbc.queryForObject("select status from recharge_dispatch_outbox where event_type='SUPPLIER_QUERY'", String.class)).isEqualTo("MANUAL_REQUIRED");
@@ -140,7 +168,7 @@ class MinisoOriginalResponseRecoveryTest {
         var ds = new JdbcDataSource();
         ds.setURL("jdbc:h2:mem:" + UUID.randomUUID() + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1");
         var jdbc = new JdbcTemplate(ds);
-        jdbc.execute("create table mc_order(order_Id varchar(100) primary key,org_code varchar(64),out_orderId varchar(100),account varchar(64),num int,supplier_channel varchar(32),order_price bigint,parent_id varchar(64),produt_code varchar(64),callback_url varchar(1024),order_status int,data_status varchar(32),flow_id bigint,fail_code varchar(64),fail_reason varchar(512),remark varchar(512),edit_time timestamp)");
+        jdbc.execute("create table mc_order(order_Id varchar(100) primary key,org_code varchar(64),out_orderId varchar(100),account varchar(64),num int,supplier_channel varchar(32),order_price bigint,parent_id varchar(64),produt_code varchar(64),callback_url varchar(1024),order_status int,data_status varchar(32),flow_id bigint,fail_code varchar(64),fail_reason varchar(512),remark varchar(512),edit_time timestamp,data varchar(4096))");
         jdbc.execute("create table recharge_order_ext(order_id varchar(100) primary key,org_code varchar(64),out_order_sn varchar(100),persist_status varchar(32),validation_status varchar(32),supplier_batch_id varchar(64),balance_reserved boolean,dispatch_status varchar(32),voucher_use_state varchar(8),voucher_use_time timestamp,voucher_invalid_time timestamp,last_error varchar(512),updated_at timestamp)");
         jdbc.execute("create table mc_order_supplier_flow(id bigint primary key,order_Id varchar(100),out_order_no varchar(100),channel varchar(32),status varchar(32),request_param clob,response_result clob)");
         jdbc.execute("create table recharge_miniso_receipt(order_id varchar(100) primary key,org_code varchar(64),batch_id int,coupon_code varchar(128) unique,phone varchar(64),begin_time varchar(19),end_time varchar(19),coupon_status int,use_time timestamp,created_at timestamp,updated_at timestamp)");
@@ -148,7 +176,7 @@ class MinisoOriginalResponseRecoveryTest {
         jdbc.execute("create table recharge_dispatch_outbox(event_id varchar(100) primary key,event_type varchar(32),org_code varchar(64),order_id varchar(100),out_order_sn varchar(100),status varchar(32),retry_count int,max_retry_count int,locked_until timestamp,locked_by varchar(128),version bigint,last_error varchar(512),updated_at timestamp)");
         jdbc.execute("create table recharge_balance_delta_outbox(order_id varchar(100),org_code varchar(64),delta_type varchar(32),delta_amount bigint,status varchar(32))");
         jdbc.execute("create table recharge_notify_task(order_id varchar(100))");
-        jdbc.execute("insert into mc_order values('O1','A35','OUT1','13800138000',1,'MINISO',100,'80100392','80100139','',13,'PROCESSING',10022,null,null,'',null)");
+        jdbc.execute("insert into mc_order values('O1','A35','OUT1','13800138000',1,'MINISO',100,'80100392','80100139','',13,'PROCESSING',10022,null,null,'',null,null)");
         jdbc.execute("insert into recharge_order_ext values('O1','A35','OUT1','DB_PERSISTED','PASSED','106552',true,'SUPPLIER_ACCEPTED','',null,null,'',null)");
         var raw = Map.of("code", 200, "data", java.util.List.of(Map.of("batchId", 106552, "couponCode", "TEST-COUPON", "phone", "13800138000", "beginTime", "2026-10-20 17:51:30", "endTime", "2026-12-31 23:59:59")));
         String response = json.writeValueAsString(Map.of("response_code", "200", "supplier_order_id", "O1", "raw_response", json.writeValueAsString(raw)));
