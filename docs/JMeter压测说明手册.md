@@ -208,7 +208,7 @@ code == "200" || code == 200 || code == "510" || code == 510
 | 变量 | 来源 |
 | --- | --- |
 | `baseUrl` | `http://apitest.kalaiwang.com` |
-| `appId` / `appSecret` | A35cecjXS7lZ1W30NMN / A35ZkrekPgvyfuhsijp |
+| `appId` / `appSecret` | `A35cecjXS7lZ1W30NMN` / 从受控环境文件读取，不写入文档 |
 | `loadTestToken` | 与 Nacos `load-test-token` 一致 |
 | `productId` | 80100022 |
 | `account` | 测试充值账号,不要重复 |
