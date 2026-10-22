@@ -273,6 +273,13 @@ class TradeEngineReliabilityConfigurationTest {
                     }
 
                     @Override
+                    public Optional<Duration> findPendingRetryDelay(
+                            String eventId,
+                            com.cardshop.trade.engine.domain.order.OutboxEventType eventType) {
+                        return Optional.empty();
+                    }
+
+                    @Override
                     public Optional<com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent> claim(
                             com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent event,
                             String workerId,

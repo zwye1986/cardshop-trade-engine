@@ -16,7 +16,7 @@ import org.junit.jupiter.api.Test;
 class RedisRechargeCacheRepairAdapterTest {
 
     @Test
-    void rewritesBalanceBaselineWhenRepairLockIsAcquired() {
+    void initializesMissingBalanceOnlyWhenSafetyChecksPass() {
         FakeOperations operations = new FakeOperations(List.of(
                 new RedisRechargeCacheRepairAdapter.MerchantBalanceBaseline("A05", 1_000L, 22L)));
         operations.lockAcquired = true;
@@ -31,7 +31,22 @@ class RedisRechargeCacheRepairAdapterTest {
         assertThat(result.failed()).isZero();
         assertThat(result.skipped()).isZero();
         assertThat(operations.writes).containsExactly("A05:1000:0:22");
-        assertThat(operations.releases).containsExactly("A05:worker-A");
+        assertThat(operations.releases).hasSize(1);
+        assertThat(operations.releases.getFirst()).startsWith("A05:worker-A:");
+    }
+
+    @Test
+    void existingOrUnsafeBalanceIsSkippedWithoutOverwritingFunds() {
+        FakeOperations operations = new FakeOperations(List.of(
+                new RedisRechargeCacheRepairAdapter.MerchantBalanceBaseline("A35", 1_000L, 56L)));
+        operations.lockAcquired = true;
+        operations.initializationSafe = false;
+        var result = new RedisRechargeCacheRepairAdapter(operations, Duration.ofMinutes(5))
+                .repairDue(1, 0, 10, "worker");
+        assertThat(result.skipped()).isEqualTo(1);
+        assertThat(result.succeeded()).isZero();
+        assertThat(operations.writes).isEmpty();
+        assertThat(operations.releases).hasSize(1);
     }
 
     @Test
@@ -58,6 +73,7 @@ class RedisRechargeCacheRepairAdapterTest {
         private final List<String> writes = new ArrayList<>();
         private final List<String> releases = new ArrayList<>();
         private boolean lockAcquired;
+        private boolean initializationSafe = true;
 
         private FakeOperations(List<RedisRechargeCacheRepairAdapter.MerchantBalanceBaseline> baselines) {
             this.baselines = baselines;
@@ -77,8 +93,11 @@ class RedisRechargeCacheRepairAdapterTest {
         }
 
         @Override
-        public void writeBalanceBaseline(String orgCode, long available, long frozen, long version) {
-            writes.add(orgCode + ":" + available + ":" + frozen + ":" + version);
+        public boolean initializeBalanceIfSafe(String orgCode, String owner) {
+            if (!initializationSafe) return false;
+            var baseline = baselines.stream().filter(row -> row.orgCode().equals(orgCode)).findFirst().orElseThrow();
+            writes.add(orgCode + ":" + baseline.available() + ":0:" + baseline.version());
+            return true;
         }
 
         @Override

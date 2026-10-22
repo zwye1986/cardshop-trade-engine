@@ -1,5 +1,7 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderFundsAdapter;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort;
 import com.cardshop.trade.engine.infrastructure.persistence.MinisoReceiptStore;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoCouponGuardMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper;
@@ -141,7 +143,8 @@ import reactor.core.publisher.Mono;
  * 自动配置和 Nacos 环境提供，local profile 禁用 Redis 时不会强制创建接单端口。
  */
 @Configuration(proxyBeanMethods = false)
-@EnableConfigurationProperties(TradeEngineProperties.class)
+@EnableConfigurationProperties({TradeEngineProperties.class,
+        com.cardshop.trade.engine.infrastructure.notify.bocom.BocomNotifyProperties.class})
 @EnableRabbit
 public class TradeEngineInfrastructureConfiguration {
 
@@ -731,14 +734,43 @@ public class TradeEngineInfrastructureConfiguration {
     @ConditionalOnMissingBean(MerchantNotifyClientPort.class)
     public MerchantNotifyClientPort merchantNotifyClientPort(
             ObjectProvider<V12SigningCredentialStorePort> credentialStoreProvider,
+            ObjectProvider<com.cardshop.trade.engine.application.recharge.MerchantNotifyAttemptPort> attemptProvider,
             HttpClient httpClient,
             ObjectMapper objectMapper,
-            TradeEngineProperties properties) {
-        return new HttpMerchantNotifyClientAdapter(
+            TradeEngineProperties properties,
+            com.cardshop.trade.engine.infrastructure.notify.bocom.BocomNotifyProperties bocom,
+            Clock clock) {
+        var direct=new HttpMerchantNotifyClientAdapter(
                 httpClient,
                 objectMapper,
                 Duration.ofMillis(properties.getNotify().getHttpTimeoutMs()),
                 credentialStoreProvider::getIfAvailable);
+        // 持久化可能后置装配，调用时解析审计端口；缺失会暂缓而非无证据发送。
+        var audit=new com.cardshop.trade.engine.application.recharge.MerchantNotifyAttemptPort() {
+            public boolean begin(com.cardshop.trade.engine.application.recharge.MerchantNotifyRequest r,String id) {
+                return attemptProvider.getObject().begin(r,id);
+            }
+            public void finish(com.cardshop.trade.engine.application.recharge.MerchantNotifyRequest r,String id,
+                    com.cardshop.trade.engine.application.recharge.MerchantNotifyAttemptResult result) {
+                attemptProvider.getObject().finish(r,id,result);
+            }
+        };
+        var bank=new com.cardshop.trade.engine.infrastructure.notify.bocom.BocomMerchantNotifyClientAdapter(bocom,objectMapper,audit,clock);
+        return new com.cardshop.trade.engine.infrastructure.notify.RoutingMerchantNotifyClientAdapter(direct,bank);
+    }
+
+    /** 三类通知共用准备服务，银行注册与发送开关独立；参见详细设计2104实施细化。 */
+    @Bean
+    @ConditionalOnMissingBean(com.cardshop.trade.engine.application.recharge.MerchantNotifyPreparationService.class)
+    public com.cardshop.trade.engine.application.recharge.MerchantNotifyPreparationService merchantNotifyPreparationService(
+            com.cardshop.trade.engine.infrastructure.notify.bocom.BocomNotifyProperties bocom,
+            ObjectProvider<V12SigningCredentialStorePort> credentials,
+            ObjectProvider<MerchantNotifyPayloadSigner> signers,Clock clock) {
+        var store=credentials.getIfAvailable(V12SigningCredentialStorePort::unavailable);
+        return new com.cardshop.trade.engine.application.recharge.MerchantNotifyPreparationService(
+                new com.cardshop.trade.engine.infrastructure.notify.bocom.ConfiguredMerchantNotifyRouteAdapter(bocom),
+                signers.getIfAvailable(()->new V1MerchantNotifyPayloadSigner(store)),
+                new com.cardshop.trade.engine.application.recharge.V12RedemptionNotifyPayloadSigner(store),clock);
     }
 
     @Bean
@@ -782,6 +814,25 @@ public class TradeEngineInfrastructureConfiguration {
         return new MinisoRoutingSupplierGateway(miniso, fallback);
     }
 
+    /** 独立资金入口必须具备真实SQL事务；缺依赖时不启用可写Worker，见详细设计独立资金协议。 */
+    @Bean
+    @ConditionalOnBean({PlatformTransactionManager.class,
+            MinisoReceiptMapper.class,
+            RechargeBalanceDeltaOutboxMapper.class,
+            RechargeFulfillmentOrderPort.class, BalanceDeltaFlushOutboxPort.class, BalanceReservationReleasePort.class})
+    @ConditionalOnMissingBean(RechargeOrderFundsPort.class)
+    public RechargeOrderFundsPort rechargeOrderFundsPort(
+            BalanceReservationReleasePort redis, RechargeFulfillmentOrderPort orders,
+            BalanceDeltaFlushOutboxPort deltas,
+            RechargeBalanceDeltaOutboxMapper deltaMapper,
+            MinisoReceiptMapper receipts,
+            ObjectProvider<com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection> protection,
+            PlatformTransactionManager transactionManager) {
+        return new MybatisRechargeOrderFundsAdapter(
+                redis, orders, deltas, deltaMapper, receipts, protection::getIfAvailable, transactionManager,
+                MybatisRechargeOrderFundsAdapter.DEFAULT_TRANSACTION_TIMEOUT_SECONDS);
+    }
+
     @Bean
     @ConditionalOnBean({
             RechargeOutboxPort.class,
@@ -791,6 +842,7 @@ public class TradeEngineInfrastructureConfiguration {
             DirectRechargeFrequencyPort.class,
             BalanceDeltaFlushOutboxPort.class,
             BalanceReservationReleasePort.class,
+            RechargeOrderFundsPort.class,
             RechargeNotifyTaskPort.class,
             V1MerchantProfilePort.class
     })
@@ -803,12 +855,14 @@ public class TradeEngineInfrastructureConfiguration {
             DirectRechargeFrequencyPort frequencyPort,
             BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
             BalanceReservationReleasePort balanceReservationReleasePort,
+            RechargeOrderFundsPort orderFunds,
             RechargeNotifyTaskPort notifyTaskPort,
             ObjectProvider<MerchantNotifyPayloadSigner> payloadSignerProvider,
             ObjectProvider<V12SigningCredentialStorePort> credentialStoreProvider,
             ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
             ObjectProvider<com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection>
                     minisoProtection,
+            ObjectProvider<com.cardshop.trade.engine.application.recharge.MerchantNotifyPreparationService> notifyPreparation,
             V1MerchantProfilePort merchantProfilePort,
             Clock clock,
             TradeEngineProperties properties) {
@@ -828,7 +882,7 @@ public class TradeEngineInfrastructureConfiguration {
                 RechargeFulfillmentConfigurationSupport.deferredRechargeDispatchTimerPort(dispatchTimerPortProvider),
                 clock,
                 RechargeFulfillmentConfigurationSupport.workerSettings(fulfillment),
-                minisoProtection::getIfAvailable);
+                minisoProtection::getIfAvailable,notifyPreparation.getIfAvailable(),orderFunds);
     }
 
     /**

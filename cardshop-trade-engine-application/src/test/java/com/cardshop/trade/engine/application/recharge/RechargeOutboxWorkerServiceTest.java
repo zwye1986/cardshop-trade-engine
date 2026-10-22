@@ -376,6 +376,37 @@ class RechargeOutboxWorkerServiceTest {
                 });
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = OutboxEventType.class, names = {"SUPPLIER_DISPATCH", "SUPPLIER_QUERY"})
+    void failedConsumptionConfirmationRetriesSuccessfulOrderWithoutCallingSupplierAgain(OutboxEventType type) {
+        var outboxes = new FakeOutboxPort(outbox(type));
+        var orders = type == OutboxEventType.SUPPLIER_DISPATCH
+                ? new SequencedFulfillmentOrderPort(dispatchableOrder(), dispatchableOrder(), successfulOrder(), successfulOrder())
+                : new SequencedFulfillmentOrderPort(supplierAcceptedOrder(), successfulOrder());
+        var gateway = new FakeSupplierGatewayPort(SupplierGatewayResponse.success("SUP-1", "200", "ok", "{}"));
+        var notifications = new FakeNotifyTaskPort();
+        var attempts = new AtomicInteger();
+        var funds = new BalanceReservationReleasePort() {
+            public BalanceReservationReleaseResult release(BalanceReservationReleaseCommand command) {
+                throw new AssertionError("成功确认不得调用退款");
+            }
+            public boolean confirm(RechargeFulfillmentOrder order) { return attempts.incrementAndGet() > 1; }
+        };
+        var service = new RechargeOutboxWorkerService(outboxes, orders, gateway,
+                new FakeFrequencyPort(true), BalanceDeltaFlushOutboxPort.noop(), funds,
+                notifications, new FixedNotifyPayloadSigner(), CLOCK, settings());
+        String eventId = outbox(type).eventId();
+        assertThat(service.processEvent(eventId, type, "worker")).isEqualTo(RechargeOutboxBatchResult.Outcome.FAILED);
+        assertThat(outboxes.successes).isEmpty();
+        assertThat(notifications.createdTasks).isEmpty();
+        assertThat(outboxes.failures).hasSize(1);
+        assertThat(service.processEvent(eventId, type, "worker")).isEqualTo(RechargeOutboxBatchResult.Outcome.SUCCEEDED);
+        assertThat(attempts).hasValue(2);
+        assertThat(gateway.dispatchRequests.size() + gateway.queryRequests.size()).isEqualTo(1);
+        assertThat(notifications.createdTasks).hasSize(1);
+        assertThat(outboxes.successes).containsExactly(eventId);
+    }
+
     @Test
     void confirmedMinisoReceiptReachesTerminalWriteBeforeMerchantNotification() {
         var receipt = new MinisoFulfillmentReceipt("ORDER-1","A36",100023,"TEST-C1","13800138000",
@@ -468,6 +499,55 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(outboxPort.findByEventIds).containsExactly("dispatch-ORDER-1");
         assertThat(outboxPort.claimedOrderIds).containsExactly("ORDER-1");
         assertThat(outboxPort.successes).containsExactly("dispatch-ORDER-1");
+    }
+
+    @Test
+    void earlyTimerWakeupRearmsUntilPersistedDueThenDispatchesOnlyOnce() {
+        FakeOutboxPort outboxPort = new FakeOutboxPort(outbox(OutboxEventType.SUPPLIER_DISPATCH));
+        outboxPort.due = false;
+        // 现场复现：数据库舍入至 16:26:33，16:26:32.815 唤醒还剩 185ms。
+        outboxPort.pendingRetryDelay = Optional.of(Duration.ofMillis(185));
+        FakeSupplierGatewayPort supplierGateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("SUP-1001", "0", "success", "{}"));
+        FakeDispatchTimerPort timer = new FakeDispatchTimerPort();
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                outboxPort, new FakeFulfillmentOrderPort(dispatchableOrder()), supplierGateway,
+                new FakeFrequencyPort(true), BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(), new FakeNotifyTaskPort(),
+                new FixedNotifyPayloadSigner(), CLOCK, settings(), timer);
+
+        assertThat(service.processEvent("dispatch-ORDER-1", OutboxEventType.SUPPLIER_DISPATCH, "timer"))
+                .isEqualTo(RechargeOutboxBatchResult.Outcome.DEFERRED);
+        assertThat(timer.calls).containsExactly(new TimerCall(
+                "dispatch-ORDER-1", OutboxEventType.SUPPLIER_DISPATCH, Duration.ofMillis(185)));
+        assertThat(outboxPort.claimedOrderIds).isEmpty();
+        assertThat(outboxPort.failures).isEmpty();
+        assertThat(supplierGateway.dispatchRequests).isEmpty();
+
+        outboxPort.due = true;
+        assertThat(service.processEvent("dispatch-ORDER-1", OutboxEventType.SUPPLIER_DISPATCH, "timer"))
+                .isEqualTo(RechargeOutboxBatchResult.Outcome.SUCCEEDED);
+        assertThat(service.processEvent("dispatch-ORDER-1", OutboxEventType.SUPPLIER_DISPATCH, "timer"))
+                .isEqualTo(RechargeOutboxBatchResult.Outcome.SKIPPED);
+        assertThat(supplierGateway.dispatchRequests).hasSize(1);
+        assertThat(timer.calls).hasSize(1);
+    }
+
+    @Test
+    void timerMissWithoutPendingEventDoesNotCreateAnEndlessWakeup() {
+        FakeDispatchTimerPort timer = new FakeDispatchTimerPort();
+        FakeSupplierGatewayPort gateway = new FakeSupplierGatewayPort(
+                SupplierGatewayResponse.success("unused", "0", "success", "{}"));
+        RechargeOutboxWorkerService service = new RechargeOutboxWorkerService(
+                new FakeOutboxPort(), new FakeFulfillmentOrderPort(dispatchableOrder()), gateway,
+                new FakeFrequencyPort(true), BalanceDeltaFlushOutboxPort.noop(),
+                BalanceReservationReleasePort.noop(), new FakeNotifyTaskPort(),
+                new FixedNotifyPayloadSigner(), CLOCK, settings(), timer);
+
+        assertThat(service.processEvent("missing", OutboxEventType.SUPPLIER_QUERY, "timer"))
+                .isEqualTo(RechargeOutboxBatchResult.Outcome.SKIPPED);
+        assertThat(timer.calls).isEmpty();
+        assertThat(gateway.dispatchRequests).isEmpty();
     }
 
     @Test
@@ -574,6 +654,41 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(outboxPort.successes).containsExactly("dispatch-ORDER-1");
         assertThat(orderPort.statusUpdates.getLast().dispatchStatus()).isEqualTo(FulfillmentDispatchStatus.SUCCESS);
         assertThat(notifyTaskPort.createdTasks).isEmpty();
+    }
+
+    @Test void bankDispatchAndCancellationCreateTasksWithEmptyOriginalUrlWithoutMerchantKey() {
+        for (var type : List.of(OutboxEventType.SUPPLIER_DISPATCH,OutboxEventType.INVALID_ORDER)) {
+            var original=orderWithNotifyUrl("");
+            var order=type==OutboxEventType.SUPPLIER_DISPATCH ? original : new RechargeFulfillmentOrder(
+                    original.orderId(),original.outOrderSn(),original.orgCode(),original.account(),original.productId(),
+                    original.selectedProductId(),"MINISO",original.orderPrice(),"",12,"DB_PERSISTED","PASSED",true,true);
+            var outbox=new FakeOutboxPort(outbox(type));
+            var orders=new FakeFulfillmentOrderPort(order);
+            // 详细设计9.8：银行通知测试也必须具有已核实的MINISO作废凭据，不能绕过释放授权。
+            orders.hasTrustedVoidReceipt = type == OutboxEventType.INVALID_ORDER;
+            var supplier=new FakeSupplierGatewayPort(SupplierGatewayResponse.success("SUP","200","ok","{}"));
+            var tasks=new FakeNotifyTaskPort();
+            var route=new MerchantNotifyRoute(NotifyDeliveryChannel.BOCOM_OPENAPI,"A36","r1",
+                    "https://bank.invalid/api/trade/J_IEP_001_2104/v1","protocol","app","RSA","key1","bank1");
+            MerchantNotifyPayloadSigner signer=new MerchantNotifyPayloadSigner() {
+                public Map<String,String> signOrderStatus(RechargeFulfillmentOrder o,String s,Instant t) {throw new AssertionError("no HMAC");}
+                public Map<String,String> signWriteOff(RechargeFulfillmentOrder o,Instant t) {throw new AssertionError("no HMAC");}
+            };
+            var preparation=new MerchantNotifyPreparationService((org,url)->java.util.Optional.of(route),signer,null,CLOCK);
+            var service=new RechargeOutboxWorkerService(outbox,orders,supplier,command -> {},
+                    new FakeFrequencyPort(true),BalanceDeltaFlushOutboxPort.noop(),BalanceReservationReleasePort.noop(),
+                    tasks,signer,RechargeDispatchTimerPort.noop(),CLOCK,settings(),()->null,preparation);
+            var result=service.processDue(1,0,10,"worker",List.of(type),1);
+            assertThat(result.succeeded()).isEqualTo(1);
+            assertThat(tasks.createdTasks).hasSize(1);
+            assertThat(tasks.createdTasks.getFirst().encodedPayload()).startsWith(
+                    type==OutboxEventType.SUPPLIER_DISPATCH ? "operate_type:1," : "operate_type:3,");
+            assertThat(tasks.createdTasks.getFirst().payload()).doesNotContainKeys("sign","keyId");
+            if (type == OutboxEventType.INVALID_ORDER) {
+                assertThat(orders.authorization).isNotNull();
+                assertThat(orders.completedReleaseDeltas).hasSize(1);
+            }
+        }
     }
 
     @Test
@@ -858,7 +973,7 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(notifyTaskPort.createdTasks).singleElement().satisfies(task ->
                 assertThat(task.taskId()).isEqualTo("notify-order-ORDER-1-6"));
         assertThat(balanceReleasePort.commands).singleElement().satisfies(command -> {
-            assertThat(command.releaseEventId()).isEqualTo("supplier-query-ORDER-1");
+            assertThat(command.releaseEventId()).isEqualTo("balance-flush-release-ORDER-1");
             assertThat(command.amount()).isEqualTo(5200L);
         });
         assertThat(balanceDeltaOutboxPort.commands).singleElement().satisfies(command -> {
@@ -980,7 +1095,7 @@ class RechargeOutboxWorkerServiceTest {
             assertThat(command.outOrderSn()).isEqualTo("OUT-1");
             assertThat(command.amount()).isEqualTo(5200L);
             assertThat(command.releaseType()).isEqualTo("RELEASE");
-            assertThat(command.releaseEventId()).isEqualTo("dispatch-ORDER-1");
+            assertThat(command.releaseEventId()).isEqualTo("balance-flush-release-ORDER-1");
         });
         assertThat(balanceDeltaOutboxPort.commands).singleElement().satisfies(command -> {
             assertThat(command.orderId()).isEqualTo("ORDER-1");
@@ -1026,6 +1141,36 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(balanceReleasePort.commands).hasSize(1);
         assertThat(balanceDeltaOutboxPort.commands).hasSize(1);
         assertThat(notifyTaskPort.createdTasks).isEmpty();
+    }
+
+    @Test
+    void failedTaskCompletionAfterRefundCommitRetriesWithoutSupplierOrSecondFundsOperation() {
+        var original = successfulOrder();
+        var outstanding = new RechargeFulfillmentOrder(original.orderId(), original.outOrderSn(), original.orgCode(),
+                original.account(), original.productId(), original.selectedProductId(), original.supplierChannel(),
+                original.orderPrice(), "", 12, "DB_PERSISTED", "PASSED", true, true, "CANCELLED", CLOCK.instant());
+        var committed = new RechargeFulfillmentOrder(original.orderId(), original.outOrderSn(), original.orgCode(),
+                original.account(), original.productId(), original.selectedProductId(), original.supplierChannel(),
+                original.orderPrice(), "", 12, "DB_PERSISTED", "PASSED", true, false, "CANCELLED", CLOCK.instant());
+        var outboxes = new FakeOutboxPort(outbox(OutboxEventType.INVALID_ORDER));
+        outboxes.failNextSuccess = true;
+        var orders = new FakeFulfillmentOrderPort(new HashMap<>(Map.of(outstanding.orderId(), outstanding)));
+        var deltas = new FakeBalanceDeltaOutboxPort();
+        var funds = new FakeBalanceReleasePort(BalanceReservationReleaseResult.releasedSuccess());
+        var gateway = new FakeSupplierGatewayPort(SupplierGatewayResponse.failed("", "unexpected", "must not call", ""));
+        var worker = new RechargeOutboxWorkerService(outboxes, orders, gateway, new FakeFrequencyPort(true),
+                deltas, funds, new FakeNotifyTaskPort(), new FixedNotifyPayloadSigner(), CLOCK, settings());
+        assertThat(worker.processEvent(outbox(OutboxEventType.INVALID_ORDER).eventId(), OutboxEventType.INVALID_ORDER, "worker"))
+                .isEqualTo(RechargeOutboxBatchResult.Outcome.FAILED);
+        assertThat(funds.commands).hasSize(1);
+        assertThat(deltas.commands).hasSize(1);
+        orders.ordersById.put(committed.orderId(), committed);
+        assertThat(worker.processEvent(outbox(OutboxEventType.INVALID_ORDER).eventId(), OutboxEventType.INVALID_ORDER, "worker"))
+                .isEqualTo(RechargeOutboxBatchResult.Outcome.SUCCEEDED);
+        assertThat(funds.commands).hasSize(1);
+        assertThat(deltas.commands).hasSize(1);
+        assertThat(gateway.invalidRequests).isEmpty();
+        assertThat(gateway.dispatchRequests).isEmpty();
     }
 
     @Test
@@ -1809,6 +1954,9 @@ class RechargeOutboxWorkerServiceTest {
         private final List<String> findByEventIds = new ArrayList<>();
         private int scanCount;
         private int successFailures;
+        private boolean due = true;
+        private boolean failNextSuccess;
+        private Optional<Duration> pendingRetryDelay = Optional.empty();
 
         private FakeOutboxPort(RechargeOutboxEvent... events) {
             this.events = List.of(events);
@@ -1833,9 +1981,15 @@ class RechargeOutboxWorkerServiceTest {
         public Optional<RechargeOutboxEvent> findDueByEventId(String eventId, OutboxEventType eventType) {
             findByEventIds.add(eventId);
             return events.stream()
+                    .filter(event -> due && !successes.contains(event.eventId()))
                     .filter(event -> event.eventId().equals(eventId))
                     .filter(event -> event.eventType() == eventType)
                     .findFirst();
+        }
+
+        @Override
+        public Optional<Duration> findPendingRetryDelay(String eventId, OutboxEventType eventType) {
+            return successes.contains(eventId) ? Optional.empty() : pendingRetryDelay;
         }
 
         @Override
@@ -1847,6 +2001,7 @@ class RechargeOutboxWorkerServiceTest {
         @Override
         public void markSuccess(RechargeOutboxEvent event) {
             if (successFailures-- > 0) throw new IllegalStateException("outbox completion unavailable");
+            if (failNextSuccess) { failNextSuccess = false; throw new IllegalStateException("injected failure after funds commit"); }
             successes.add(event.eventId());
         }
 
@@ -2226,6 +2381,9 @@ class RechargeOutboxWorkerServiceTest {
             commands.add(command);
             return result;
         }
+
+        @Override
+        public boolean confirm(RechargeFulfillmentOrder order) { return true; }
     }
 
     /** 仅模拟释放端口的幂等合同，不代表执行或验证真实Redis Lua。 */

@@ -16,6 +16,10 @@
         STDOUT_LOG_ENABLED=true。
 -->
 <configuration>
+    <!-- SDK的INFO/ERROR可能打印银行原文及签名；只由项目适配器输出脱敏、采样异常栈。参见详细设计2104实施细化。 -->
+    <logger name="com.bocom.api" level="OFF"/>
+    <logger name="org.apache.http.wire" level="OFF"/>
+    <logger name="org.apache.http.headers" level="OFF"/>
     <!-- 复用 Spring Boot 默认控制台/文件 appender 约定与 conversionRule -->
     <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
 

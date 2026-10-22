@@ -55,7 +55,7 @@ public class MinisoWriteOffPersistenceTest {
                         + " varchar(64),out_orderId varchar(100),account varchar(64),num"
                         + " int,supplier_channel varchar(32),order_status int,callback_url"
                         + " varchar(500),data_status varchar(32),remark varchar(100),edit_time"
-                        + " timestamp)");
+                        + " timestamp,data clob)");
         jdbc.execute(
                 "create table recharge_order_ext(order_id varchar(100) primary key,org_code"
                         + " varchar(64),out_order_sn varchar(100),supplier_batch_id"
@@ -89,7 +89,7 @@ public class MinisoWriteOffPersistenceTest {
                     + " varchar(100),notify_url varchar(500),biz_status varchar(32),payload"
                     + " clob,status varchar(32),retry_count int,max_retry_count int,next_retry_time"
                     + " timestamp,locked_by varchar(100),locked_until timestamp,last_error"
-                    + " varchar(128),created_at timestamp,updated_at timestamp)");
+                    + " varchar(128),created_at timestamp,updated_at timestamp,delivery_channel varchar(32) default 'DIRECT_JSON',route_snapshot clob,encoded_payload clob,claim_version bigint default 0)");
         jdbc.execute(
                 "create table recharge_dispatch_outbox(event_id varchar(100) primary key,status"
                         + " varchar(32),locked_until timestamp,last_error varchar(128),updated_at"
@@ -166,6 +166,53 @@ public class MinisoWriteOffPersistenceTest {
         assertThat(store.processBatch(1, 0, 100, "worker").retried()).isEqualTo(1);
         assertThat(status()).isZero();
         assertThat(eventStatus()).isEqualTo("RETRY");
+    }
+
+    @Test void bankRedemptionWithBlankUrlCommitsWithoutMerchantSigningKey() throws Exception {
+        seed(0, "");
+        reset(credentials);
+        var route=new MerchantNotifyRoute(NotifyDeliveryChannel.BOCOM_OPENAPI,"A39","r1",
+                "https://bank.invalid/api/trade/J_IEP_001_2104/v1","p","app","RSA","key","bank");
+        var tasks=new MybatisRechargeNotifyTaskAdapter(
+                new SqlSessionTemplate(sqlSessionFactory()).getMapper(RechargeNotifyTaskMapper.class),new ObjectMapper(),clock);
+        var preparation=new MerchantNotifyPreparationService((org,url)->Optional.of(route),
+                new V1MerchantNotifyPayloadSigner(credentials),new V12RedemptionNotifyPayloadSigner(credentials),clock);
+        var bankStore=new MybatisMinisoWriteOffStore(events,receiptMapper,guards,tasks,new V12RedemptionNotifyPayloadSigner(credentials),
+                new DataSourceTransactionManager(jdbc.getDataSource()),clock,2,Duration.ofSeconds(60),5,
+                MinisoWriteOffObserver.NOOP,preparation);
+        bankStore.accept(notice());
+        bankStore.processBatch(1,0,10,"worker");
+        assertThat(eventStatus()).isEqualTo("PROCESSED");
+        assertThat(count("recharge_notify_task")).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select encoded_payload from recharge_notify_task",String.class))
+                .startsWith("operate_type:2,").contains("state_type:3,use_state:2");
+        verifyNoInteractions(credentials);
+    }
+
+    private org.apache.ibatis.session.SqlSessionFactory sqlSessionFactory() throws Exception {
+        var cfg=new Configuration(); cfg.addMapper(RechargeNotifyTaskMapper.class);
+        var factory=new SqlSessionFactoryBean();factory.setDataSource(jdbc.getDataSource());factory.setConfiguration(cfg);
+        return factory.getObject();
+    }
+    @Test void missingBankRouteRollsBackRedemptionAndRecoversOriginalEventAfterConfigurationReturns() throws Exception {
+        seed(0, "");reset(credentials);
+        var available=new java.util.concurrent.atomic.AtomicBoolean(false);
+        var route=new MerchantNotifyRoute(NotifyDeliveryChannel.BOCOM_OPENAPI,"A39","r1",
+                "https://bank.invalid/api/trade/J_IEP_001_2104/v1","p","app","RSA","key","bank");
+        var preparation=new MerchantNotifyPreparationService((org,url)->{
+            if(!available.get())throw new IllegalStateException("missing bank protocol");return Optional.of(route);
+        },new V1MerchantNotifyPayloadSigner(credentials),new V12RedemptionNotifyPayloadSigner(credentials),clock);
+        var bankStore=new MybatisMinisoWriteOffStore(events,receiptMapper,guards,
+                new MybatisRechargeNotifyTaskAdapter(new SqlSessionTemplate(sqlSessionFactory()).getMapper(RechargeNotifyTaskMapper.class),new ObjectMapper(),clock),
+                new V12RedemptionNotifyPayloadSigner(credentials),new DataSourceTransactionManager(jdbc.getDataSource()),clock,3,
+                Duration.ofSeconds(60),5,MinisoWriteOffObserver.NOOP,preparation);
+        bankStore.accept(notice());bankStore.processBatch(1,0,10,"worker");
+        assertThat(count("recharge_miniso_writeoff_event")).isEqualTo(1);
+        assertThat(status()).isZero();assertThat(count("recharge_notify_task")).isZero();
+        assertThat(eventStatus()).isEqualTo("RETRY");
+        available.set(true);clock.advance();bankStore.processBatch(1,0,10,"worker");
+        assertThat(eventStatus()).isEqualTo("PROCESSED");assertThat(count("recharge_notify_task")).isEqualTo(1);
+        verifyNoInteractions(credentials);
     }
 
     @Test

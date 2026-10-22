@@ -156,6 +156,24 @@ class MinisoWriteOffAutoConfigurationTest {
         });
     }
 
+    /** 交行准备器与桥接开关组合，接收/银行处理不能错误要求商户HMAC。参见详细设计9.8和2104实施细化。 */
+    @Test
+    void bankPreparationAndReceiveOnlyWorkWithoutMerchantCredentialStore() {
+        var noKeys = configured().withBean("unavailableMerchantKeys", V12SigningCredentialStorePort.class,
+                V12SigningCredentialStorePort::unavailable, definition -> definition.setPrimary(true));
+        noKeys.withPropertyValues("trade.engine.supplier.miniso.callback.enabled=true",
+                "trade.engine.supplier.miniso.callback.key2=local-key").run(c -> assertThat(c).hasNotFailed());
+        noKeys.withPropertyValues("trade.engine.supplier.miniso.callback.processing-enabled=true")
+                .run(c -> assertThat(c).hasFailed());
+        noKeys.withBean(MerchantNotifyPreparationService.class, () -> mock(MerchantNotifyPreparationService.class))
+                .withPropertyValues("trade.engine.supplier.miniso.callback.processing-enabled=true")
+                .run(c -> {
+                    assertThat(c).hasNotFailed();
+                    assertThat(c).hasSingleBean(MinisoWriteOffStore.class);
+                    assertThat(c).hasSingleBean(MinisoWriteOffProtection.class);
+                });
+    }
+
     ApplicationContextRunner configured() {
         return runner.withBean(
                         org.apache.ibatis.session.SqlSessionFactory.class,

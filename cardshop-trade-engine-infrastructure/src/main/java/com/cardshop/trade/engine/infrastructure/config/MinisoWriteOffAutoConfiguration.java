@@ -77,12 +77,16 @@ public class MinisoWriteOffAutoConfiguration {
             MinisoReceiptMapper receipts,
             MinisoCouponGuardMapper guards,
             RechargeNotifyTaskPort tasks,
-            V12SigningCredentialStorePort credentials,
+            org.springframework.beans.factory.ObjectProvider<V12SigningCredentialStorePort> credentialProvider,
+            org.springframework.beans.factory.ObjectProvider<MerchantNotifyPreparationService> preparation,
             PlatformTransactionManager tm,
             Clock clock,
             MinisoWriteOffProperties settings,
             MinisoWriteOffObserver observer) {
-        if (settings.isProcessingEnabled() && !credentials.available())
+        var credentials = credentialProvider.getIfAvailable(V12SigningCredentialStorePort::unavailable);
+        var preparationService = preparation.getIfAvailable();
+        // 详细设计9.8及2104通知：仅处理且无统一准备器时要求HMAC，接收独立运行。
+        if (settings.isProcessingEnabled() && preparationService == null && !credentials.available())
             throw new IllegalStateException(
                     "MINISO processing requires persistent merchant signing-key store");
         return new MybatisMinisoWriteOffStore(
@@ -96,7 +100,7 @@ public class MinisoWriteOffAutoConfiguration {
                 settings.getMaxRetryCount(),
                 Duration.ofSeconds(settings.getRetryBackoffSeconds()),
                 settings.getTransactionTimeoutSeconds(),
-                observer);
+                observer, preparationService);
     }
 
     /** 接收与处理独立启用时都检查持久结构；探针不标记Job已扫描，参见详细设计9.8。 */

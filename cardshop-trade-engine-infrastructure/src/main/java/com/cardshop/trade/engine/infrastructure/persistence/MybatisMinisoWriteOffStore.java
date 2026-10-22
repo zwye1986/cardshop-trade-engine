@@ -41,6 +41,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
     private final MinisoCouponGuardMapper guards;
     private final RechargeNotifyTaskPort tasks;
     private final V12RedemptionNotifyPayloadSigner signer;
+    private final MerchantNotifyPreparationService notifyPreparation;
     private final TransactionTemplate tx;
     private final Clock clock;
     private final int maxRetries;
@@ -84,6 +85,16 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
             Duration backoff,
             int timeoutSeconds,
             MinisoWriteOffObserver observer) {
+        this(events,receipts,guards,tasks,signer,tm,clock,maxRetries,backoff,timeoutSeconds,observer,null);
+    }
+
+    /** 银行分支不依赖商户HMAC，事实/通知/事件仍同事务提交；参见详细设计2104实施细化。 */
+    public MybatisMinisoWriteOffStore(MinisoWriteOffEventMapper events,MinisoReceiptMapper receipts,
+            MinisoCouponGuardMapper guards,
+            RechargeNotifyTaskPort tasks,V12RedemptionNotifyPayloadSigner signer,PlatformTransactionManager tm,
+            Clock clock,int maxRetries,Duration backoff,int timeoutSeconds,MinisoWriteOffObserver observer,
+            MerchantNotifyPreparationService notifyPreparation) {
+        this.notifyPreparation=notifyPreparation;
         this.observer = Objects.requireNonNull(observer);
         this.events = Objects.requireNonNull(events);
         this.guards = Objects.requireNonNull(guards);
@@ -268,7 +279,8 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
         } catch (DateTimeParseException ex) {
             throw new MinisoWriteOffException(USE_TIME_OUT_OF_RANGE);
         }
-        if (order.notifyUrl() != null && !order.notifyUrl().isBlank()) createTask(order, event);
+        // 银行通道不依赖原notify_url，直连空地址由准备服务保留跳过语义。
+        if (notifyPreparation != null || (order.notifyUrl() != null && !order.notifyUrl().isBlank())) createTask(order, event);
         if (receipts.redeem(order.orderId(), event.useTime()) != 1)
             throw new MinisoWriteOffException(DB_UNAVAILABLE);
         if (events.redeemVoucher(order.orderId(), order.orgCode(), event.useTime(), now()) != 1)
@@ -324,6 +336,11 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
                         "PASSED",
                         true,
                         true);
+        if (notifyPreparation != null) {
+            notifyPreparation.redeemed(facts,event.eventId(),event.useTime(),MAX_NOTIFY_RETRIES)
+                    .ifPresent(tasks::insertIfAbsent);
+            return;
+        }
         tasks.insertIfAbsent(
                 new RechargeNotifyTaskDraft(
                         taskId,

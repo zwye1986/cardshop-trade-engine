@@ -83,10 +83,10 @@ public final class MinisoRechargeSupplierGatewayAdapter implements RechargeSuppl
             // 作废是不可逆的外部副作用：本地凭据缺失时禁止仅凭远端同手机号/同批次猜测券码。
             if (local.isEmpty()) return unknown(request.orderId(), null);
             MinisoApiResponse query = client.queryGrand(request.orderId());
-            Optional<MinisoFulfillmentReceipt> receipt = receipt(query, order.get(), true);
+            Optional<MinisoFulfillmentReceipt> receipt = receipt(query, order.get(), true, local.get());
             if (receipt.isEmpty()) return unknown(request.orderId(), query.rawBody());
             MinisoFulfillmentReceipt confirmed = receipt.get();
-            if (!sameImmutableReceipt(local.get(), confirmed)) return unknown(request.orderId(), query.rawBody());
+            if (!sameVoucherIdentity(local.get(), confirmed)) return unknown(request.orderId(), query.rawBody());
             // 同一已持久化券的远端已作废可证明前次作废成功；其余状态不一致均不能降级后再次作废。
             if (confirmed.couponStatus() == STATUS_VOID) return success(query, confirmed);
             if (confirmed.couponStatus() != local.get().couponStatus()
@@ -122,7 +122,17 @@ public final class MinisoRechargeSupplierGatewayAdapter implements RechargeSuppl
     }
 
     /** 不采用 Jackson 的宽松数值/文本强转，避免把缺失字段或字符串数组当成完整发券证明。 */
-    private Optional<MinisoFulfillmentReceipt> receipt(MinisoApiResponse response, TrustedOrder order, boolean query) {
+    private static Optional<MinisoFulfillmentReceipt> receipt(MinisoApiResponse response, TrustedOrder order, boolean query) {
+        return receipt(response, order, query, null);
+    }
+
+    /**
+     * 作废查询仅核对券身份和状态，有效期沿用本地持久事实；普通发券/查单仍要求完整远端有效期。
+     * queryGrand的生效时间可能与发券相差1秒，不能据此阻断作废，也不能覆盖旧卡管导出有效期。
+     * 参见详细设计「名创作废凭据匹配修订（2026-10-21）」；本地归属和三项身份随后独立校验。
+     */
+    private static Optional<MinisoFulfillmentReceipt> receipt(MinisoApiResponse response, TrustedOrder order,
+            boolean query, MinisoFulfillmentReceipt persistedReceipt) {
         if (!successfulEnvelope(response)) return Optional.empty();
         JsonNode data = response.body().path("data");
         if (!data.isArray() || data.size() != order.snapshot().num()) return Optional.empty();
@@ -132,8 +142,8 @@ public final class MinisoRechargeSupplierGatewayAdapter implements RechargeSuppl
                 || batchId.intValue() != order.batchId()
                 || !text(coupon, "phone").equals(order.snapshot().account())) return Optional.empty();
         String code = text(coupon, "couponCode");
-        String begin = text(coupon, "beginTime");
-        String end = text(coupon, "endTime");
+        String begin = persistedReceipt == null ? text(coupon, "beginTime") : persistedReceipt.beginTime();
+        String end = persistedReceipt == null ? text(coupon, "endTime") : persistedReceipt.endTime();
         if (blank(code) || code.indexOf(',') >= 0 || !begin.matches(DATE_PATTERN) || !end.matches(DATE_PATTERN)) {
             return Optional.empty();
         }
@@ -157,14 +167,30 @@ public final class MinisoRechargeSupplierGatewayAdapter implements RechargeSuppl
     }
 
     /**
-     * 在远端作废前核对本地持久凭据的全部不可变字段，不能等到作废后由成功事务才发现串券。
-     * 状态另行按单调性判断；参见详细设计「名创作废审查补充」。
+     * 无网络地复核已保存的原始发券响应，维护工具与在线发券共用同一严格合同。
+     * 参见详细设计「名创原始成功流水受控恢复」；不适用于缺手机号的查单响应，也不推断券实时状态。
      */
-    private static boolean sameImmutableReceipt(MinisoFulfillmentReceipt local, MinisoFulfillmentReceipt remote) {
+    public static Optional<MinisoFulfillmentReceipt> confirmIssuedReceipt(
+            MinisoOrderSnapshot snapshot, MinisoApiResponse response) {
+        if (snapshot == null || response == null || snapshot.num() != SINGLE_COUPON
+                || blank(snapshot.account()) || blank(snapshot.orgCode()) || blank(snapshot.orderId())) {
+            return Optional.empty();
+        }
+        String batch = snapshot.batchId();
+        if (batch == null || !batch.matches("[0-9]+") || batch.length() > 10) return Optional.empty();
+        long value = Long.parseLong(batch);
+        if (value <= 0 || value > Integer.MAX_VALUE) return Optional.empty();
+        return receipt(response, new TrustedOrder(snapshot, (int) value), false);
+    }
+
+    /**
+     * 在远端作废前确认订单/商户归属，并只匹配券码、手机号、批次，不比较生效或到期时间。
+     * 状态另行按单调性判断；参见详细设计「名创作废凭据匹配修订（2026-10-21）」。
+     */
+    private static boolean sameVoucherIdentity(MinisoFulfillmentReceipt local, MinisoFulfillmentReceipt remote) {
         return local.orgCode().equals(remote.orgCode()) && local.orderId().equals(remote.orderId())
                 && local.batchId() == remote.batchId() && local.couponCode().equals(remote.couponCode())
-                && local.phone().equals(remote.phone()) && local.beginTime().equals(remote.beginTime())
-                && local.endTime().equals(remote.endTime());
+                && local.phone().equals(remote.phone());
     }
 
     /** 两个数组均为合同必返字段；成功对象必须精确对应请求券且带 msg，不接受外来券或重复券。 */

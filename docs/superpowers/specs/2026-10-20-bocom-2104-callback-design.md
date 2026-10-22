@@ -2,7 +2,7 @@
 
 日期：2026-10-20。工作区：`.worktrees/feat/bocom-callback`；分支：`feat/bocom-callback`。
 
-状态：总体方案与本文书面设计均已获用户确认，实施计划见 `../plans/2026-10-20-bocom-2104-callback-implementation.md`。本文不是已实现、已部署或银行已验收的证明。
+状态（2026-10-21）：已按用户确认方案完成代码、SDK与严格传输、任务/入口及离线验证。主工程clean package通过（812项，31项按开关跳过），独立模拟器79项及Python4项通过；未部署或真实银行验收。实施计划见 `../plans/2026-10-20-bocom-2104-callback-implementation.md`，实际证据以《集成测试.md》为准。
 
 ## 1. 目标与非目标
 
@@ -74,6 +74,10 @@
 空 URL 清理与到期扫描按通道区别处理：仅保留原直连清理语义，银行空目标绝不能被标为 SUCCESS。迁移、单元测试和兼容构造入口都必须显式覆盖此区别。
 
 ## 7. SDK 与日志安全
+
+实施审查修订（2026-10-21）：SDK WebUtils对307/308递归转发原form，故传输边界采用JDK21 HttpClient显式Redirect.NEVER、整次请求期限与同一X.509信任证书。仍由SDK prepareParams/buildQuery/parse完成原生网关构造与签验；不自行实现签名、不改变请求响应协议。工厂保留openCertVerify串行初始化，并为专用HttpClient创建严格TLS1.2信任上下文。所有3xx均视为未确认，禁止跟随，防止冻结目标改变及HTTP降级。测试增加重定向目的端收不到任何报文的反例。
+
+2026-10-21实施确认：采用官方`openCertVerify`，在银行发送前完成一次JVM级X.509信任证书初始化。其静态共享作用域只允许单一信任证书，禁止按请求切换，证书加载失败禁止发送；不调用`ignoreSSLHostnameVerifier`。TLS信任证书与银行验签公钥分别配置，证书轮换统一停发/重启。发送默认关闭，关闭不删除路由或任务。本地HTTPS测试必须覆盖可信/不可信证书和主机名不匹配。本次仅离线实现和验证，用户已解除此前TLS方案选择的等待。
 
 官方 jar 通过项目本地固定 Maven 坐标 `com.bocom:bocom-openapi-sdk:2.2.6` 接入 infrastructure；该坐标不声称已发布于 Maven Central。不使用 systemPath 或个人绝对路径。本次核对的 jar SHA-256 为 `8df82ae2931dd5cc52fcbbea5643cd6819412f27f9cf64478b476c2e53120fad`。提供 SHA-256 校验的 SDK 本地安装脚本与使用说明：输入用户自备银行接入包路径，安装指定 jar 及项目维护的依赖 POM；CI/团队可将同一制品发布到已有受控 Maven 仓库。本次不创建或配置远端制品服务，不提交银行二进制包。
 

@@ -25,6 +25,7 @@ import org.apache.ibatis.annotations.Update;
  */
 @Mapper
 public interface RechargeBalanceDeltaOutboxMapper extends BaseMapper<RechargeBalanceDeltaOutboxDO> {
+    int FUNDS_QUERY_TIMEOUT_SECONDS = 5;
 
     /**
      * MINISO释放收尾在主事务中当前锁读已有delta，只核对资金身份，不重置刷账进度。
@@ -84,6 +85,15 @@ public interface RechargeBalanceDeltaOutboxMapper extends BaseMapper<RechargeBal
               event_id = event_id
             """)
     int insertIfAbsent(RechargeBalanceDeltaOutboxDO outbox);
+
+    /** 资金入口在订单锁内核对不可变Delta内容；参见详细设计独立资金协议。 */
+    @org.apache.ibatis.annotations.Options(timeout = FUNDS_QUERY_TIMEOUT_SECONDS)
+    @Select("""
+            select event_id as eventId, org_code as orgCode, order_id as orderId,
+              out_order_sn as outOrderSn, delta_type as deltaType, delta_amount as deltaAmount,
+              status from recharge_balance_delta_outbox where event_id=#{eventId} for update
+            """)
+    RechargeBalanceDeltaOutboxDO selectFundsEventForUpdate(@Param("eventId") String eventId);
 
     /**
      * 批量幂等写入余额刷账事件。

@@ -79,7 +79,7 @@ class RechargeFulfillmentVoucherStatePersistenceTest {
                     fail_code varchar(128),
                     fail_reason varchar(512),
                     remark varchar(512),
-                    edit_time timestamp(6)
+                    edit_time timestamp(6), data clob
                 )
                 """);
         jdbc.execute("""

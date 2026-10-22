@@ -1,5 +1,6 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
+import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort;
 import com.cardshop.trade.engine.application.recharge.BalanceReservationReleasePort;
 import com.cardshop.trade.engine.application.recharge.DirectRechargeFrequencyPort;
@@ -13,6 +14,7 @@ import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerSettin
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort;
 import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
 import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.recharge.V1MerchantNotifyPayloadSigner;
@@ -25,6 +27,8 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration;
+import org.springframework.boot.autoconfigure.transaction.TransactionAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 
 /**
@@ -40,10 +44,16 @@ import org.springframework.context.annotation.Bean;
  * <p>本类只在所有真实端口存在时创建 worker，不注册 noop worker。这样 SUP/INV/CB 联调缺任一真实依赖时会
  * 暴露为入口不可用或启动依赖错误，避免把“没有处理能力”伪装成“扫描为空”。
  */
-@AutoConfiguration(afterName = {
-        "com.cardshop.trade.engine.infrastructure.config.TradeEngineMybatisPersistenceAutoConfiguration",
-        "com.cardshop.trade.engine.infrastructure.config.TradeEngineRedisPendingAutoConfiguration"
-})
+@AutoConfiguration(
+        after = {
+                MybatisPlusAutoConfiguration.class,
+                DataSourceTransactionManagerAutoConfiguration.class,
+                TransactionAutoConfiguration.class
+        },
+        afterName = {
+                "com.cardshop.trade.engine.infrastructure.config.TradeEngineMybatisPersistenceAutoConfiguration",
+                "com.cardshop.trade.engine.infrastructure.config.TradeEngineRedisPendingAutoConfiguration"
+        })
 public class TradeEngineFulfillmentAutoConfiguration {
 
     /**
@@ -63,6 +73,7 @@ public class TradeEngineFulfillmentAutoConfiguration {
             DirectRechargeFrequencyPort.class,
             BalanceDeltaFlushOutboxPort.class,
             BalanceReservationReleasePort.class,
+            RechargeOrderFundsPort.class,
             RechargeNotifyTaskPort.class,
             V1MerchantProfilePort.class
     })
@@ -75,12 +86,14 @@ public class TradeEngineFulfillmentAutoConfiguration {
             DirectRechargeFrequencyPort frequencyPort,
             BalanceDeltaFlushOutboxPort balanceDeltaFlushOutboxPort,
             BalanceReservationReleasePort balanceReservationReleasePort,
+            RechargeOrderFundsPort orderFunds,
             RechargeNotifyTaskPort notifyTaskPort,
             ObjectProvider<MerchantNotifyPayloadSigner> payloadSignerProvider,
             ObjectProvider<V12SigningCredentialStorePort> credentialStoreProvider,
             ObjectProvider<RechargeDispatchTimerPort> dispatchTimerPortProvider,
             ObjectProvider<com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection>
                     minisoProtection,
+            ObjectProvider<com.cardshop.trade.engine.application.recharge.MerchantNotifyPreparationService> notifyPreparation,
             V1MerchantProfilePort merchantProfilePort,
             Clock clock,
             TradeEngineProperties properties) {
@@ -100,7 +113,7 @@ public class TradeEngineFulfillmentAutoConfiguration {
                 RechargeFulfillmentConfigurationSupport.deferredRechargeDispatchTimerPort(dispatchTimerPortProvider),
                 clock,
                 RechargeFulfillmentConfigurationSupport.workerSettings(fulfillment),
-                minisoProtection::getIfAvailable);
+                minisoProtection::getIfAvailable,notifyPreparation.getIfAvailable(),orderFunds);
     }
 
     /**

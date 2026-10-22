@@ -133,7 +133,7 @@ class RechargeRedisScriptLoaderTest {
                 .contains("release_balance_reservation.lua")
                 .contains("ALREADY_RELEASED")
                 .contains("HINCRBY', KEYS[1], 'available'")
-                .contains("releaseEventId");
+                .contains("operationId");
     }
 
     @Test
@@ -144,8 +144,8 @@ class RechargeRedisScriptLoaderTest {
 
         assertThat(script)
                 .contains("RESERVATION_NOT_FOUND")
-                .contains("RESERVATION_NOT_RELEASED")
+                .contains("RESERVATION_FUNDS_STATUS_MISSING")
                 .contains("FROZEN_BALANCE_NOT_ENOUGH")
-                .contains("tonumber(redis.call('HGET', KEYS[1], 'frozen') or '0')");
+                .contains("BALANCE_BASELINE_INVALID");
     }
 }

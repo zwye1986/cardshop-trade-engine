@@ -5,6 +5,7 @@ import com.cardshop.trade.engine.application.logging.LogStormGuard.LogDecision;
 import com.cardshop.trade.engine.application.recharge.BalanceReservationReleaseCommand;
 import com.cardshop.trade.engine.application.recharge.BalanceReservationReleasePort;
 import com.cardshop.trade.engine.application.recharge.BalanceReservationReleaseResult;
+import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrder;
 import java.nio.charset.StandardCharsets;
 import java.time.Clock;
 import java.time.Duration;
@@ -31,6 +32,9 @@ public class RedisBalanceReservationReleaseAdapter implements BalanceReservation
     private static final String LOG_EVENT_CLOSE_SESSION_FAILED = "redis-release-balance.close-session.failed";
     private static final String STATUS_RELEASED = "RELEASED";
     private static final String STATUS_ALREADY_RELEASED = "ALREADY_RELEASED";
+    private static final String STATUS_CONFIRMED = "CONFIRMED";
+    private static final String STATUS_ALREADY_CONFIRMED = "ALREADY_CONFIRMED";
+    private static final String CONFIRM_OPERATION = "CONFIRM";
     private static final String DEFAULT_FAIL_CODE = "RELEASE_FAILED";
 
     private final RechargeRedisSessionFactory sessionFactory;
@@ -55,6 +59,26 @@ public class RedisBalanceReservationReleaseAdapter implements BalanceReservation
 
     @Override
     public BalanceReservationReleaseResult release(BalanceReservationReleaseCommand command) {
+        return toResult(execute(command));
+    }
+
+    /** 复用已有Lua执行及异常采样，不增加Bean/构造器；参见详细设计9.2成功预扣收尾最小修订。 */
+    @Override
+    public boolean confirm(RechargeFulfillmentOrder order) {
+        Map<String, String> result = execute(new BalanceReservationReleaseCommand(
+                order.orgCode(), order.orderId(), order.outOrderSn(), order.orderPrice(),
+                CONFIRM_OPERATION, "balance-confirm-" + order.orderId(), "成功预扣消费确认"));
+        String code = result.get("code");
+        boolean confirmed = STATUS_CONFIRMED.equals(code) || STATUS_ALREADY_CONFIRMED.equals(code);
+        if (!confirmed && logStormGuard.shouldLog("redis-confirm.rejected").shouldLog()) {
+            // 预扣证据不足是预期保护分支，高频重试采样warn；原始参数和失败正文不进入日志。
+            log.warn("Redis成功预扣确认被拒绝 orderId={}, orgCode={}, failCode={}",
+                    order.orderId(), order.orgCode(), result.getOrDefault("fail_code", DEFAULT_FAIL_CODE));
+        }
+        return confirmed;
+    }
+
+    private Map<String, String> execute(BalanceReservationReleaseCommand command) {
         Objects.requireNonNull(command, "command must not be null");
         RechargeRedisSession session;
         try {
@@ -69,7 +93,7 @@ public class RedisBalanceReservationReleaseAdapter implements BalanceReservation
                     decision.occurrence(),
                     decision.sampledOccurrence(),
                     ex));
-            return BalanceReservationReleaseResult.failed("REDIS_SESSION_UNAVAILABLE", "Redis 会话不可用");
+            return Map.of("fail_code", "REDIS_SESSION_UNAVAILABLE", "fail_reason", "Redis 会话不可用");
         }
         try {
             /*
@@ -83,7 +107,7 @@ public class RedisBalanceReservationReleaseAdapter implements BalanceReservation
                             keyBuilder.releaseBalanceReservationKeys(command),
                             args(command))
                     .block(redisOperationTimeout);
-            return toResult(rawResult);
+            return flatResult(rawResult);
         } catch (RuntimeException ex) {
             logSampledError(LOG_EVENT_LUA_FAILED, decision -> log.error(
                     "Redis余额预扣释放Lua失败 orgCode={}, outOrderSn={}, orderId={}, releaseEventId={}, occurrence={}, sampled={}",
@@ -94,7 +118,7 @@ public class RedisBalanceReservationReleaseAdapter implements BalanceReservation
                     decision.occurrence(),
                     decision.sampledOccurrence(),
                     ex));
-            return BalanceReservationReleaseResult.failed("RELEASE_LUA_ERROR", "Redis 余额释放脚本执行失败");
+            return Map.of("fail_code", "RELEASE_LUA_ERROR", "fail_reason", "Redis 余额脚本执行失败");
         } finally {
             closeWithErrorLog(session);
         }
@@ -109,11 +133,13 @@ public class RedisBalanceReservationReleaseAdapter implements BalanceReservation
                 normalize(command.releaseType(), "RELEASE"),
                 command.releaseEventId() == null ? "" : command.releaseEventId(),
                 command.reason() == null ? "" : command.reason(),
-                Long.toString(clock.instant().toEpochMilli()));
+                Long.toString(clock.instant().toEpochMilli()),
+                command.expectedFundsStatus() == null ? "" : command.expectedFundsStatus(),
+                command.alreadyReleasedOnly() ? "1" : "0",
+                command.allowLegacyCancelledRefund() ? "1" : "0");
     }
 
-    private static BalanceReservationReleaseResult toResult(Object rawResult) {
-        Map<String, String> fields = flatResult(rawResult);
+    private static BalanceReservationReleaseResult toResult(Map<String, String> fields) {
         String code = fields.getOrDefault("code", DEFAULT_FAIL_CODE);
         if (STATUS_RELEASED.equals(code)) {
             return BalanceReservationReleaseResult.releasedSuccess();

@@ -75,10 +75,10 @@ final class MinisoMysqlReleaseRecovery implements AutoCloseable {
         // 同一商户每轮重置本夹具余额并使用独立订单key；不调用FLUSHDB，也不连任何现有Redis。
         redis.opsForHash().putAll(keys.balanceKey("TASK17"), Map.of("available","1000","frozen","137")).block();
         redis.opsForHash().putAll(keys.orderKey("TASK17","out-" + id),
-                Map.of("order_id",id,"balance_reserved","1","order_status","SUCCESS")).block();
+                Map.of("order_id",id,"org_code","TASK17","out_order_sn","out-"+id,"balance_reserved","1","order_status","SUCCESS")).block();
         var command = command(id);
         redis.opsForHash().putAll(keys.releaseBalanceReservationKeys(command).get(2),
-                Map.of("order_id",id,"amount","137","status","RESERVED")).block();
+                Map.of("order_id",id,"org_code","TASK17","out_order_sn","out-"+id,"amount","137","status","DB_PERSISTED","funds_status","RESERVED")).block();
     }
 
     BalanceReservationReleaseCommand command(String id) {
@@ -96,6 +96,14 @@ final class MinisoMysqlReleaseRecovery implements AutoCloseable {
             String id = "task17-crash-" + window, coupon = "Task17-crash-" + window;
             f.seed(id); seed(id);
             f.tx.executeWithoutResult(s -> f.receipts.save(f.receipt(id,coupon,0)));
+            if (window.equals("after-authorize")) {
+                // 合并dev独立资金协议：真实成功消费后删除易失订单快照，后续许可仍可退款。
+                assertThat(release.confirm(f.orders.findByOrderId(id).orElseThrow())).isTrue();
+                assertThat(redis.opsForHash().get(keys.reservationKey("TASK17", id), "funds_status").block())
+                        .isEqualTo("CONSUMED");
+                redis.delete(keys.orderKey("TASK17", "out-" + id)).block();
+                balance(1000, 0);
+            }
             if (window.equals("before-authorize-commit")) {
                 f.fault.set(window);
                 assertThatThrownBy(() -> f.orders.authorizeMinisoTerminalRelease(f.terminal(id,coupon),"source-"+id))
@@ -123,7 +131,7 @@ final class MinisoMysqlReleaseRecovery implements AutoCloseable {
             var authorization = f.orders.authorizeMinisoTerminalRelease(f.terminal(id,coupon),"source-"+id).orElseThrow();
             assertThat(authorization).isEqualTo(new MinisoBalanceReleaseAuthorization(id,"TASK17","out-"+id,
                     "source-"+id,137,f.CLOCK.instant()));
-            balance(1000,137);
+            balance(1000, window.equals("after-authorize") ? 0 : 137);
             if (!window.equals("after-authorize")) {
                 BalanceReservationReleasePort firstRelease = release;
                 if (window.equals("lost-response")) firstRelease = command -> {
@@ -155,7 +163,7 @@ final class MinisoMysqlReleaseRecovery implements AutoCloseable {
                 assertThat(worker(f,release,false).processDue(1,0,1,"task17-event-B",List.of(OutboxEventType.SUPPLIER_QUERY),1)
                         .succeeded()).isEqualTo(1);
                 balance(1137,0);
-                assertThat(redis.opsForHash().get(keys.orderKey("TASK17","out-"+id),"release_event_id").block()).isEqualTo("source-"+id);
+                assertThat(redis.opsForHash().get(keys.reservationKey("TASK17",id),"release_event_id").block()).isEqualTo("source-"+id);
                 assertThat(f.jdbc.queryForObject("select status from recharge_dispatch_outbox where event_id=?",String.class,"retry-"+id)).isEqualTo("SUCCESS");
             }
             f.jdbc.update("update recharge_dispatch_outbox set next_retry_time='2026-10-21',locked_until=null where order_id=?",id);
@@ -168,7 +176,7 @@ final class MinisoMysqlReleaseRecovery implements AutoCloseable {
                     .containsExactly(Map.of("event_id","balance-flush-release-"+id,"org_code","TASK17","order_id",id,
                             "out_order_sn","out-"+id,"delta_type","RELEASE","delta_amount",137L));
             assertThat(f.jdbc.queryForObject("select status from recharge_dispatch_outbox where event_id=?",String.class,"source-"+id)).isEqualTo("SUCCESS");
-            assertThat(redis.opsForHash().get(keys.orderKey("TASK17","out-"+id),"release_event_id").block()).isEqualTo(authorization.sourceEventId());
+            assertThat(redis.opsForHash().get(keys.reservationKey("TASK17",id),"release_event_id").block()).isEqualTo(authorization.sourceEventId());
             assertThat(release.release(command(id)).succeeded()).isTrue(); balance(1137,0);
             System.out.println("Task17 window="+window+" source="+authorization.sourceEventId()+" late=MANUAL_REQUIRED available=1137 frozen=0 delta=137/RELEASE count=1 reserved=0 original=SUCCESS");
         }

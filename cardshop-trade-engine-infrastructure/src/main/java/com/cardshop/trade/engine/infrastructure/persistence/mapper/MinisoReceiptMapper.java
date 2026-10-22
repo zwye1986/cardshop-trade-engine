@@ -47,6 +47,17 @@ from recharge_miniso_receipt where order_id=#{orderId}
 """)
     MinisoFulfillmentReceipt selectReceipt(@Param("orderId") String orderId);
 
+    /** 主单已由lockSnapshot锁定；与凭据/成功终态共用事务，参见详细设计「名创卡密导出兼容修复」。 */
+    @Select("select data from mc_order where order_Id=#{orderId} and org_code=#{orgCode}")
+    String selectLegacyData(@Param("orderId") String orderId, @Param("orgCode") String orgCode);
+
+    @Update("""
+            update mc_order set data=#{data}
+            where order_Id=#{orderId} and org_code=#{orgCode} and (data is null or trim(data)='')
+            """)
+    int fillLegacyData(@Param("orderId") String orderId, @Param("orgCode") String orgCode,
+                       @Param("data") String data);
+
     String RECEIPT_COLUMNS =
             "order_id as orderId,org_code as orgCode,batch_id as batchId,coupon_code as"
                 + " couponCode,phone,begin_time as beginTime,end_time as endTime,coupon_status as"

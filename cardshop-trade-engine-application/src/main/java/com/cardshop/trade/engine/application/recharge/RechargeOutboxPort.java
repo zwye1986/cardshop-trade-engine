@@ -33,6 +33,15 @@ public interface RechargeOutboxPort {
      */
     Optional<RechargeOutboxEvent> findDueByEventId(String eventId, OutboxEventType eventType);
 
+    /**
+     * 读取仍待执行事件距持久化到期时间的非负延迟，供提前唤醒后续排。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」timer 提前唤醒修订。
+     * 仅返回满足新引擎归属哨兵、INIT/FAILED 且重试未耗尽的事件；已领取、终态或不存在返回空。
+     * 实现以与 due 查询相同的时钟和数据库时区计算；两次读取之间已到期时返回零，不能据此跳过 CAS。
+     */
+    Optional<Duration> findPendingRetryDelay(String eventId, OutboxEventType eventType);
+
     Optional<RechargeOutboxEvent> claim(RechargeOutboxEvent event, String workerId, Duration lease);
 
     void markSuccess(RechargeOutboxEvent event);

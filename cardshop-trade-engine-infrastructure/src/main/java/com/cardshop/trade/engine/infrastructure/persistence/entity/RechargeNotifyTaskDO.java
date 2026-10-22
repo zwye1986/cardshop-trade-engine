@@ -15,6 +15,27 @@ import java.time.LocalDateTime;
 @TableName("recharge_notify_task")
 public class RechargeNotifyTaskDO {
 
+    /** 投递通道 */
+    @TableField("delivery_channel")
+    private String deliveryChannel;
+    /** 通知路由快照 */
+    @TableField("route_snapshot")
+    private String routeSnapshot;
+    /** 银行通知编码正文 */
+    @TableField("encoded_payload")
+    private String encodedPayload;
+    /** 领取租约代次 */
+    @TableField("claim_version")
+    private Long claimVersion;
+    public String getDeliveryChannel() { return deliveryChannel; }
+    public void setDeliveryChannel(String v) { deliveryChannel = v; }
+    public String getRouteSnapshot() { return routeSnapshot; }
+    public void setRouteSnapshot(String v) { routeSnapshot = v; }
+    public String getEncodedPayload() { return encodedPayload; }
+    public void setEncodedPayload(String v) { encodedPayload = v; }
+    public Long getClaimVersion() { return claimVersion; }
+    public void setClaimVersion(Long v) { claimVersion = v; }
+
     @TableId(value = "id", type = IdType.AUTO)
     private Long id;
 
@@ -33,6 +54,7 @@ public class RechargeNotifyTaskDO {
     @TableField("out_order_sn")
     private String outOrderSn;
 
+    /** 通知目标地址 */
     @TableField("notify_url")
     private String notifyUrl;
 

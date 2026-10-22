@@ -312,6 +312,33 @@ public interface RechargeDispatchOutboxMapper extends BaseMapper<RechargeDispatc
             @Param("now") LocalDateTime now);
 
     /**
+     * 读取可续排事件的实际到期时间，不把已领取或终态事件重新加入热唤醒。
+     *
+     * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」timer 提前唤醒修订。
+     * 不限定 next_retry_time 大于当前时间，避免 due 查询后刚好到期的事件再次漏排；仍须重走 due/CAS。
+     */
+    @Select("""
+            select o.next_retry_time
+            from recharge_dispatch_outbox o
+            where o.event_id = #{eventId}
+              and o.event_type = #{eventType}
+              and o.status in ('INIT', 'FAILED')
+              and o.retry_count < o.max_retry_count
+              and exists (
+                select 1
+                from recharge_order_ext ext
+                where ext.order_id = o.order_id
+                  and ext.org_code = o.org_code
+                  and ext.out_order_sn = o.out_order_sn
+                  and ext.persist_status = 'DB_PERSISTED'
+              )
+            limit 1
+            """)
+    LocalDateTime selectPendingRetryTime(
+            @Param("eventId") String eventId,
+            @Param("eventType") String eventType);
+
+    /**
      * 基于事件 ID 和版本号抢占履约事件。
      */
     default int claimProcessing(String eventId, long currentVersion, String workerId, LocalDateTime lockedUntil) {

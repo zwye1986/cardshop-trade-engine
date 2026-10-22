@@ -70,9 +70,33 @@ class MinisoLocalRedisContractTest {
             script.setResultType(java.util.List.class);
             var result = redis.execute(script,arguments.keys(),arguments.args()).next().block();
             assertThat(result).contains("ACCEPTED");
+            assertThat(redis.opsForHash().get(keys.reservationKey("A39", "ORDER1"), "funds_status").block()).isEqualTo("RESERVED");
+            assertThat(redis.opsForHash().get(keys.reservationKey("A39", "ORDER1"), "org_code").block()).isEqualTo("A39");
+            assertThat(redis.getExpire(keys.reservationKey("A39", "ORDER1")).block()).isEqualTo(Duration.ZERO);
+            assertThat(redis.getExpire(keys.orderKey("A39", "OUT1")).block()).isPositive();
             assertThat(redis.opsForHash().get(keys.orderKey("A39","OUT1"),"supplier_batch_id").block()).isEqualTo("100023");
             var reader = new RedisPersistOrderSnapshotAdapter(redis,keys,Duration.ofSeconds(3));
             assertThat(reader.findLatestSnapshot("A39","OUT1","ORDER1").orElseThrow().supplierBatchId()).isEqualTo("100023");
+            // 独立资金协议端到端：真实accept→落库标记→业务快照过期→消费确认→作废退款及重放。
+            var loader = new RechargeRedisScriptLoader();
+            redis.execute(loader.markDbPersistedScript(), keys.markDbPersistedKeys(command),
+                    java.util.List.of("A39", "ORDER1", "1", Long.toString(now.toEpochMilli()), "28800")).next().block();
+            redis.expire(keys.orderKey("A39", "OUT1"), Duration.ofMillis(1)).block();
+            for (int i = 0; i < 100 && Boolean.TRUE.equals(redis.hasKey(keys.orderKey("A39", "OUT1")).block()); i++) Thread.sleep(2);
+            assertThat(redis.hasKey(keys.orderKey("A39", "OUT1")).block()).isFalse();
+            var confirm = new com.cardshop.trade.engine.application.recharge.BalanceReservationReleaseCommand(
+                    "A39", "ORDER1", "OUT1", 100, "CONFIRM", "balance-confirm-ORDER1", "test");
+            assertThat(redis.execute(loader.releaseBalanceReservationScript(), keys.releaseBalanceReservationKeys(confirm),
+                    java.util.List.of("A39", "ORDER1", "OUT1", "100", "CONFIRM", "balance-confirm-ORDER1", "test", "1000")).next().block())
+                    .contains("CONFIRMED");
+            var release = new com.cardshop.trade.engine.application.recharge.BalanceReservationReleaseCommand(
+                    "A39", "ORDER1", "OUT1", 100, "RELEASE", "balance-flush-release-ORDER1", "test");
+            var releaseArgs = java.util.List.of("A39", "ORDER1", "OUT1", "100", "RELEASE", "balance-flush-release-ORDER1", "test", "1000", "CONSUMED", "0");
+            assertThat(redis.execute(loader.releaseBalanceReservationScript(), keys.releaseBalanceReservationKeys(release), releaseArgs).next().block()).contains("RELEASED");
+            assertThat(redis.execute(loader.releaseBalanceReservationScript(), keys.releaseBalanceReservationKeys(release), releaseArgs).next().block()).contains("ALREADY_RELEASED");
+            assertThat(redis.opsForHash().get(keys.balanceKey("A39"), "available").block()).isEqualTo("1000");
+            assertThat(redis.opsForHash().get(keys.balanceKey("A39"), "frozen").block()).isEqualTo("0");
+            assertThat(redis.hasKey(keys.orderKey("A39", "OUT1")).block()).isFalse();
         } finally {
             if (factory!=null) factory.destroy();
             process.destroy();
@@ -90,7 +114,7 @@ class MinisoLocalRedisContractTest {
 
             var result = fixture.adapter.release(wrongOrder);
 
-            assertRejected(result, "ORDER_ID_MISMATCH");
+            assertRejected(result, "RESERVATION_NOT_FOUND");
             fixture.assertFrozen(before);
             assertThat(fixture.redis.hasKey(fixture.keys.reservationKey(RELEASE_ORG, "OTHER-ORDER")).block()).isFalse();
             fixture.assertNoReleaseEvidence(wrongOrder);
@@ -133,7 +157,10 @@ class MinisoLocalRedisContractTest {
             assertThat(fixture.adapter.release(fixture.command)).isEqualTo(BalanceReservationReleaseResult.releasedSuccess());
 
             fixture.assertReleased(FROZEN_RELEASE_EVENT, "RELEASED");
-            assertThat(fixture.redis.opsForValue().get(fixture.releaseKeys.get(5)).block()).isEqualTo("RELEASED");
+            var marker = fixture.redis.opsForValue().get(fixture.releaseKeys.get(5)).block();
+            assertThat(new com.fasterxml.jackson.databind.ObjectMapper().readTree(marker))
+                    .isEqualTo(new com.fasterxml.jackson.databind.ObjectMapper().valueToTree(
+                            List.of(RELEASE_ORG, RELEASE_ORDER, RELEASE_OUT_ORDER, "137", FROZEN_RELEASE_EVENT)));
             var after = fixture.snapshot();
             assertThat(fixture.adapter.release(fixture.command)).isEqualTo(BalanceReservationReleaseResult.alreadyReleasedSuccess());
             assertThat(fixture.snapshot()).isEqualTo(after);
@@ -143,10 +170,12 @@ class MinisoLocalRedisContractTest {
             var changedEvent = new BalanceReservationReleaseCommand(RELEASE_ORG, RELEASE_ORDER, RELEASE_OUT_ORDER,
                     RESERVED_AMOUNT, "RELEASE", "task17-replayed-different-event", "supplier failed");
             assertThat(fixture.adapter.release(changedEvent)).isEqualTo(BalanceReservationReleaseResult.alreadyReleasedSuccess());
-            fixture.assertReleased(changedEvent.releaseEventId(), "ALREADY_RELEASED");
-            assertThat(fixture.redis.opsForValue().get(fixture.releaseKeys.get(5)).block()).isEqualTo("RELEASED");
+            // dev独立资金协议保持首次凭证，不因后来事件ID补写退款标记；余额/快照/原许可全部不变。
+            fixture.assertReleased(FROZEN_RELEASE_EVENT, "RELEASED");
+            assertThat(fixture.snapshot()).isEqualTo(after);
+            assertThat(fixture.redis.opsForValue().get(fixture.releaseKeys.get(5)).block()).isEqualTo(marker);
             assertThat(fixture.redis.opsForValue().get(fixture.keys.releaseBalanceReservationKeys(changedEvent).get(5)).block())
-                    .isEqualTo("ALREADY_RELEASED");
+                    .isNull();
         }
     }
 
@@ -230,8 +259,12 @@ class MinisoLocalRedisContractTest {
             }
             assertThat(hash(orderKey)).containsAllEntriesOf(Map.of("order_id", RELEASE_ORDER, "order_price", "137",
                     "balance_reserved", "1", "dispatch_allowed", "1", "order_status", "ACCEPTED", "supplier_batch_id", "100023"));
+            // 详细设计独立资金协议：真实accept后还必须真实markDbPersisted，不能以PENDING_MQ冒充落库资格。
+            assertThat(redis.execute(loader.markDbPersistedScript(), keys.markDbPersistedKeys(accept),
+                    List.of(RELEASE_ORG, RELEASE_ORDER, "1", Long.toString(RELEASE_TIME.toEpochMilli()), "28800"))
+                    .next().block()).contains("MARKED");
             assertThat(hash(reservationKey)).containsAllEntriesOf(Map.of("order_id", RELEASE_ORDER,
-                    "out_order_sn", RELEASE_OUT_ORDER, "amount", "137", "status", "PENDING_MQ"));
+                    "out_order_sn", RELEASE_OUT_ORDER, "amount", "137", "status", "DB_PERSISTED", "funds_status", "RESERVED"));
             assertFrozen(snapshot());
         }
 
@@ -247,7 +280,7 @@ class MinisoLocalRedisContractTest {
             assertThat(hash(keys.balanceKey(RELEASE_ORG))).containsEntry("available", "863").containsEntry("frozen", "137");
             assertThat(snapshot()).isEqualTo(before);
             assertThat(hash(orderKey)).containsEntry("balance_reserved", "1").doesNotContainKey("release_event_id");
-            assertThat(hash(reservationKey)).containsEntry("amount", "137").containsEntry("status", "PENDING_MQ")
+            assertThat(hash(reservationKey)).containsEntry("amount", "137").containsEntry("status", "DB_PERSISTED")
                     .doesNotContainKey("release_event_id");
             assertNoReleaseEvidence(command);
         }

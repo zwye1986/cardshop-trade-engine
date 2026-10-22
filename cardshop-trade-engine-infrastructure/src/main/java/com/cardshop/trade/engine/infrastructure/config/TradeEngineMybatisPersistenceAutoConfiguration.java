@@ -7,15 +7,18 @@ import com.baomidou.mybatisplus.core.injector.DefaultSqlInjector;
 import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.BalanceDeltaFlushOutboxPort;
+import com.cardshop.trade.engine.application.recharge.BalanceReservationReleasePort;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeNotifyTaskPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderBatchPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderPersistencePort;
 import com.cardshop.trade.engine.application.recharge.RechargeOutboxPort;
 import com.cardshop.trade.engine.application.recharge.RechargePersistOutboxAsyncWriter;
 import com.cardshop.trade.engine.infrastructure.observability.TradeEngineObservabilityMetrics;
+import com.cardshop.trade.engine.infrastructure.persistence.MinisoReceiptStore;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisAcceptAnomalyCheckRepositoryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisBalanceDeltaOutboxWriteAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisBatchRechargeOrderPersistenceAdapter;
@@ -25,11 +28,13 @@ import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeDispa
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeFulfillmentOrderAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeNotifyTaskAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderPersistenceAdapter;
+import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderFundsAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargePersistOutboxAsyncWriter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McDepartRecordMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderSupplierFlowMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeAcceptAnomalyMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
@@ -81,6 +86,31 @@ import org.springframework.transaction.PlatformTransactionManager;
 })
 @ConditionalOnClass({MybatisPlusAutoConfiguration.class, MybatisRechargeOrderPersistenceAdapter.class})
 public class TradeEngineMybatisPersistenceAutoConfiguration {
+    /** 独立资金入口在事务管理器与MyBatis就绪后创建；缺依赖时不启用可写Worker。 */
+    @Bean
+    @ConditionalOnBean({SqlSessionFactory.class, PlatformTransactionManager.class,
+            BalanceReservationReleasePort.class})
+    @ConditionalOnMissingBean(RechargeOrderFundsPort.class)
+    public RechargeOrderFundsPort rechargeOrderFundsPort(
+            BalanceReservationReleasePort redis, RechargeFulfillmentOrderPort orders,
+            BalanceDeltaFlushOutboxPort deltas,
+            RechargeBalanceDeltaOutboxMapper deltaMapper,
+            MinisoReceiptMapper receipts,
+            ObjectProvider<com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection> protection,
+            PlatformTransactionManager transactionManager) {
+        return new MybatisRechargeOrderFundsAdapter(
+                redis, orders, deltas, deltaMapper, receipts, protection::getIfAvailable, transactionManager,
+                MybatisRechargeOrderFundsAdapter.DEFAULT_TRANSACTION_TIMEOUT_SECONDS);
+    }
+
+    /** 请求身份必须在发送前可靠登记；参见详细设计「交行 2104 通知实施细化」。 */
+    @Bean
+    @ConditionalOnBean(SqlSessionFactory.class)
+    @ConditionalOnMissingBean(com.cardshop.trade.engine.application.recharge.MerchantNotifyAttemptPort.class)
+    public com.cardshop.trade.engine.application.recharge.MerchantNotifyAttemptPort merchantNotifyAttemptPort(
+            com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyAttemptMapper mapper, Clock clock) {
+        return new com.cardshop.trade.engine.infrastructure.persistence.MybatisMerchantNotifyAttemptAdapter(mapper,clock);
+    }
 
     /** 密钥持久化依赖MySQL；未提供独立主密钥时装配不可用端口，入口拒绝签发，参见详细设计3.1。 */
     @Bean
@@ -306,12 +336,13 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper,
-            ObjectProvider<com.cardshop.trade.engine.infrastructure.persistence.MinisoReceiptStore> minisoReceipts,
+            ObjectProvider<MinisoReceiptStore> minisoReceipts,
             McDepartRecordMapper departRecords,
             RechargeDispatchOutboxMapper dispatchEvents,
             RechargeBalanceDeltaOutboxMapper balanceDeltas,
             ObjectMapper objectMapper,
             Clock clock) {
+        // 参见详细设计「名创 MINISO 专属协议实施约束」：后置端口也必须接入凭据事务，不能遗漏普通配置的依赖。
         return new MybatisRechargeFulfillmentOrderAdapter(
                 orderMapper,
                 extMapper,

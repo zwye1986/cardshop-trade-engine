@@ -6,19 +6,20 @@ import com.cardshop.trade.engine.infrastructure.persistence.entity.McExtDepartDO
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import java.time.Duration;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.util.StringUtils;
 
 /**
  * Redis 商户余额基线修复适配器。
  *
  * <p>参见 {@code docs/交行直充业务系统高可用方案设计.md}「17.4 缓存修复任务」。当前阶段先覆盖
- * dev/test 联调必须的余额基线预热：在持有商户级 {@code balance:repairing_lock} 时，用
- * {@code mc_ext_depart.balance} 重建 Redis {@code available/frozen/version} 字段。批量商品配置扫描和全量重建
+ * dev/test 新商户余额初始化：已有balance不覆盖，只有Redis无pending且MySQL无新引擎历史才初始化。
+ * 参见详细设计「9.2 成功预扣收尾最小修订」。批量商品配置扫描和全量重建
  * 仍按文档作为后续任务；V1 请求级缺失/漂移比较修复由 {@code V1ProductConfigPreheatPort} 单独承担。
  */
 public class RedisRechargeCacheRepairAdapter implements RechargeCacheRepairPort {
@@ -56,22 +57,19 @@ public class RedisRechargeCacheRepairAdapter implements RechargeCacheRepairPort 
         int failed = 0;
         int skipped = 0;
         for (MerchantBalanceBaseline baseline : baselines) {
-            if (!operations.acquireRepairLock(baseline.orgCode(), workerId, repairLockTtl)) {
+            String owner = workerId + ":" + UUID.randomUUID();
+            if (!operations.acquireRepairLock(baseline.orgCode(), owner, repairLockTtl)) {
                 skipped++;
                 continue;
             }
             try {
-                operations.writeBalanceBaseline(
-                        baseline.orgCode(),
-                        baseline.available(),
-                        0L,
-                        baseline.version());
-                succeeded++;
+                if (operations.initializeBalanceIfSafe(baseline.orgCode(), owner)) succeeded++;
+                else skipped++;
             } catch (RuntimeException ex) {
                 failed++;
                 log.error("Redis余额基线修复失败 orgCode={}, workerId={}", baseline.orgCode(), workerId, ex);
             } finally {
-                operations.releaseRepairLock(baseline.orgCode(), workerId);
+                operations.releaseRepairLock(baseline.orgCode(), owner);
             }
         }
         return new RechargeCompensationBatchResult(baselines.size(), succeeded, failed, skipped);
@@ -86,12 +84,26 @@ public class RedisRechargeCacheRepairAdapter implements RechargeCacheRepairPort 
 
         boolean acquireRepairLock(String orgCode, String workerId, Duration lockTtl);
 
-        void writeBalanceBaseline(String orgCode, long available, long frozen, long version);
+        boolean initializeBalanceIfSafe(String orgCode, String owner);
 
         void releaseRepairLock(String orgCode, String workerId);
     }
 
     private static final class RedisCacheRepairOperations implements CacheRepairOperations {
+
+        // 相同owner令牌下先读后写两次校验；SQL必须位于两次Redis检查之间，不能使用扫描时的旧余额。
+        private static final DefaultRedisScript<Long> INITIALIZE_IF_SAFE = new DefaultRedisScript<>("""
+                if redis.call('GET', KEYS[1]) ~= ARGV[1]
+                    or redis.call('EXISTS', KEYS[2]) == 1
+                    or redis.call('ZCARD', KEYS[3]) ~= 0 then return 0 end
+                if ARGV[2] == 'CHECK' then return 1 end
+                redis.call('HSET', KEYS[2], 'available', ARGV[3], 'frozen', '0', 'version', ARGV[4])
+                return 1
+                """, Long.class);
+        private static final DefaultRedisScript<Long> UNLOCK_IF_OWNED = new DefaultRedisScript<>("""
+                if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) end
+                return 0
+                """, Long.class);
 
         private final McExtDepartMapper extDepartMapper;
         private final ReactiveStringRedisTemplate redisTemplate;
@@ -130,22 +142,25 @@ public class RedisRechargeCacheRepairAdapter implements RechargeCacheRepairPort 
         }
 
         @Override
-        public void writeBalanceBaseline(String orgCode, long available, long frozen, long version) {
-            redisTemplate.opsForHash()
-                    .putAll(keyBuilder.balanceKey(orgCode), Map.of(
-                            "available", Long.toString(available),
-                            "frozen", Long.toString(frozen),
-                            "version", Long.toString(version)))
-                    .block(redisTimeout);
+        public boolean initializeBalanceIfSafe(String orgCode, String owner) {
+            var keys = List.of(keyBuilder.balanceRepairingLockKey(orgCode), keyBuilder.balanceKey(orgCode),
+                    keyBuilder.pendingKey(orgCode));
+            Long safe = redisTemplate.execute(INITIALIZE_IF_SAFE, keys, List.of(owner, "CHECK"))
+                    .next().block(redisTimeout);
+            if (!Long.valueOf(1).equals(safe)) return false;
+            // TODO: 有历史商户的余额丢失须另行实现受控逐单重建，不能覆写为MySQL余额/frozen0；见详细设计9.2。
+            McExtDepartDO source = extDepartMapper.selectUnusedMerchantBalance(orgCode);
+            if (source == null || source.getBalance() == null || source.getId() == null) return false;
+            Long initialized = redisTemplate.execute(INITIALIZE_IF_SAFE, keys,
+                    List.of(owner, "WRITE", Long.toString(source.getBalance()), Long.toString(source.getId())))
+                    .next().block(redisTimeout);
+            return Long.valueOf(1).equals(initialized);
         }
 
         @Override
         public void releaseRepairLock(String orgCode, String workerId) {
             String lockKey = keyBuilder.balanceRepairingLockKey(orgCode);
-            String owner = redisTemplate.opsForValue().get(lockKey).block(redisTimeout);
-            if (workerId.equals(owner)) {
-                redisTemplate.delete(lockKey).block(redisTimeout);
-            }
+            redisTemplate.execute(UNLOCK_IF_OWNED, List.of(lockKey), List.of(workerId)).next().block(redisTimeout);
         }
 
         private static Duration normalizeRedisTimeout(Duration timeout) {

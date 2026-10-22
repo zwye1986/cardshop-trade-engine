@@ -93,22 +93,39 @@ public class MybatisRechargeDispatchOutboxAdapter
     }
 
     @Override
+    public Optional<Duration> findPendingRetryDelay(String eventId, OutboxEventType eventType) {
+        Objects.requireNonNull(eventType, "eventType must not be null");
+        return Optional.ofNullable(requireMapper().selectPendingRetryTime(eventId, eventType.name()))
+                .map(due -> {
+                    Duration remaining = Duration.between(now(), due);
+                    return remaining.isNegative() ? Duration.ZERO : remaining;
+                });
+    }
+
+    @Override
     public Optional<RechargeOutboxEvent> claim(RechargeOutboxEvent event, String workerId, Duration lease) {
-        LocalDateTime lockedUntil = now().plusNanos(lease.toNanos());
-        int updated = requireMapper().claimProcessing(event.eventId(), event.version(), workerId, lockedUntil);
+        // 参见详细设计「9.1 派单 Outbox」：due、租约回收与截止统一使用注入 Clock 的上海时间。
+        LocalDateTime now = now();
+        LocalDateTime lockedUntil = now.plusNanos(lease.toNanos());
+        int updated = requireMapper().claimProcessing(event.eventId(), event.version(), workerId, lockedUntil, now);
         return updated == 1 ? Optional.of(event.claimedCopy()) : Optional.empty();
     }
 
     @Override
     public void markSuccess(RechargeOutboxEvent event) {
-        requireMapper().update(null, new LambdaUpdateWrapper<RechargeDispatchOutboxDO>()
+        // 独立资金协议：收尾提交后也不能由过期/被接管Worker结束新任务，CAS miss必须显式失败。
+        LocalDateTime now = now();
+        int updated = requireMapper().update(null, new LambdaUpdateWrapper<RechargeDispatchOutboxDO>()
                 .eq(RechargeDispatchOutboxDO::getEventId, event.eventId())
                 .eq(RechargeDispatchOutboxDO::getVersion, event.version())
+                .eq(RechargeDispatchOutboxDO::getStatus, TaskStatus.PROCESSING.name())
+                .ge(RechargeDispatchOutboxDO::getLockedUntil, now)
                 .set(RechargeDispatchOutboxDO::getStatus, TaskStatus.SUCCESS.name())
                 .set(RechargeDispatchOutboxDO::getLockedUntil, null)
                 .set(RechargeDispatchOutboxDO::getLastError, "")
-                .set(RechargeDispatchOutboxDO::getUpdatedAt, now())
+                .set(RechargeDispatchOutboxDO::getUpdatedAt, now)
                 .setSql("version = version + 1"));
+        if (updated != 1) throw new IllegalStateException("outbox claim lost before success: " + event.eventId());
     }
 
     @Override

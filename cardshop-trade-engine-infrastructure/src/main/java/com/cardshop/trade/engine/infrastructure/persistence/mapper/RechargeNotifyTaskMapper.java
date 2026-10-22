@@ -30,6 +30,7 @@ public interface RechargeNotifyTaskMapper extends BaseMapper<RechargeNotifyTaskD
               notify_url,
               biz_status,
               payload,
+              delivery_channel, route_snapshot, encoded_payload, claim_version,
               status,
               retry_count,
               max_retry_count,
@@ -49,6 +50,7 @@ public interface RechargeNotifyTaskMapper extends BaseMapper<RechargeNotifyTaskD
               #{notifyUrl},
               #{bizStatus},
               #{payload},
+              #{deliveryChannel}, #{routeSnapshot}, #{encodedPayload}, #{claimVersion},
               #{status},
               #{retryCount},
               #{maxRetryCount},
@@ -67,16 +69,17 @@ public interface RechargeNotifyTaskMapper extends BaseMapper<RechargeNotifyTaskD
     /**
      * 单表扫描到期通知任务。
      *
-     * <p>空 {@code notify_url} 任务不进入扫描；应由
+     * <p>仅直连空 {@code notify_url} 任务不进入扫描；银行缺目标仍进入故障恢复，不能清理为成功。直连应由
      * {@link com.cardshop.trade.engine.application.recharge.RechargeNotifyWorkerTaskPort#closeBlankNotifyUrlTasks()}
      * 或运维 SQL 终态清理。参见 {@code docs/交行直充业务系统详细设计.md}「9.3 回调设计」。
      */
-    default List<RechargeNotifyTaskDO> selectDueTasks(int limit) {
+    default List<RechargeNotifyTaskDO> selectDueTasks(int limit, LocalDateTime now) {
         int safeLimit = Math.max(1, Math.min(limit, 1000));
-        LocalDateTime now = LocalDateTime.now();
         return selectList(new LambdaQueryWrapper<RechargeNotifyTaskDO>()
-                .isNotNull(RechargeNotifyTaskDO::getNotifyUrl)
-                .ne(RechargeNotifyTaskDO::getNotifyUrl, "")
+                .and(target -> target.eq(RechargeNotifyTaskDO::getDeliveryChannel, "BOCOM_OPENAPI")
+                        .or(direct -> direct.eq(RechargeNotifyTaskDO::getDeliveryChannel, "DIRECT_JSON")
+                                .isNotNull(RechargeNotifyTaskDO::getNotifyUrl).ne(RechargeNotifyTaskDO::getNotifyUrl, ""))
+                        .or(unknown -> unknown.notIn(RechargeNotifyTaskDO::getDeliveryChannel, "DIRECT_JSON", "BOCOM_OPENAPI")))
                 .and(wrapper -> wrapper
                         .and(due -> due
                                 .in(RechargeNotifyTaskDO::getStatus, TaskStatus.INIT.name(), TaskStatus.FAILED.name())

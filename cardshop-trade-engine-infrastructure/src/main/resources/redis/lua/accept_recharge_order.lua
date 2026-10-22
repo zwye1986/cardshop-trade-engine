@@ -228,11 +228,14 @@ redis.call('HSET', KEYS[3],
 )
 
 redis.call('HSET', KEYS[4],
+  'org_code', orgCode,
   'order_id', orderId,
   'out_order_sn', outOrderSn,
   'request_hash', requestHash,
   'amount', tostring(amount),
   'status', dispatchAllowed and 'PENDING_MQ' or 'NONE',
+  -- 详细设计9.2：资金状态独立于持久化状态，成功消费确认不得冒充退款释放。
+  'funds_status', balanceReserved and 'RESERVED' or 'NONE',
   'created_at', now,
   'updated_at', now
 )
@@ -260,7 +263,9 @@ redis.call('ZADD', KEYS[12], nextRetryTime, orgCode)
 
 redis.call('PEXPIRE', KEYS[2], pendingTtlMs)
 redis.call('PEXPIRE', KEYS[3], pendingTtlMs)
-redis.call('PEXPIRE', KEYS[4], pendingTtlMs)
+-- 详细设计9.2独立资金协议：真实预扣凭证不随业务快照过期；无预扣记录仍按受理期清理。
+if balanceReserved then redis.call('PERSIST', KEYS[4])
+else redis.call('PEXPIRE', KEYS[4], pendingTtlMs) end
 redis.call('PEXPIRE', KEYS[6], pendingTtlMs)
 redis.call('PEXPIRE', KEYS[7], pendingTtlMs)
 redis.call('PEXPIRE', KEYS[8], nonceTtlMs)
