@@ -499,9 +499,11 @@ String frozenPayload = JSONObject.toJSONString(signed);
 
 **Files:** Modify `LB/MinisoLegacyNotificationService.java`、`MinisoCallbackBridgeStore.java`、`LT/MinisoLegacyNotificationServiceTest.java`。
 
-- [ ] 1. 离线HTTP服务器返回200且正文`{"code":500}`，预期仍DELIVERED_HTTP；500/超时则FAILED退避，不改冻结正文。过期Worker返回200时不得覆盖新Worker的人工/成功结果。运行`legacy_test MinisoLegacyNotificationServiceTest`红灯。
-- [ ] 2. 短事务claim INIT/FAILED及过期SENDING，HTTP在事务外，3秒超时、60秒租约；只用冻结URL/payload，不读取当前配置重新签名。默认禁止重定向泄露冻结正文；HTTP2xx仅标网络层投递，非2xx/网络失败30秒退避、最多10次失败后人工。对实际发送次数不承诺物理恰好一次。
-- [ ] 3. 所有完成/失败结果写入owner/version CAS；过期租约后失败CAS无权修改新代次。对网络响应体不记录、不按业务code猜合同；任务HTTP调用不得持有任何订单/guard/任务行事务锁。
+实际清单补充：扩展`LT/MinisoBridgeMysqlContractTest.java`验证真实InnoDB下锁外HTTP、9/10次失败边界、租约接管和冻结UTF-8正文恢复；新端仅同步两主设计、本计划及`docs/集成测试.md`，不改共享DDL或新端生产代码。
+
+- [x] 1. 离线HTTP服务器返回200且正文`{"code":500}`，预期仍DELIVERED_HTTP；500/超时则FAILED退避，不改冻结正文。过期Worker返回200时不得覆盖新Worker的人工/成功结果。运行`legacy_test MinisoLegacyNotificationServiceTest`红灯。
+- [x] 2. 短事务claim INIT/FAILED及过期SENDING，HTTP在事务外，3秒超时、60秒租约；只用冻结URL/payload，不读取当前配置重新签名。默认禁止重定向泄露冻结正文；HTTP2xx仅标网络层投递，非2xx/网络失败30秒退避、最多10次失败后人工。对实际发送次数不承诺物理恰好一次。
+- [x] 3. 所有完成/失败结果写入owner/version CAS；过期租约后失败CAS无权修改新代次。对网络响应体不记录、不按业务code猜合同；任务HTTP调用不得持有任何订单/guard/任务行事务锁。
 
 ```sql
 UPDATE mc_miniso_legacy_notify_task SET status=?,retry_count=?,next_retry_time=?,
@@ -510,8 +512,10 @@ WHERE task_id=? AND status='SENDING' AND lock_owner=? AND version=?
   AND locked_until>?;
 ```
 
-- [ ] 4. 同测试转绿，加受控时钟测试第9/10次失败边界、不同URL配置变更不重签、宕机恢复原正文；不扫描旧历史订单补task。
-- [ ] 5. 本地提交`feat(miniso): deliver legacy notifications with lease fencing`。
+- [x] 4. 同测试转绿，加受控时钟测试第9/10次失败边界、不同URL配置变更不重签、宕机恢复原正文；不扫描旧历史订单补task。
+- [x] 5. 本地提交`feat(miniso): deliver legacy notifications with lease fencing`（旧端`c0bcded7`）。
+
+2026-10-22本地执行：88项基线通过。可编译发送空骨架下46项中21项预期断言失败；实现后修正测试夹具字符集大小写/204响应，再修复LONGTEXT映射Clob误发描述文本及断开响应后close误判网络失败，核心46项全通过。扩展57项中2项干净红灯证明任务行等待会缩短领取租约、完成CAS使用等待前时间会放行过期结果；取得任务锁后重新取时后关联122项转绿。最终15组387项全部通过，失败/错误/跳过0，其中通知58项。真实MySQL8.0.28 RC/RR每轮新端1项、旧端8项全通过，确认HTTP200/business500仅网络投递、HTTP500第9/10次失败与30秒退避、HTTP期间第二连接NOWAIT取得主单/guard/任务锁、过期接管拦截迟到200、宕机恢复原UTF-8正文。每个新增MySQL连接显式设置隔离级别；仅消费专用任务，不补扫历史订单。逐笔领取避免串行批量消耗租约；结果写库失败不额外计网络失败。完整配置/命令/随机schema/日志见《集成测试.md》`MINISO-BRIDGE-LEGACY-NOTIFY-LOCAL-20261022`。旧端本地提交`c0bcded7`。本任务不交付Task17整套跨JVM/Redis验收或Task18 Job装配；仅本地提交，不push、部署或修改共享配置，不单独启用BRIDGE。
 
 ## Task 17: 真实MySQL双隔离级别、跨JVM及Redis断点验收
 
