@@ -449,8 +449,10 @@ FROM mc_miniso_callback_inbox WHERE coupon_code=? FOR UPDATE;
 
 **Files:** Create `LB/MinisoCallbackRouteService.java`、`LT/MinisoCallbackRouteServiceTest.java`；Extend `LB/MinisoCallbackBridgeStore.java`、`LT/MinisoBridgeMysqlContractTest.java`。
 
-- [ ] 1. 写真实事务测试：新单不建旧批次；新事件insert后最终inbox CAS失效必须二者全回滚；重复投递保留PROCESSED进度；未知后凭据补齐；双归属/多条/批次或手机号不符转人工。运行`legacy_test MinisoCallbackRouteServiceTest`红灯。
-- [ ] 2. 短事务领取INIT/RETRY或过期PROCESSING，提交owner/version/60秒租约后结束；业务事务重新按锁序复核归属、事件，最后CAS。路由枚举仅NEW_ENGINE/LEGACY；已固定归属遇矛盾转人工，不改投。数据库错/锁错不推断为旧单。
+实际清单补充：`LT/MinisoBridgeConfigurationTest.java`验证主连接store/service真实装配及默认不开扫描；新端同步两主设计、本计划与`docs/集成测试.md`，不改新端生产代码或共享DDL。
+
+- [x] 1. 写真实事务测试：新单不建旧批次；新事件insert后最终inbox CAS失效必须二者全回滚；重复投递保留PROCESSED进度；未知后凭据补齐；双归属/多条/批次或手机号不符转人工。运行`legacy_test MinisoCallbackRouteServiceTest`红灯。
+- [x] 2. 短事务领取INIT/RETRY或过期PROCESSING，提交owner/version/60秒租约后结束；业务事务重新按锁序复核归属、事件，最后CAS。路由枚举仅NEW_ENGINE/LEGACY；已固定归属遇矛盾转人工，不改投。数据库错/锁错不推断为旧单。
 
 ```sql
 UPDATE mc_miniso_callback_inbox
@@ -461,9 +463,11 @@ WHERE event_id=? AND status='PROCESSING' AND lock_owner=? AND version=?
 ```
 
 CAS更新行数不是1时抛异常回滚整业务事务，包括已插新事件；失败重试回写也需owner/version，不让迟到Worker改新代次。
-- [ ] 3. 按0021列合同写新事件INIT/retry0/version0，received_at=inbox首次时间，next_retry_time/updated_at=本次时间；现存相同事实不改进度。只有INIT/RETRY且非空归属一致才CAS补空order/org；PROCESSED要求完整匹配，MANUAL_REQUIRED不恢复。使用同主JdbcTemplate/事务，不调用HTTP或独立outbox writer。
-- [ ] 4. 测试orderId长度80、源event version0/inbox version1、首次received_at比投递早一小时、空归属RETRY且已有retry_count=7，断言不截断/重置。60秒退避、最多100次失败、耗尽人工；单批100、owner/version及DB异常回滚均转绿。
-- [ ] 5. 本地提交`feat(miniso): route shared inbox to engine events atomically`。
+- [x] 3. 按0021列合同写新事件INIT/retry0/version0，received_at=inbox首次时间，next_retry_time/updated_at=本次时间；现存相同事实不改进度。只有INIT/RETRY且非空归属一致才CAS补空order/org；PROCESSED要求完整匹配，MANUAL_REQUIRED不恢复。使用同主JdbcTemplate/事务，不调用HTTP或独立outbox writer。
+- [x] 4. 测试orderId长度80、源event version0/inbox version1、首次received_at比投递早一小时、空归属RETRY且已有retry_count=7，断言不截断/重置。60秒退避、最多100次失败、耗尽人工；单批100、owner/version及DB异常回滚均转绿。
+- [x] 5. 本地提交`feat(miniso): route shared inbox to engine events atomically`。
+
+2026-10-22本地执行：145项基线通过；可编译路由空骨架下28项中19项预期断言失败，8项因缺少投递事件的后续读回报错，不将其当独立行为红灯。首轮28项及扩展37项转绿；另加旧表大小写命中、零批次及空商户订单号反例，40项中3项预期断言失败后修正，最终路由41项全通过。最终14组329项全部通过，失败/错误/跳过0。真实MySQL8.0.28 RC/RR每轮新端1项、旧端6项全通过，确认80位订单号、首次接收年龄、事件version0/inbox version1、RETRY计数7/version9补归属且不改ON UPDATE时间、PROCESSED全字段幂等、最终CAS/真实SQL/插入后租约到期整事务回滚、主单等待期间新Worker独立接管inbox。一次收尾复跑误改既有Task11同步屏障导致超时，恢复观察点后完整RC/RR转绿，未改该生产退款路径。旧端本地提交`5bc67e40`；日志/随机schema见《集成测试.md》`MINISO-BRIDGE-LEASE-ROUTE-LOCAL-20261022`。可信旧归属目前仅固定LEGACY并RETRY，TODO留Task15，不写旧核销/通知或报告完成；Task18调度及Task17整套跨JVM/Redis验收未交付，不单独启用BRIDGE。两仓库仅本地提交，未push/部署/改共享配置。
 
 ## Task 15: 旧核销事实与冻结通知任务原子提交
 
