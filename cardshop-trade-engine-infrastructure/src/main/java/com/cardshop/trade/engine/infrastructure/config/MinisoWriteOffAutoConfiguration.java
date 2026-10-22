@@ -121,6 +121,7 @@ public class MinisoWriteOffAutoConfiguration {
                         0,
                         1);
                 receipts.useTime("__miniso_schema_probe__");
+                events.terminalDecisionPresent("__miniso_schema_probe__");
             } catch (RuntimeException ex) {
                 throw com.cardshop.trade.engine.infrastructure.persistence.MinisoWriteOffFailures
                         .storage(ex);

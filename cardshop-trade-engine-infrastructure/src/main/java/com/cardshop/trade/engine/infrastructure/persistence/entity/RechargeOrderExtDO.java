@@ -132,6 +132,14 @@ public class RechargeOrderExtDO {
     @TableField("balance_release_amount")
     private Long balanceReleaseAmount;
 
+    /** 无需余额释放裁决时间；参见详细设计9.8，DDL COMMENT同名。 */
+    @TableField("balance_no_release_decided_at")
+    private LocalDateTime balanceNoReleaseDecidedAt;
+
+    /** 无需余额释放裁决事件编号；首次来源不可覆盖，参见详细设计9.8，DDL COMMENT同名。 */
+    @TableField("balance_no_release_event_id")
+    private String balanceNoReleaseEventId;
+
     /**
      * 业务履约状态。
      */
@@ -335,6 +343,22 @@ public class RechargeOrderExtDO {
 
     public void setBalanceReleaseAmount(Long balanceReleaseAmount) {
         this.balanceReleaseAmount = balanceReleaseAmount;
+    }
+
+    public LocalDateTime getBalanceNoReleaseDecidedAt() {
+        return balanceNoReleaseDecidedAt;
+    }
+
+    public void setBalanceNoReleaseDecidedAt(LocalDateTime value) {
+        balanceNoReleaseDecidedAt = value;
+    }
+
+    public String getBalanceNoReleaseEventId() {
+        return balanceNoReleaseEventId;
+    }
+
+    public void setBalanceNoReleaseEventId(String value) {
+        balanceNoReleaseEventId = value;
     }
 
     public String getDispatchStatus() {

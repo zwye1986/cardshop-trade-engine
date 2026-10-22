@@ -35,7 +35,16 @@ public interface RechargeFulfillmentOrderPort {
     }
 
     /**
+     * 锁内核对持久无需释放裁决、首次事件及无扣款事实；false不等于允许历史终态自动收尾。
+     * 两种裁决互斥且字段必须完整，缺结构或损坏均失败关闭。参见详细设计9.8「未预扣终态恢复修订」。
+     */
+    default boolean isMinisoTerminalNoReleaseRequired(String orderId) {
+        throw new UnsupportedOperationException("MINISO no-release decision requires persistent adapter");
+    }
+
+    /**
      * 在同一主事务中裁决MINISO终态及首次释放许可；empty仅表示可信订单原本未预扣。
+     * 返回empty前必须同事务保存独立无需释放裁决，重试不能凭预扣标记推断该事实。
      * 参见 {@code docs/交行直充业务系统详细设计.md}「9.8」。已有许可返回首次冻结值，不重新裁决。
      */
     default Optional<MinisoBalanceReleaseAuthorization> authorizeMinisoTerminalRelease(

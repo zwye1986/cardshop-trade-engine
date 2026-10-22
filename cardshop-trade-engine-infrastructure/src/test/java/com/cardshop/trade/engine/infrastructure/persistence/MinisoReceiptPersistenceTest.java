@@ -31,7 +31,8 @@ class MinisoReceiptPersistenceTest {
                 "create table recharge_order_ext(order_id varchar(100) primary key,org_code"
                     + " varchar(64),out_order_sn varchar(100),supplier_batch_id"
                     + " varchar(64),persist_status varchar(32),balance_release_authorized_at timestamp,"
-                    + "balance_release_event_id varchar(100),balance_release_amount bigint)");
+                    + "balance_release_event_id varchar(100),balance_release_amount bigint,"
+                    + "balance_no_release_decided_at timestamp,balance_no_release_event_id varchar(100))");
         jdbc.execute(
                 "create table recharge_miniso_receipt(order_id varchar(100) primary key,org_code"
                     + " varchar(64),batch_id int,coupon_code varchar(128) unique,phone"

@@ -212,6 +212,17 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
         return authorization(order, ext);
     }
 
+    /** 完整校验两类裁决后才允许无资金恢复，不能仅凭预扣标记或历史终态推断。参见详细设计9.8。 */
+    @Override
+    @Transactional
+    public boolean isMinisoTerminalNoReleaseRequired(String orderId) {
+        var order = orderMapper.lockFulfillmentOrder(orderId);
+        var ext = extMapper.lockFulfillmentOrder(orderId);
+        validateMinisoOwnership(order, ext);
+        authorization(order, ext);
+        return ext.getBalanceNoReleaseDecidedAt() != null;
+    }
+
     /** 首次裁决锁内提交终态与授权，HTTP/Redis由后续Worker在锁外执行；参见详细设计9.8。 */
     @Override
     @Transactional
@@ -230,8 +241,8 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
             throw new MinisoWriteOffException(RELEASE_TERMINAL_CONFLICT);
         }
         var existing = authorization(order, ext);
-        if (existing.isPresent()) {
-            // 已提交授权优先；迟到核销不触发第二次裁决，也不重写eventId/amount/time。
+        if (existing.isPresent() || ext.getBalanceNoReleaseDecidedAt() != null) {
+            // 已提交的两类裁决均优先；迟到核销不触发第二次裁决，也不重写eventId/amount/time。
             if (!update.dispatchStatus().name().equals(ext.getDispatchStatus())
                     || !Objects.equals(order.getOrderStatus(), update.orderStatus())) {
                 throw new MinisoWriteOffException(RELEASE_TERMINAL_CONFLICT);
@@ -257,6 +268,20 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
             }
             validateSourceEvent(order, sourceEventId);
             writeFulfillmentStatus(update);
+            int rows = extMapper.update(null, new LambdaUpdateWrapper<RechargeOrderExtDO>()
+                    .eq(RechargeOrderExtDO::getOrderId, order.getOrderId())
+                    .isNull(RechargeOrderExtDO::getBalanceNoReleaseDecidedAt)
+                    .isNull(RechargeOrderExtDO::getBalanceNoReleaseEventId)
+                    .isNull(RechargeOrderExtDO::getBalanceReleaseAuthorizedAt)
+                    .isNull(RechargeOrderExtDO::getBalanceReleaseEventId)
+                    .isNull(RechargeOrderExtDO::getBalanceReleaseAmount)
+                    .set(RechargeOrderExtDO::getBalanceNoReleaseDecidedAt,
+                            LocalDateTime.ofInstant(clock.instant(), LEGACY_CARDSHOP_DB_ZONE)
+                                    .truncatedTo(ChronoUnit.MILLIS))
+                    .set(RechargeOrderExtDO::getBalanceNoReleaseEventId, sourceEventId));
+            if (rows != 1) throw new MinisoWriteOffException(RELEASE_AUTHORIZATION_INCONSISTENT);
+            log.info("MINISO terminal requires no release: orderId={}, orgCode={}, eventId={}",
+                    order.getOrderId(), order.getOrgCode(), sourceEventId);
             return Optional.empty();
         }
         long amount = preDeductAmount(order);
@@ -268,6 +293,8 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
                 .isNull(RechargeOrderExtDO::getBalanceReleaseAuthorizedAt)
                 .isNull(RechargeOrderExtDO::getBalanceReleaseEventId)
                 .isNull(RechargeOrderExtDO::getBalanceReleaseAmount)
+                .isNull(RechargeOrderExtDO::getBalanceNoReleaseDecidedAt)
+                .isNull(RechargeOrderExtDO::getBalanceNoReleaseEventId)
                 .set(RechargeOrderExtDO::getBalanceReleaseAuthorizedAt,
                         LocalDateTime.ofInstant(authorizedAt, LEGACY_CARDSHOP_DB_ZONE))
                 .set(RechargeOrderExtDO::getBalanceReleaseEventId, sourceEventId)
@@ -347,6 +374,24 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
         var time = ext.getBalanceReleaseAuthorizedAt();
         var event = ext.getBalanceReleaseEventId();
         var amount = ext.getBalanceReleaseAmount();
+        var noReleaseTime = ext.getBalanceNoReleaseDecidedAt();
+        var noReleaseEvent = ext.getBalanceNoReleaseEventId();
+        if (noReleaseTime != null || noReleaseEvent != null) {
+            // 无需释放不是零额授权；部分记录、双裁决、错归属及新增扣款均失败关闭。
+            // 不重查可迟到的核销证据，否则会再次截断已提交裁决的通知恢复，参见详细设计9.8。
+            if (noReleaseTime == null || noReleaseEvent == null || noReleaseEvent.isBlank()
+                    || time != null || event != null || amount != null
+                    || !Boolean.FALSE.equals(ext.getBalanceReserved())
+                    || !matchesReleaseTerminal(ext.getDispatchStatus(), order.getOrderStatus())
+                    || FulfillmentDispatchStatus.CANCELLED.name().equals(ext.getDispatchStatus())
+                            && (!VoucherUseState.CANCELLED.code().equals(ext.getVoucherUseState())
+                                    || ext.getVoucherInvalidTime() == null)
+                    || !preDeductRecords(order.getOrderId()).isEmpty()) {
+                throw new MinisoWriteOffException(RELEASE_AUTHORIZATION_INCONSISTENT);
+            }
+            validateSourceEvent(order, noReleaseEvent);
+            return Optional.empty();
+        }
         if (time == null && event == null && amount == null) return Optional.empty();
         if (time == null || event == null || event.isBlank() || amount == null || amount <= 0
                 || !matchesReleaseTerminal(ext.getDispatchStatus(), order.getOrderStatus())

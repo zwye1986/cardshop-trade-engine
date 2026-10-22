@@ -31,7 +31,9 @@ class BocomNotifyChangelogTest {
         var root=Path.of("src/main/resources");
         var parser=ChangeLogParserFactory.getInstance().getParser("db/changelog/db.changelog-master.yaml",new DirectoryResourceAccessor(root));
         var changelog=parser.parse("db/changelog/db.changelog-master.yaml",new ChangeLogParameters(),new DirectoryResourceAccessor(root));
-        assertThat(changelog.getChangeSets().getLast().getId()).isEqualTo("0024-bocom-notify-route-and-attempt");
+        assertThat(changelog.getChangeSets()).extracting(change -> change.getId())
+                .containsSubsequence("0023-miniso-shared-callback-bridge", "0024-bocom-notify-route-and-attempt",
+                        "0025-miniso-no-release-decision");
         String sql=Files.readString(root.resolve("db/changelog/0024-bocom-notify.yaml"));
         assertThat(sql).contains("DEFAULT 'DIRECT_JSON'", "claim_version bigint NOT NULL DEFAULT 0", "encoded_payload text CHARACTER SET utf8mb4",
                 "CREATE TABLE recharge_notify_attempt", "UNIQUE KEY uk_notify_attempt_msg (msg_id)","idx_notify_attempt_task (task_id, started_at)");

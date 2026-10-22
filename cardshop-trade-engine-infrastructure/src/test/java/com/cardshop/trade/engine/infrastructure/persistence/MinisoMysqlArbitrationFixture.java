@@ -180,6 +180,9 @@ final class MinisoMysqlArbitrationFixture {
             if (sql.startsWith("update recharge_order_ext") && sql.contains("balance_release_authorized_at=")
                     && fault.compareAndSet("before-authorize-commit", ""))
                 throw new IllegalStateException("Task17 crash after authorization SQL before commit");
+            if (sql.startsWith("update recharge_order_ext") && sql.contains("balance_no_release_decided_at=")
+                    && fault.compareAndSet("before-no-release-commit", ""))
+                throw new IllegalStateException("No-release crash after decision SQL before commit");
             if (sql.startsWith("update recharge_order_ext") && sql.contains("balance_reserved=")
                     && fault.compareAndSet("after-flag", ""))
                 throw new IllegalStateException("Task17 crash after delta and release flag SQL before commit");

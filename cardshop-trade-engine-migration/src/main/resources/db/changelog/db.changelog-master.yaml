@@ -799,3 +799,7 @@ databaseChangeLog:
   - include:
       file: 0024-bocom-notify.yaml
       relativeToChangelogFile: true
+
+  - include:
+      file: 0025-miniso-no-release-decision.yaml
+      relativeToChangelogFile: true

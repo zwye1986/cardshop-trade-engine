@@ -64,7 +64,8 @@ public class MinisoWriteOffPersistenceTest {
                         + "voucher_use_state varchar(1) default '',voucher_use_time timestamp,"
                         + "voucher_invalid_time timestamp,balance_reserved boolean default true,"
                         + "balance_release_authorized_at timestamp,"
-                        + "balance_release_event_id varchar(100),balance_release_amount bigint)");
+                        + "balance_release_event_id varchar(100),balance_release_amount bigint,"
+                        + "balance_no_release_decided_at timestamp,balance_no_release_event_id varchar(100))");
         jdbc.execute(
                 "create table recharge_miniso_receipt(order_id varchar(100) primary key,org_code"
                         + " varchar(64),batch_id int,coupon_code varchar(128) unique,phone"
@@ -272,10 +273,11 @@ public class MinisoWriteOffPersistenceTest {
     }
 
     @ParameterizedTest
-    @ValueSource(booleans = {true, false})
-    void authorizedDirectReceptionOnlyRetainsManualEvidence(boolean balanceReserved) {
+    @CsvSource({"true,true", "true,false", "false,false"})
+    void authorizedDirectReceptionOnlyRetainsManualEvidence(boolean moneyAuthorization, boolean balanceReserved) {
         seed(3, "https://merchant.example/notify");
         authorizedRelease(balanceReserved);
+        if (!moneyAuthorization) noReleaseDecision();
         var original = fundedOrderFacts();
 
         store.accept(notice());
@@ -298,10 +300,12 @@ public class MinisoWriteOffPersistenceTest {
     }
 
     @ParameterizedTest
-    @CsvSource({"3,true", "3,false", "0,true"})
-    void authorizedSharedEventCannotRedeemOrInterruptFunding(int receiptStatus, boolean balanceReserved) {
+    @CsvSource({"3,true,true", "3,false,true", "0,true,true", "3,false,false", "0,false,false"})
+    void authorizedSharedEventCannotRedeemOrInterruptFunding(int receiptStatus, boolean balanceReserved,
+            boolean moneyAuthorization) {
         seed(3, "https://merchant.example/notify");
         authorizedRelease(balanceReserved);
+        if (!moneyAuthorization) noReleaseDecision();
         // 0模拟授权后凭据状态被其它写入者损坏；授权仍优先，不能重新核销或取消原资金任务。
         jdbc.update("update recharge_miniso_receipt set coupon_status=?", receiptStatus);
         var original = fundedOrderFacts();
@@ -698,6 +702,13 @@ public class MinisoWriteOffPersistenceTest {
                 balanceReserved);
         jdbc.update("insert into recharge_dispatch_outbox(event_id,status,locked_until,last_error,updated_at) "
                 + "values('INV','RETRY',?,'REDIS_UNAVAILABLE',?)", USED.plusMinutes(3), USED.minusMinutes(1));
+    }
+
+    /** 独立无需释放事实，绝不使用零额资金授权代替；见详细设计9.8。 */
+    void noReleaseDecision() {
+        jdbc.update("update recharge_order_ext set balance_release_authorized_at=null,balance_release_event_id=null,"
+                + "balance_release_amount=null,balance_no_release_decided_at=?,balance_no_release_event_id='INV'",
+                USED.minusMinutes(1));
     }
 
     List<Map<String, Object>> fundedOrderFacts() {

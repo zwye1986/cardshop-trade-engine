@@ -543,6 +543,12 @@ public class RechargeOutboxWorkerService {
                             .orElseThrow(() -> new MinisoWriteOffException(MinisoWriteOffException.Reason.OWNERSHIP_CONFLICT));
                     return completeAuthorizedMinisoRelease(event, authorizedOrder, authorization.get());
                 }
+                if (orderPort.isMinisoTerminalNoReleaseRequired(order.orderId())) {
+                    // empty授权本身不构成证明；只有主库完整无需释放裁决允许通知收尾，参见详细设计9.8。
+                    var terminalOrder = orderPort.findByOrderId(order.orderId())
+                            .orElseThrow(() -> new MinisoWriteOffException(MinisoWriteOffException.Reason.OWNERSHIP_CONFLICT));
+                    return completeMinisoTerminalTask(event, terminalOrder);
+                }
                 if (order.cancelled() || order.orderStatus() == ORDER_STATUS_FAILED
                         || order.orderStatus() == LegacyOrderStatusCode.REFUNDED.code()
                         || FulfillmentDispatchStatus.FAILED.name().equals(order.dispatchStatus())) {
@@ -1063,6 +1069,12 @@ public class RechargeOutboxWorkerService {
             // 标记0意味着Redis已确认，只核对持久delta；缺行/损坏仍失败，不因Redis已不可用阻塞通知收尾。
             orderPort.completeMinisoBalanceRelease(authorization);
         }
+        return completeMinisoTerminalTask(event, order);
+    }
+
+    /** 已提交两类裁决共用幂等通知及任务收尾；不重做资金或核销裁决。参见详细设计9.8。 */
+    private RechargeOutboxBatchResult.Outcome completeMinisoTerminalTask(
+            RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
         if (order.cancelled()) {
             if (order.invalidTime() == null) {
                 outboxPort.markManualRequired(event, "CANCELLED_TIME_MISSING");

@@ -283,7 +283,9 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                                 out_order_sn varchar(100), supplier_batch_id varchar(64), persist_status varchar(32),
                                 dispatch_status varchar(32), last_error varchar(1000), updated_at timestamp,
                                 voucher_use_state varchar(8), voucher_use_time timestamp, balance_reserved boolean default true, balance_release_authorized_at timestamp,
-                                balance_release_event_id varchar(100), balance_release_amount bigint)
+                                balance_release_event_id varchar(100), balance_release_amount bigint,
+                                voucher_invalid_time timestamp, balance_no_release_decided_at timestamp,
+                                balance_no_release_event_id varchar(100))
                             """);
                     jdbc.execute("""
                             create table recharge_miniso_receipt(order_id varchar(100) primary key,
@@ -333,7 +335,8 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         jdbc.execute("create table recharge_order_ext(order_id varchar(100) primary key,org_code varchar(64),"
                 + "out_order_sn varchar(100),persist_status varchar(32),balance_reserved boolean,dispatch_status varchar(32),"
                 + "voucher_use_state varchar(1),voucher_use_time timestamp,balance_release_authorized_at timestamp(3),"
-                + "balance_release_event_id varchar(100),balance_release_amount bigint,updated_at timestamp(3))");
+                + "balance_release_event_id varchar(100),balance_release_amount bigint,updated_at timestamp(3),"
+                + "voucher_invalid_time timestamp,balance_no_release_decided_at timestamp(3),balance_no_release_event_id varchar(100))");
         jdbc.execute("create table mc_depart_record(id bigint auto_increment primary key,org_code varchar(64),"
                 + "order_id varchar(100),type varchar(1),`value` bigint)");
         jdbc.execute("create table recharge_dispatch_outbox(event_id varchar(100) primary key,event_type varchar(32),"
@@ -344,7 +347,9 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                 + "next_retry_time timestamp(3),locked_by varchar(64),locked_until timestamp(3),version bigint,"
                 + "last_error varchar(512),created_at timestamp(3),updated_at timestamp(3))");
         jdbc.update("insert into mc_order values('O1','A39','EXT-1','MINISO',137,12)");
-        jdbc.update("insert into recharge_order_ext values('O1','A39','EXT-1','DB_PERSISTED',true,'CANCELLED',"
+        jdbc.update("insert into recharge_order_ext(order_id,org_code,out_order_sn,persist_status,balance_reserved,dispatch_status,"
+                + "voucher_use_state,voucher_use_time,balance_release_authorized_at,balance_release_event_id,balance_release_amount,updated_at) "
+                + "values('O1','A39','EXT-1','DB_PERSISTED',true,'CANCELLED',"
                 + "'3',null,'2026-10-21 08:00:00.123','event-A',137,null)");
         jdbc.update("insert into mc_depart_record(org_code,order_id,type,`value`) values('A39','O1','1',137)");
         jdbc.update("insert into recharge_dispatch_outbox values('event-A','INVALID_ORDER','A39','O1','EXT-1')");

@@ -89,6 +89,7 @@ class RechargeFulfillmentVoucherStatePersistenceTest {
                     persist_status varchar(32), balance_reserved boolean,
                     balance_release_authorized_at timestamp(3), balance_release_event_id varchar(100),
                     balance_release_amount bigint,
+                    balance_no_release_decided_at timestamp(3), balance_no_release_event_id varchar(100),
                     dispatch_status varchar(32),
                     last_error varchar(512),
                     updated_at timestamp(6),
@@ -430,14 +431,66 @@ class RechargeFulfillmentVoucherStatePersistenceTest {
         assertNoAuthorization();
     }
 
-    @Test
-    void unreservedOrderReturnsEmptyWithoutInventingRefundButStillCommitsTerminal() {
+    @ParameterizedTest
+    @ValueSource(strings = {"CANCELLED", "FAILED"})
+    void unreservedOrderReturnsEmptyWithoutInventingRefundButStillCommitsTerminal(String terminal) {
         seedMiniso();
         jdbc.update("update recharge_order_ext set balance_reserved=false");
         jdbc.update("delete from mc_depart_record");
+        var update = terminal.equals("CANCELLED") ? cancellation() : update(FulfillmentDispatchStatus.FAILED);
         assertThat(port.findMinisoReleaseAuthorization(ORDER_ID)).isEmpty();
-        assertThat(port.authorizeMinisoTerminalRelease(cancellation(), "event-A")).isEmpty();
-        assertThat(dispatchStatus()).isEqualTo("CANCELLED");
+        assertThat(port.authorizeMinisoTerminalRelease(update, "event-A")).isEmpty();
+        assertThat(dispatchStatus()).isEqualTo(terminal);
+        assertThat(jdbc.queryForObject("select balance_no_release_event_id from recharge_order_ext", String.class))
+                .isEqualTo("event-A");
+        assertThat(jdbc.queryForObject("select balance_no_release_decided_at from recharge_order_ext", LocalDateTime.class))
+                .isEqualTo(LocalDateTime.parse("2026-10-19T08:00:00.123"));
+        var frozen = jdbc.queryForMap("select * from recharge_order_ext");
+        // 提交后的迟到核销不得重做裁决或覆盖首次来源；重建读取端口仍按持久事实恢复，见详细设计9.8。
+        jdbc.update("update recharge_miniso_receipt set coupon_status=1,use_time=current_timestamp");
+        assertThat(port.isMinisoTerminalNoReleaseRequired(ORDER_ID)).isTrue();
+        assertThat(port.authorizeMinisoTerminalRelease(update, "event-B")).isEmpty();
+        assertThat(jdbc.queryForMap("select * from recharge_order_ext")).isEqualTo(frozen);
+        assertNoAuthorization();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"time", "source", "wrongSource", "reserved", "debit", "authorization", "terminal", "identity"})
+    void damagedNoReleaseDecisionFailsClosed(String damage) {
+        seedMiniso();
+        jdbc.update("update recharge_order_ext set balance_reserved=false");
+        jdbc.update("delete from mc_depart_record");
+        port.authorizeMinisoTerminalRelease(cancellation(), "event-A");
+        switch (damage) {
+            case "time" -> jdbc.update("update recharge_order_ext set balance_no_release_decided_at=null");
+            case "source" -> jdbc.update("update recharge_order_ext set balance_no_release_event_id=null");
+            case "wrongSource" -> jdbc.update("update recharge_order_ext set balance_no_release_event_id='unknown'");
+            case "reserved" -> jdbc.update("update recharge_order_ext set balance_reserved=true");
+            case "debit" -> jdbc.update("insert into mc_depart_record(id,org_code,order_id,type,`value`) values(99,'A39',?,'1',137)", ORDER_ID);
+            case "authorization" -> jdbc.update("update recharge_order_ext set balance_release_amount=137");
+            case "terminal" -> jdbc.update("update recharge_order_ext set dispatch_status='SUCCESS'");
+            case "identity" -> jdbc.update("update recharge_order_ext set org_code='OTHER'");
+            default -> throw new AssertionError(damage);
+        }
+        assertThatThrownBy(() -> port.isMinisoTerminalNoReleaseRequired(ORDER_ID))
+                .isInstanceOf(MinisoWriteOffException.class);
+        assertThatThrownBy(() -> port.findMinisoReleaseAuthorization(ORDER_ID))
+                .isInstanceOf(MinisoWriteOffException.class);
+        assertThatThrownBy(() -> port.authorizeMinisoTerminalRelease(cancellation(), "event-B"))
+                .isInstanceOf(MinisoWriteOffException.class);
+    }
+
+    @Test
+    void failedNoReleaseDecisionWriteRollsBackTerminalAndReceipt() {
+        seedMiniso();
+        jdbc.update("update recharge_order_ext set balance_reserved=false");
+        jdbc.update("delete from mc_depart_record");
+        jdbc.execute("alter table recharge_order_ext add constraint reject_no_release check (balance_no_release_event_id is null)");
+        assertThatThrownBy(() -> port.authorizeMinisoTerminalRelease(cancellation(), "event-A"))
+                .isInstanceOf(DataIntegrityViolationException.class);
+        assertThat(dispatchStatus()).isEqualTo("SUCCESS");
+        assertThat(jdbc.queryForObject("select balance_no_release_decided_at from recharge_order_ext", LocalDateTime.class)).isNull();
+        assertThat(port.isMinisoTerminalNoReleaseRequired(ORDER_ID)).isFalse();
         assertNoAuthorization();
     }
 

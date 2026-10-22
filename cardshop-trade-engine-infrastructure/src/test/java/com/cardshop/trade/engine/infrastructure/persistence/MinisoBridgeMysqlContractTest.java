@@ -88,8 +88,8 @@ class MinisoBridgeMysqlContractTest {
                          request_hash_alg, persist_status, persist_source, validation_status,
                          balance_reserved, dispatch_status)
                         VALUES (?, 'FIXTURE', ?, 'fixture-hash', 'V1', 'SHA-256',
-                                'DB_PERSISTED', 'FIXTURE', 'VALID', 1, ?)
-                        """, "historical-" + status, "out-" + status, status);
+                                'DB_PERSISTED', 'FIXTURE', 'VALID', ?, ?)
+                        """, "historical-" + status, "out-" + status, status.equals("SUCCESS"), status);
             }
             liquibase.update(new Contexts(), new LabelExpression());
             assertBridgeStructure(jdbc);
@@ -244,9 +244,38 @@ class MinisoBridgeMysqlContractTest {
     void recoversCommittedAuthorizationAcrossRealMysqlAndRedisCrashWindows() throws Exception {
         MinisoMysqlReleaseRecovery.assertFailedStartupCleansScratch();
         var f = new MinisoMysqlArbitrationFixture();
+        if (Boolean.getBoolean("miniso.noReleaseResume")) {
+            // 脚本单独启动第二个Surefire JVM，禁止依赖第一JVM的内存裁决/通知状态。参见详细设计9.8。
+            try (var redis = new MinisoMysqlReleaseRecovery()) { redis.resumeNoReleaseWindows(f); }
+            assertNoReleaseRollbackPreservesEvidence(f);
+            return;
+        }
         f.jdbc.update("update recharge_dispatch_outbox set next_retry_time='2099-01-01'");
         f.jdbc.update("update recharge_miniso_writeoff_event set next_retry_time='2099-01-01'");
-        try (var redis = new MinisoMysqlReleaseRecovery()) { redis.recoverEveryWindow(f); }
+        try (var redis = new MinisoMysqlReleaseRecovery()) {
+            redis.recoverEveryWindow(f);
+            redis.prepareNoReleaseWindows(f);
+        }
+    }
+
+    /** 只在可丢弃夹具最后回滚0025：保留裁决和通知，不能通过删列丢失恢复证据。参见详细设计9.8。 */
+    private void assertNoReleaseRollbackPreservesEvidence(MinisoMysqlArbitrationFixture f) throws Exception {
+        var decisions = f.jdbc.queryForList("select * from recharge_order_ext order by order_id");
+        var notifications = f.jdbc.queryForList("select * from recharge_notify_task order by task_id");
+        var history = checksums(f.jdbc);
+        assertThat(history.getLast().get("ID")).isEqualTo("0025-miniso-no-release-decision");
+        try (var connection = f.source.getConnection(); var resources = new ClassLoaderResourceAccessor();
+                var migration = new Liquibase(MASTER, resources,
+                        DatabaseFactory.getInstance().findCorrectDatabaseImplementation(new JdbcConnection(connection)))) {
+            migration.rollback(1, new Contexts(), new LabelExpression());
+        }
+        assertBridgeStructure(f.jdbc);
+        assertHistoricalAuthorizationAbsent(f.jdbc);
+        assertThat(f.jdbc.queryForList("select * from recharge_order_ext order by order_id")).isEqualTo(decisions);
+        assertThat(f.jdbc.queryForList("select * from recharge_notify_task order by task_id")).isEqualTo(notifications);
+        assertThat(checksums(f.jdbc)).isEqualTo(history.subList(0, history.size() - 1));
+        // SELECT 1回滚保留结构但撤销迁移账本，不能把再次update当成常规应用回滚操作。
+        System.out.println("NO_RELEASE rollback: columns/decisions/notifications preserved; previous migration checksums unchanged");
     }
 
     private void assertSchemaOnlyPrivileges(JdbcTemplate jdbc, String schema) {
@@ -289,8 +318,9 @@ class MinisoBridgeMysqlContractTest {
                 SELECT COLUMN_NAME, IS_NULLABLE, COLUMN_DEFAULT FROM information_schema.COLUMNS
                 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'recharge_order_ext'
                   AND COLUMN_NAME IN ('balance_release_authorized_at', 'balance_release_event_id',
-                                      'balance_release_amount')
-                """)).hasSize(3).allSatisfy(column -> {
+                                      'balance_release_amount', 'balance_no_release_decided_at',
+                                      'balance_no_release_event_id')
+                """)).hasSize(5).allSatisfy(column -> {
                     assertThat(column.get("IS_NULLABLE")).isEqualTo("YES");
                     assertThat(column.get("COLUMN_DEFAULT")).isNull();
                 });
@@ -304,16 +334,19 @@ class MinisoBridgeMysqlContractTest {
     private void assertHistoricalAuthorizationAbsent(JdbcTemplate jdbc) {
         var historical = jdbc.queryForList("""
                 SELECT dispatch_status, balance_reserved, balance_release_authorized_at,
-                       balance_release_event_id, balance_release_amount
+                       balance_release_event_id, balance_release_amount,
+                       balance_no_release_decided_at, balance_no_release_event_id
                 FROM recharge_order_ext WHERE org_code = 'FIXTURE' ORDER BY dispatch_status
                 """);
         assertThat(historical).extracting(row -> row.get("dispatch_status"))
                 .containsExactly("CANCELLED", "SUCCESS");
         assertThat(historical).allSatisfy(row -> {
-                    assertThat(row.get("balance_reserved")).isEqualTo(true);
+                    assertThat(row.get("balance_reserved")).isEqualTo("SUCCESS".equals(row.get("dispatch_status")));
                     assertThat(row.get("balance_release_authorized_at")).isNull();
                     assertThat(row.get("balance_release_event_id")).isNull();
                     assertThat(row.get("balance_release_amount")).isNull();
+                    assertThat(row.get("balance_no_release_decided_at")).isNull();
+                    assertThat(row.get("balance_no_release_event_id")).isNull();
                 });
     }
 

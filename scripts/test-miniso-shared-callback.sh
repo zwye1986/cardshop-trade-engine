@@ -182,6 +182,10 @@ if [[ "$mode" == --all ]]; then
     rm -f "$engine_report"
     engine_test 'MinisoBridgeMysqlContractTest#recovers*' -Dminiso.recoveryTests=true
     verify_report "$engine_report" 1
+    # 第一JVM已退出；同一可丢弃主库内恢复无需释放裁决，不能用重建对象冒充进程重启。
+    rm -f "$engine_report"
+    engine_test 'MinisoBridgeMysqlContractTest#recovers*' -Dminiso.recoveryTests=true -Dminiso.noReleaseResume=true
+    verify_report "$engine_report" 1
     redis_report="$ROOT/cardshop-trade-engine-infrastructure/target/surefire-reports/TEST-com.cardshop.trade.engine.infrastructure.redis.MinisoLocalRedisContractTest.xml"
     rm -f "$redis_report"
     engine_test MinisoLocalRedisContractTest -Dminiso.localRedisTests=true

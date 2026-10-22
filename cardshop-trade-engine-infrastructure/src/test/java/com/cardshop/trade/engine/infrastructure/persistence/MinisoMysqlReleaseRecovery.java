@@ -182,7 +182,135 @@ final class MinisoMysqlReleaseRecovery implements AutoCloseable {
         }
     }
 
+    /**
+     * 第一JVM提交裁决并击中通知/原任务失败窗口；第二JVM只从MySQL读取事实恢复。
+     * 使用真实通知Mapper，签名仅用离线桩，绝不发送HTTP；参见详细设计9.8。
+     */
+    void prepareNoReleaseWindows(MinisoMysqlArbitrationFixture f) {
+        for (String terminal : List.of("CANCELLED", "FAILED")) {
+            for (String window : List.of("notify", "success")) {
+                String id = "no-release-" + terminal + "-" + window;
+                seedNoRelease(f, id);
+                var update = noReleaseTerminal(f, id, terminal);
+                assertThat(f.orders.authorizeMinisoTerminalRelease(update, "source-" + id)).isEmpty();
+                assertThat(f.orders.isMinisoTerminalNoReleaseRequired(id)).isTrue();
+                f.jdbc.update("update recharge_dispatch_outbox set event_type=? where order_id=?",
+                        terminal.equals("CANCELLED") ? "INVALID_ORDER" : "SUPPLIER_DISPATCH", id);
+                RechargeNotifyTaskPort notifications = window.equals("notify")
+                        ? task -> { throw new IllegalStateException("fixture notify store unavailable"); }
+                        : notifications(f);
+                assertThat(worker(f, forbiddenRelease(), window.equals("success"), notifications, signer())
+                        .processDue(1, 0, 1, "no-release-first", List.of(sourceType(terminal)), 1).failed()).isEqualTo(1);
+                assertThat(f.jdbc.queryForObject("select count(*) from recharge_notify_task where order_id=?", Integer.class, id))
+                        .isEqualTo(window.equals("notify") ? 0 : 1);
+                assertThat(f.jdbc.queryForObject("select status from recharge_dispatch_outbox where order_id=?", String.class, id))
+                        .isEqualTo("FAILED");
+                // 裁决提交后迟到核销只留人工证据，后续JVM不能因此阻断通知或再做资金裁决。
+                f.late(id, id);
+                System.out.println("NO_RELEASE prepared id=" + id + " pid=" + ProcessHandle.current().pid());
+            }
+        }
+        String rollback = "no-release-rollback";
+        seedNoRelease(f, rollback);
+        f.fault.set("before-no-release-commit");
+        assertThatThrownBy(() -> f.orders.authorizeMinisoTerminalRelease(
+                noReleaseTerminal(f, rollback, "CANCELLED"), "source-" + rollback)).isInstanceOf(RuntimeException.class);
+        assertThat(f.fault.get()).as("必须击中真实裁决SQL后、提交前的回滚窗口").isEmpty();
+        assertThat(f.orders.isMinisoTerminalNoReleaseRequired(rollback)).isFalse();
+        assertThat(f.jdbc.queryForMap("select dispatch_status,voucher_invalid_time from recharge_order_ext where order_id=?", rollback))
+                .containsEntry("dispatch_status", "SUCCESS").containsEntry("voucher_invalid_time", null);
+        f.writeOff.accept(new MinisoWriteOffNotification(rollback, java.time.LocalDateTime.of(2026, 10, 22, 9, 0)));
+        assertThatThrownBy(() -> f.orders.authorizeMinisoTerminalRelease(
+                noReleaseTerminal(f, rollback, "CANCELLED"), "source-" + rollback)).isInstanceOf(MinisoWriteOffException.class);
+        f.jdbc.update("update recharge_dispatch_outbox set next_retry_time='2099-01-01' where order_id=?", rollback);
+    }
+
+    void resumeNoReleaseWindows(MinisoMysqlArbitrationFixture f) throws Exception {
+        for (String terminal : List.of("CANCELLED", "FAILED")) {
+            for (String window : List.of("notify", "success")) {
+                String id = "no-release-" + terminal + "-" + window;
+                var decision = f.jdbc.queryForMap("select * from recharge_order_ext where order_id=?", id);
+                assertThat(decision).containsEntry("balance_no_release_event_id", "source-" + id);
+                assertThat(decision.get("balance_no_release_decided_at")).isNotNull();
+                var existing = f.jdbc.queryForList("select * from recharge_notify_task where order_id=?", id);
+                // 事件B先恢复事件A的裁决，随后A收尾；两次恢复只能留下同一份冻结通知。
+                f.jdbc.update("""
+                        insert into recharge_dispatch_outbox(event_id,event_type,org_code,order_id,out_order_sn,payload,status,
+                          retry_count,max_retry_count,next_retry_time,version,shard_key)
+                        values (?,'SUPPLIER_QUERY','TASK17',?,?,'{}','INIT',0,10,'2026-10-21',0,?)
+                        """, "retry-" + id, id, "out-" + id, "retry-" + id);
+                assertThat(worker(f, forbiddenRelease(), false, notifications(f), signer())
+                        .processDue(1, 0, 1, "no-release-B", List.of(OutboxEventType.SUPPLIER_QUERY), 1).succeeded()).isEqualTo(1);
+                var frozen = f.jdbc.queryForList("select * from recharge_notify_task where order_id=?", id);
+                if (!existing.isEmpty()) assertThat(frozen).isEqualTo(existing);
+                assertThat(frozen).singleElement().satisfies(task -> {
+                    assertThat(task.get("biz_status")).isEqualTo(terminal.equals("CANCELLED") ? "CANCELLED" : "6");
+                    assertThat(task.get("notify_url")).isEqualTo("https://fixture.invalid/no-release");
+                });
+                var payload = new ObjectMapper().readTree((String) frozen.getFirst().get("payload"));
+                assertThat(payload.path("orderId").asText()).isEqualTo(id);
+                if (terminal.equals("CANCELLED")) assertThat(payload.path("invalidTime").asText()).isEqualTo(f.CLOCK.instant().toString());
+                f.jdbc.update("update recharge_dispatch_outbox set next_retry_time='2026-10-21',locked_until=null where event_id=?", "source-" + id);
+                assertThat(worker(f, forbiddenRelease(), false, notifications(f), signer())
+                        .processDue(1, 0, 1, "no-release-A", List.of(sourceType(terminal)), 1).succeeded()).isEqualTo(1);
+                assertThat(f.jdbc.queryForList("select * from recharge_notify_task where order_id=?", id)).isEqualTo(frozen);
+                assertThat(f.jdbc.queryForMap("select * from recharge_order_ext where order_id=?", id)).isEqualTo(decision);
+                assertThat(f.jdbc.queryForList("select status from recharge_dispatch_outbox where order_id=?", String.class, id))
+                        .containsExactly("SUCCESS", "SUCCESS");
+                assertThat(f.jdbc.queryForObject("select count(*) from recharge_balance_delta_outbox where order_id=?", Integer.class, id)).isZero();
+                assertThat(f.jdbc.queryForObject("select count(*) from mc_depart_record where order_id=?", Integer.class, id)).isZero();
+                assertThat(f.jdbc.queryForObject("select status from recharge_miniso_writeoff_event where coupon_code=?", String.class, id))
+                        .isEqualTo("MANUAL_REQUIRED");
+                System.out.println("NO_RELEASE recovered id=" + id + " pid=" + ProcessHandle.current().pid()
+                        + " notify=1 delta=0 funds=forbidden supplier=forbidden A=SUCCESS B=SUCCESS late=MANUAL_REQUIRED");
+            }
+        }
+    }
+
+    private void seedNoRelease(MinisoMysqlArbitrationFixture f, String id) {
+        f.seed(id);
+        f.jdbc.update("update recharge_order_ext set balance_reserved=0 where order_id=?", id);
+        f.jdbc.update("delete from mc_depart_record where order_id=?", id);
+        f.jdbc.update("update mc_order set callback_url='https://fixture.invalid/no-release' where order_Id=?", id);
+        f.tx.executeWithoutResult(s -> f.receipts.save(f.receipt(id, id, 0)));
+    }
+
+    private OrderFulfillmentStatusUpdate noReleaseTerminal(MinisoMysqlArbitrationFixture f, String id, String terminal) {
+        return terminal.equals("CANCELLED") ? f.terminal(id, id)
+                : new OrderFulfillmentStatusUpdate(id, FulfillmentDispatchStatus.FAILED, 6, "PROCESSED", null,
+                        "", "", "fixture", f.receipt(id, id, 3), null);
+    }
+
+    private static OutboxEventType sourceType(String terminal) {
+        return terminal.equals("CANCELLED") ? OutboxEventType.INVALID_ORDER : OutboxEventType.SUPPLIER_DISPATCH;
+    }
+
+    private static BalanceReservationReleasePort forbiddenRelease() {
+        return command -> { throw new AssertionError("no-release recovery must never call funds"); };
+    }
+
+    private RechargeNotifyTaskPort notifications(MinisoMysqlArbitrationFixture f) {
+        return new MybatisRechargeNotifyTaskAdapter(f.mapper(
+                com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeNotifyTaskMapper.class), new ObjectMapper(), f.CLOCK);
+    }
+
+    private static MerchantNotifyPayloadSigner signer() {
+        var signer = mock(MerchantNotifyPayloadSigner.class);
+        when(signer.signOrderStatus(any(), anyString(), any())).thenAnswer(call -> Map.of(
+                "orderId", ((RechargeFulfillmentOrder) call.getArgument(0)).orderId(), "status", call.getArgument(1),
+                "nonce", java.util.UUID.randomUUID().toString()));
+        when(signer.signWriteOff(any(), any())).thenAnswer(call -> Map.of(
+                "orderId", ((RechargeFulfillmentOrder) call.getArgument(0)).orderId(), "invalidTime", call.getArgument(1).toString(),
+                "nonce", java.util.UUID.randomUUID().toString()));
+        return signer;
+    }
+
     RechargeOutboxWorkerService worker(MinisoMysqlArbitrationFixture f, BalanceReservationReleasePort releaser, boolean failSuccess) {
+        return worker(f, releaser, failSuccess, mock(RechargeNotifyTaskPort.class), mock(MerchantNotifyPayloadSigner.class));
+    }
+
+    private RechargeOutboxWorkerService worker(MinisoMysqlArbitrationFixture f, BalanceReservationReleasePort releaser,
+            boolean failSuccess, RechargeNotifyTaskPort notifications, MerchantNotifyPayloadSigner signer) {
         var outbox = new MybatisRechargeDispatchOutboxAdapter(f.mapper(RechargeDispatchOutboxMapper.class),new ObjectMapper(),f.CLOCK) {
             @Override public void markSuccess(RechargeOutboxEvent event) {
                 if (failSuccess) throw new IllegalStateException("Task17 crash before original SUCCESS");
@@ -193,7 +321,7 @@ final class MinisoMysqlReleaseRecovery implements AutoCloseable {
         var supplier = mock(RechargeSupplierGatewayPort.class, invocation -> { throw new AssertionError("recovery must not call supplier"); });
         return new RechargeOutboxWorkerService(outbox,f.orders,supplier,outbox,mock(DirectRechargeFrequencyPort.class),
                 mock(BalanceDeltaFlushOutboxPort.class, invocation -> { throw new AssertionError("must use main transaction delta"); }),
-                releaser, mock(RechargeNotifyTaskPort.class), mock(MerchantNotifyPayloadSigner.class),
+                releaser, notifications, signer,
                 RechargeDispatchTimerPort.noop(),f.CLOCK,new RechargeOutboxWorkerSettings(Duration.ofSeconds(60),
                 Duration.ofSeconds(1),Duration.ofSeconds(1),Duration.ofSeconds(60),Duration.ofSeconds(1)), () -> f.protection);
     }

@@ -1,0 +1,15 @@
+databaseChangeLog:
+  - changeSet:
+      id: 0025-miniso-no-release-decision
+      author: cardshop
+      comment: 合法未预扣MINISO终态的无需释放裁决，参见详细设计9.8；不回填历史终态。
+      changes:
+        - sql:
+            sql: |
+              ALTER TABLE recharge_order_ext
+                ADD COLUMN balance_no_release_decided_at datetime(3) NULL COMMENT '无需余额释放裁决时间',
+                ADD COLUMN balance_no_release_event_id varchar(100) NULL COMMENT '无需余额释放裁决事件编号';
+      # 应用回滚仍保留首次裁决，禁止丢失恢复证据或据此补认历史退款。
+      rollback:
+        - sql:
+            sql: SELECT 1

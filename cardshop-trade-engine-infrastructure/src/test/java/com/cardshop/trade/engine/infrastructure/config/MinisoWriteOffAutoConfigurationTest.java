@@ -8,6 +8,8 @@ import com.cardshop.trade.engine.application.v1.crypto.*;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.*;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -120,16 +122,18 @@ class MinisoWriteOffAutoConfigurationTest {
         });
     }
 
-    @Test
-    void receiveOnlyProbeFailsClosedOnMissingPersistentStructure() {
+    @ParameterizedTest
+    @ValueSource(strings = {"events", "terminal-decision"})
+    void receiveOnlyProbeFailsClosedOnMissingPersistentStructure(String structure) {
         configured().withPropertyValues(
                 "trade.engine.supplier.miniso.callback.enabled=true",
                 "trade.engine.supplier.miniso.callback.key2=test-key")
                 .run(c -> {
                     assertThat(c).hasNotFailed();
                     var mapper=c.getBean(MinisoWriteOffEventMapper.class);
-                    when(mapper.due(any(),anyInt(),anyInt(),anyInt()))
-                            .thenThrow(new org.springframework.dao.DataAccessResourceFailureException("private SQL"));
+                    var failure = new org.springframework.dao.DataAccessResourceFailureException("private SQL");
+                    if (structure.equals("events")) when(mapper.due(any(),anyInt(),anyInt(),anyInt())).thenThrow(failure);
+                    else when(mapper.terminalDecisionPresent(anyString())).thenThrow(failure);
                     assertThatThrownBy(() -> c.getBean("minisoWriteOffSchemaProbe",org.springframework.boot.ApplicationRunner.class)
                             .run(new org.springframework.boot.DefaultApplicationArguments()))
                             .isInstanceOf(MinisoWriteOffException.class).hasMessageStartingWith("DB_UNAVAILABLE")

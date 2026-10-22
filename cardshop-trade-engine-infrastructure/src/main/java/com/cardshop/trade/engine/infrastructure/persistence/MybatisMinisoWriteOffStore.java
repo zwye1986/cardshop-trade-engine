@@ -118,7 +118,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
 
     /**
      * T1只保存已认证事件；接收方法返回时独立事务已经提交，重复事实不重置处理进度。
-     * 已有释放许可的新事件直接保留人工证据，不修改原履约/资金任务，参见详细设计9.8。
+     * 已有资金授权或无需释放裁决的新事件直接保留人工证据，不修改原履约任务，参见详细设计9.8。
      */
     @Override
     public void accept(MinisoWriteOffNotification notice) {
@@ -136,7 +136,7 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
                                         // 未知归属只能锁同券guard及事件；凭据即使随后出现也留待下一事务定位。
                                         if (owned == null) guards.lockInTransaction(notice.couponCode(), now());
                                         boolean authorized = owned != null
-                                                && events.releaseAuthorizationPresent(owned.order().orderId());
+                                                && Boolean.TRUE.equals(events.terminalDecisionPresent(owned.order().orderId()));
                                         var previous = events.lock(notice.eventId());
                                         events.insertIfAbsent(
                                                 notice.eventId(),
@@ -257,9 +257,9 @@ public final class MybatisMinisoWriteOffStore implements MinisoWriteOffStore {
             throw new MinisoWriteOffException(OWNERSHIP_CONFLICT);
         var order = owned.order();
         var receipt = owned.receipt();
-        // 许可一旦提交，迟到核销只能转人工；即使凭据状态被迟到写入污染，也不重新核销。
-        // 只让外层T3更新核销事件，不调用stopInvalidation截断已授权资金恢复，参见详细设计9.8。
-        if (events.releaseAuthorizationPresent(order.orderId()))
+        // 任一终态裁决一旦提交，迟到核销只能转人工；即使凭据状态被迟到写入污染，也不重新核销。
+        // 只让外层T3更新核销事件，不调用stopInvalidation截断已提交裁决的恢复，参见详细设计9.8。
+        if (Boolean.TRUE.equals(events.terminalDecisionPresent(order.orderId())))
             throw new MinisoWriteOffException(REDEEM_VOID_CONFLICT);
         if (receipt.couponStatus() == VOID) throw new MinisoWriteOffException(REDEEM_VOID_CONFLICT);
         if (order.orderStatus()
