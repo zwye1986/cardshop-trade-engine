@@ -425,9 +425,11 @@ WHERE order_no=? AND coupon_code=? AND channel='MINISO'
 
 **Files:** Create `LB/MinisoCallbackBridgeStore.java`、`LB/MinisoBridgeLease.java`；Modify `LM/api/ExtCommonApi.java`；Create `LT/MinisoCallbackBridgeReceiveTest.java`。
 
-- [ ] 1. 用MockMvc及真实事务store测试提交前阻塞、提交失败、提交后回执丢失重投、同券异时冲突、未知归属。合法首次请求只有提交后得HTTP200/code数值200；提交未知返回503，重投不重置状态/首次时间/版本。运行`legacy_test MinisoCallbackBridgeReceiveTest`红灯。
-- [ ] 2. 保留`POST /api/common/mcNotify`，从ServletInputStream有界读4097字节以判超限，不先`@RequestBody JSONObject`；Content-Type不符415、超限413、业务参数/验签冲突HTTP200 code500、存储/资源不可用503。BRIDGE暂停503，不能回退旧同步；LEGACY仅首次兼容验证使用。删除此入口输出完整正文/请求头/签名的日志。
-- [ ] 3. 验签通过后才建guard/inbox。已知归属从主单开始复查，未知只guard→新事件→inbox；不能先锁inbox再等主单。幂等保留首次事实，MANUAL_REQUIRED相同事实仍确认接收，不自动恢复。最小落库不含nonce/time/sign/raw/key2。
+实际清单补充：`LB/MinisoBridgeConfiguration.java`、`LT/MinisoBridgeConfigurationTest.java`（共用完整DDL夹具）及`LT/MinisoBridgeMysqlContractTest.java`；旧`ruoyi-common`新增`filter/MinisoRawCallbackRequest.java`，在`RepeatableFilter`及`XssFilter`仅对该POST映射跳过正文预处理，避免全量预读/改写先于控制器。新端仅更新两主设计、计划及集成记录。
+
+- [x] 1. 用MockMvc及真实事务store测试提交前阻塞、提交失败、提交后回执丢失重投、同券异时冲突、未知归属。合法首次请求只有提交后得HTTP200/code数值200；提交未知返回503，重投不重置状态/首次时间/版本。运行`legacy_test MinisoCallbackBridgeReceiveTest`红灯。
+- [x] 2. 保留`POST /api/common/mcNotify`，从ServletInputStream有界读4097字节以判超限，不先`@RequestBody JSONObject`；Content-Type不符415、超限413、业务参数/验签冲突HTTP200 code500、存储/资源不可用503。BRIDGE暂停503，不能回退旧同步；LEGACY仅首次兼容验证使用。删除此入口输出完整正文/请求头/签名的日志。
+- [x] 3. 验签通过后才建guard/inbox。已知归属从主单开始复查，未知只guard→新事件→inbox；不能先锁inbox再等主单。幂等保留首次事实，MANUAL_REQUIRED相同事实仍确认接收，不自动恢复。最小落库不含nonce/time/sign/raw/key2。
 
 ```sql
 INSERT INTO mc_miniso_callback_inbox
@@ -438,8 +440,10 @@ SELECT event_id,coupon_code,use_time,status,version,received_at
 FROM mc_miniso_callback_inbox WHERE coupon_code=? FOR UPDATE;
 ```
 
-- [ ] 4. insert幂等之后必须读回比对eventId/券码/useTime，不把重复主键当相同事实。提交结果不明也不补发成功；后续重投由唯一事实收敛。相同HTTP测试及严格验签测试转绿。
-- [ ] 5. 本地提交`feat(miniso): durably accept bridge callbacks before acknowledgement`。
+- [x] 4. insert幂等之后必须读回比对eventId/券码/useTime，不把重复主键当相同事实。提交结果不明也不补发成功；后续重投由唯一事实收敛。相同HTTP测试及严格验签测试转绿。
+- [x] 5. 本地提交`feat(miniso): durably accept bridge callbacks before acknowledgement`。
+
+2026-10-22本地执行：基线3组138项通过。可编译接收骨架下25项中23项预期断言失败；扩展后LEGACY坏JSON的3项返回码反例修复，真实过滤器链再出现5项预期红灯（超限被trim后接受、坏UTF-8被替换后接受、控制器前全量读取），仅对该POST映射及Spring等价路径绕过正文包装后转绿。最终13组287项全部通过，另加强UTF-8响应msg及提交故障注入断言后46项接收测试通过，均失败/错误/跳过0。真实MySQL8.0.28 RC/RR各新端1项＋旧端5项通过，验证提交前不可见、提交结果未知503后重投保持首次时间/人工进度、上海DATETIME、已知先等主单、未知等guard后不反向定位新发布主单；过滤器链参与真实HTTP调用。最小接收不写可信归属或投递事件，不提前执行Task14。旧端本地提交`6abf92e0`，日志及配置见《集成测试.md》`MINISO-BRIDGE-DURABLE-RECEIVE-LOCAL-20261022`。新端仅设计/计划/执行记录；未push、部署或改共享配置，Task14及Task17完整验收未完成，不单独启用BRIDGE。
 
 ## Task 14: 租约路由与同连接新事件投递
 
