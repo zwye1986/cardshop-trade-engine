@@ -26,8 +26,9 @@ import org.slf4j.LoggerFactory;
  * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.1 派单 Outbox」、
  * 「9.3 作废设计」和「9.4 回调设计」。本服务只扫描履约事件
  * （{@code SUPPLIER_DISPATCH}/{@code SUPPLIER_QUERY}/{@code INVALID_ORDER}），不处理
- * {@code BALANCE_DELTA_FLUSH}；余额释放只通过 {@link BalanceDeltaFlushOutboxPort} 写入
- * {@code recharge_balance_delta_outbox}（详细设计「9.2 余额 Delta 刷账 Outbox」）。
+ * {@code BALANCE_DELTA_FLUSH}；非MINISO释放经 {@link BalanceDeltaFlushOutboxPort} 写入delta（9.2），
+ * MINISO先恢复持久授权，再经 {@link RechargeFulfillmentOrderPort#completeMinisoBalanceRelease}
+ * 原子提交delta及释放标记（9.8），不使用独立writer分步收尾。
  * 具体 MySQL、Redis 和 HTTP 实现都在基础设施层。
  */
 public class RechargeOutboxWorkerService {
@@ -46,6 +47,8 @@ public class RechargeOutboxWorkerService {
     private static final int MAX_PARALLELISM = 32;
     private static final int MAX_SCAN_LIMIT = 1000;
     private static final char ACCOUNT_KEY_SEPARATOR = '\0';
+    private static final String MINISO_CHANNEL = "MINISO";
+    private static final String RELEASE_TYPE = "RELEASE";
 
     private final java.util.function.Supplier<MinisoWriteOffProtection> minisoWriteOffProtection;
     private final com.cardshop.trade.engine.application.logging.LogStormGuard errorLogs =
@@ -56,6 +59,8 @@ public class RechargeOutboxWorkerService {
     private final RechargeSupplierGatewayPort supplierGatewayPort;
     private final SupplierQueryOutboxPort supplierQueryOutboxPort;
     private final DirectRechargeFrequencyPort frequencyPort;
+    // MINISO授权恢复必须使用冻结许可锁外释放；普通资金入口仍处理其他渠道。参见详细设计9.8。
+    private final BalanceReservationReleasePort balanceReservationReleasePort;
     private final RechargeOrderFundsPort orderFunds;
     private final RechargeNotifyTaskPort notifyTaskPort;
     private final MerchantNotifyPayloadSigner notifyPayloadSigner;
@@ -232,6 +237,7 @@ public class RechargeOutboxWorkerService {
         this.supplierQueryOutboxPort = Objects.requireNonNull(
                 supplierQueryOutboxPort, "supplierQueryOutboxPort must not be null");
         this.frequencyPort = Objects.requireNonNull(frequencyPort, "frequencyPort must not be null");
+        this.balanceReservationReleasePort = Objects.requireNonNull(balanceReservationReleasePort);
         this.orderFunds = orderFunds == null
                 ? new RechargeOrderFundsService(balanceReservationReleasePort, orderPort, balanceDeltaFlushOutboxPort)
                 : orderFunds;
@@ -526,6 +532,27 @@ public class RechargeOutboxWorkerService {
 
     private RechargeOutboxBatchResult.Outcome handleClaimed(RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
         try {
+            if (isMiniso(order) && (event.eventType() == OutboxEventType.SUPPLIER_DISPATCH
+                    || event.eventType() == OutboxEventType.SUPPLIER_QUERY
+                    || event.eventType() == OutboxEventType.INVALID_ORDER)) {
+                // 三类任务先恢复已提交许可，不受迟到核销影响；即使标记已清也须核对delta。参见详细设计9.8。
+                var authorization = orderPort.findMinisoReleaseAuthorization(order.orderId());
+                if (authorization.isPresent()) {
+                    // 许可可能在初始快照后才提交；重新读取稳定终态及原作废时间，避免误发失败通知。
+                    var authorizedOrder = orderPort.findByOrderId(order.orderId())
+                            .orElseThrow(() -> new MinisoWriteOffException(MinisoWriteOffException.Reason.OWNERSHIP_CONFLICT));
+                    return completeAuthorizedMinisoRelease(event, authorizedOrder, authorization.get());
+                }
+                if (order.cancelled() || order.orderStatus() == ORDER_STATUS_FAILED
+                        || order.orderStatus() == LegacyOrderStatusCode.REFUNDED.code()
+                        || FulfillmentDispatchStatus.FAILED.name().equals(order.dispatchStatus())) {
+                    // 历史终态不能补认许可，也不能落入普通非派单分支提前SUCCESS。
+                    if (!blockedByMinisoRedemption(event, order)) {
+                        outboxPort.markManualRequired(event, "RELEASE_AUTHORIZATION_INCONSISTENT");
+                    }
+                    return RechargeOutboxBatchResult.Outcome.FAILED;
+                }
+            }
             return switch (event.eventType()) {
                 case SUPPLIER_DISPATCH -> handleSupplierDispatch(event, order);
                 case SUPPLIER_QUERY -> handleSupplierQuery(event, order);
@@ -539,8 +566,8 @@ public class RechargeOutboxWorkerService {
         } catch (Exception ex) {
             // 高频重试按类别采样，保留安全分类栈；参见详细设计9.5及日志风暴防护。
             if (errorLogs.shouldLog("outbox.handle." + ex.getClass().getSimpleName()).shouldLog()) {
-                log.error("outbox事件处理异常 eventId={}, eventType={}, orderId={}",
-                    event.eventId(), event.eventType(), event.orderId(), ex);
+                log.error("outbox事件处理异常 eventId={}, eventType={}, orderId={}, orgCode={}",
+                    event.eventId(), event.eventType(), event.orderId(), event.orgCode(), ex);
             }
             if (ex instanceof MinisoWriteOffException conflict
                     && conflict.reason() == MinisoWriteOffException.Reason.REDEEM_VOID_CONFLICT) {
@@ -548,7 +575,16 @@ public class RechargeOutboxWorkerService {
                 outboxPort.markManualRequired(event, conflict.getMessage());
                 return RechargeOutboxBatchResult.Outcome.FAILED;
             }
+            if (ex instanceof MinisoWriteOffException conflict
+                    && (conflict.reason() == MinisoWriteOffException.Reason.RELEASE_AUTHORIZATION_INCONSISTENT
+                    || conflict.reason() == MinisoWriteOffException.Reason.RELEASE_TERMINAL_CONFLICT
+                    || conflict.reason() == MinisoWriteOffException.Reason.RELEASE_EVIDENCE_MISSING)) {
+                outboxPort.markManualRequired(event, conflict.getMessage());
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
+            // MINISO异常保留当前任务；下一轮先查许可，再凭已有调用流水转查单，不能丢失资金恢复载体（9.8）。
             if (event.eventType() == OutboxEventType.SUPPLIER_DISPATCH
+                    && !isMiniso(order)
                     && recoverDispatchExceptionByQuery(event, order, ex)) {
                 return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
             }
@@ -718,12 +754,7 @@ public class RechargeOutboxWorkerService {
                 return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
             }
             case FAILED -> {
-                return finishDispatchFailure(
-                        event,
-                        order,
-                        flowId,
-                        response.responseCode(),
-                        response.responseMessage());
+                return finishDispatchFailure(event, order, flowId, response);
             }
             case RETRYABLE_FAILED -> {
                 /*
@@ -752,19 +783,45 @@ public class RechargeOutboxWorkerService {
             RechargeOutboxEvent event,
             RechargeFulfillmentOrder order,
             Long flowId,
-            String failCode,
-            String failReason) {
-        orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
+            SupplierGatewayResponse response) {
+        String failReason = response.responseMessage();
+        var update = new OrderFulfillmentStatusUpdate(
                 order.orderId(),
                 FulfillmentDispatchStatus.FAILED,
                 ORDER_STATUS_FAILED,
                 DATA_STATUS_PROCESSED,
                 flowId,
-                failCode,
+                response.responseCode(),
                 failReason,
-                failReason));
+                failReason).withMinisoReceipt(response.minisoReceipt());
+        if (isMiniso(order)) {
+            Optional<MinisoBalanceReleaseAuthorization> authorization;
+            try {
+                // 以事务内已锁凭据为准，不要求本次响应重复携带已有证据；FAILED本身不是未发券证明（9.8）。
+                authorization = orderPort.authorizeMinisoTerminalRelease(update, event.eventId());
+            } catch (MinisoWriteOffException ex) {
+                if (ex.reason() != MinisoWriteOffException.Reason.RECEIPT_PENDING
+                        && ex.reason() != MinisoWriteOffException.Reason.RELEASE_EVIDENCE_MISSING) throw ex;
+                // 缺少可退款证据属于预期降级；高频查单采样warn，保留分类栈与定位字段，不记录响应原文。
+                if (errorLogs.shouldLog("outbox.miniso.release-evidence").shouldLog()) {
+                    log.warn("名创失败结果缺少释放证据 eventId={}, orderId={}, orgCode={}",
+                            event.eventId(), order.orderId(), order.orgCode(), ex);
+                }
+                if (event.eventType() == OutboxEventType.SUPPLIER_DISPATCH) {
+                    return recoverDispatchUnknownByQuery(event, order, new SupplierFlowSnapshot(flowId, "fail"),
+                            "名创失败结果缺少可信凭据，转原订单号查单");
+                }
+                markSupplierQueryFailedOrManualRequired(event, "MINISO_RELEASE_EVIDENCE_PENDING");
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
+            if (authorization.isPresent() && !releaseAuthorizedMinisoBalance(event, authorization.get(), failReason)) {
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
+        } else {
+            orderPort.updateFulfillmentStatus(update);
+        }
         createOrderStatusNotifyTask(order, LegacyOrderStatusCode.FAILED);
-        if (!releaseBalanceReservationAndEnqueueDelta(event, order, failReason)) {
+        if (!isMiniso(order) && !releaseBalanceReservationAndEnqueueDelta(event, order, failReason)) {
             frequencyPort.releaseIfOwned(
                     order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
             return RechargeOutboxBatchResult.Outcome.FAILED;
@@ -844,25 +901,7 @@ public class RechargeOutboxWorkerService {
                 return completeSuccessfulOrder(event, order);
             }
             case FAILED -> {
-                orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
-                        order.orderId(),
-                        FulfillmentDispatchStatus.FAILED,
-                        ORDER_STATUS_FAILED,
-                        DATA_STATUS_PROCESSED,
-                        flowId,
-                        response.responseCode(),
-                        response.responseMessage(),
-                        response.responseMessage()));
-                createOrderStatusNotifyTask(order, LegacyOrderStatusCode.FAILED);
-                if (!releaseBalanceReservationAndEnqueueDelta(event, order, response.responseMessage())) {
-                    frequencyPort.releaseIfOwned(
-                            order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
-                    return RechargeOutboxBatchResult.Outcome.FAILED;
-                }
-                frequencyPort.releaseIfOwned(
-                        order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
-                outboxPort.markSuccess(event);
-                return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+                return finishDispatchFailure(event, order, flowId, response);
             }
             case PROCESSING -> {
                 orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
@@ -891,8 +930,17 @@ public class RechargeOutboxWorkerService {
             markFailedOrManualRequired(event, "order not found for invalid", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
-        if (blockedByMinisoRedemption(event, order))
-            return RechargeOutboxBatchResult.Outcome.FAILED;
+        try {
+            if (blockedByMinisoRedemption(event, order)) return RechargeOutboxBatchResult.Outcome.FAILED;
+        } catch (MinisoWriteOffException ex) {
+            if (!isMiniso(order) || ex.reason() != MinisoWriteOffException.Reason.OWNERSHIP_CONFLICT) throw ex;
+            // 缺凭据也表现为归属未确认，只准查单补证据；绝不因此调用远端作废或授予退款许可（9.8）。
+            if (errorLogs.shouldLog("outbox.miniso.invalid-evidence").shouldLog()) {
+                log.warn("名创作废归属证据未确认，转原订单号查单 eventId={}, orderId={}, orgCode={}",
+                        event.eventId(), order.orderId(), order.orgCode(), ex);
+            }
+            return queryMinisoReceiptForInvalidation(event, order);
+        }
         // 作废完成仍保留订单12，独立终态及原时间用于恢复；参见详细设计9.6。
         if (order.cancelled()) {
             if (order.invalidTime() == null) {
@@ -909,6 +957,7 @@ public class RechargeOutboxWorkerService {
             return completeTerminalBalanceRelease(event, order, "供应商作废终态补偿释放预扣");
         }
         if (order.orderStatus() != ORDER_STATUS_SUCCESS) {
+            if (isMiniso(order)) return queryMinisoReceiptForInvalidation(event, order);
             markFailedOrManualRequired(event, "订单尚未发券成功，不能确认券作废", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
@@ -926,7 +975,7 @@ public class RechargeOutboxWorkerService {
             if (blockedByMinisoRedemption(event, order))
                 return RechargeOutboxBatchResult.Outcome.FAILED;
             var invalidTime = clock.instant();
-            orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(
+            var update = new OrderFulfillmentStatusUpdate(
                     order.orderId(),
                     FulfillmentDispatchStatus.CANCELLED,
                     ORDER_STATUS_SUCCESS,
@@ -934,9 +983,19 @@ public class RechargeOutboxWorkerService {
                     null,
                     null,
                     null,
-                    "供应商作废成功").withMinisoReceipt(response.minisoReceipt()).withInvalidTime(invalidTime));
+                    "供应商作废成功").withMinisoReceipt(response.minisoReceipt()).withInvalidTime(invalidTime);
+            if (isMiniso(order)) {
+                // 终态与首次许可必须同事务，empty只表示可信订单原本未预扣；参见详细设计9.8。
+                var authorization = orderPort.authorizeMinisoTerminalRelease(update, event.eventId());
+                if (authorization.isPresent()
+                        && !releaseAuthorizedMinisoBalance(event, authorization.get(), "供应商作废成功")) {
+                    return RechargeOutboxBatchResult.Outcome.FAILED;
+                }
+            } else {
+                orderPort.updateFulfillmentStatus(update);
+            }
             createWriteOffNotifyTask(order, invalidTime);
-            if (!releaseBalanceReservationAndEnqueueDelta(event, order, "供应商作废成功")) {
+            if (!isMiniso(order) && !releaseBalanceReservationAndEnqueueDelta(event, order, "供应商作废成功")) {
                 frequencyPort.releaseIfOwned(
                         order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
                 return RechargeOutboxBatchResult.Outcome.FAILED;
@@ -951,20 +1010,87 @@ public class RechargeOutboxWorkerService {
             markFailedOrManualRequired(event, "供应商作废处理中", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
+        if (isMiniso(order)) return queryMinisoReceiptForInvalidation(event, order);
         markFailedOrManualRequired(event, response.responseMessage(), settings.retryBackoff());
+        return RechargeOutboxBatchResult.Outcome.FAILED;
+    }
+
+    /**
+     * 缺凭据/不明作废结果用原orderId查单，沿用原INVALID任务退避，不重开已完成的稳定查单事件。
+     * 查单只能补齐发券证据，不能等同作废完成；下一轮仍须门禁、远端确认及事务授权。参见详细设计9.8。
+     */
+    private RechargeOutboxBatchResult.Outcome queryMinisoReceiptForInvalidation(
+            RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
+        var request = queryRequest(event, order);
+        long flowId = orderPort.insertSupplierFlowStart(new SupplierFlowStartCommand(
+                order.orderId(), order.outOrderSn(), order.supplierChannel(), "new", "作废前查单补凭据",
+                request.supplierRequestId(), queryRequestPayload(request)));
+        var response = supplierGatewayPort.query(request);
+        orderPort.updateSupplierFlow(flowUpdate(flowId, response));
+        if (response.status() == SupplierGatewayStatus.SUCCESS && response.minisoReceipt() != null) {
+            orderPort.updateFulfillmentStatus(new OrderFulfillmentStatusUpdate(order.orderId(),
+                    FulfillmentDispatchStatus.CANCEL_REQUESTED, ORDER_STATUS_SUCCESS, DATA_STATUS_PROCESSING,
+                    flowId, null, null, "原订单号查单补齐凭据，等待作废确认").withMinisoReceipt(response.minisoReceipt()));
+        }
+        markFailedOrManualRequired(event, "MINISO_INVALID_EVIDENCE_PENDING", settings.retryBackoff());
         return RechargeOutboxBatchResult.Outcome.FAILED;
     }
 
     /** 作废前、远端成功后与退款补偿统一复核持久核销证据；参见详细设计9.5。 */
     private boolean blockedByMinisoRedemption(
             RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
-        if (order == null || !"MINISO".equals(order.supplierChannel())) return false;
+        if (!isMiniso(order)) return false;
         var protection = minisoWriteOffProtection.get();
         if (protection != null && protection.blockInvalidation(event.eventId(), order.orderId())) {
             outboxPort.markManualRequired(event, "REDEEM_VOID_CONFLICT");
             return true;
         }
         return false;
+    }
+
+    private static boolean isMiniso(RechargeFulfillmentOrder order) {
+        return order != null && MINISO_CHANNEL.equals(order.supplierChannel());
+    }
+
+    /** 资金先于可重试通知，最后才完成原任务；不重做核销裁决。参见详细设计9.8。 */
+    private RechargeOutboxBatchResult.Outcome completeAuthorizedMinisoRelease(
+            RechargeOutboxEvent event, RechargeFulfillmentOrder order, MinisoBalanceReleaseAuthorization authorization) {
+        if (order.balanceReserved()) {
+            if (!releaseAuthorizedMinisoBalance(event, authorization, "名创持久授权释放恢复")) {
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
+        } else {
+            // 标记0意味着Redis已确认，只核对持久delta；缺行/损坏仍失败，不因Redis已不可用阻塞通知收尾。
+            orderPort.completeMinisoBalanceRelease(authorization);
+        }
+        if (order.cancelled()) {
+            if (order.invalidTime() == null) {
+                outboxPort.markManualRequired(event, "CANCELLED_TIME_MISSING");
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
+            createWriteOffNotifyTask(order, order.invalidTime());
+        } else {
+            createOrderStatusNotifyTask(order, LegacyOrderStatusCode.FAILED);
+        }
+        frequencyPort.releaseIfOwned(
+                order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
+        outboxPort.markSuccess(event);
+        return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
+    }
+
+    /** 冻结event/amount/身份执行锁外Redis；确认成功后只走同主事务delta及标记收尾。参见详细设计9.8。 */
+    private boolean releaseAuthorizedMinisoBalance(
+            RechargeOutboxEvent event, MinisoBalanceReleaseAuthorization authorization, String reason) {
+        var result = balanceReservationReleasePort.release(new BalanceReservationReleaseCommand(
+                authorization.orgCode(), authorization.orderId(), authorization.outOrderSn(), authorization.amount(),
+                RELEASE_TYPE, authorization.sourceEventId(), reason == null ? "" : reason));
+        if (!result.succeeded()) {
+            String failReason = result.failReason().isBlank() ? result.failCode() : result.failReason();
+            markFailedOrManualRequired(event, "release balance reservation failed: " + failReason, settings.retryBackoff());
+            return false;
+        }
+        orderPort.completeMinisoBalanceRelease(authorization);
+        return true;
     }
 
     private RechargeOutboxBatchResult.Outcome completeTerminalBalanceRelease(

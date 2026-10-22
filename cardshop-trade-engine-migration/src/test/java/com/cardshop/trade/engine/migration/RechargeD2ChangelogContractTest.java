@@ -109,6 +109,90 @@ class RechargeD2ChangelogContractTest {
                         "0016-d2-drop-recharge-order-ext-persist-status-index");
     }
 
+    /** 桥接发布合同不可用缺表跳过或破坏性回滚替代，参见详细设计9.8。 */
+    @Test
+    void declaresBridgeEvidenceAndNullableReleaseAuthorization() throws Exception {
+        try (var resources = new DirectoryResourceAccessor(Path.of("src/main/resources"))) {
+            var changelog = ChangeLogParserFactory.getInstance()
+                    .getParser("db/changelog/db.changelog-master.yaml", resources)
+                    .parse("db/changelog/db.changelog-master.yaml", new ChangeLogParameters(), resources);
+            var bridge = changelog.getChangeSets().stream()
+                    .filter(change -> change.getId().equals("0023-miniso-shared-callback-bridge"))
+                    .findFirst();
+            assertThat(bridge).as("已批准的桥接结构必须由独立新迁移发布").isPresent();
+            var changeSet = bridge.orElseThrow();
+            String sql = changeSet.getChanges().stream()
+                    .map(change -> ((liquibase.change.core.RawSQLChange) change).getSql())
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            // 分表断言同名列，防止一张表的字段误替另一张表满足合同。
+            String inbox = sql.substring(0, sql.indexOf("CREATE TABLE mc_miniso_legacy_notify_task"));
+            String notification = sql.substring(sql.indexOf("CREATE TABLE mc_miniso_legacy_notify_task"),
+                    sql.indexOf("CREATE TABLE mc_miniso_coupon_guard"));
+            String guard = sql.substring(sql.indexOf("CREATE TABLE mc_miniso_coupon_guard"),
+                    sql.indexOf("ALTER TABLE recharge_order_ext"));
+            assertThat(inbox)
+                    .contains("CREATE TABLE mc_miniso_callback_inbox (",
+                            "event_id varchar(96) NOT NULL COMMENT '核销事件编号'",
+                            "coupon_code varchar(128) COLLATE utf8mb4_bin NOT NULL COMMENT '名创券码'",
+                            "use_time datetime NOT NULL COMMENT '核销时间'",
+                            "status varchar(32) NOT NULL DEFAULT 'INIT' COMMENT '接收事件状态'",
+                            "route_target varchar(16) NULL COMMENT '可信处理归属'",
+                            "order_id varchar(100) COLLATE utf8mb4_bin NULL COMMENT '可信平台订单号'",
+                            "org_code varchar(64) NULL COMMENT '可信商户编码'",
+                            "retry_count int NOT NULL DEFAULT 0 COMMENT '失败处理次数'",
+                            "next_retry_time datetime(3) NOT NULL COMMENT '下次处理时间'",
+                            "version bigint NOT NULL DEFAULT 1 COMMENT '事件版本'",
+                            "lock_owner varchar(128) NULL COMMENT '任务租约持有者'",
+                            "locked_until datetime(3) NULL COMMENT '任务租约截止时间'",
+                            "last_error varchar(500) NULL COMMENT '脱敏失败摘要'",
+                            "received_at datetime(3) NOT NULL COMMENT '首次接收时间'",
+                            "routed_at datetime(3) NULL COMMENT '归属处理完成时间'",
+                            "updated_at datetime(3) NOT NULL COMMENT '更新时间'",
+                            "PRIMARY KEY (event_id)", "UNIQUE KEY uk_miniso_inbox_coupon (coupon_code)",
+                            "KEY idx_miniso_inbox_due (status, next_retry_time)",
+                            "KEY idx_miniso_inbox_lease (status, locked_until)",
+                            "KEY idx_miniso_inbox_order (order_id)", "KEY idx_miniso_inbox_org (org_code)",
+                            "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='名创共享核销接收表'");
+            assertThat(notification)
+                    .contains("CREATE TABLE mc_miniso_legacy_notify_task (",
+                            "task_id varchar(96) NOT NULL COMMENT '任务编号'",
+                            "event_id varchar(96) NOT NULL COMMENT '核销事件编号'",
+                            "order_id varchar(100) COLLATE utf8mb4_bin NOT NULL COMMENT '平台订单号'",
+                            "org_code varchar(64) NOT NULL COMMENT '商户编码'",
+                            "notify_url varchar(1024) NOT NULL COMMENT '核销通知地址'",
+                            "payload longtext NOT NULL COMMENT '冻结通知报文'",
+                            "status varchar(32) NOT NULL DEFAULT 'INIT' COMMENT '通知任务状态'",
+                            "retry_count int NOT NULL DEFAULT 0 COMMENT '失败处理次数'",
+                            "max_retry_count int NOT NULL DEFAULT 10 COMMENT '最大失败处理次数'",
+                            "next_retry_time datetime(3) NOT NULL COMMENT '下次发送时间'",
+                            "version bigint NOT NULL DEFAULT 1 COMMENT '任务版本'",
+                            "lock_owner varchar(128) NULL COMMENT '任务租约持有者'",
+                            "locked_until datetime(3) NULL COMMENT '任务租约截止时间'",
+                            "last_error varchar(500) NULL COMMENT '脱敏失败摘要'",
+                            "created_at datetime(3) NOT NULL COMMENT '创建时间'",
+                            "updated_at datetime(3) NOT NULL COMMENT '更新时间'",
+                            "PRIMARY KEY (task_id)", "UNIQUE KEY uk_miniso_legacy_notify_event (event_id)",
+                            "KEY idx_miniso_legacy_notify_due (status, next_retry_time)",
+                            "KEY idx_miniso_legacy_notify_lease (status, locked_until)",
+                            "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='名创旧核销通知任务表'");
+            assertThat(guard).contains("CREATE TABLE mc_miniso_coupon_guard (", "PRIMARY KEY (coupon_code)",
+                    "coupon_code varchar(128) COLLATE utf8mb4_bin NOT NULL COMMENT '名创券码'",
+                    "created_at datetime(3) NOT NULL COMMENT '创建时间'",
+                    "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='名创券码事务互斥表'");
+            assertThat(sql)
+                    .contains("ALTER TABLE recharge_order_ext",
+                            "ADD COLUMN balance_release_authorized_at datetime(3) NULL COMMENT '余额释放授权时间'",
+                            "ADD COLUMN balance_release_event_id varchar(100) NULL COMMENT '余额释放授权事件编号'",
+                            "ADD COLUMN balance_release_amount bigint NULL COMMENT '余额释放授权金额，单位分'")
+                    .doesNotContain("IF NOT EXISTS", "UPDATE recharge_order_ext", "CURRENT_TIMESTAMP");
+            // 已有同名但不兼容的结构必须失败，不能MARK_RAN后运行缺少保护的代码。
+            assertThat(changeSet.getPreconditions().getOnFail().toString()).isEqualTo("HALT");
+            assertThat(changeSet.getRollback().getChanges()).singleElement()
+                    .satisfies(change -> assertThat(((liquibase.change.core.RawSQLChange) change).getSql())
+                            .isEqualTo("SELECT 1"));
+        }
+    }
+
     /**
      * 截取 changelog 中指定表的 create table 块，便于断言余额刷账表不含通用 outbox 字段。
      *

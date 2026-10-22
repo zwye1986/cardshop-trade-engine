@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""名创入站和V1.2核销/作废通知的可执行协议示例；参见详细设计9.5。
+"""名创入站和V1.2核销/作废通知的可执行协议示例；参见详细设计9.5、9.8。
 默认仅离线自检。发送仅允许显式本机URL和环境变量key2，不打印真实密钥或报文。
 """
 import argparse
@@ -50,6 +50,16 @@ def verify_callback(payload, key_id, encoded_key):
 def self_test():
     _, headers = notice(FIXTURE_KEY2, FIXTURE_NONCE, FIXTURE_TIME, FIXTURE_BODY)
     assert headers["sign"] == "62088F92CF0CB4452F9A95098E60E350"
+    # 同券同时间可重新签名，事件身份不依赖nonce/time；异时必须保留同一身份供接收端拒绝覆盖。
+    # 此处只验证固定密码学向量；路由、200持久提交及503由两仓库真实合同测试验证，不能用模型自证。
+    replay_body = json.loads(json.dumps(FIXTURE_BODY))
+    assert notice(FIXTURE_KEY2, FIXTURE_NONCE, FIXTURE_TIME, replay_body)[1]["sign"] == headers["sign"]
+    conflict_body = dict(FIXTURE_BODY, useTime="2026-10-17 09:29:01")
+    assert notice(FIXTURE_KEY2, FIXTURE_NONCE, FIXTURE_TIME, conflict_body)[1]["sign"] == "7011502D687F3B896310E769D1871BE9"
+    event_id = "miniso-redeemed-" + hashlib.sha256(
+        ("MINISO:REDEEMED:" + FIXTURE_BODY["couponCode"]).encode("utf-8")).hexdigest()
+    assert event_id == "miniso-redeemed-ff08b00be72babc1a123564e3e203072731fd9811650618cec05951824fc3465"
+    print("PASS: same-time replay, different-time conflict signature, stable event-id vector")
     # 文档V1.2通用协议验签向量：2/2属于其他直充分类，不作为名创业务状态示例。
     # 空invalid_time与keyId都必须参与签名，原固定向量保持不变。
     payload = {
@@ -87,6 +97,8 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--url", help="仅显式发送本机dev/test的/api/common/mcNotify")
     group.add_argument("--verify-callback", type=Path, help="验证已保存的商户回调JSON，不输出报文")
+    parser.add_argument("--scenario", choices=("accepted", "same-time", "conflict", "paused"), default="accepted",
+                        help="仅验证本机预置状态；paused要求人工预先暂停BRIDGE接收，不修改服务配置")
     parser.add_argument("--key-id", help="本商户可信配置中的预期keyId")
     args = parser.parse_args()
     if args.verify_callback:
@@ -106,22 +118,41 @@ def main():
     key2 = os.environ.get("MINISO_CALLBACK_KEY2", "")
     if not key2:
         parser.error("发送需要显式配置MINISO_CALLBACK_KEY2，不回退示例密钥")
-    body, headers = notice(key2, secrets.token_hex(16), str(int(time.time() * 1000)), FIXTURE_BODY)
     # 禁止重定向把带签名的请求转发到其它地址；默认代理也不参与本机测试。
     class NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, req, fp, code, msg, hdrs, newurl):
             return None
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-    request = urllib.request.Request(args.url, data=body, headers=headers, method="POST")
-    try:
-        with opener.open(request, timeout=10) as response:
-            payload = json.loads(response.read(4096))
-            code = payload.get("code")
-            print("HTTP", response.status, "business_code", code)
-            return 0 if response.status == 200 and type(code) is int and code == 200 else 1
-    except (urllib.error.URLError, ValueError):
-        print("FAIL: callback request rejected or unavailable")
-        return 1
+    facts = [FIXTURE_BODY]
+    if args.scenario == "same-time":
+        facts.append(dict(FIXTURE_BODY))
+    elif args.scenario == "conflict":
+        facts.append(dict(FIXTURE_BODY, useTime="2026-10-17 09:29:01"))
+    for index, fact in enumerate(facts):
+        body, headers = notice(key2, secrets.token_hex(16), str(int(time.time() * 1000)), fact)
+        request = urllib.request.Request(args.url, data=body, headers=headers, method="POST")
+        try:
+            with opener.open(request, timeout=10) as response:
+                payload = json.loads(response.read(4096))
+                code = payload.get("code") if isinstance(payload, dict) else None
+                expected = 500 if args.scenario == "conflict" and index == 1 else 200
+                valid = (args.scenario != "paused" and response.status == 200
+                         and type(code) is int and code == expected)
+                # 不打印外部code原文，恶意或错误响应可能把payload/密钥放入该字段。
+                print("PASS" if valid else "FAIL", "HTTP", response.status,
+                      "business_code", code if type(code) is int else "INVALID",
+                      "accepted_only" if valid and expected == 200 else "conflict_expected")
+                if not valid:
+                    return 1
+        except urllib.error.HTTPError as error:
+            valid = args.scenario == "paused" and error.code == 503
+            error.close()
+            print("PASS" if valid else "FAIL", "HTTP", error.code, "bridge_paused" if valid else "rejected")
+            return 0 if valid else 1
+        except (urllib.error.URLError, ValueError):
+            print("FAIL: callback request rejected or unavailable")
+            return 1
+    return 0
 
 
 if __name__ == "__main__":

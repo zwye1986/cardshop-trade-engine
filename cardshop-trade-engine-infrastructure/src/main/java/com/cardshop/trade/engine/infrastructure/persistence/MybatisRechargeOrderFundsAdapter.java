@@ -19,7 +19,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p>参见 docs/交行直充业务系统详细设计.md「2026-10-21 订单快照失效后的独立资金协议」。
  * 复用主单→扩展→凭据→核销事件锁序，保护锁持续覆盖有界Redis调用；Redis成功后SQL回滚
  * 不会撤销Redis，只能由同订单资金凭证幂等恢复。这里不重建历史快照、消费事实或余额；
- * 历史无资金标记的作废退款由已核实的扣款及作废事实授权，见同文档「历史已作废订单退款最小兼容」。
+ * 非MINISO历史无资金标记的作废退款由已核实的扣款及作废事实授权；MINISO仅允许9.8持久许可路径。
+ * 见同文档「历史已作废订单退款最小兼容」。
  */
 public final class MybatisRechargeOrderFundsAdapter implements RechargeOrderFundsPort {
     public static final int DEFAULT_TRANSACTION_TIMEOUT_SECONDS = 5;
@@ -77,10 +78,9 @@ public final class MybatisRechargeOrderFundsAdapter implements RechargeOrderFund
                     || order.orderStatus() == LegacyOrderStatusCode.REFUNDED.code());
             if (!cancelled && !failed) throw new IllegalStateException("order is not eligible for funds release");
             if (MINISO_CHANNEL.equals(order.supplierChannel())) {
-                var guard = protection.get();
-                if (guard == null) throw new IllegalStateException("MINISO funds release protection unavailable");
-                // assertVoidAllowed复用当前事务的凭据及事件锁，不释放保护后再调用Redis。
-                guard.assertVoidAllowed(order.orderId());
+                // 详细设计9.8：MINISO释放只能恢复已提交许可，不能由旧普通资金入口
+                // 重新检查核销后直接退款；Worker负责冻结sourceEventId/amount及锁外Redis恢复。
+                throw new MinisoWriteOffException(MinisoWriteOffException.Reason.RELEASE_EVIDENCE_MISSING);
             }
             var preDeduct = deltaMapper.selectFundsEventForUpdate(PRE_DEDUCT_EVENT_PREFIX + order.orderId());
             verifyDelta(preDeduct, order, PRE_DEDUCT, -order.orderPrice());

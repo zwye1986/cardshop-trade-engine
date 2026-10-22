@@ -103,11 +103,22 @@ public interface MinisoWriteOffEventMapper {
             @Param("shard") int shard,
             @Param("limit") int limit);
 
+    /**
+     * 已按主单→扩展→凭据→guard锁定可信归属后，当前读持久许可；参见详细设计9.8。
+     * 任一授权字段非空均禁止自动核销，部分字段损坏也不能当作未授权；此处不授予或执行资金释放。
+     * 扩展行已持锁，重复FOR UPDATE用于避免RR早先候选快照隐藏已提交许可，不新增反向锁依赖。
+     */
+    @Options(timeout = QUERY_TIMEOUT_SECONDS)
+    @Select("select (balance_release_authorized_at is not null or balance_release_event_id is not null "
+            + "or balance_release_amount is not null) from recharge_order_ext where order_id=#{id} for update")
+    boolean releaseAuthorizationPresent(@Param("id") String id);
+
+    /** 首次接收可直接保留人工冲突；version仍为0，重复投递不更新首次时间或处理进度，见详细设计9.8。 */
     @Insert(
             """
 insert into recharge_miniso_writeoff_event(event_id,coupon_code,use_time,order_id,org_code,status,
   retry_count,next_retry_time,last_error,version,received_at,updated_at)
-values(#{id},#{coupon},#{used},#{order},#{org},'INIT',0,#{now},'',0,#{now},#{now})
+values(#{id},#{coupon},#{used},#{order},#{org},#{status},0,#{now},#{error},0,#{now},#{now})
 on duplicate key update event_id=event_id
 """)
     int insertIfAbsent(
@@ -116,6 +127,8 @@ on duplicate key update event_id=event_id
             @Param("used") LocalDateTime used,
             @Param("order") String order,
             @Param("org") String org,
+            @Param("status") String status,
+            @Param("error") String error,
             @Param("now") LocalDateTime now);
 
     @Update(

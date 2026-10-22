@@ -75,7 +75,8 @@ from recharge_miniso_receipt where order_id=#{orderId}
                     + " from recharge_miniso_receipt where order_id=#{id} for update")
     MinisoFulfillmentReceipt lockReceipt(@Param("id") String id);
 
-    @Select("select use_time from recharge_miniso_receipt where order_id=#{id}")
+    /** 已锁凭据后仍须当前读核销时间，不能因RR早先快照漏掉use_time证据；参见详细设计9.8。 */
+    @Select("select use_time from recharge_miniso_receipt where order_id=#{id} for update")
     java.time.LocalDateTime useTime(@Param("id") String id);
 
     @Update(

@@ -43,10 +43,12 @@ public class MinisoWriteOffAutoConfiguration {
     public com.cardshop.trade.engine.infrastructure.persistence.MinisoReceiptStore
             minisoReceiptStore(
                     MinisoReceiptMapper receipts,
+                    MinisoCouponGuardMapper guards,
+                    Clock clock,
                     org.springframework.beans.factory.ObjectProvider<MinisoWriteOffProtection>
                             protection) {
         return new com.cardshop.trade.engine.infrastructure.persistence.MinisoReceiptStore(
-                receipts, protection::getIfAvailable);
+                receipts, guards, clock, protection::getObject);
     }
 
     /** 作废保护随真实持久化装配，关闭恢复Job不能绕过既有事件；参见docs/交行直充业务系统详细设计.md「9.5」。 */
@@ -56,22 +58,24 @@ public class MinisoWriteOffAutoConfiguration {
     public MinisoWriteOffProtection minisoWriteOffProtection(
             MinisoWriteOffEventMapper events,
             MinisoReceiptMapper receipts,
+            MinisoCouponGuardMapper guards,
+            MinisoSharedCallbackInboxMapper inbox,
             PlatformTransactionManager tm,
             Clock clock,
             MinisoWriteOffProperties settings) {
         return new com.cardshop.trade.engine.infrastructure.persistence
                 .MybatisMinisoWriteOffProtection(
-                events, receipts, tm, clock, settings.getTransactionTimeoutSeconds());
+                events, receipts, guards, inbox, tm, clock, settings.getTransactionTimeoutSeconds());
     }
 
     @Bean
-    @ConditionalOnProperty(
-            prefix = "trade.engine.supplier.miniso.callback",
-            name = "processing-enabled",
-            havingValue = "true")
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
+            "${trade.engine.supplier.miniso.callback.enabled:false} || "
+                    + "${trade.engine.supplier.miniso.callback.processing-enabled:false}")
     public MybatisMinisoWriteOffStore minisoWriteOffStore(
             MinisoWriteOffEventMapper events,
             MinisoReceiptMapper receipts,
+            MinisoCouponGuardMapper guards,
             RechargeNotifyTaskPort tasks,
             org.springframework.beans.factory.ObjectProvider<V12SigningCredentialStorePort> credentialProvider,
             org.springframework.beans.factory.ObjectProvider<MerchantNotifyPreparationService> preparation,
@@ -79,13 +83,16 @@ public class MinisoWriteOffAutoConfiguration {
             Clock clock,
             MinisoWriteOffProperties settings,
             MinisoWriteOffObserver observer) {
-        var credentials=credentialProvider.getIfAvailable(V12SigningCredentialStorePort::unavailable);
-        if (preparation.getIfAvailable()==null && !credentials.available())
+        var credentials = credentialProvider.getIfAvailable(V12SigningCredentialStorePort::unavailable);
+        var preparationService = preparation.getIfAvailable();
+        // 详细设计9.8及2104通知：仅处理且无统一准备器时要求HMAC，接收独立运行。
+        if (settings.isProcessingEnabled() && preparationService == null && !credentials.available())
             throw new IllegalStateException(
                     "MINISO processing requires persistent merchant signing-key store");
         return new MybatisMinisoWriteOffStore(
                 events,
                 receipts,
+                guards,
                 tasks,
                 new V12RedemptionNotifyPayloadSigner(credentials),
                 tm,
@@ -93,15 +100,14 @@ public class MinisoWriteOffAutoConfiguration {
                 settings.getMaxRetryCount(),
                 Duration.ofSeconds(settings.getRetryBackoffSeconds()),
                 settings.getTransactionTimeoutSeconds(),
-                observer,preparation.getIfAvailable());
+                observer, preparationService);
     }
 
-    /** 启动后校验0021关键列并初始化积压指标；只读，不标记一次Job成功。 */
+    /** 接收与处理独立启用时都检查持久结构；探针不标记Job已扫描，参见详细设计9.8。 */
     @Bean
-    @ConditionalOnProperty(
-            prefix = "trade.engine.supplier.miniso.callback",
-            name = "processing-enabled",
-            havingValue = "true")
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
+            "${trade.engine.supplier.miniso.callback.enabled:false} || "
+                    + "${trade.engine.supplier.miniso.callback.processing-enabled:false}")
     public org.springframework.boot.ApplicationRunner minisoWriteOffSchemaProbe(
             MinisoWriteOffEventMapper events,
             MinisoReceiptMapper receipts,

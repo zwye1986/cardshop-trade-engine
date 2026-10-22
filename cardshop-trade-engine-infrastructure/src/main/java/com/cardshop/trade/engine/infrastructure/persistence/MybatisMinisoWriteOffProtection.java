@@ -10,11 +10,15 @@ import org.springframework.transaction.support.*;
 
 import java.time.*;
 
-/** 永久作废/退款保护，不依赖核销处理开关、key2或商户签名密钥。 参见docs/交行直充业务系统详细设计.md「9.5」；处理暂停仍须保留已接收事件的资金门禁。 */
+/** 永久核销证据保护，不依赖处理开关或密钥；参见docs/交行直充业务系统详细设计.md「9.8」。
+ * 独立前置检查不授予资金许可，最终作废复核必须参与调用方终态事务。
+ */
 public final class MybatisMinisoWriteOffProtection implements MinisoWriteOffProtection {
     private static final int USED = 1, VOID = 3;
     private final MinisoWriteOffEventMapper events;
     private final MinisoReceiptMapper receipts;
+    private final MinisoCouponGuardMapper guards;
+    private final MinisoSharedCallbackInboxMapper inbox;
     private final MinisoWriteOffOrderLocks orderLocks;
     private final TransactionTemplate tx;
     private final Clock clock;
@@ -22,12 +26,16 @@ public final class MybatisMinisoWriteOffProtection implements MinisoWriteOffProt
     public MybatisMinisoWriteOffProtection(
             MinisoWriteOffEventMapper events,
             MinisoReceiptMapper receipts,
+            MinisoCouponGuardMapper guards,
+            MinisoSharedCallbackInboxMapper inbox,
             PlatformTransactionManager tm,
             Clock clock,
             int timeoutSeconds) {
         this.events = events;
         this.receipts = receipts;
-        this.orderLocks = new MinisoWriteOffOrderLocks(events, receipts);
+        this.guards = guards;
+        this.inbox = inbox;
+        this.orderLocks = new MinisoWriteOffOrderLocks(events, receipts, guards);
         this.clock = clock;
         tx = new TransactionTemplate(tm);
         tx.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
@@ -44,7 +52,7 @@ public final class MybatisMinisoWriteOffProtection implements MinisoWriteOffProt
             return Boolean.TRUE.equals(
                     tx.execute(
                             s -> {
-                                var owned = orderLocks.lock(orderId);
+                                var owned = orderLocks.lock(orderId, now());
                                 if (owned == null)
                                     throw new MinisoWriteOffException(OWNERSHIP_CONFLICT);
                                 if (!evidence(owned.receipt())) return false;
@@ -67,16 +75,21 @@ public final class MybatisMinisoWriteOffProtection implements MinisoWriteOffProt
     public void assertVoidAllowed(String orderId) {
         if (!TransactionSynchronizationManager.isActualTransactionActive())
             throw new IllegalStateException("MINISO void check requires order transaction");
+        // 调用方已锁主单/扩展，此处按凭据→guard→事件→inbox复核；不另开事务或吞读锁异常。
         var local = receipts.lockReceipt(orderId);
-        if (local != null && evidence(local))
-            throw new MinisoWriteOffException(REDEEM_VOID_CONFLICT);
+        if (local != null) {
+            guards.lockInTransaction(local.couponCode(), now());
+            if (evidence(local)) throw new MinisoWriteOffException(REDEEM_VOID_CONFLICT);
+        }
     }
 
     private boolean evidence(MinisoFulfillmentReceipt receipt) {
-        // 即使密钥暂不可用、事实尚未推进，持久接收的核销证据也阻止作废/退款。
+        // 必须在guard后当前锁定读：不复用早先快照，不筛掉人工/已转投等已认证事实，见详细设计9.8。
         var event = events.lockByCoupon(receipt.couponCode());
+        var shared = inbox.lockByCoupon(receipt.couponCode());
         return receipt.couponStatus() == USED
                 || receipts.useTime(receipt.orderId()) != null
-                || event != null;
+                || event != null
+                || shared != null;
     }
 }

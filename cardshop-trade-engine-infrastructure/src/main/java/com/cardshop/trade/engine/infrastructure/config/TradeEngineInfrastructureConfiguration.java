@@ -3,6 +3,7 @@ package com.cardshop.trade.engine.infrastructure.config;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeOrderFundsAdapter;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderFundsPort;
 import com.cardshop.trade.engine.infrastructure.persistence.MinisoReceiptStore;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoCouponGuardMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper;
 import com.cardshop.trade.engine.infrastructure.supplier.MinisoRoutingSupplierGateway;
 import com.cardshop.trade.engine.infrastructure.supplier.miniso.MinisoHttpClient;
@@ -666,9 +667,10 @@ public class TradeEngineInfrastructureConfiguration {
     @ConditionalOnBean(MinisoReceiptMapper.class)
     @ConditionalOnMissingBean(MinisoReceiptStore.class)
     public MinisoReceiptStore minisoReceiptStore(MinisoReceiptMapper mapper,
+            MinisoCouponGuardMapper guards, Clock clock,
             ObjectProvider<com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection>
                     protection) {
-        return new MinisoReceiptStore(mapper, protection::getIfAvailable);
+        return new MinisoReceiptStore(mapper, guards, clock, protection::getObject);
     }
 
     @Bean
@@ -679,6 +681,9 @@ public class TradeEngineInfrastructureConfiguration {
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper,
+            McDepartRecordMapper departRecords,
+            RechargeDispatchOutboxMapper dispatchEvents,
+            RechargeBalanceDeltaOutboxMapper balanceDeltas,
             ObjectMapper objectMapper,
             Clock clock) {
         /*
@@ -691,7 +696,10 @@ public class TradeEngineInfrastructureConfiguration {
                 flowMapper,
                 objectMapper,
                 clock,
-                minisoReceipts.getIfAvailable());
+                minisoReceipts::getObject,
+                departRecords,
+                dispatchEvents,
+                balanceDeltas);
     }
 
     @Bean

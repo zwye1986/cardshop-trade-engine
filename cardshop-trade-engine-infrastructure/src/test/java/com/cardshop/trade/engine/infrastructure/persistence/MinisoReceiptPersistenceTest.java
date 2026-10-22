@@ -2,7 +2,7 @@ package com.cardshop.trade.engine.infrastructure.persistence;
 
 import static org.assertj.core.api.Assertions.*;
 import com.cardshop.trade.engine.application.recharge.MinisoFulfillmentReceipt;
-import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.*;
 import java.util.UUID;
 import org.apache.ibatis.session.Configuration;
 import org.h2.jdbcx.JdbcDataSource;
@@ -30,22 +30,44 @@ class MinisoReceiptPersistenceTest {
         jdbc.execute(
                 "create table recharge_order_ext(order_id varchar(100) primary key,org_code"
                     + " varchar(64),out_order_sn varchar(100),supplier_batch_id"
-                    + " varchar(64),persist_status varchar(32))");
+                    + " varchar(64),persist_status varchar(32),balance_release_authorized_at timestamp,"
+                    + "balance_release_event_id varchar(100),balance_release_amount bigint)");
         jdbc.execute(
                 "create table recharge_miniso_receipt(order_id varchar(100) primary key,org_code"
                     + " varchar(64),batch_id int,coupon_code varchar(128) unique,phone"
                     + " varchar(64),begin_time varchar(19),end_time varchar(19),coupon_status"
-                    + " int,created_at timestamp default current_timestamp,updated_at timestamp"
+                    + " int,use_time timestamp,created_at timestamp default current_timestamp,updated_at timestamp"
                     + " default current_timestamp)");
+        jdbc.execute("create table mc_miniso_coupon_guard(coupon_code varchar(128) primary key,"
+                + "created_at timestamp not null)");
+        jdbc.execute("create table mc_miniso_callback_inbox(event_id varchar(96) primary key,"
+                + "coupon_code varchar(128) unique not null,use_time timestamp not null,"
+                + "status varchar(32) not null,retry_count int not null,next_retry_time timestamp not null,"
+                + "version bigint not null,received_at timestamp not null,updated_at timestamp not null)");
+        jdbc.execute("create table recharge_miniso_writeoff_event(event_id varchar(96) primary key,"
+                + "coupon_code varchar(128) unique,use_time timestamp,order_id varchar(100),org_code varchar(64),"
+                + "status varchar(32),retry_count int,next_retry_time timestamp,last_error varchar(128),version bigint,"
+                + "received_at timestamp,processed_at timestamp,updated_at timestamp)");
         for (var id : new String[]{"O1", "O2"}) {
             jdbc.update("insert into mc_order values(?, 'A39', ?, '13800138000', 1, 'MINISO', 13, null)",id,id);
-            jdbc.update("insert into recharge_order_ext values(?, 'A39', ?, '100023', 'DB_PERSISTED')",id,id);
+            jdbc.update("insert into recharge_order_ext(order_id,org_code,out_order_sn,supplier_batch_id,persist_status) "
+                    + "values(?, 'A39', ?, '100023', 'DB_PERSISTED')",id,id);
         }
         var cfg = new Configuration();
         cfg.addMapper(MinisoReceiptMapper.class);
+        cfg.addMapper(MinisoWriteOffEventMapper.class);
+        cfg.addMapper(MinisoCouponGuardMapper.class);
+        cfg.addMapper(MinisoSharedCallbackInboxMapper.class);
         var factory = new SqlSessionFactoryBean(); factory.setDataSource(ds); factory.setConfiguration(cfg);
-        store = new MinisoReceiptStore(new SqlSessionTemplate(factory.getObject()).getMapper(MinisoReceiptMapper.class));
-        tx = new TransactionTemplate(new DataSourceTransactionManager(ds));
+        var session = new SqlSessionTemplate(factory.getObject());
+        var tm = new DataSourceTransactionManager(ds);
+        tx = new TransactionTemplate(tm);
+        var clock = java.time.Clock.systemUTC();
+        var receipts = session.getMapper(MinisoReceiptMapper.class);
+        var guards = session.getMapper(MinisoCouponGuardMapper.class);
+        var protection = new MybatisMinisoWriteOffProtection(session.getMapper(MinisoWriteOffEventMapper.class),
+                receipts, guards, session.getMapper(MinisoSharedCallbackInboxMapper.class), tm, clock, 5);
+        store = new MinisoReceiptStore(receipts, guards, clock, () -> protection);
     }
     @Test void confirmedReceiptPopulatesLegacyExportDataAndReplayPreservesIt() throws Exception {
         tx.executeWithoutResult(s -> store.save(receipt("O1", "TEST-COUPON", 0)));
@@ -99,6 +121,7 @@ class MinisoReceiptPersistenceTest {
             throw new IllegalStateException("simulate status commit failure");
         })).isInstanceOf(IllegalStateException.class);
         assertThat(jdbc.queryForObject("select count(*) from recharge_miniso_receipt",Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from mc_miniso_coupon_guard",Integer.class)).isZero();
         assertThat(jdbc.queryForObject("select order_status from mc_order where order_Id='O1'",Integer.class)).isEqualTo(13);
         assertThat(jdbc.queryForObject("select data from mc_order where order_Id='O1'",String.class)).isNull();
     }
@@ -143,6 +166,40 @@ class MinisoReceiptPersistenceTest {
         tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 0)));
         assertThat(jdbc.queryForObject("select batch_id from recharge_miniso_receipt where order_id='O1'",Integer.class)).isEqualTo(100023);
     }
+
+    @Test void sharedEvidenceBeforeFirstReceiptAllowsPublicationButRejectsVoid() {
+        var used = java.time.LocalDateTime.of(2026, 10, 21, 9, 30);
+        jdbc.update("insert into mc_miniso_callback_inbox values(?,?,?,'MANUAL_REQUIRED',0,?,1,?,?)",
+                "shared-C1", "C1", used, used, used, used);
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 3))))
+                .isInstanceOf(com.cardshop.trade.engine.application.recharge.MinisoWriteOffException.class)
+                .hasMessage("REDEEM_VOID_CONFLICT");
+        assertThat(jdbc.queryForObject("select count(*) from recharge_miniso_receipt", Integer.class)).isZero();
+        tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 0)));
+        assertThat(status()).isZero();
+        assertThat(jdbc.queryForObject("select count(*) from mc_miniso_coupon_guard where coupon_code='C1'",
+                Integer.class)).isEqualTo(1);
+        assertThat(jdbc.queryForObject("select status from mc_miniso_callback_inbox", String.class))
+                .isEqualTo("MANUAL_REQUIRED");
+    }
+
+    @Test void missingGuardFailsClosedBeforeReceiptPublication() {
+        jdbc.execute("drop table mc_miniso_coupon_guard");
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 0))))
+                .isInstanceOf(IllegalStateException.class).hasNoCause().hasMessageNotContaining("C1");
+        assertThat(jdbc.queryForObject("select count(*) from recharge_miniso_receipt", Integer.class)).isZero();
+    }
+
+    @Test void useTimeWithoutEventOrUsedStatusStillBlocksVoid() {
+        tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 0)));
+        jdbc.update("update recharge_miniso_receipt set use_time=? where order_id='O1'",
+                java.time.LocalDateTime.of(2026, 10, 21, 9, 30));
+        assertThatThrownBy(() -> tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 3))))
+                .isInstanceOf(com.cardshop.trade.engine.application.recharge.MinisoWriteOffException.class)
+                .hasMessage("REDEEM_VOID_CONFLICT");
+        assertThat(status()).isZero();
+    }
+
     @Test void lateQueryCannotDowngradeUsedOrVoidedReceipt() {
         tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 1)));
         tx.executeWithoutResult(s -> store.save(receipt("O1", "C1", 0)));

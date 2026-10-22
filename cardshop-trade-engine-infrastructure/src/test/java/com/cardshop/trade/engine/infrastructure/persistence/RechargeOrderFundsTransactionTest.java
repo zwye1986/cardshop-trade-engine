@@ -44,16 +44,20 @@ public class RechargeOrderFundsTransactionTest {
         ds.setURL("jdbc:h2:mem:" + UUID.randomUUID() + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1;LOCK_TIMEOUT=2000");
         jdbc = new JdbcTemplate(ds);
         jdbc.execute("create table mc_order(order_Id varchar(64) primary key, org_code varchar(64),out_orderId varchar(64),account varchar(64),num int,supplier_channel varchar(32),order_status int,callback_url varchar(128))");
-        jdbc.execute("create table recharge_order_ext(order_id varchar(64) primary key,org_code varchar(64),out_order_sn varchar(64),supplier_batch_id varchar(64),persist_status varchar(32),dispatch_status varchar(32),balance_reserved boolean)");
+        jdbc.execute("create table recharge_order_ext(order_id varchar(64) primary key,org_code varchar(64),out_order_sn varchar(64),supplier_batch_id varchar(64),persist_status varchar(32),dispatch_status varchar(32),balance_reserved boolean,balance_release_authorized_at timestamp,balance_release_event_id varchar(100),balance_release_amount bigint)");
         jdbc.execute("create table recharge_miniso_receipt(order_id varchar(64) primary key,org_code varchar(64),batch_id int,coupon_code varchar(128) unique,phone varchar(64),begin_time varchar(19),end_time varchar(19),coupon_status int,use_time timestamp)");
         jdbc.execute("create table recharge_miniso_writeoff_event(event_id varchar(80) primary key,coupon_code varchar(128) unique,use_time timestamp,order_id varchar(64),org_code varchar(64),status varchar(24),retry_count int,next_retry_time timestamp,last_error varchar(128),version bigint,received_at timestamp,updated_at timestamp)");
         jdbc.execute("create table recharge_balance_delta_outbox(id bigint auto_increment primary key,event_id varchar(128) unique,org_code varchar(64),order_id varchar(64),out_order_sn varchar(64),delta_type varchar(32),delta_amount bigint,status varchar(32),retry_count int,max_retry_count int,next_retry_time timestamp,locked_by varchar(64),locked_until timestamp,version bigint,last_error varchar(128),created_at timestamp,updated_at timestamp)");
-        jdbc.update("insert into mc_order values('O1','A35','OUT1','13800138000',1,'MINISO',12,'')");
-        jdbc.update("insert into recharge_order_ext values('O1','A35','OUT1','1','DB_PERSISTED','CANCELLED',true)");
+        jdbc.update("insert into mc_order values('O1','A35','OUT1','13800138000',1,'FNK_CGS_BX',12,'')");
+        jdbc.update("insert into recharge_order_ext(order_id,org_code,out_order_sn,supplier_batch_id,persist_status,dispatch_status,balance_reserved) values('O1','A35','OUT1','1','DB_PERSISTED','CANCELLED',true)");
         jdbc.update("insert into recharge_miniso_receipt values('O1','A35',1,'C1','13800138000','2026-10-20 00:00:00','2026-10-23 23:59:59',3,null)");
         insertDelta("balance-flush-O1", "A35", "PRE_DEDUCT", -100);
         var cfg = new MybatisConfiguration();
         cfg.setMapUnderscoreToCamelCase(true);
+        jdbc.execute("create table mc_miniso_coupon_guard(coupon_code varchar(128) primary key,created_at timestamp not null)");
+        jdbc.execute("create table mc_miniso_callback_inbox(event_id varchar(96) primary key,coupon_code varchar(128) unique,use_time timestamp,status varchar(32))");
+        cfg.addMapper(MinisoCouponGuardMapper.class);
+        cfg.addMapper(MinisoSharedCallbackInboxMapper.class);
         cfg.addMapper(MinisoReceiptMapper.class);
         cfg.addMapper(MinisoWriteOffEventMapper.class);
         cfg.addMapper(RechargeBalanceDeltaOutboxMapper.class);
@@ -82,10 +86,20 @@ public class RechargeOrderFundsTransactionTest {
             @Override public boolean confirm(RechargeFulfillmentOrder order) { duringRedis.run(); return true; }
         };
         tm = new DataSourceTransactionManager(ds);
-        var protection = new MybatisMinisoWriteOffProtection(events, receipts, tm, CLOCK, 5);
+        var protection = new MybatisMinisoWriteOffProtection(events, receipts, session.getMapper(MinisoCouponGuardMapper.class), session.getMapper(MinisoSharedCallbackInboxMapper.class), tm, CLOCK, 5);
         adapter = new MybatisRechargeOrderFundsAdapter(redis, orders,
                 new MybatisBalanceDeltaOutboxWriteAdapter(deltas, CLOCK), deltas, receipts,
                 () -> protection, tm, 5);
+    }
+
+    /** 合并回归：旧资金端口不能绕过新MINISO许可，参见详细设计9.8。 */
+    @Test void ordinaryFundsPortCannotReleaseMinisoWithoutPersistentAuthorization() {
+        jdbc.update("update mc_order set supplier_channel='MINISO'");
+        assertThatThrownBy(() -> adapter.release(current(), "未经授权的名创释放"))
+                .isInstanceOf(MinisoWriteOffException.class).hasMessage("RELEASE_EVIDENCE_MISSING");
+        assertThat(credits.get()).isZero();
+        assertThat(releaseCount()).isZero();
+        assertThat(current().balanceReserved()).isTrue();
     }
 
     @Test void refundRunsWithOrderLocksAndCommitsDeltaAndFlagTogether() {
@@ -161,7 +175,8 @@ public class RechargeOrderFundsTransactionTest {
     }
 
     @Test void acceptedRedemptionEvidenceBlocksCancelledRefund() {
-        events.insertIfAbsent("redemption-C1", "C1", LocalDateTime.of(2026,10,21,16,0), "O1", "A35", LocalDateTime.now(CLOCK));
+        jdbc.update("update mc_order set supplier_channel='MINISO'");
+        events.insertIfAbsent("redemption-C1", "C1", LocalDateTime.of(2026,10,21,16,0), "O1", "A35", "INIT", null, LocalDateTime.now(CLOCK));
         assertThatThrownBy(() -> adapter.release(current(), "作废退款")).isInstanceOf(MinisoWriteOffException.class);
         assertThat(credits.get()).isZero(); assertThat(releaseCount()).isZero();
     }
@@ -174,24 +189,22 @@ public class RechargeOrderFundsTransactionTest {
         assertThatThrownBy(() -> adapter.confirm(current())).hasMessageContaining("eligible");
     }
 
-    @Test void redemptionReceptionCannotEnterGapBetweenProtectionAndCredit() throws Exception {
-        var entered = new CountDownLatch(1); var resume = new CountDownLatch(1);
-        duringRedis = () -> {
-            entered.countDown();
-            try { assertThat(resume.await(3, TimeUnit.SECONDS)).isTrue(); }
-            catch (InterruptedException ex) { Thread.currentThread().interrupt(); throw new IllegalStateException(ex); }
-        };
-        var store = new MybatisMinisoWriteOffStore(events, receipts, mock(RechargeNotifyTaskPort.class),
-                mock(V12RedemptionNotifyPayloadSigner.class), tm, CLOCK, 10, Duration.ofSeconds(30), 5);
+    /** 普通MINISO退款与接收并发时也不能到达Redis，真实授权竞争由RC/RR夹具验证。参见详细设计9.8。 */
+    @Test void ordinaryMinisoRefundAndConcurrentReceptionNeverCreditBalance() throws Exception {
+        jdbc.update("update mc_order set supplier_channel='MINISO'");
+        var store = new MybatisMinisoWriteOffStore(events, receipts, session.getMapper(MinisoCouponGuardMapper.class),
+                mock(RechargeNotifyTaskPort.class), mock(V12RedemptionNotifyPayloadSigner.class),
+                tm, CLOCK, 10, Duration.ofSeconds(30), 5);
         try (var pool = Executors.newVirtualThreadPerTaskExecutor()) {
-            var refund = pool.submit(() -> adapter.release(current(), "作废退款"));
-            assertThat(entered.await(2, TimeUnit.SECONDS)).isTrue();
+            var refund = pool.submit(() -> assertThatThrownBy(() -> adapter.release(current(), "作废退款"))
+                    .isInstanceOf(MinisoWriteOffException.class));
             var callback = pool.submit(() -> store.accept(new MinisoWriteOffNotification("C1", LocalDateTime.of(2026,10,21,16,0))));
-            try { assertThatThrownBy(() -> callback.get(150, TimeUnit.MILLISECONDS)).isInstanceOf(TimeoutException.class); }
-            finally { resume.countDown(); }
-            assertThat(refund.get(3, TimeUnit.SECONDS).succeeded()).isTrue();
+            refund.get(3, TimeUnit.SECONDS);
             callback.get(3, TimeUnit.SECONDS);
-            assertThat(credits.get()).isEqualTo(1);
+            assertThat(credits.get()).isZero();
+            assertThat(releaseCount()).isZero();
+            assertThat(current().balanceReserved()).isTrue();
+            assertThat(jdbc.queryForObject("select count(*) from recharge_miniso_writeoff_event", Integer.class)).isEqualTo(1);
         }
     }
 
@@ -263,7 +276,7 @@ public class RechargeOrderFundsTransactionTest {
             var deltas = session.getMapper(RechargeBalanceDeltaOutboxMapper.class);
             adapter = new MybatisRechargeOrderFundsAdapter(realRedis, orders,
                     new MybatisBalanceDeltaOutboxWriteAdapter(deltas, CLOCK), deltas, receipts,
-                    () -> new MybatisMinisoWriteOffProtection(events, receipts, tm, CLOCK, 5), tm, 5);
+                    () -> new MybatisMinisoWriteOffProtection(events, receipts, session.getMapper(MinisoCouponGuardMapper.class), session.getMapper(MinisoSharedCallbackInboxMapper.class), tm, CLOCK, 5), tm, 5);
         }
 
         @Test void legacyRefundReachesMysqlBalanceAndReplayDoesNotCreditTwice() {
@@ -326,7 +339,7 @@ public class RechargeOrderFundsTransactionTest {
 
     private RechargeFulfillmentOrder current() {
         String dispatch = jdbc.queryForObject("select dispatch_status from recharge_order_ext where order_id='O1'", String.class);
-        return new RechargeFulfillmentOrder("O1","OUT1","A35","13800138000","P","SKU","MINISO",100,"",
+        return new RechargeFulfillmentOrder("O1","OUT1","A35","13800138000","P","SKU",jdbc.queryForObject("select supplier_channel from mc_order where order_Id='O1'", String.class),100,"",
                 jdbc.queryForObject("select order_status from mc_order where order_Id='O1'", Integer.class),
                 "DB_PERSISTED","PASSED",true,
                 jdbc.queryForObject("select balance_reserved from recharge_order_ext where order_id='O1'", Boolean.class),

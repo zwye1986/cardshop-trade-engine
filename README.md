@@ -109,7 +109,7 @@ mvn -pl cardshop-trade-engine-bootstrap -am spring-boot:run
 
 `scenario` / `load` 与 `supplier-mock` 可在同一台机器上并行运行：前者调用交易引擎 V1 接口，后者只监听供应商 HTTP 端口，互不依赖。
 
-`load` 模式只允许在 dev/test 环境使用，必须使用 test188 专用测试商户、测试产品和安全的供应商 mock，避免压到真实供应商或真实商户回调链路。test188 当前 `MINISO` 供应商已在 `cardshop-trade-engine-supplier.yaml` 指向本机 mock：`127.0.0.1:18082/tripartite/coupon/*`，`timeout-ms=10000`；mock 下单接口会**立即**返回 `PROCESSING`，最终结果在 `final-result-delay-ms-min/max`（默认 `1200-9800ms`）窗口内通过查单接口变为 `SUCCESS`/`FAILED`。
+`load` 模式只允许在 dev/test 环境使用，必须使用 test188 专用测试商户、测试产品和安全的供应商 mock，避免压到真实供应商或真实商户回调链路。历史 test188 通用 mock 配置中，`MINISO` 供应商曾在 `cardshop-trade-engine-supplier.yaml` 被指向本机 mock：`127.0.0.1:18082/tripartite/coupon/*`，`timeout-ms=10000`；通用 mock 报文的下单接口会**立即**返回 `PROCESSING`，最终结果在 `final-result-delay-ms-min/max`（默认 `1200-9800ms`）窗口内通过查单接口变为 `SUCCESS`/`FAILED`。
 
 ### 打包与 test188 配置
 
@@ -216,7 +216,7 @@ mvn -f cardshop-trade-engine-simulator/pom.xml exec:java \
 
 ### supplier-mock 供应商 HTTP mock 模式
 
-`supplier-mock` 模式在本机启动供应商 HTTP mock，注册下单/查单四条路径（`/supplier/dispatch`、`/supplier/query` 以及 MINISO 兼容路径 `/tripartite/coupon/batchGrandCoupon`、`/tripartite/coupon/queryGrand`）。该模式**不需要** `app-secret` / `aes-key`，可与 `scenario` / `load` 在同一台机器并行运行。
+`supplier-mock` 模式在本机启动供应商 HTTP mock，注册通用下单/查单与 MINISO 发券/查单/作废路径（`/supplier/dispatch`、`/supplier/query` 以及 MINISO 兼容路径 `/tripartite/coupon/batchGrandCoupon`、`/tripartite/coupon/queryGrand`、`/tripartite/coupon/abandonUserCoupon`）。该模式**不需要** `app-secret` / `aes-key`，可与 `scenario` / `load` 在同一台机器并行运行。
 
 ```bash
 ./bin/run-a39-simulator.sh \
@@ -235,7 +235,9 @@ Nacos / `cardshop-trade-engine-supplier.yaml` 中将 `dispatch-url` / `query-url
 
 `127.0.0.1` 是从**每个 trade-engine 进程所在机器**解析的：mock 必须与发起派单的引擎实例同机，或把 URL 改成 mock 所在主机的内网 IP。pro143/pro140/pro120 多实例共用同一 Nacos 时，只在本机起了 mock 的节点才能通；其余节点会出现连接失败并触发 Outbox 可重试。该模式仅限 dev/test/联调，禁止把生产供应商流量指到 mock。
 
-下单接口立即返回 `PROCESSING`；查单接口在配置的延迟窗口过后返回最终 `SUCCESS`/`FAILED` 结果。
+通用 `order_id/supplier_request_id` 报文保留原有延迟与 `PROCESSING/SUCCESS/FAILED` 行为。MINISO 原生报文使用 `orderNo`（发券另带 `phone` 与 `batchList:[{batchId:数值,number:数值}]`），返回数值 `code=200` 和 `data` 完整券数组；同一订单冻结批次/手机号/数量，重复发券返回原凭据，身份变化拒绝。仅支持单批次、每次1—10张合成券，不模拟真实库存或供应商认证。
+
+仅发券请求可带离线桩头 `X-Mock-Miniso-Scenario: UNKNOWN_AFTER_ISSUE`：第一次响应为 `MOCK_RESULT_UNKNOWN/data=null`，但已保存合成凭据，随后 `queryGrand` 用原 `orderNo` 可查回，重发不再造券。未知订单查单同样返回不明，不能作为明确未发券或退款证据。作废接收新端 `couponCodes` 数组及旧端逗号分隔字符串，逐券返回 `data.succeed/failed`，未知券不能假成功；查单状态为0未使用、3已作废，重复作废幂等。成功券不能替代另一张券的作废证明。该桩不提供银行2104接口，不连接名创，不验证MD5鉴权；固定有效期和随机 `MOCK-MINISO-` 券码仅用于本地测试。
 
 ### 参数与环境变量
 
@@ -401,4 +403,30 @@ mvn -f cardshop-trade-engine-simulator/pom.xml test
 名创四个主动接口现由独立协议客户端实现，按供应商PDF和旧卡管使用大写MD5请求鉴权，不改变调用方V1.2 HMAC-SM3协议。真实适配默认关闭；配置、0020/0021结构变更、冻结批次、凭据事务与核销回调恢复见 [启动说明](deploy/STARTUP.md#名创专属协议本地验证与受控启用) 和 [名创适配设计](docs/superpowers/specs/2026-10-17-miniso-legacy-request-auth-design.md)。本地测试通过不能替代真实名创沙箱验收。
 
 
-名创核销入站已按旧卡管独立key2协议实现 `POST /api/common/mcNotify`，持久接收后由 `minisoWriteOffProcessJob` 恢复处理并生成V1.2商户通知；新增入口和处理默认均关闭。详见 [核销入口与恢复](deploy/STARTUP.md#名创核销回调入口与恢复) 及 [详细设计](docs/superpowers/specs/2026-10-17-miniso-writeoff-callback-design.md)。离线可运行 `python3 scripts/miniso-writeoff-example.py` 校验测试MD5/HMAC-SM3向量，需Python运行时支持SM3。
+名创核销入站按旧卡管独立key2协议保留唯一 `POST /api/common/mcNotify`。共库桥接部署目标仍是旧测试入口：旧端提交共享inbox后确认，由旧路由Job投递新事件或提交旧核销事实，新单再由 `minisoWriteOffProcessJob` 恢复；新引擎公开接收不必开启。各接收/处理开关默认关闭，永久资金保护独立生效。详见 [核销入口与恢复](deploy/STARTUP.md#名创核销回调入口与恢复) 及 [详细设计](docs/superpowers/specs/2026-10-17-miniso-writeoff-callback-design.md)。离线可运行 `python3 scripts/miniso-writeoff-example.py` 校验测试MD5/HMAC-SM3向量，需Python运行时支持SM3。
+
+### MINISO 共库桥接协议与发布门禁（2026-10-22）
+
+本地代码及离线合同已实现，尚未发布或启用 BRIDGE。新端完整回归815项（789通过、26项既有条件跳过），模拟器83项及Python回环HTTP测试5项通过；旧端完整回归784项仍有2失败、45错误、10跳过，是发布阻断。325项桥接相关回归通过不能替代旧端全量通过。证据、候选JAR校验和、0023迁移checksum、待核实现场项及授权范围统一见 [集成测试 Task19记录](docs/集成测试.md#miniso-bridge-task19-local-20261022)。已删除的旧测试前端不在交付中。
+
+离线自检不发送网络请求，需支持SM3的Python（本机可使用Codex现有捆绑Python，将其bin目录放在本次命令的PATH前部）：
+
+```bash
+python3 scripts/miniso-writeoff-example.py
+python3 -m unittest discover -s scripts/tests -p 'test_miniso_writeoff_example.py'
+```
+
+仅在自行启动的本机隔离旧服务上、用环境变量 `MINISO_CALLBACK_KEY2` 注入本地测试密钥后执行；以下各场景仅验证预置状态，不修改服务开关，也不是test188发布命令：
+
+```bash
+python3 scripts/miniso-writeoff-example.py --url http://127.0.0.1:9191/api/common/mcNotify --scenario same-time
+python3 scripts/miniso-writeoff-example.py --url http://127.0.0.1:9191/api/common/mcNotify --scenario conflict
+# 必须预先处于BRIDGE且暂停接收；应返回HTTP503，禁止回退LEGACY。
+python3 scripts/miniso-writeoff-example.py --url http://127.0.0.1:9191/api/common/mcNotify --scenario paused
+```
+
+三个场景使用同一虚构券及固定首次时间。同券同时间即使重签也属于同一事件；异时请求应HTTP200/数值code500，首次证据不变。HTTP200/数值code200只表示已提交接收，脚本输出 `accepted_only`，不表示核销、资金、商户通知或银行处理完成。脚本只允许显式回环主机及旧唯一路径，关闭代理和重定向，不输出正文、券码、密钥或外部字符串code。
+
+接收成功后需另行核对可信归属及后台结果：新单inbox为 `TRANSFERRED_NEW`，新事件从version0开始恢复，不创建旧批次或旧AES任务；旧单为 `LEGACY_APPLIED`，只推进目标券并按原配置冻结旧AES通知，`DELIVERED_HTTP`也仅代表HTTP成功。未知归属 `RETRY`，冲突/耗尽 `MANUAL_REQUIRED`，不可默认转旧。迟到核销不得撤销已提交的释放授权；可能已发券但无凭据则按原单查证，仍不明转人工且不退款。
+
+发布前必须取得具体test188授权并逐项解除交接记录中的阻断：全部写入者和实例清单、历史无授权终态盘点、主连接/schema/迁移核验、三个Job实际扫描、唯一URL/TLS/接入身份和供应商重试证据。停收保留503，回滚保留inbox/event/task/guard/授权，退回不识别合同的旧JAR前先停相关资金写入并登记未完成事项。pro140、全租户回调切换、真实名创请求及历史补通知均不在本轮授权内；银行2104 SDK TLS及通知验收独立。

@@ -1,11 +1,14 @@
 package com.cardshop.trade.engine.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.Mockito.mock;
 
 import com.baomidou.mybatisplus.autoconfigure.DdlApplicationRunner;
 import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean;
 import com.cardshop.trade.engine.application.recharge.AcceptAnomalyCheckRepositoryPort;
 import com.cardshop.trade.engine.application.recharge.BalanceReservationReleasePort;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceDeltaFlushPort;
@@ -44,15 +47,20 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrder
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.lang.reflect.Proxy;
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.time.Clock;
+import java.util.UUID;
 import javax.sql.DataSource;
 import com.zaxxer.hikari.HikariDataSource;
 import org.apache.ibatis.mapping.Environment;
 import org.apache.ibatis.session.Configuration;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory;
+import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.mybatis.spring.annotation.MapperScan;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -66,6 +74,7 @@ import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.AbstractDataSource;
+import org.springframework.transaction.annotation.EnableTransactionManagement;
 
 /**
  * MyBatis 落库端口后置自动配置测试。
@@ -266,19 +275,20 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                     jdbc.execute("""
                             create table mc_order(order_Id varchar(100) primary key, org_code varchar(64),
                                 out_orderId varchar(100), account varchar(64), num int, supplier_channel varchar(32),
-                                order_status int, data_status varchar(32), flow_id bigint, fail_code varchar(100),
+                                order_status int, order_price bigint, data_status varchar(32), flow_id bigint, fail_code varchar(100),
                                 fail_reason varchar(1000), remark varchar(1000), edit_time timestamp, data clob)
                             """);
                     jdbc.execute("""
                             create table recharge_order_ext(order_id varchar(100) primary key, org_code varchar(64),
                                 out_order_sn varchar(100), supplier_batch_id varchar(64), persist_status varchar(32),
                                 dispatch_status varchar(32), last_error varchar(1000), updated_at timestamp,
-                                voucher_use_state varchar(8))
+                                voucher_use_state varchar(8), voucher_use_time timestamp, balance_reserved boolean default true, balance_release_authorized_at timestamp,
+                                balance_release_event_id varchar(100), balance_release_amount bigint)
                             """);
                     jdbc.execute("""
                             create table recharge_miniso_receipt(order_id varchar(100) primary key,
                                 org_code varchar(64), batch_id int, coupon_code varchar(128) unique, phone varchar(64),
-                                begin_time varchar(19), end_time varchar(19), coupon_status int,
+                                begin_time varchar(19), end_time varchar(19), coupon_status int, use_time timestamp,
                                 created_at timestamp default current_timestamp,
                                 updated_at timestamp default current_timestamp)
                             """);
@@ -290,6 +300,9 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                             insert into recharge_order_ext(order_id, org_code, out_order_sn, supplier_batch_id,
                                 persist_status) values('O-LATE', 'A39', 'OUT-LATE', '100023', 'DB_PERSISTED')
                             """);
+                    jdbc.execute("create table mc_miniso_coupon_guard(coupon_code varchar(128) primary key,created_at timestamp not null)");
+                    jdbc.execute("create table mc_miniso_callback_inbox(event_id varchar(96) primary key,coupon_code varchar(128) unique,use_time timestamp,status varchar(32))");
+                    jdbc.execute("create table recharge_miniso_writeoff_event(event_id varchar(96) primary key,coupon_code varchar(128) unique,use_time timestamp,order_id varchar(100),org_code varchar(64),status varchar(32))");
                     var receipt = new MinisoFulfillmentReceipt("O-LATE", "A39", 100023, "TEST-LATE-COUPON",
                             "13800138000", "2026-10-01 00:00:00", "2026-12-01 00:00:00", 0);
                     var update = new OrderFulfillmentStatusUpdate("O-LATE", FulfillmentDispatchStatus.SUCCESS,
@@ -307,6 +320,87 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
                             "select dispatch_status from recharge_order_ext where order_id='O-LATE'", String.class))
                             .isEqualTo("SUCCESS");
                 });
+    }
+
+    @Test
+    void minisoCompletionCommitsOnMainConnectionEvenWhenDedicatedWriterDataSourceFails() {
+        var main = new JdbcDataSource();
+        main.setURL("jdbc:h2:mem:" + UUID.randomUUID() + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1");
+        var jdbc = new JdbcTemplate(main);
+        // 只预置已提交许可；凭据门禁属于首次授权，恢复不应依赖receipt或专用异步writer。
+        jdbc.execute("create table mc_order(order_Id varchar(100) primary key,org_code varchar(64),"
+                + "out_orderId varchar(100),supplier_channel varchar(32),order_price bigint,order_status int)");
+        jdbc.execute("create table recharge_order_ext(order_id varchar(100) primary key,org_code varchar(64),"
+                + "out_order_sn varchar(100),persist_status varchar(32),balance_reserved boolean,dispatch_status varchar(32),"
+                + "voucher_use_state varchar(1),voucher_use_time timestamp,balance_release_authorized_at timestamp(3),"
+                + "balance_release_event_id varchar(100),balance_release_amount bigint,updated_at timestamp(3))");
+        jdbc.execute("create table mc_depart_record(id bigint auto_increment primary key,org_code varchar(64),"
+                + "order_id varchar(100),type varchar(1),`value` bigint)");
+        jdbc.execute("create table recharge_dispatch_outbox(event_id varchar(100) primary key,event_type varchar(32),"
+                + "org_code varchar(64),order_id varchar(100),out_order_sn varchar(100))");
+        jdbc.execute("create table recharge_balance_delta_outbox(id bigint auto_increment primary key,"
+                + "event_id varchar(128) unique,org_code varchar(64),order_id varchar(100),out_order_sn varchar(100),"
+                + "delta_type varchar(32),delta_amount bigint,status varchar(32),retry_count int,max_retry_count int,"
+                + "next_retry_time timestamp(3),locked_by varchar(64),locked_until timestamp(3),version bigint,"
+                + "last_error varchar(512),created_at timestamp(3),updated_at timestamp(3))");
+        jdbc.update("insert into mc_order values('O1','A39','EXT-1','MINISO',137,12)");
+        jdbc.update("insert into recharge_order_ext values('O1','A39','EXT-1','DB_PERSISTED',true,'CANCELLED',"
+                + "'3',null,'2026-10-21 08:00:00.123','event-A',137,null)");
+        jdbc.update("insert into mc_depart_record(org_code,order_id,type,`value`) values('A39','O1','1',137)");
+        jdbc.update("insert into recharge_dispatch_outbox values('event-A','INVALID_ORDER','A39','O1','EXT-1')");
+        DataSource brokenWriter = new AbstractDataSource() {
+            @Override
+            public Connection getConnection() throws SQLException {
+                throw new SQLException("dedicated writer unavailable for test");
+            }
+
+            @Override
+            public Connection getConnection(String username, String password) throws SQLException {
+                return getConnection();
+            }
+        };
+        try {
+            new ApplicationContextRunner()
+                    .withBean("dataSource", DataSource.class, () -> main, definition -> definition.setPrimary(true))
+                    .withBean("persistOutboxWriterDataSource", DataSource.class, () -> brokenWriter)
+                    .withBean(ObjectMapper.class, ObjectMapper::new)
+                    .withBean(Clock.class, Clock::systemUTC)
+                    .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                    .withPropertyValues("trade.engine.mq.persist-batch-enabled=true",
+                            "trade.engine.persist.outbox-async-enabled=true")
+                    .withUserConfiguration(RealMainMapperConfiguration.class)
+                    .withConfiguration(AutoConfigurations.of(DataSourceTransactionManagerAutoConfiguration.class,
+                            TradeEngineMybatisPersistenceAutoConfiguration.class))
+                    .run(context -> {
+                        assertThat(context).hasNotFailed().hasSingleBean(RechargePersistOutboxAsyncWriter.class);
+                        assertThatThrownBy(() -> context.getBean("persistOutboxWriterDataSource", DataSource.class)
+                                .getConnection()).isInstanceOf(SQLException.class)
+                                .hasMessage("dedicated writer unavailable for test");
+                        var port = context.getBean(RechargeFulfillmentOrderPort.class);
+                        var authorization = port.findMinisoReleaseAuthorization("O1").orElseThrow();
+                        // 在真实Spring代理下先注入第二条UPDATE失败，以事务外JDBC排除连接分离的孤立delta。
+                        jdbc.execute("alter table recharge_order_ext add constraint reject_completion "
+                                + "check (balance_reserved)");
+                        assertThatThrownBy(() -> port.completeMinisoBalanceRelease(authorization))
+                                .isInstanceOf(org.springframework.dao.DataIntegrityViolationException.class);
+                        assertThat(jdbc.queryForObject("select count(*) from recharge_balance_delta_outbox", Integer.class))
+                                .isZero();
+                        assertThat(jdbc.queryForObject("select balance_reserved from recharge_order_ext", Boolean.class))
+                                .isTrue();
+                        jdbc.execute("alter table recharge_order_ext drop constraint reject_completion");
+                        port.completeMinisoBalanceRelease(authorization);
+                        port.completeMinisoBalanceRelease(authorization);
+                        assertThat(jdbc.queryForObject("select balance_reserved from recharge_order_ext", Boolean.class))
+                                .isFalse();
+                        assertThat(jdbc.queryForMap("select event_id,delta_type,delta_amount,status "
+                                + "from recharge_balance_delta_outbox"))
+                                .containsEntry("event_id", "balance-flush-release-O1").containsEntry("delta_type", "RELEASE")
+                                .containsEntry("delta_amount", 137L).containsEntry("status", "INIT");
+                        assertThat(port.findMinisoReleaseAuthorization("O1")).contains(authorization);
+                    });
+        } finally {
+            jdbc.execute("shutdown");
+        }
     }
 
     @Test
@@ -480,6 +574,20 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
         @Bean
         MinisoReceiptMapper minisoReceiptMapper() {
             return mapperProxy(MinisoReceiptMapper.class);
+        }
+    }
+
+    @org.springframework.context.annotation.Configuration(proxyBeanMethods = false)
+    @EnableTransactionManagement
+    @MapperScan(basePackageClasses = McOrderMapper.class, sqlSessionFactoryRef = "sqlSessionFactory")
+    static class RealMainMapperConfiguration {
+
+        @Bean
+        SqlSessionFactory sqlSessionFactory(@Qualifier("dataSource") DataSource main) throws Exception {
+            var factory = new MybatisSqlSessionFactoryBean();
+            factory.setDataSource(main);
+            factory.setConfiguration(new MybatisConfiguration());
+            return factory.getObject();
         }
     }
 

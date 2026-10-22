@@ -28,6 +28,16 @@ public interface RechargeBalanceDeltaOutboxMapper extends BaseMapper<RechargeBal
     int FUNDS_QUERY_TIMEOUT_SECONDS = 5;
 
     /**
+     * MINISO释放收尾在主事务中当前锁读已有delta，只核对资金身份，不重置刷账进度。
+     * 参见 {@code docs/交行直充业务系统详细设计.md}「9.8」；不以插入影响行数代替一致性证明。
+     */
+    @Select("""
+            select event_id, org_code, order_id, out_order_sn, delta_type, delta_amount
+            from recharge_balance_delta_outbox where event_id = #{eventId} for update
+            """)
+    RechargeBalanceDeltaOutboxDO lockByEventId(@Param("eventId") String eventId);
+
+    /**
      * 幂等写入余额刷账事件。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「8.3 异步落库 Consumer」「9.2 余额 Delta 刷账 Outbox」。
