@@ -333,10 +333,13 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     @ConditionalOnBean(SqlSessionFactory.class)
     @ConditionalOnMissingBean(RechargeFulfillmentOrderPort.class)
     public RechargeFulfillmentOrderPort rechargeFulfillmentOrderPort(
-            ObjectProvider<MinisoReceiptStore> minisoReceipts,
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper,
             McOrderSupplierFlowMapper flowMapper,
+            ObjectProvider<MinisoReceiptStore> minisoReceipts,
+            McDepartRecordMapper departRecords,
+            RechargeDispatchOutboxMapper dispatchEvents,
+            RechargeBalanceDeltaOutboxMapper balanceDeltas,
             ObjectMapper objectMapper,
             Clock clock) {
         // 参见详细设计「名创 MINISO 专属协议实施约束」：后置端口也必须接入凭据事务，不能遗漏普通配置的依赖。
@@ -346,7 +349,10 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
                 flowMapper,
                 objectMapper,
                 clock,
-                minisoReceipts.getIfAvailable());
+                minisoReceipts::getObject,
+                departRecords,
+                dispatchEvents,
+                balanceDeltas);
     }
 
     /**

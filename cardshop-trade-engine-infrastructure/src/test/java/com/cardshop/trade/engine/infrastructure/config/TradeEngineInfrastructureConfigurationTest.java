@@ -143,6 +143,8 @@ class TradeEngineInfrastructureConfigurationTest {
     void realMinisoRouteIsExplicitAndKeepsOtherChannelsOnGenericGateway() {
         contextRunner.withBean(com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper.class,
                 () -> interfaceProxy(com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper.class))
+                .withBean(com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoCouponGuardMapper.class,
+                        () -> interfaceProxy(com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoCouponGuardMapper.class))
                 .withPropertyValues("trade.engine.supplier.http-enabled=true", "trade.engine.supplier.miniso.enabled=true",
                         "trade.engine.supplier.miniso.base-url=https://miniso.example.test",
                         "trade.engine.supplier.miniso.tripartite=test", "trade.engine.supplier.miniso.key=test-only-key")

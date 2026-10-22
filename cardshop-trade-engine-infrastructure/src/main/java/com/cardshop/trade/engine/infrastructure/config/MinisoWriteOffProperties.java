@@ -99,9 +99,9 @@ public class MinisoWriteOffProperties implements InitializingBean {
 
     @Override
     public void afterPropertiesSet() {
-        if (enabled && (!processingEnabled || key2 == null || key2.isBlank()))
+        if (enabled && (key2 == null || key2.isBlank()))
             throw new IllegalArgumentException(
-                    "MINISO reception requires processing-enabled and independent key2");
+                    "MINISO reception requires independent key2");
         if (batchSize < 1
                 || batchSize > 1000
                 || retryBackoffSeconds < 1

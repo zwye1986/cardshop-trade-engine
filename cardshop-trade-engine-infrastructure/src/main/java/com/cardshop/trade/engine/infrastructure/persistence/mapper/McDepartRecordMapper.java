@@ -6,6 +6,7 @@ import java.util.List;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 /**
  * 旧系统商户资金流水表 `mc_depart_record` Mapper。
@@ -16,6 +17,11 @@ import org.apache.ibatis.annotations.Param;
  */
 @Mapper
 public interface McDepartRecordMapper extends BaseMapper<McDepartRecordDO> {
+
+    /** MINISO许可核对原预扣事实；value为旧表关键字列，保持反引号。参见详细设计9.8。 */
+    @Select("select org_code,order_id,type,`value` from mc_depart_record "
+            + "where order_id=#{orderId} and type=#{type} for update")
+    List<McDepartRecordDO> lockPreDeductRecords(@Param("orderId") String orderId, @Param("type") String type);
 
     /**
      * 写入资金流水。

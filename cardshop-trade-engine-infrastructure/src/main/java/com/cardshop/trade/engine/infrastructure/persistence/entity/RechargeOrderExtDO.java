@@ -120,6 +120,18 @@ public class RechargeOrderExtDO {
     @TableField("balance_reserved")
     private Boolean balanceReserved;
 
+    /** 余额释放授权时间；参见 {@code docs/交行直充业务系统详细设计.md}「9.8」，DDL COMMENT同名。 */
+    @TableField("balance_release_authorized_at")
+    private LocalDateTime balanceReleaseAuthorizedAt;
+
+    /** 余额释放授权事件编号；首次履约事件不可被重试覆盖，参见详细设计9.8，DDL COMMENT同名。 */
+    @TableField("balance_release_event_id")
+    private String balanceReleaseEventId;
+
+    /** 余额释放授权金额，单位分；参见详细设计9.8，DDL COMMENT同名。 */
+    @TableField("balance_release_amount")
+    private Long balanceReleaseAmount;
+
     /**
      * 业务履约状态。
      */
@@ -299,6 +311,30 @@ public class RechargeOrderExtDO {
 
     public void setBalanceReserved(Boolean balanceReserved) {
         this.balanceReserved = balanceReserved;
+    }
+
+    public LocalDateTime getBalanceReleaseAuthorizedAt() {
+        return balanceReleaseAuthorizedAt;
+    }
+
+    public void setBalanceReleaseAuthorizedAt(LocalDateTime balanceReleaseAuthorizedAt) {
+        this.balanceReleaseAuthorizedAt = balanceReleaseAuthorizedAt;
+    }
+
+    public String getBalanceReleaseEventId() {
+        return balanceReleaseEventId;
+    }
+
+    public void setBalanceReleaseEventId(String balanceReleaseEventId) {
+        this.balanceReleaseEventId = balanceReleaseEventId;
+    }
+
+    public Long getBalanceReleaseAmount() {
+        return balanceReleaseAmount;
+    }
+
+    public void setBalanceReleaseAmount(Long balanceReleaseAmount) {
+        this.balanceReleaseAmount = balanceReleaseAmount;
     }
 
     public String getDispatchStatus() {
