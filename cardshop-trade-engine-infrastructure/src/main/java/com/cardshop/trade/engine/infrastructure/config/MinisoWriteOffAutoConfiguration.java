@@ -69,10 +69,9 @@ public class MinisoWriteOffAutoConfiguration {
     }
 
     @Bean
-    @ConditionalOnProperty(
-            prefix = "trade.engine.supplier.miniso.callback",
-            name = "processing-enabled",
-            havingValue = "true")
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
+            "${trade.engine.supplier.miniso.callback.enabled:false} || "
+                    + "${trade.engine.supplier.miniso.callback.processing-enabled:false}")
     public MybatisMinisoWriteOffStore minisoWriteOffStore(
             MinisoWriteOffEventMapper events,
             MinisoReceiptMapper receipts,
@@ -83,7 +82,7 @@ public class MinisoWriteOffAutoConfiguration {
             Clock clock,
             MinisoWriteOffProperties settings,
             MinisoWriteOffObserver observer) {
-        if (!credentials.available())
+        if (settings.isProcessingEnabled() && !credentials.available())
             throw new IllegalStateException(
                     "MINISO processing requires persistent merchant signing-key store");
         return new MybatisMinisoWriteOffStore(
@@ -100,12 +99,11 @@ public class MinisoWriteOffAutoConfiguration {
                 observer);
     }
 
-    /** 启动后校验0021关键列并初始化积压指标；只读，不标记一次Job成功。 */
+    /** 接收与处理独立启用时都检查持久结构；探针不标记Job已扫描，参见详细设计9.8。 */
     @Bean
-    @ConditionalOnProperty(
-            prefix = "trade.engine.supplier.miniso.callback",
-            name = "processing-enabled",
-            havingValue = "true")
+    @org.springframework.boot.autoconfigure.condition.ConditionalOnExpression(
+            "${trade.engine.supplier.miniso.callback.enabled:false} || "
+                    + "${trade.engine.supplier.miniso.callback.processing-enabled:false}")
     public org.springframework.boot.ApplicationRunner minisoWriteOffSchemaProbe(
             MinisoWriteOffEventMapper events,
             MinisoReceiptMapper receipts,

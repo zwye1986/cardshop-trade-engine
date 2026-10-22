@@ -27,6 +27,9 @@ class MinisoWriteOffAutoConfigurationTest {
                 c -> {
                     assertThat(c).hasNotFailed();
                     assertThat(c).doesNotHaveBean(MinisoWriteOffStore.class);
+                    assertThat(c).doesNotHaveBean(ReceiveMinisoWriteOffService.class);
+                    assertThat(c.getBean(MinisoWriteOffProperties.class).isEnabled()).isFalse();
+                    assertThat(c.getBean(MinisoWriteOffProperties.class).isProcessingEnabled()).isFalse();
                 });
     }
 
@@ -85,6 +88,72 @@ class MinisoWriteOffAutoConfigurationTest {
                             assertThat(c).hasNotFailed();
                             assertThat(c).hasSingleBean(ReceiveMinisoWriteOffService.class);
                         });
+    }
+
+    @Test
+    void receptionCanPersistWhileProcessingIsPaused() {
+        configured().withPropertyValues(
+                "trade.engine.supplier.miniso.callback.enabled=true",
+                "trade.engine.supplier.miniso.callback.processing-enabled=false",
+                "trade.engine.supplier.miniso.callback.key2=test-key")
+                .run(c -> {
+                    assertThat(c).hasNotFailed();
+                    assertThat(c).hasSingleBean(ReceiveMinisoWriteOffService.class);
+                    assertThat(c).hasSingleBean(MinisoWriteOffStore.class);
+                    assertThat(c).hasSingleBean(MinisoWriteOffProtection.class);
+                });
+    }
+
+    @Test
+    void protectionStillRejectsUnreadableEvidenceWhenProcessingIsOff() {
+        configured().run(c -> {
+            var receipts = c.getBean(MinisoReceiptMapper.class);
+            var failure = new org.springframework.dao.DataAccessResourceFailureException("private SQL");
+            when(receipts.lockReceipt("order")).thenThrow(failure);
+            org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
+            try {
+                assertThatThrownBy(() -> c.getBean(MinisoWriteOffProtection.class).assertVoidAllowed("order"))
+                        .isSameAs(failure);
+            } finally {
+                org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(false);
+            }
+        });
+    }
+
+    @Test
+    void receiveOnlyProbeFailsClosedOnMissingPersistentStructure() {
+        configured().withPropertyValues(
+                "trade.engine.supplier.miniso.callback.enabled=true",
+                "trade.engine.supplier.miniso.callback.key2=test-key")
+                .run(c -> {
+                    assertThat(c).hasNotFailed();
+                    var mapper=c.getBean(MinisoWriteOffEventMapper.class);
+                    when(mapper.due(any(),anyInt(),anyInt(),anyInt()))
+                            .thenThrow(new org.springframework.dao.DataAccessResourceFailureException("private SQL"));
+                    assertThatThrownBy(() -> c.getBean("minisoWriteOffSchemaProbe",org.springframework.boot.ApplicationRunner.class)
+                            .run(new org.springframework.boot.DefaultApplicationArguments()))
+                            .isInstanceOf(MinisoWriteOffException.class).hasMessageStartingWith("DB_UNAVAILABLE")
+                            .hasMessageNotContaining("private SQL");
+                });
+    }
+
+    @Test
+    void processingOffStillRejectsSharedEvidenceBeforeFirstRefund() {
+        configured().run(c -> {
+            var receipts=c.getBean(MinisoReceiptMapper.class);
+            var inbox=c.getBean(MinisoSharedCallbackInboxMapper.class);
+            when(receipts.lockReceipt("order")).thenReturn(new MinisoFulfillmentReceipt(
+                    "order","org",1,"coupon","10000000000","2026-10-01 00:00:00","2026-11-01 00:00:00",0));
+            when(inbox.lockByCoupon("coupon")).thenReturn(new MinisoSharedCallbackInboxMapper.Evidence(
+                    "event",java.time.LocalDateTime.of(2026,10,22,10,0),"MANUAL_REQUIRED"));
+            org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(true);
+            try {
+                assertThatThrownBy(() -> c.getBean(MinisoWriteOffProtection.class).assertVoidAllowed("order"))
+                        .isInstanceOf(MinisoWriteOffException.class).hasMessage("REDEEM_VOID_CONFLICT");
+            } finally {
+                org.springframework.transaction.support.TransactionSynchronizationManager.setActualTransactionActive(false);
+            }
+        });
     }
 
     ApplicationContextRunner configured() {

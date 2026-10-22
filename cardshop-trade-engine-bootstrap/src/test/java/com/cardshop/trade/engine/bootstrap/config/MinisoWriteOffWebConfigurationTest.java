@@ -82,6 +82,23 @@ class MinisoWriteOffWebConfigurationTest {
                         });
     }
 
+    @Test
+    void receivingWhileProcessingPausedDoesNotRegisterProcessingHandler() {
+        runner.withPropertyValues(
+                        "trade.engine.supplier.miniso.callback.enabled=true",
+                        "trade.engine.supplier.miniso.callback.key2=local-test")
+                .run(c -> {
+                    assertThat(c).hasNotFailed();
+                    assertThat(c).doesNotHaveBean(MinisoWriteOffProcessJob.class);
+                    assertThat(c).doesNotHaveBean(MinisoWriteOffXxlHandler.class);
+                    WebTestClient.bindToApplicationContext(c).build().post().uri("/api/common/mcNotify")
+                            .header("Content-Type","application/json").bodyValue("{}")
+                            .exchange().expectStatus().isOk().expectBody().jsonPath("$.code").isEqualTo(200);
+                    verify(c.getBean(MinisoWriteOffStore.class)).accept(any());
+                    verify(c.getBean(MinisoWriteOffStore.class),never()).processBatch(anyInt(),anyInt(),anyInt(),anyString());
+                });
+    }
+
     @Configuration(proxyBeanMethods = false)
     @EnableWebFlux
     @EnableConfigurationProperties(MinisoWriteOffProperties.class)

@@ -32,8 +32,12 @@ class MinisoWriteOffMetricsTest {
                             registry,
                             beans.getBeanProvider(MinisoWriteOffEventMapper.class),
                             Clock.fixed(Instant.parse("2026-10-17T01:30:00Z"), ZoneOffset.UTC));
+            metrics.started();
+            assertThat(registry.get("trade.miniso.writeoff.last.scan.epoch.seconds").gauge().value()).isZero();
             metrics.event("accepted");
             metrics.batch(new MinisoWriteOffBatchResult(1, 1, 0, 0, 0, 0));
+            assertThat(registry.get("trade.miniso.writeoff.last.scan.epoch.seconds").gauge().value())
+                    .isEqualTo(Instant.parse("2026-10-17T01:30:00Z").getEpochSecond());
             clearInvocations(mapper);
             assertThat(registry.get("trade.miniso.writeoff.pending").gauge().value()).isEqualTo(3);
             assertThat(registry.get("trade.miniso.writeoff.oldest.age.seconds").gauge().value())

@@ -545,8 +545,8 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -B -f "$E/pom.xml" \
 
 **Files:** Create `LB/MinisoCallbackBridgeJobs.java`、`LT/MinisoCallbackBridgeJobsTest.java`；Modify `EI/config/MinisoWriteOffAutoConfiguration.java`及`ET/config/MinisoWriteOffAutoConfigurationTest.java`、旧`MinisoBridgeConfigurationTest.java`。复用新端既有`MinisoWriteOffXxlHandler`，不新建核销Job。
 
-- [ ] 1. 测试所有bridge开关默认关闭、BRIDGE入口停收503、停route/notify不丢已接收事实、处理关闭仍阻止首次退款、缺表/读异常失败关闭。运行`legacy_test 'MinisoBridgeConfigurationTest,MinisoCallbackBridgeJobsTest'`及`engine_test MinisoWriteOffAutoConfigurationTest`确认缺行为红灯。
-- [ ] 2. 注册`minisoCallbackBridgeRoute`、`minisoCallbackBridgeLegacyNotify`；只通过现有XXL executor运行，默认limit100，非法参数拒绝、不暴露公网手工接口。新端处理仍复用`minisoWriteOffProcessJob`，与接收分开装配。开关不能禁用归属和资金保护，LEGACY初次兼容不是混写许可。
+- [x] 1. 测试所有bridge开关默认关闭、BRIDGE入口停收503、停route/notify不丢已接收事实、处理关闭仍阻止首次退款、缺表/读异常失败关闭。运行`legacy_test 'MinisoBridgeConfigurationTest,MinisoCallbackBridgeJobsTest'`及`engine_test MinisoWriteOffAutoConfigurationTest`确认缺行为红灯。
+- [x] 2. 注册`minisoCallbackBridgeRoute`、`minisoCallbackBridgeLegacyNotify`；只通过现有XXL executor运行，默认limit100，非法参数拒绝、不暴露公网手工接口。新端处理仍复用`minisoWriteOffProcessJob`，与接收分开装配。开关不能禁用归属和资金保护，LEGACY初次兼容不是混写许可。
 
 ```java
 @XxlJob("minisoCallbackBridgeRoute")
@@ -560,9 +560,11 @@ public void notifyLegacy() {
 ```
 
 `processBatch(int limit)`在对应服务公开定义，内部自行检查routing/legacy-notify开关并校验limit；禁用时返回无副作用摘要。
-- [ ] 3. 接入当前可用指标设施或结构化低频批末摘要：首次/重复/冲突/存储失败、各状态待处理数及最老年龄、新投递/旧应用/HTTP通知结果、授权未收尾数、最后成功扫描时间。每类异常由已有采样工具或服务内时间窗限频，不引入通用监控平台。所有日志仅event/order/org及安全错误码，保护路径异常保留抽样栈。
-- [ ] 4. 同测试转绿；测试服务真实执行一批后才更新最后成功扫描，不把handler注册/开关true当已扫描证据。每批失败摘要和耗尽人工均可观测。
-- [ ] 5. 本地提交`feat(miniso): expose controlled bridge jobs and backlog signals`。
+- [x] 3. 接入当前可用指标设施或结构化低频批末摘要：首次/重复/冲突/存储失败、各状态待处理数及最老年龄、新投递/旧应用/HTTP通知结果、授权未收尾数、最后成功扫描时间。每类异常由已有采样工具或服务内时间窗限频，不引入通用监控平台。所有日志仅event/order/org及安全错误码，保护路径异常保留抽样栈。
+- [x] 4. 同测试转绿；测试服务真实执行一批后才更新最后成功扫描，不把handler注册/开关true当已扫描证据。每批失败摘要和耗尽人工均可观测。
+- [x] 5. 本地提交`feat(miniso): expose controlled bridge jobs and backlog signals`。
+
+2026-10-22本地完成：旧端注册两个受控XXL handler并公开processBatch(int limit)，默认停用、非法参数拒绝，停扫描不改事实；按分钟输出安全批末摘要及抽样栈，真实扫描及聚合成功才推进最后扫描时间。新端接收/处理独立装配，复用既有核销Job，永久保护不受开关影响。最终新端189项、旧端325项关联回归全通过；MySQL8.0.28 RC/RR、跨JVM及真实Redis合同36次强制执行再次全通过，失败/错误/跳过0，两轮临时资源清理已核验。旧端本地提交`819757ab`；新端随本任务提交，完整命令及限制见《集成测试.md》`MINISO-BRIDGE-JOBS-SIGNALS-LOCAL-20261022`。未push、部署或启用BRIDGE，不执行Task19；远端真实Job扫描及发布门禁仍待授权验收。
 
 ## Task 19: 协议示例、两仓库回归与发布门禁交接
 
