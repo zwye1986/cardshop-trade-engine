@@ -45,11 +45,7 @@ class MinisoBridgeMysqlContractTest {
         assertThat(port).matches("[0-9]{1,5}");
         assertThat(Integer.parseInt(port)).isBetween(1, 65535);
         assertThat(isolation).isIn("READ-COMMITTED", "REPEATABLE-READ");
-        var dataSource = new DriverManagerDataSource(
-                "jdbc:mysql://127.0.0.1:" + port + "/" + schema
-                        + "?allowPublicKeyRetrieval=true&useSSL=false&serverTimezone=UTC"
-                        + "&connectTimeout=5000&socketTimeout=60000&allowMultiQueries=true",
-                "miniso_bridge_it", requiredEnv("MINISO_MYSQL_PASSWORD"));
+        var dataSource = MinisoMysqlArbitrationFixture.dataSource();
         var jdbc = new JdbcTemplate(dataSource);
         // 任何DDL/业务写入前先核验标记；禁止把任意本地转发的共享数据库当作夹具。
         assertThat(jdbc.queryForObject("SELECT run_id FROM miniso_bridge_fixture", String.class))
@@ -186,6 +182,71 @@ class MinisoBridgeMysqlContractTest {
             jdbc.update("delete from recharge_order_ext where order_id=?", order);
             jdbc.update("delete from mc_order where order_Id=?", order);
         }
+    }
+
+    /** Task17：旧Java8接收暂停在无凭据候选后，新Java21提交凭据，再分别裁决；参见详细设计9.8。 */
+    @Test
+    @EnabledIfSystemProperty(named="miniso.crossJvmTests", matches="true")
+    void crossJvmEngineArbitratesAgainstUnknownLegacyReceiver() throws Exception {
+        var f = new MinisoMysqlArbitrationFixture();
+        // 前序结构/旧端合同留下的样本不参与本次到期扫描。
+        f.jdbc.update("update mc_miniso_callback_inbox set next_retry_time='2099-01-01'");
+        f.jdbc.update("update recharge_miniso_writeoff_event set next_retry_time='2099-01-01'");
+        try (var redis = new MinisoMysqlReleaseRecovery()) {
+            for (String round : List.of("receive-first","authorize-first")) {
+                String id = "task17-" + round, coupon = "Task17-" + round;
+                f.seed(id); redis.seed(id);
+                f.signal(round+":ready"); f.await(round+":candidate-empty");
+                f.tx.executeWithoutResult(s -> f.receipts.save(f.receipt(id,coupon,0)));
+                f.signal(round+":published");
+                if (round.equals("receive-first")) {
+                    f.await(round+":accepted");
+                    assertThatThrownBy(() -> f.orders.authorizeMinisoTerminalRelease(f.terminal(id,coupon),"source-"+id))
+                            .isInstanceOf(com.cardshop.trade.engine.application.recharge.MinisoWriteOffException.class);
+                    assertThat(f.orders.findMinisoReleaseAuthorization(id)).isEmpty();
+                    redis.balance(1000,137);
+                    assertThat(f.jdbc.queryForObject("select count(*) from recharge_balance_delta_outbox where order_id=?",Integer.class,id)).isZero();
+                    f.await(round+":routed");
+                    assertThat(f.writeOff.processBatch(1,0,100,"task17").processed()).isEqualTo(1);
+                    assertThat(redis.worker(f,redis.release,false).processDue(1,0,1,"task17-no-auth",List.of(com.cardshop.trade.engine.domain.order.OutboxEventType.INVALID_ORDER),1)
+                            .succeeded()).isZero();
+                    redis.balance(1000,137);
+                    assertThat(f.orders.findMinisoReleaseAuthorization(id)).isEmpty();
+                    assertThat(f.jdbc.queryForObject("select status from recharge_dispatch_outbox where order_id=?",String.class,id)).isEqualTo("MANUAL_REQUIRED");
+                    System.out.println("Task17 receive-first: inbox commit before first authorization; auth=absent available=1000 frozen=137 delta=0 redeemed=1");
+                } else {
+                    var authorization = f.orders.authorizeMinisoTerminalRelease(f.terminal(id,coupon),"source-"+id).orElseThrow();
+                    assertThat(authorization).isEqualTo(new com.cardshop.trade.engine.application.recharge.MinisoBalanceReleaseAuthorization(
+                            id,"TASK17","out-"+id,"source-"+id,137,f.CLOCK.instant()));
+                    f.signal(round+":authorized"); f.await(round+":accepted"); f.await(round+":routed");
+                    assertThat(f.writeOff.processBatch(1,0,100,"task17").manual()).isEqualTo(1);
+                    assertThat(f.orders.findMinisoReleaseAuthorization(id)).contains(authorization);
+                    assertThat(redis.worker(f,redis.release,false).processDue(1,0,1,"task17",List.of(com.cardshop.trade.engine.domain.order.OutboxEventType.INVALID_ORDER),1).succeeded()).isEqualTo(1);
+                    redis.balance(1137,0);
+                    assertThat(f.jdbc.queryForObject("select delta_amount from recharge_balance_delta_outbox where order_id=?",Long.class,id)).isEqualTo(137);
+                    assertThat(f.orders.findMinisoReleaseAuthorization(id)).contains(authorization);
+                    assertThat(f.jdbc.queryForObject("select balance_reserved from recharge_order_ext where order_id=?",Boolean.class,id)).isFalse();
+                    assertThat(f.jdbc.queryForObject("select status from recharge_dispatch_outbox where order_id=?",String.class,id)).isEqualTo("SUCCESS");
+                    assertThat(f.jdbc.queryForObject("select status from recharge_miniso_writeoff_event where coupon_code=?",String.class,coupon)).isEqualTo("MANUAL_REQUIRED");
+                    assertThat(f.jdbc.queryForList("select event_id,org_code,order_id,out_order_sn,delta_type,delta_amount from recharge_balance_delta_outbox where order_id=?",id))
+                            .containsExactly(Map.of("event_id","balance-flush-release-"+id,"org_code","TASK17","order_id",id,
+                                    "out_order_sn","out-"+id,"delta_type","RELEASE","delta_amount",137L));
+                    System.out.println("Task17 authorize-first: frozen source="+authorization.sourceEventId()+" late=MANUAL_REQUIRED available=1137 frozen=0 delta=137 original=SUCCESS");
+                }
+                f.signal(round+":done");
+            }
+        }
+    }
+
+    /** Task17：同一真实MySQL schema内逐断点恢复，Redis为本方法独占的临时进程。 */
+    @Test
+    @EnabledIfSystemProperty(named="miniso.recoveryTests", matches="true")
+    void recoversCommittedAuthorizationAcrossRealMysqlAndRedisCrashWindows() throws Exception {
+        MinisoMysqlReleaseRecovery.assertFailedStartupCleansScratch();
+        var f = new MinisoMysqlArbitrationFixture();
+        f.jdbc.update("update recharge_dispatch_outbox set next_retry_time='2099-01-01'");
+        f.jdbc.update("update recharge_miniso_writeoff_event set next_retry_time='2099-01-01'");
+        try (var redis = new MinisoMysqlReleaseRecovery()) { redis.recoverEveryWindow(f); }
     }
 
     private void assertSchemaOnlyPrivileges(JdbcTemplate jdbc, String schema) {

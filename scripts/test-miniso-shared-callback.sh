@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
-# 可丢弃MySQL结构夹具；参见 docs/交行直充业务系统详细设计.md「9.8 名创单入口、共库核销分流」。
+# 可丢弃MySQL/跨JVM/Redis验收夹具；参见 docs/交行直充业务系统详细设计.md「9.8 名创单入口、共库核销分流」。
 # 必需：MINISO_MYSQL_IMAGE（预先拉取的8.0.28镜像）、JAVA21_HOME（或指向JDK21的JAVA_HOME）。
-# 可选：MINISO_MYSQL_ISOLATION=READ-COMMITTED|REPEATABLE-READ；默认与test188全局默认RC一致。
+# --schema可选MINISO_MYSQL_ISOLATION；--all强制分别运行READ-COMMITTED及REPEATABLE-READ。
 # 旧端消费同一schema：另设MINISO_LEGACY_DIR及JAVA8_HOME。未指定时明确报告旧端未验收。
 # 不接受远端JDBC URL、已有容器或共享schema；退出只删除本次容器及临时文件，不执行DROP DATABASE。
 set +x
 set -euo pipefail
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-[[ $# == 1 && "$1" == --schema ]] || fail 'usage: test-miniso-shared-callback.sh --schema'
+mode="${1:-}"
+case "$mode" in
+    --schema) [[ $# == 1 ]] || fail 'usage: --schema' ;;
+    --all) [[ $# == 3 && "$2" == --legacy-repo ]] || fail 'usage: --all --legacy-repo PATH'
+        export MINISO_LEGACY_DIR="$3" ;;
+    *) fail 'usage: test-miniso-shared-callback.sh --schema | --all --legacy-repo PATH' ;;
+esac
 : "${MINISO_MYSQL_IMAGE:?必须显式设置已核实版本的MINISO_MYSQL_IMAGE（8.0.28）}"
 [[ -z "${MINISO_MYSQL_JDBC_URL:-}${MINISO_MYSQL_HOST:-}" ]] || fail '不接受外部数据库地址'
 ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
-JAVA21_HOME="${JAVA21_HOME:-${JAVA_HOME:-}}"
+JAVA21_HOME="${JAVA21_HOME:-${JAVA_HOME:-$(/usr/libexec/java_home -v 21 2>/dev/null || true)}}"
+JAVA8_HOME="${JAVA8_HOME:-/Library/Java/JavaVirtualMachines/jdk-1.8.jdk/Contents/Home}"
 [[ -n "$JAVA21_HOME" && -x "$JAVA21_HOME/bin/javac" ]] || fail '需要JAVA21_HOME/JAVA_HOME指向JDK21'
 [[ "$("$JAVA21_HOME/bin/javac" -version 2>&1)" == javac\ 21.* ]] || fail '新端必须使用JDK21'
 if [[ -n "${MINISO_LEGACY_DIR:-}" ]]; then
@@ -21,7 +28,10 @@ if [[ -n "${MINISO_LEGACY_DIR:-}" ]]; then
     [[ -n "${JAVA8_HOME:-}" && -x "$JAVA8_HOME/bin/javac" ]] || fail '旧端需要JAVA8_HOME指向JDK8（不能是JRE）'
     [[ "$("$JAVA8_HOME/bin/javac" -version 2>&1)" == javac\ 1.8.* ]] || fail '旧端必须使用JDK8'
 fi
-for tool in docker mvn openssl; do command -v "$tool" >/dev/null || fail "缺少$tool"; done
+for tool in docker mvn openssl python3; do command -v "$tool" >/dev/null || fail "缺少$tool"; done
+if [[ "$mode" == --all ]]; then
+    command -v redis-server >/dev/null || fail '完整门禁需要本机redis-server'
+fi
 # Docker的显式context优先于DOCKER_HOST，必须核验实际生效端点，不能被本地HOST值掩盖远程context。
 # 回环端口必须属于本机Docker；参见详细设计9.8的可丢弃环境边界。
 if [[ -n "${DOCKER_CONTEXT:-}" ]]; then
@@ -39,14 +49,58 @@ case "$MINISO_MYSQL_ISOLATION" in
     *) fail '隔离级别只允许READ-COMMITTED或REPEATABLE-READ' ;;
 esac
 
+# 指定方法筛选避免把未启用的强制场景算作skip；逐阶段检查新产生的Surefire XML。
+verify_report() {
+    python3 - "$1" "$2" <<'VERIFY'
+import sys, xml.etree.ElementTree as E
+p, expected = sys.argv[1], int(sys.argv[2])
+r=E.parse(p).getroot()
+actual=int(r.attrib['tests'])
+assert actual==expected, (p, actual, expected)
+assert all(int(r.attrib.get(k,0))==0 for k in ['failures','errors','skipped']), r.attrib
+print('VERIFIED Surefire:', p, 'tests=',actual,'failures=0 errors=0 skipped=0')
+VERIFY
+}
+engine_test() {
+    JAVA_HOME="$JAVA21_HOME" PATH="$JAVA21_HOME/bin:$PATH" \
+        mvn -B -f "$ROOT/pom.xml" -pl cardshop-trade-engine-infrastructure -am \
+        -Dmaven.test.skip=false -DskipTests=false -Dtest="$1" -Dsurefire.failIfNoSpecifiedTests=false \
+        -Dminiso.mysqlTests=true -Djava.io.tmpdir="$scratch/jvm" "${@:2}" test
+}
+legacy_test() {
+    JAVA_HOME="$JAVA8_HOME" PATH="$JAVA8_HOME/bin:$PATH" \
+        mvn -B -f "$MINISO_LEGACY_DIR/pom.xml" -pl cardShop-admin -am \
+        -Dmaven.test.skip=false -DskipTests=false -Dtest="$1" -Dsurefire.failIfNoSpecifiedTests=false \
+        -Dminiso.mysqlTests=true -Djava.io.tmpdir="$scratch/jvm" "${@:2}" test
+}
+run_fixture() {
 umask 077
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/miniso-mysql.XXXXXX")"
+mkdir "$scratch/jvm"
+engine_pid=""; legacy_pid=""
 export MINISO_MYSQL_RUN_ID="$(openssl rand -hex 8)"
 export MINISO_MYSQL_SCHEMA="miniso_bridge_it_$MINISO_MYSQL_RUN_ID"
 export MINISO_MYSQL_PASSWORD="$(openssl rand -hex 24)"
 cleanup() {
     result=$?
     trap - EXIT
+    trap '' INT TERM
+    # 跨JVM两组任务有独立进程组。中断先终止整组（包括Surefire/Redis），有界等待并reap，再清容器。
+    for child_pid in "$engine_pid" "$legacy_pid"; do
+        [[ -n "$child_pid" ]] || continue
+        kill -TERM -- "-$child_pid" 2>/dev/null || true
+        for ((attempt = 0; attempt < 50; attempt++)); do
+            kill -0 -- "-$child_pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        kill -KILL -- "-$child_pid" 2>/dev/null || true
+        wait "$child_pid" 2>/dev/null || true
+    done
+    if [[ -n "$engine_pid$legacy_pid" ]]; then
+        for stage_log in "$scratch/engine-cross.log" "$scratch/legacy-cross.log"; do
+            [[ ! -f "$stage_log" ]] || cat "$stage_log"
+        done
+    fi
     if [[ -s "$scratch/container.id" ]]; then
         container_id="$(cat "$scratch/container.id")"
         if ! docker rm -fv "$container_id" >/dev/null; then
@@ -55,6 +109,7 @@ cleanup() {
         fi
     fi
     rm -rf "$scratch"
+    printf 'CLEANED fixture: schema=%s result=%s\n' "$MINISO_MYSQL_SCHEMA" "$result"
     exit "$result"
 }
 trap cleanup EXIT
@@ -91,17 +146,82 @@ INSERT INTO miniso_bridge_fixture VALUES ('$MINISO_MYSQL_RUN_ID');
 EOF
 printf 'MINISO fixture: image=%s platform=%s schema=%s isolation=%s\n' \
     "$image_id" "$platform" "$MINISO_MYSQL_SCHEMA" "$MINISO_MYSQL_ISOLATION"
-JAVA_HOME="$JAVA21_HOME" PATH="$JAVA21_HOME/bin:$PATH" \
-    mvn -B -f "$ROOT/pom.xml" -pl cardshop-trade-engine-infrastructure -am \
-    -Dmaven.test.skip=false -DskipTests=false \
-    -Dtest=MinisoBridgeMysqlContractTest -Dsurefire.failIfNoSpecifiedTests=false \
-    -Dminiso.mysqlTests=true test
+engine_report="$ROOT/cardshop-trade-engine-infrastructure/target/surefire-reports/TEST-com.cardshop.trade.engine.infrastructure.persistence.MinisoBridgeMysqlContractTest.xml"
+legacy_report="${MINISO_LEGACY_DIR:-}/cardShop-admin/target/surefire-reports/TEST-com.ruoyi.web.mc.miniso.bridge.MinisoBridgeMysqlContractTest.xml"
+# 删除单一目标报告，防止沿用历史绿灯；业务schema只交给这两个测试JVM。
+rm -f "$engine_report"
+engine_test 'MinisoBridgeMysqlContractTest#actualMaster*'
+verify_report "$engine_report" 1
 if [[ -n "${MINISO_LEGACY_DIR:-}" ]]; then
-    JAVA_HOME="$JAVA8_HOME" PATH="$JAVA8_HOME/bin:$PATH" \
-        mvn -B -f "$MINISO_LEGACY_DIR/pom.xml" -pl cardShop-admin -am \
-        -Dmaven.test.skip=false -DskipTests=false -Dtest=MinisoBridgeMysqlContractTest \
-        -Dsurefire.failIfNoSpecifiedTests=false -Dminiso.mysqlTests=true test
-    printf 'PASS: 新端结构迁移及旧端同schema消费（不是资金并发验收）\n'
+    rm -f "$legacy_report"
+    legacy_test 'MinisoBridgeMysqlContractTest#consumes*+production*+ownership*+wholeOrder*+http*+routes*+applies*+delivers*+distinct*'
+    verify_report "$legacy_report" 9
+fi
+if [[ "$mode" == --all ]]; then
+    mysql_fixture -e 'CREATE TABLE miniso_bridge_test_barrier (seq bigint AUTO_INCREMENT UNIQUE, name varchar(100) PRIMARY KEY, value varchar(100) NOT NULL, committed_at timestamp(3) DEFAULT CURRENT_TIMESTAMP(3)) ENGINE=InnoDB'
+    rm -f "$engine_report" "$legacy_report"
+    # 非交互Bash开启job control，为每个后台函数建立独立进程组；不向本脚本所在组发信号。
+    set -m
+    engine_test 'MinisoBridgeMysqlContractTest#crossJvm*' -Dminiso.crossJvmTests=true > "$scratch/engine-cross.log" 2>&1 &
+    engine_pid=$!
+    legacy_test 'MinisoBridgeMysqlContractTest#crossJvm*' -Dminiso.crossJvmTests=true > "$scratch/legacy-cross.log" 2>&1 &
+    legacy_pid=$!
+    set +m
+    printf 'Task17 cross-JVM processes: engine=%s legacy=%s\n' "$engine_pid" "$legacy_pid"
+    # 两边都wait；任一失败必须保留该轮输出且门禁非零，不留后台JVM继续操作已清理的schema。
+    engine_result=0; legacy_result=0
+    wait "$engine_pid" || engine_result=$?
+    engine_pid=""
+    wait "$legacy_pid" || legacy_result=$?
+    legacy_pid=""
+    cat "$scratch/engine-cross.log" "$scratch/legacy-cross.log"
+    [[ "$engine_result" == 0 && "$legacy_result" == 0 ]] || fail '跨JVM屏障/生产事务验收失败'
+    verify_report "$engine_report" 1
+    verify_report "$legacy_report" 1
+    mysql_fixture -e 'SELECT seq,name,value,committed_at FROM miniso_bridge_test_barrier ORDER BY seq'
+    rm -f "$engine_report"
+    engine_test 'MinisoBridgeMysqlContractTest#recovers*' -Dminiso.recoveryTests=true
+    verify_report "$engine_report" 1
+    redis_report="$ROOT/cardshop-trade-engine-infrastructure/target/surefire-reports/TEST-com.cardshop.trade.engine.infrastructure.redis.MinisoLocalRedisContractTest.xml"
+    rm -f "$redis_report"
+    engine_test MinisoLocalRedisContractTest -Dminiso.localRedisTests=true
+    verify_report "$redis_report" 5
+    printf 'PASS: 双JVM裁决、真实Redis和MySQL断点恢复 isolation=%s\n' "$MINISO_MYSQL_ISOLATION"
+elif [[ -n "${MINISO_LEGACY_DIR:-}" ]]; then
+    printf 'PASS: 结构与旧端事务合同；完整Task17请运行--all\n'
 else
     printf 'PASS: 新端结构迁移；NOT RUN: 旧端消费（未设置MINISO_LEGACY_DIR，不计通过）\n'
+fi
+# 异步函数正常return不会触发Bash EXIT trap，必须显式退出以执行同一清理路径。
+exit 0
+}
+# 外层接收信号后转交当前夹具子shell；否则只杀外层会遗留其wait中的两个测试JVM。
+fixture_pid=""
+forward_signal() {
+    signal_result="$1"
+    trap '' INT TERM
+    if [[ -n "$fixture_pid" ]]; then
+        kill -TERM "$fixture_pid" 2>/dev/null || true
+        wait "$fixture_pid" 2>/dev/null || true
+    fi
+    exit "$signal_result"
+}
+trap 'forward_signal 130' INT
+trap 'forward_signal 143' TERM
+run_once() {
+    run_fixture &
+    fixture_pid=$!
+    fixture_result=0
+    wait "$fixture_pid" || fixture_result=$?
+    fixture_pid=""
+    return "$fixture_result"
+}
+if [[ "$mode" == --all ]]; then
+    for MINISO_MYSQL_ISOLATION in READ-COMMITTED REPEATABLE-READ; do
+        export MINISO_MYSQL_ISOLATION
+        run_once
+    done
+    printf 'PASS: Task17全部强制门禁完成（RC/RR，无跳过）\n'
+else
+    run_once
 fi

@@ -519,12 +519,12 @@ WHERE task_id=? AND status='SENDING' AND lock_owner=? AND version=?
 
 ## Task 17: 真实MySQL双隔离级别、跨JVM及Redis断点验收
 
-**Files:** Extend `E/scripts/test-miniso-shared-callback.sh`、`ET/persistence/MinisoBridgeMysqlContractTest.java`、`LT/MinisoBridgeMysqlContractTest.java`、`ET/redis/MinisoLocalRedisContractTest.java`；Append `E/docs/集成测试.md`。
+**Files:** Extend `E/scripts/test-miniso-shared-callback.sh`、`ET/persistence/MinisoBridgeMysqlContractTest.java`、`LT/MinisoBridgeMysqlContractTest.java`、`ET/redis/MinisoLocalRedisContractTest.java`；新增测试专用`ET/persistence/MinisoMysqlArbitrationFixture.java`、`MinisoMysqlReleaseRecovery.java`并补充离线`legacy-baseline.sql`的id投影；Append `E/docs/集成测试.md`。
 
-- [ ] 1. 脚本增加`--all --legacy-repo "$L"`，校验JDK8/21和实际执行测试数；共享本次Docker schema只给两个测试JVM，不启动Nacos/MQ/XXL/真实供应商。旧测试调用真实桥接store/路由/事务服务，新测试调用真实新端adapter/Worker。两JVM屏障只在测试schema内，使用独立控制连接和有界等待；生产事务不写控制屏障表。每次连接显式设置RC或RR，不只改全局变量。
-- [ ] 2. 构造确定性竞争，不用sleep猜时间：未知接收候选无凭据后暂停→另事务发布凭据→分别放行接收或首次授权。测试MyBatis/JDBC拦截器可暂停准确语句，但不增加生产暂停钩子。接收先提交：无授权/无Redis释放；授权先提交：授权不变/核销人工/恢复完成。RC和RR均执行，保留屏障顺序、事务提交及最终SQL结果。
-- [ ] 3. 覆盖旧端整单多券仅非首券核销、候选后新归属出现、批次CAS失败、退款流水失败；以及旧路由租约过期最终CAS失败，分别断言无资金越权、无半套退款、无孤立新事件/旧事实/task。加入不同券并行控制，不能把全局串行误当同券正确。
-- [ ] 4. 扩展现有真实redis-server夹具执行生产release Lua，金额137分；在授权提交前回滚、提交后未Redis、Redis已生效响应丢失、delta写前、delta/标记事务失败、原任务SUCCESS前分别中断。每个断点恢复时插入迟到核销，核对余额只增加137、RELEASE唯一且正确、balance_reserved与delta一致、sourceEventId不变。原Lua身份错配、金额139及重复release是负控，不只断言ALREADY_RELEASED文本。
+- [x] 1. 脚本增加`--all --legacy-repo "$L"`，校验JDK8/21和实际执行测试数；共享本次Docker schema只给两个测试JVM，不启动Nacos/MQ/XXL/真实供应商。旧测试调用真实桥接store/路由/事务服务，新测试调用真实新端adapter/Worker。两JVM屏障只在测试schema内，使用独立控制连接和有界等待；生产事务不写控制屏障表。每次连接显式设置RC或RR，不只改全局变量。
+- [x] 2. 构造确定性竞争，不用sleep猜时间：未知接收候选无凭据后暂停→另事务发布凭据→分别放行接收或首次授权。测试MyBatis/JDBC拦截器可暂停准确语句，但不增加生产暂停钩子。接收先提交：无授权/无Redis释放；授权先提交：授权不变/核销人工/恢复完成。RC和RR均执行，保留屏障顺序、事务提交及最终SQL结果。
+- [x] 3. 覆盖旧端整单多券仅非首券核销、候选后新归属出现、批次CAS失败、退款流水失败；以及旧路由租约过期最终CAS失败，分别断言无资金越权、无半套退款、无孤立新事件/旧事实/task。加入不同券并行控制，不能把全局串行误当同券正确。
+- [x] 4. 扩展现有真实redis-server夹具执行生产release Lua，金额137分；在授权提交前回滚、提交后未Redis、Redis已生效响应丢失、delta写前、delta/标记事务失败、原任务SUCCESS前分别中断。每个断点恢复时插入迟到核销，核对余额只增加137、RELEASE唯一且正确、balance_reserved与delta一致、sourceEventId不变。原Lua身份错配、金额139及重复release是负控，不只断言ALREADY_RELEASED文本。
 
 ```bash
 MINISO_MYSQL_IMAGE="$MINISO_MYSQL_IMAGE" \
@@ -534,8 +534,12 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) mvn -B -f "$E/pom.xml" \
   -Dsurefire.failIfNoSpecifiedTests=false -Dminiso.localRedisTests=true test
 ```
 
-- [ ] 5. 预期：RC/RR和两个实际JVM边界全部通过，Redis及最终数据库值满足上述独立期望。无Docker/redis-server、真实版本不符或任一强制用例跳过就是该门禁未通过，不能降级为H2后声明完成。
-- [ ] 6. 将执行日期、profile、本地容器版本/schema、禁用远端Nacos说明、连接隔离级别、测试数据范围、命令、Surefire实际数量、屏障及最终余额/delta证据追加《集成测试.md》；仅记录真实结果。删除临时容器、可丢弃schema及scratch；有长期回归价值的合同测试保留。本地提交`test(miniso): prove shared callback arbitration and release recovery`。
+- [x] 5. 预期：RC/RR和两个实际JVM边界全部通过，Redis及最终数据库值满足上述独立期望。无Docker/redis-server、真实版本不符或任一强制用例跳过就是该门禁未通过，不能降级为H2后声明完成。
+- [x] 6. 将执行日期、profile、本地容器版本/schema、禁用远端Nacos说明、连接隔离级别、测试数据范围、命令、Surefire实际数量、屏障及最终余额/delta证据追加《集成测试.md》；仅记录真实结果。删除临时容器、可丢弃schema及scratch；有长期回归价值的合同测试保留。本地提交`test(miniso): prove shared callback arbitration and release recovery`。
+
+2026-10-22本地执行：`--all --legacy-repo`强制RC/RR，每级新端结构1、旧端合同9、跨JVM两端各1、组合恢复1、独立Redis5，共36次执行全部通过，无失败/错误/跳过。跨JVM准确暂停未知候选查询后，分别证明接收先提交阻断首次授权，以及授权先提交后迟到核销转人工且真实Worker恢复137分。七个恢复窗口覆盖提交前回滚、提交后未Redis、回复丢失、delta写前/插入后/标记SQL后提交失败及原SUCCESS前；新增事件B恢复冻结A许可，比较完整delta身份和独立余额。旧多券非首券、归属后出现、CAS/流水回滚、租约末CAS和不同券并行均实测。每条连接显式RC/RR；旧生产发布/作废专属RC保留。新端关联192项、旧端291项全通过。审查补齐Worker负控/不同事件source及构造失败/中断清理，实际Redis启动失败和SIGTERM反例通过；正常退出也逐轮核对容器/scratch清理。旧端本地提交`2c78660d`。完整证据见《集成测试.md》`MINISO-BRIDGE-CROSS-JVM-RECOVERY-LOCAL-20261022`。生产代码及共享DDL未改；仅本地提交，不执行Task18—19、push或部署，不单独启用BRIDGE。
+
+授权提交前回滚窗口补充判据：后来核销胜出时必须无授权、无Redis释放、无delta，并由真实Worker阻断；“只增加137”仅适用于已提交许可的恢复窗口，不能给未提交许可制造退款。
 
 ## Task 18: 默认关闭、受控Job与低频观测
 

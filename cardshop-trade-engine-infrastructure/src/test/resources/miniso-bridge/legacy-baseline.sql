@@ -1,6 +1,7 @@
 -- 仅供新建可丢弃schema的最小旧表前置结构，不是发布DDL或完整旧库快照。
 -- 引擎结构必须由真实master changelog发布；参见 docs/交行直充业务系统详细设计.md 9.8。
 CREATE TABLE mc_order (
+    id bigint NOT NULL AUTO_INCREMENT UNIQUE COMMENT '表主键',
     order_Id varchar(100) NOT NULL COMMENT '平台订单号',
     org_code varchar(64) DEFAULT NULL COMMENT '商户编码',
     out_orderId varchar(100) DEFAULT NULL COMMENT '商户订单号',
