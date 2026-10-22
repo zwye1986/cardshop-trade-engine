@@ -473,9 +473,11 @@ CAS更新行数不是1时抛异常回滚整业务事务，包括已插新事件�
 
 **Files:** Modify `LB/MinisoCallbackRouteService.java`；Create `LB/MinisoLegacyNotificationService.java`、`LT/MinisoLegacyNotificationServiceTest.java`；Extend `LT/MinisoCallbackRouteServiceTest.java`。
 
-- [ ] 1. 写旧分支红灯：唯一可信旧券核销→一条history/状态2/一条冻结task/LEGACY_APPLIED；任务insert失败则三种副作用全部回滚；已作废/已退款/异时历史核销只转人工。运行`legacy_test 'MinisoCallbackRouteServiceTest,MinisoLegacyNotificationServiceTest'`。
-- [ ] 2. 锁主单/无ext复核/匹配MINISO state_type3全部凭据/目标guard/新事件/inbox，在当前锁定读下幂等保存history及目标批次条件更新。别的券不变，主单充值状态和余额不变。历史已核销且同时间只登记接收幂等事实，不创建新的历史补发task；同券多条矛盾历史人工，不取MAX。
-- [ ] 3. 新事实需通知时从可信order/本券/useTime构造旧TreeMap字段，保留数字timestamp、原8位nonce格式、state_type/use_state原类型及AESUtils.Encrypt流程；只从mc_config.writeOffNotifyUrl取URL。冻结URL/完整正文一次，移除aesKey后落库；无配置只提交事实，不回退新notify_url。
+实际清单补充：复用Task14既有事务所有者`LB/MinisoCallbackBridgeStore.java`应用旧分支，扩展`LT/MinisoBridgeMysqlContractTest.java`；新端仅扩展可丢弃MySQL夹具`E/cardshop-trade-engine-infrastructure/src/test/resources/miniso-bridge/legacy-baseline.sql`的旧商户AES/通知配置投影，以及两主设计、计划和集成记录，不改共享迁移或新端生产代码。
+
+- [x] 1. 写旧分支红灯：唯一可信旧券核销→一条history/状态2/一条冻结task/LEGACY_APPLIED；任务insert失败则三种副作用全部回滚；已作废/已退款/异时历史核销只转人工。运行`legacy_test 'MinisoCallbackRouteServiceTest,MinisoLegacyNotificationServiceTest'`。
+- [x] 2. 锁主单/无ext复核/匹配MINISO state_type3全部凭据/目标guard/新事件/inbox，在当前锁定读下幂等保存history及目标批次条件更新。别的券不变，主单充值状态和余额不变。历史已核销且同时间只登记接收幂等事实，不创建新的历史补发task；同券多条矛盾历史人工，不取MAX。
+- [x] 3. 新事实需通知时从可信order/本券/useTime构造旧TreeMap字段，保留数字timestamp、原8位nonce格式、state_type/use_state原类型及AESUtils.Encrypt流程；只从mc_config.writeOffNotifyUrl取URL。冻结URL/完整正文一次，移除aesKey后落库；无配置只提交事实，不回退新notify_url。
 
 ```java
 Map<String, Object> signed = new TreeMap<String, Object>();
@@ -488,8 +490,10 @@ String frozenPayload = JSONObject.toJSONString(signed);
 ```
 
 `fieldsFromLockedFacts`是本方法内由已锁主单/目标券构造的局部Map，字段明确为order_id/out_order_sn/account/state_type/use_state/use_time/timestamp/nonce_str；不复用`getOrderInvalid`的首券/MAX JOIN。固定本地aes测试向量独立验密，不在日志输出正文。
-- [ ] 4. taskId=`miniso-legacy-notify-`加同券64位摘要，event_id唯一，初值INIT/version1/retry0/max10；任务/事实/inbox最终CAS同主事务提交。双券不同useTime非对称输入验证只冻结目标券，重投仍同一payload/URL/sign。上述测试转绿。
-- [ ] 5. 本地提交`feat(miniso): apply legacy redemption with frozen notification task`。
+- [x] 4. taskId=`miniso-legacy-notify-`加同券64位摘要，event_id唯一，初值INIT/version1/retry0/max10；任务/事实/inbox最终CAS同主事务提交。双券不同useTime非对称输入验证只冻结目标券，重投仍同一payload/URL/sign。上述测试转绿。
+- [x] 5. 本地提交`feat(miniso): apply legacy redemption with frozen notification task`。
+
+2026-10-22本地执行：141项基线通过；新增旧分支红灯58项中16项预期断言失败，1项因未生成任务的后续读取错误，不把它当独立行为红灯；首轮58项转绿，补充固定OpenSSL向量/独立JCE验密、双券不同useTime、异渠道历史、新事件冲突、重复task键及提交结果未知后重投后64项通过。最终15组352项全通过，失败/错误/跳过0。真实MySQL8.0.28 RC/RR每轮新端1项、旧端7项均通过；Task15逐连接显式隔离级别，验证非首券history/状态2/冻结task/LEGACY_APPLIED、task真实SQL/批次CAS/最终CAS/插入后租约到期整事务回滚、重投冻结与历史不补发、余额137及主单不变。旧端本地提交`143b72ea`；完整配置/命令/随机schema/日志见《集成测试.md》`MINISO-BRIDGE-LEGACY-APPLY-LOCAL-20261022`。Task15只创建通知任务，HTTP仍TODO留Task16；Task17整套跨JVM/Redis及Task18调度未验收。两仓库仅本地提交，未push、部署或改共享配置，不单独启用BRIDGE。
 
 ## Task 16: 旧通知锁外HTTP与租约防迟到回写
 

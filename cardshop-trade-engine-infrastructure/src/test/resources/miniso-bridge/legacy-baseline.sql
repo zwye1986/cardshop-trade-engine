@@ -91,6 +91,7 @@ CREATE TABLE mc_ext_depart (
     org_code varchar(64) PRIMARY KEY,
     balance bigint,
     credit_status varchar(8),
+    aes_key varchar(128),
     depart_status int DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 CREATE TABLE mc_redpacket_record (
@@ -100,4 +101,11 @@ CREATE TABLE mc_redpacket_record (
     channel varchar(64),
     state varchar(8),
     value bigint
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Task15旧通知配置的最小投影，仅供随机本地schema；不作为生产DDL。
+CREATE TABLE mc_config (
+    org_code varchar(64),
+    config_key varchar(64),
+    config_value varchar(1024)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
