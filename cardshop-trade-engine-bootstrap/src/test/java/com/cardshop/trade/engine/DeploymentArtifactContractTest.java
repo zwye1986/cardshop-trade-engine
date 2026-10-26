@@ -2,13 +2,28 @@ package com.cardshop.trade.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.cardshop.trade.engine.application.recharge.MerchantNotifyClientPort;
+import com.cardshop.trade.engine.application.recharge.MerchantNotifyPreparationService;
+import com.cardshop.trade.engine.application.recharge.MerchantNotifyRequest;
+import com.cardshop.trade.engine.application.recharge.MerchantNotifySendResult;
+import com.cardshop.trade.engine.application.recharge.NotifyDeliveryChannel;
+import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrder;
+import com.cardshop.trade.engine.infrastructure.config.TradeEngineInfrastructureConfiguration;
+import com.cardshop.trade.engine.infrastructure.notify.bocom.BocomNotifyProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.boot.env.YamlPropertySourceLoader;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.core.io.FileSystemResource;
 
 /**
  * 部署交付物契约测试。
@@ -45,6 +60,7 @@ class DeploymentArtifactContractTest {
                 .contains("JDK 21")
                 .contains("cardshop-trade-engine-bootstrap")
                 .contains("cardshop-trade-engine-dev.example.yaml")
+                .contains("cardshop-trade-engine-bocom-a35.test.yaml")
                 .contains("zip")
                 .doesNotContain("deploy/config/.dev.env")
                 .doesNotContain("deploy/config/.test.env")
@@ -145,6 +161,64 @@ class DeploymentArtifactContractTest {
                 .contains("write-enabled: false")
                 .doesNotContain("SPRING_RABBITMQ_HOST:47.100.11.188")
                 .doesNotContain("SPRING_RABBITMQ_USERNAME:admin_cardshop");
+    }
+
+    /** A35按用户要求启用发送，但缺失TLS或凭据仍须暂缓三类通知；参见详细设计「交行 2104 通知实施细化」。 */
+    @Test
+    void a35TestConfigurationEnablesDeliveryButWaitsForMissingCredentials() throws IOException {
+        Path configuration = repositoryRoot().resolve("deploy/nacos/cardshop-trade-engine-bocom-a35.test.yaml");
+        assertThat(configuration).exists().isRegularFile();
+        var sources = new YamlPropertySourceLoader().load("a35-bank-test", new FileSystemResource(configuration));
+        new ApplicationContextRunner().withUserConfiguration(TradeEngineInfrastructureConfiguration.class)
+                .withInitializer(context -> {
+                    // 该交付物在未注入任何真实密钥/TLS路径时也应能安全装配，不能依赖开发机环境。
+                    context.getEnvironment().getPropertySources().remove("systemEnvironment");
+                    context.getEnvironment().getPropertySources().remove("systemProperties");
+                    sources.forEach(source -> context.getEnvironment().getPropertySources().addLast(source));
+                })
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var settings = context.getBean(BocomNotifyProperties.class);
+                    assertThat(settings.isEnabled()).isTrue();
+                    assertThat(settings.getTlsTrustCertificatePath()).isEmpty();
+                    assertThat(settings.getMerchants()).containsOnlyKeys("A35");
+                    var merchant = settings.getMerchants().get("A35");
+                    assertThat(merchant.getAppId()).isEqualTo("appogvxz202610210001z");
+                    assertThat(merchant.getProtocol()).isEqualTo("JHISV202610210001");
+                    assertThat(merchant.getSignatureAlgorithm()).isEqualTo("SM2");
+                    assertThat(merchant.getGatewayUrl())
+                            .isEqualTo("https://open.test.bankcomm.com:9443/api/trade/J_IEP_001_2104/v1");
+                    assertThat(settings.getCredentials().get(merchant.getPrivateKeyRef()).getPrivateKey()).isEmpty();
+                    assertThat(settings.getCredentials().get(merchant.getBankPublicKeyRef()).getBankPublicKey()).isEmpty();
+                    assertThat(settings.getCredentials().values()).allSatisfy(credential -> {
+                        assertThat(credential.getOrgCode()).isEqualTo("A35");
+                        assertThat(credential.getAppId()).isEqualTo("appogvxz202610210001z");
+                        assertThat(credential.getSignatureAlgorithm()).isEqualTo("SM2");
+                    });
+
+                    var preparation = context.getBean(MerchantNotifyPreparationService.class);
+                    var order = new RechargeFulfillmentOrder("SYNTHETIC-ORDER", "SYNTHETIC-OUT", "A35", "synthetic",
+                            "P", "C", "MINISO", 137, "", 12, "DB_PERSISTED", "PASSED", true, true);
+                    var tasks = List.of(preparation.orderStatus(order, "12", 10).orElseThrow(),
+                            preparation.cancelled(order, Instant.parse("2026-10-26T03:30:00Z"), 10).orElseThrow(),
+                            preparation.redeemed(order, "synthetic-redemption", LocalDateTime.of(2026, 10, 26, 11, 20), 10)
+                                    .orElseThrow());
+                    assertThat(tasks.get(0).encodedPayload()).startsWith("operate_type:1,");
+                    assertThat(tasks.get(1).encodedPayload()).startsWith("operate_type:3,");
+                    assertThat(tasks.get(2).encodedPayload()).startsWith("operate_type:2,");
+                    var json = new ObjectMapper();
+                    for (var task : tasks) {
+                        assertThat(task.deliveryChannel()).isEqualTo(NotifyDeliveryChannel.BOCOM_OPENAPI);
+                        assertThat(task.payload()).doesNotContainKeys("sign", "keyId");
+                        var request = new MerchantNotifyRequest(task.taskId(), task.notifyUrl(), json.writeValueAsString(task.payload()),
+                                task.orgCode(), task.orderId(), task.outOrderSn(), task.deliveryChannel(),
+                                json.writeValueAsString(task.routeSnapshot()), task.encodedPayload(), 1, "offline-worker",
+                                LocalDateTime.of(2026, 10, 26, 12, 0), task.notifyType(), task.bizStatus());
+                        var result = context.getBean(MerchantNotifyClientPort.class).send(request);
+                        assertThat(result.disposition()).isEqualTo(MerchantNotifySendResult.Disposition.DEFERRED);
+                        assertThat(result.errorMessage()).isEqualTo("BANK_FROZEN_CREDENTIAL_UNAVAILABLE");
+                    }
+                });
     }
 
     @Test

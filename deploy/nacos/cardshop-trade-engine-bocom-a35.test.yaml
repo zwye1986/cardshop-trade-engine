@@ -1,0 +1,36 @@
+# A35交行2104测试环境配置片段，不是完整Nacos主配置，不能覆盖原有数据源、Redis或MQ配置。
+# 参见 docs/交行直充业务系统详细设计.md「交行 2104 通知实施细化」及 docs/交行2104回调接入指引.md。
+# 注册路由后，新通知进入BOCOM_OPENAPI任务；发送关闭期间保留任务，不回退到下单notify_url。
+# 历史DIRECT_JSON任务不会自动迁移，不得为补发直接改写其通道或原始正文。
+trade:
+  engine:
+    notify:
+      bocom:
+        enabled: true
+        # TODO：按用户要求，TLS信任方式及服务器证书路径留到后续联调确认，参见详细设计「交行 2104 通知实施细化」。
+        # 用户已要求打开发送开关；空路径不代表跳过TLS校验，缺少TLS配置时当前发送器仍会暂缓。
+        tls-trust-certificate-path: ${BOCOM_TLS_TRUST_CERTIFICATE_PATH:}
+        connect-timeout-ms: 3000
+        read-timeout-ms: 3000
+        merchants:
+          A35:
+            route-version: a35-bocom-test-20261026-v1
+            gateway-url: https://open.test.bankcomm.com:9443/api/trade/J_IEP_001_2104/v1
+            protocol: JHISV202610210001
+            app-id: appogvxz202610210001z
+            signature-algorithm: SM2
+            private-key-ref: a35-sm2-private-20261021-v1
+            bank-public-key-ref: bocom-test-sm2-public-v1
+        credentials:
+          a35-sm2-private-20261021-v1:
+            org-code: A35
+            app-id: appogvxz202610210001z
+            signature-algorithm: SM2
+            # 从用户指定sm2key.pri受控注入原始十六进制正文，不把个人路径或私钥写入版本库。
+            private-key: ${BOCOM_A35_PRIVATE_KEY:}
+          bocom-test-sm2-public-v1:
+            org-code: A35
+            app-id: appogvxz202610210001z
+            signature-algorithm: SM2
+            # 来自2104示例中标注“测试环境总行云OPENAPI交行SM2公钥”的APIGW_PUBLIC_KEY，不能用默认RSA值或我方公钥。
+            bank-public-key: ${BOCOM_A35_BANK_PUBLIC_KEY:}
