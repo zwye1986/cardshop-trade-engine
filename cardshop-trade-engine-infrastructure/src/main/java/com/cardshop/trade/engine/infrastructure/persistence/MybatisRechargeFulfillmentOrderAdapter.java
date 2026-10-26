@@ -144,6 +144,32 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
         return Optional.of(new SupplierFlowSnapshot(flow.getId(), flow.getStatus()));
     }
 
+    /**
+     * 查同订单全部MINISO请求元数据，避免较新的查单流水掩盖已发送的作废；不读原始响应。
+     * 单订单流水随有限重试增长，不扫描跨订单数据，也不依赖MySQL专有JSON函数。
+     * 损坏的非空请求参数失败关闭，不能将“未读懂”解释为允许再次作废。
+     * 参见详细设计「MINISO本地凭据作废与未知结果恢复（2026-10-26）」。
+     */
+    @Override
+    public boolean hasSupplierInvalidationAttempt(String orderId, String supplierRequestId) {
+        var flows = flowMapper.selectList(new LambdaQueryWrapper<McOrderSupplierFlowDO>()
+                .select(McOrderSupplierFlowDO::getRequestParam)
+                .eq(McOrderSupplierFlowDO::getOrderId, orderId)
+                .eq(McOrderSupplierFlowDO::getChannel, MINISO_CHANNEL));
+        for (var flow : flows) {
+            if (flow.getRequestParam() == null || flow.getRequestParam().isBlank()) continue;
+            try {
+                var payload = objectMapper.readTree(flow.getRequestParam());
+                if (payload != null && OutboxEventType.INVALID_ORDER.name().equals(payload.path("operation").textValue())
+                        && supplierRequestId.equals(payload.path("supplier_request_id").textValue())) return true;
+            } catch (JsonProcessingException exception) {
+                // 立即抛出安全摘要；原异常可能携带请求中的敏感字段，由Worker统一采样记录堆栈。
+                throw new IllegalStateException("MINISO supplier attempt metadata is unreadable");
+            }
+        }
+        return false;
+    }
+
     @Override
     @Transactional
     public long insertSupplierFlowStart(SupplierFlowStartCommand command) {

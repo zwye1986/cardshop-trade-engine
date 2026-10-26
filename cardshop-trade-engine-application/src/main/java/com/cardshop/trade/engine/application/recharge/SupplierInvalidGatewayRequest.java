@@ -16,6 +16,7 @@ import java.util.Map;
  * @param account 直充账号，对应旧表 {@code mc_order.account}
  * @param supplierChannel 供应商渠道编码，对应旧表 {@code mc_order.url}
  * @param rawPayload 作废 outbox 原始载荷展开后的补充字段，便于渠道适配器扩展私有参数
+ * @param queryOnly 已有持久作废尝试时只查证原订单，不再次发送作废；由Worker决定，不信任外部载荷
  */
 public record SupplierInvalidGatewayRequest(
         String supplierRequestId,
@@ -24,5 +25,12 @@ public record SupplierInvalidGatewayRequest(
         String orgCode,
         String account,
         String supplierChannel,
-        Map<String, Object> rawPayload) {
+        Map<String, Object> rawPayload,
+        boolean queryOnly) {
+
+    /** 兼容其他渠道的原始请求；MINISO恢复必须显式传queryOnly，参见详细设计2026-10-26修订。 */
+    public SupplierInvalidGatewayRequest(String supplierRequestId, String orderId, String outOrderSn,
+            String orgCode, String account, String supplierChannel, Map<String, Object> rawPayload) {
+        this(supplierRequestId, orderId, outOrderSn, orgCode, account, supplierChannel, rawPayload, false);
+    }
 }

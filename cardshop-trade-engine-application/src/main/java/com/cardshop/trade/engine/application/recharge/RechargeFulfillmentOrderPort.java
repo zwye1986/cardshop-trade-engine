@@ -20,6 +20,15 @@ public interface RechargeFulfillmentOrderPort {
      */
     Optional<SupplierFlowSnapshot> findLatestSupplierFlowByOrderId(String orderId);
 
+    /**
+     * 按订单及原INVALID事件读取持久作废尝试；new/未知结果也表示可能已发送，后续只能查证。
+     * 不得只看最近流水或重试次数，避免崩溃及插入其他流水后重发不可逆请求。
+     * 参见详细设计「MINISO本地凭据作废与未知结果恢复（2026-10-26）」。
+     */
+    default boolean hasSupplierInvalidationAttempt(String orderId, String supplierRequestId) {
+        throw new UnsupportedOperationException("MINISO invalidation recovery requires persistent attempt lookup");
+    }
+
     long insertSupplierFlowStart(SupplierFlowStartCommand command);
 
     void updateSupplierFlow(SupplierFlowUpdateCommand command);

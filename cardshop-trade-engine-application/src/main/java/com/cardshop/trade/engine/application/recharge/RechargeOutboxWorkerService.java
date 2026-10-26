@@ -49,6 +49,7 @@ public class RechargeOutboxWorkerService {
     private static final char ACCOUNT_KEY_SEPARATOR = '\0';
     private static final String MINISO_CHANNEL = "MINISO";
     private static final String RELEASE_TYPE = "RELEASE";
+    private static final String MINISO_INVALID_QUERY_OPERATION = "INVALID_QUERY";
 
     private final java.util.function.Supplier<MinisoWriteOffProtection> minisoWriteOffProtection;
     private final com.cardshop.trade.engine.application.logging.LogStormGuard errorLogs =
@@ -976,7 +977,18 @@ public class RechargeOutboxWorkerService {
                 null,
                 null,
                 "供应商作废中"));
-        SupplierGatewayResponse response = supplierGatewayPort.invalid(invalidRequest(event, order));
+        // 调用前先提交尝试事实；即使回包或任务计数丢失，新Worker也只能查证，参见详细设计2026-10-26修订。
+        boolean queryOnly = isMiniso(order) && orderPort.hasSupplierInvalidationAttempt(order.orderId(), event.eventId());
+        var request = invalidRequest(event, order, queryOnly);
+        Long flowId = null;
+        if (isMiniso(order)) {
+            flowId = orderPort.insertSupplierFlowStart(new SupplierFlowStartCommand(order.orderId(), order.outOrderSn(),
+                    order.supplierChannel(), "new", queryOnly ? "作废未知结果查证" : "本地凭据直接作废",
+                    request.supplierRequestId(), Map.of("supplier_request_id", request.supplierRequestId(),
+                            "operation", queryOnly ? MINISO_INVALID_QUERY_OPERATION : OutboxEventType.INVALID_ORDER.name())));
+        }
+        SupplierGatewayResponse response = supplierGatewayPort.invalid(request);
+        if (flowId != null) orderPort.updateSupplierFlow(flowUpdate(flowId, response));
         if (response.status() == SupplierGatewayStatus.SUCCESS) {
             if (blockedByMinisoRedemption(event, order))
                 return RechargeOutboxBatchResult.Outcome.FAILED;
@@ -986,7 +998,7 @@ public class RechargeOutboxWorkerService {
                     FulfillmentDispatchStatus.CANCELLED,
                     ORDER_STATUS_SUCCESS,
                     DATA_STATUS_PROCESSED,
-                    null,
+                    flowId,
                     null,
                     null,
                     "供应商作废成功").withMinisoReceipt(response.minisoReceipt()).withInvalidTime(invalidTime);
@@ -1016,14 +1028,14 @@ public class RechargeOutboxWorkerService {
             markFailedOrManualRequired(event, "供应商作废处理中", settings.retryBackoff());
             return RechargeOutboxBatchResult.Outcome.FAILED;
         }
-        if (isMiniso(order)) return queryMinisoReceiptForInvalidation(event, order);
+        // 本地凭据已齐全的不明结果不能回落普通发券查单，否则远端缺phone会再次阻断作废恢复。
         markFailedOrManualRequired(event, response.responseMessage(), settings.retryBackoff());
         return RechargeOutboxBatchResult.Outcome.FAILED;
     }
 
     /**
-     * 缺凭据/不明作废结果用原orderId查单，沿用原INVALID任务退避，不重开已完成的稳定查单事件。
-     * 查单只能补齐发券证据，不能等同作废完成；下一轮仍须门禁、远端确认及事务授权。参见详细设计9.8。
+     * 仅缺本地凭据时用原orderId普通查单，沿用原INVALID任务退避；不明作废结果使用queryOnly专用合同。
+     * 查单只能补齐发券证据，不能等同作废完成；下一轮仍须门禁及事务授权。参见详细设计9.8及2026-10-26修订。
      */
     private RechargeOutboxBatchResult.Outcome queryMinisoReceiptForInvalidation(
             RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
@@ -1233,7 +1245,8 @@ public class RechargeOutboxWorkerService {
                 Map.of("outbox_payload", event.payload()));
     }
 
-    private static SupplierInvalidGatewayRequest invalidRequest(RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
+    private static SupplierInvalidGatewayRequest invalidRequest(
+            RechargeOutboxEvent event, RechargeFulfillmentOrder order, boolean queryOnly) {
         return new SupplierInvalidGatewayRequest(
                 event.eventId(),
                 order.orderId(),
@@ -1241,7 +1254,8 @@ public class RechargeOutboxWorkerService {
                 order.orgCode(),
                 order.account(),
                 order.supplierChannel(),
-                Map.of("outbox_payload", event.payload()));
+                Map.of("outbox_payload", event.payload()),
+                queryOnly);
     }
 
     private static SupplierQueryGatewayRequest queryRequest(RechargeOutboxEvent event, RechargeFulfillmentOrder order) {

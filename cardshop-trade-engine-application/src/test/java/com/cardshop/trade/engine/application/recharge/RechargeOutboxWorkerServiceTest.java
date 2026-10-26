@@ -17,6 +17,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -241,6 +242,54 @@ class RechargeOutboxWorkerServiceTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"unknown", "gateway-exception", "audit-update-failure"})
+    void unknownMinisoInvalidationAuditsAttemptAndRecoversWithoutOrdinaryQueryOrRepeatedRefund(String failure) {
+        var orders = new FakeFulfillmentOrderPort(minisoOrder(12, true, "SUCCESS"));
+        orders.flowUpdateFailures = failure.equals("audit-update-failure") ? 1 : 0;
+        var outbox = new FakeOutboxPort(outbox(OutboxEventType.INVALID_ORDER));
+        var gateway = failure.equals("gateway-exception")
+                ? FakeSupplierGatewayPort.throwing(new IllegalStateException("supplier response lost"))
+                : new FakeSupplierGatewayPort(SupplierGatewayResponse.retryableFailed(
+                        "ORDER-1", "MINISO_RESULT_UNKNOWN", "timeout or incomplete acknowledgment", "{\"code\":200}"));
+        var release = new IdempotentBalanceReleasePort();
+        var notifications = new FakeNotifyTaskPort();
+        var worker = minisoWorker(outbox, orders, gateway, release, notifications, new FakeBalanceDeltaOutboxPort(), false);
+
+        assertThat(worker.processDue(1, 0, 10, "worker", List.of(OutboxEventType.INVALID_ORDER), 1).failed()).isEqualTo(1);
+        assertThat(gateway.queryRequests).isEmpty();
+        assertThat(gateway.invalidRequests).singleElement().satisfies(request -> assertThat(request.queryOnly()).isFalse());
+        assertThat(orders.flowStarts).singleElement().satisfies(flow -> assertThat(flow.requestPayload())
+                .containsEntry("supplier_request_id", "dispatch-ORDER-1").containsEntry("operation", "INVALID_ORDER"));
+        if (failure.equals("unknown")) {
+            assertThat(orders.flowUpdates).singleElement().satisfies(flow -> assertThat(flow.rawResponse()).isEqualTo("{\"code\":200}"));
+        } else {
+            assertThat(orders.flowUpdates).isEmpty();
+        }
+        assertThat(orders.authorization).isNull();
+        assertThat(release.balanceIncrease).isZero();
+        assertThat(notifications.createdTasks).isEmpty();
+
+        // 新Worker、相同原任务且retryCount未变，覆盖尝试已落库而任务计数尚未更新的崩溃窗口。
+        var voidReceipt = new MinisoFulfillmentReceipt("ORDER-1", "A36", 123, "TEST-C1", "13800138000",
+                "2026-07-01 00:00:00", "2026-12-01 00:00:00", 3);
+        var recovery = new FakeSupplierGatewayPort(SupplierGatewayResponse.success("ORDER-1", "200", "void", "{}")
+                .withMinisoReceipt(voidReceipt));
+        worker = minisoWorker(outbox, orders, recovery, release, notifications, new FakeBalanceDeltaOutboxPort(), false);
+        assertThat(worker.processDue(1, 0, 10, "worker", List.of(OutboxEventType.INVALID_ORDER), 1).succeeded()).isEqualTo(1);
+        assertThat(recovery.invalidRequests).singleElement().satisfies(request -> assertThat(request.queryOnly()).isTrue());
+        assertThat(recovery.queryRequests).isEmpty();
+        assertThat(orders.flowStarts.getLast().requestPayload()).containsEntry("operation", "INVALID_QUERY");
+        assertThat(orders.findByOrderId("ORDER-1").orElseThrow().orderStatus()).isEqualTo(12);
+        assertThat(release.balanceIncrease).isEqualTo(137);
+        assertThat(orders.completedReleaseDeltas).hasSize(1);
+        assertThat(notifications.createdTasks).hasSize(1);
+        assertThat(worker.processDue(1, 0, 10, "worker", List.of(OutboxEventType.INVALID_ORDER), 1).succeeded()).isEqualTo(1);
+        assertThat(recovery.invalidRequests).hasSize(1);
+        assertThat(release.balanceIncrease).isEqualTo(137);
+        assertThat(notifications.createdTasks).hasSize(1);
+    }
+
     @Test
     void invalidationWithoutMinisoReceiptQueriesOriginalOrderAndRetainsItsRecoveryTask() {
         for (int status : List.of(2, 12)) {
@@ -284,7 +333,16 @@ class RechargeOutboxWorkerServiceTest {
                 SupplierGatewayResponse.success("ORDER-1", "200", "ok", "{}").withMinisoReceipt(receipt));
         var release = new IdempotentBalanceReleasePort();
         var notifications = new FakeNotifyTaskPort();
-        var service = minisoWorker(outbox, orders, gateway, release, notifications, new FakeBalanceDeltaOutboxPort(), false);
+        // 与真实保护器一致：本地缺凭据先报归属未确认，不能先尝试作废再用普通查单兜底。
+        var service = new RechargeOutboxWorkerService(outbox, orders, gateway, new FakeSupplierQueryOutboxPort(),
+                new FakeFrequencyPort(true), new FakeBalanceDeltaOutboxPort(), release, notifications,
+                new FixedNotifyPayloadSigner(), RechargeDispatchTimerPort.noop(), CLOCK, settings(),
+                () -> new MinisoWriteOffProtection() {
+                    public boolean blockInvalidation(String eventId, String orderId) {
+                        throw new MinisoWriteOffException(MinisoWriteOffException.Reason.OWNERSHIP_CONFLICT);
+                    }
+                    public void assertVoidAllowed(String orderId) { }
+                });
 
         assertThat(service.processDue(1, 0, 10, "worker", List.of(OutboxEventType.INVALID_ORDER), 1).failed()).isEqualTo(1);
         assertThat(orders.statusUpdates.getLast().minisoReceipt()).isEqualTo(receipt);
@@ -292,6 +350,8 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(release.balanceIncrease).isZero();
         assertThat(notifications.createdTasks).isEmpty();
         assertThat(outbox.successes).isEmpty();
+        assertThat(gateway.invalidRequests).isEmpty();
+        assertThat(orders.hasSupplierInvalidationAttempt("ORDER-1", "dispatch-ORDER-1")).isFalse();
 
         var voidReceipt = new MinisoFulfillmentReceipt(receipt.orderId(), receipt.orgCode(), receipt.batchId(),
                 receipt.couponCode(), receipt.phone(), receipt.beginTime(), receipt.endTime(), 3);
@@ -2073,6 +2133,7 @@ class RechargeOutboxWorkerServiceTest {
         private boolean hasTrustedVoidReceipt;
         private String authorizationFault = "";
         private int completionFailures;
+        private int flowUpdateFailures;
         private final Map<String, BalanceDeltaFlushOutboxCommand> completedReleaseDeltas = new HashMap<>();
 
         private FakeFulfillmentOrderPort(RechargeFulfillmentOrder order) {
@@ -2094,6 +2155,13 @@ class RechargeOutboxWorkerServiceTest {
         }
 
         @Override
+        public boolean hasSupplierInvalidationAttempt(String orderId, String supplierRequestId) {
+            return flowStarts.stream().anyMatch(flow -> flow.orderId().equals(orderId)
+                    && flow.supplierRequestId().equals(supplierRequestId)
+                    && "INVALID_ORDER".equals(flow.requestPayload().get("operation")));
+        }
+
+        @Override
         public long insertSupplierFlowStart(SupplierFlowStartCommand command) {
             flowStarts.add(command);
             latestSupplierFlowsByOrderId.put(command.orderId(), new SupplierFlowSnapshot(99L, command.status()));
@@ -2102,6 +2170,7 @@ class RechargeOutboxWorkerServiceTest {
 
         @Override
         public void updateSupplierFlow(SupplierFlowUpdateCommand command) {
+            if (flowUpdateFailures-- > 0) throw new IllegalStateException("supplier audit response write failed");
             flowUpdates.add(command);
         }
 
@@ -2285,6 +2354,7 @@ class RechargeOutboxWorkerServiceTest {
         @Override
         public SupplierGatewayResponse invalid(SupplierInvalidGatewayRequest request) {
             invalidRequests.add(request);
+            if (dispatchException != null) throw dispatchException;
             return dispatchResponses.getFirst();
         }
     }

@@ -11,6 +11,7 @@ import com.cardshop.trade.engine.application.recharge.MinisoFulfillmentReceipt;
 import com.cardshop.trade.engine.application.recharge.MinisoWriteOffException;
 import com.cardshop.trade.engine.application.recharge.OrderFulfillmentStatusUpdate;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
+import com.cardshop.trade.engine.application.recharge.SupplierFlowStartCommand;
 import com.cardshop.trade.engine.infrastructure.config.TradeEngineMybatisPersistenceAutoConfiguration;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoCouponGuardMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoReceiptMapper;
@@ -28,6 +29,7 @@ import java.time.Clock;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
+import java.util.Map;
 import java.util.UUID;
 import org.h2.jdbcx.JdbcDataSource;
 import org.junit.jupiter.api.AfterEach;
@@ -117,6 +119,9 @@ class RechargeFulfillmentVoucherStatePersistenceTest {
                 + "event_type varchar(32), org_code varchar(64), order_id varchar(100), out_order_sn varchar(100))");
         jdbc.execute("create table mc_depart_record(id bigint auto_increment primary key, org_code varchar(64),"
                 + "order_id varchar(100), type varchar(1), `value` bigint)");
+        jdbc.execute("create table mc_order_supplier_flow(id bigint auto_increment primary key,"
+                + "order_Id varchar(100),out_order_no varchar(100),channel varchar(32),status varchar(10),"
+                + "remark varchar(512),request_param clob,response_result clob,create_time timestamp,update_time timestamp)");
         jdbc.execute("""
                 create table recharge_balance_delta_outbox (
                     id bigint auto_increment primary key, event_id varchar(128) not null unique,
@@ -175,6 +180,28 @@ class RechargeFulfillmentVoucherStatePersistenceTest {
     @AfterEach
     void closeDatabase() {
         jdbc.execute("shutdown");
+    }
+
+    @Test
+    void invalidationAttemptSurvivesNewerFlowsAndMatchesExactOrderEventAndOperation() {
+        String eventId = "invalid-\"-ORDER-1";
+        assertThat(port.hasSupplierInvalidationAttempt(ORDER_ID, eventId)).isFalse();
+        port.insertSupplierFlowStart(new SupplierFlowStartCommand("OTHER-ORDER", "OUT", "MINISO", "new", "test",
+                eventId, Map.of("operation", "INVALID_ORDER", "supplier_request_id", eventId)));
+        port.insertSupplierFlowStart(new SupplierFlowStartCommand(ORDER_ID, "OUT", "MINISO", "new", "test",
+                "OTHER-EVENT", Map.of("operation", "INVALID_ORDER", "supplier_request_id", "OTHER-EVENT")));
+        port.insertSupplierFlowStart(new SupplierFlowStartCommand(ORDER_ID, "OUT", "MINISO", "new", "test",
+                eventId, Map.of("operation", "INVALID_QUERY", "supplier_request_id", eventId)));
+        assertThat(port.hasSupplierInvalidationAttempt(ORDER_ID, eventId)).isFalse();
+
+        // 无任何回包/状态更新，new行已独立提交，代表可能已发送；后续查询流水不能覆盖该事实。
+        port.insertSupplierFlowStart(new SupplierFlowStartCommand(ORDER_ID, "OUT", "MINISO", "new", "test",
+                eventId, Map.of("operation", "INVALID_ORDER", "supplier_request_id", eventId)));
+        port.insertSupplierFlowStart(new SupplierFlowStartCommand(ORDER_ID, "OUT", "MINISO", "new", "test",
+                eventId, Map.of("operation", "INVALID_QUERY", "supplier_request_id", eventId)));
+        assertThat(port.hasSupplierInvalidationAttempt(ORDER_ID, eventId)).isTrue();
+        assertThat(port.hasSupplierInvalidationAttempt(ORDER_ID, eventId + "-suffix")).isFalse();
+        assertThat(jdbc.queryForObject("select count(*) from mc_order_supplier_flow", Integer.class)).isEqualTo(5);
     }
 
     @Test

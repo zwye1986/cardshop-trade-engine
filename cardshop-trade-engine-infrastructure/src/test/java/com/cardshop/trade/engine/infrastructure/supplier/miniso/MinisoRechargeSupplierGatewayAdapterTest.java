@@ -122,9 +122,9 @@ class MinisoRechargeSupplierGatewayAdapterTest {
     }
 
     @Test
-    void invalidQueryRequiresCompleteReceiptBeforeAnyAbandon() {
+    void recoveryRejectsEmptyQueryWithoutRepeatingAbandon() {
         reply("{\"code\":200,\"data\":[]}");
-        assertUnknown(adapter().invalid(invalid()));
+        assertUnknown(adapter().invalid(invalid(true)));
         assertThat(calls.remove().path()).endsWith("/queryGrand");
         assertThat(calls).isEmpty();
     }
@@ -168,8 +168,7 @@ class MinisoRechargeSupplierGatewayAdapterTest {
     }
 
     @Test
-    void malformedAbandonResponseRetainsItsRawEvidenceAfterSuccessfulPreQuery() {
-        reply(envelope(coupon(0)));
+    void malformedAbandonResponseRetainsItsRawEvidence() {
         String raw = "private-coupon-response";
         reply(raw);
         SupplierGatewayResponse response = adapter().invalid(invalid());
@@ -233,28 +232,28 @@ class MinisoRechargeSupplierGatewayAdapterTest {
     }
 
     @Test
-    void invalidQueriesFirstAndConfirmsExactAllSuccess() {
-        reply(envelope(coupon(0)));
+    void invalidUsesPersistedCouponDirectlyWithoutPreQuery() {
         reply("{\"code\":200,\"data\":{\"succeed\":[{\"couponCode\":\"COUPON-1\",\"msg\":\"成功\"}],\"failed\":[]}}");
-        assertSuccess(adapter().invalid(invalid()), 3);
-        assertThat(calls.remove().path()).endsWith("/queryGrand");
+        var response = adapter().invalid(invalid());
+        assertSuccess(response, 3);
+        assertThat(response.minisoReceipt()).isEqualTo(localReceipt(3));
         Call abandon = calls.remove();
         assertThat(abandon.path()).endsWith("/abandonUserCoupon");
         assertThat(abandon.body().path("couponCodes").asText()).isEqualTo(COUPON);
+        assertThat(calls).isEmpty();
     }
 
     @Test
     void invalidRequiresPersistedReceiptBeforeAbandon() {
-        reply(envelope(coupon(0)));
-        reply("{\"code\":200,\"data\":{\"succeed\":[{\"couponCode\":\"COUPON-1\",\"msg\":\"成功\"}],\"failed\":[]}}");
         assertUnknown(adapter(Optional.empty()).invalid(invalid()));
-        assertThat(calls).noneMatch(call -> call.path().endsWith("/abandonUserCoupon"));
+        assertUnknown(adapter(Optional.empty()).invalid(invalid(true)));
+        assertThat(calls).isEmpty();
     }
 
     @Test
     void invalidRejectsVoucherIdentityOrOrderOwnershipMismatchBeforeAbandon() {
         for (MinisoFulfillmentReceipt local : List.of(
-                new MinisoFulfillmentReceipt(ORDER, ORG, 123, "OTHER-COUPON", PHONE,
+                new MinisoFulfillmentReceipt(ORDER, ORG, 123, "COUPON-1,OTHER-COUPON", PHONE,
                         "2026-10-01 00:00:00", "2026-12-01 00:00:00", 0),
                 new MinisoFulfillmentReceipt("OTHER-ORDER", ORG, 123, COUPON, PHONE,
                         "2026-10-01 00:00:00", "2026-12-01 00:00:00", 0),
@@ -264,31 +263,10 @@ class MinisoRechargeSupplierGatewayAdapterTest {
                         "2026-10-01 00:00:00", "2026-12-01 00:00:00", 0),
                 new MinisoFulfillmentReceipt(ORDER, ORG, 123, COUPON, "13900139000",
                         "2026-10-01 00:00:00", "2026-12-01 00:00:00", 0))) {
-            reply(envelope(coupon(0)));
-            reply("{\"code\":200,\"data\":{\"succeed\":[{\"couponCode\":\"COUPON-1\",\"msg\":\"成功\"}],\"failed\":[]}}");
             assertUnknown(adapter(Optional.of(local)).invalid(invalid()));
-            assertThat(calls).noneMatch(call -> call.path().endsWith("/abandonUserCoupon"));
-            replies.clear();
-            calls.clear();
+            assertUnknown(adapter(Optional.of(local)).invalid(invalid(true)));
+            assertThat(calls).isEmpty();
         }
-    }
-
-    /** 作废身份只比较券码/手机号/批次，时间沿用本地事实；参见详细设计「名创作废凭据匹配修订」。 */
-    @ParameterizedTest
-    @ValueSource(strings = {"begin-differs", "end-differs", "missing", "malformed"})
-    void invalidIgnoresRemoteValidityAndPreservesPersistedDates(String variant) throws Exception {
-        reply(envelope(couponWithUntrustedValidity(0, variant)));
-        reply("{\"code\":200,\"data\":{\"succeed\":[{\"couponCode\":\"COUPON-1\",\"msg\":\"成功\"}],\"failed\":[]}}");
-
-        SupplierGatewayResponse response = adapter().invalid(invalid());
-
-        assertSuccess(response, 3);
-        assertThat(response.minisoReceipt()).isEqualTo(localReceipt(3));
-        assertThat(calls.remove().path()).endsWith("/queryGrand");
-        Call abandon = calls.remove();
-        assertThat(abandon.path()).endsWith("/abandonUserCoupon");
-        assertThat(abandon.body().path("couponCodes").asText()).isEqualTo(COUPON);
-        assertThat(calls).isEmpty();
     }
 
     @ParameterizedTest
@@ -296,7 +274,7 @@ class MinisoRechargeSupplierGatewayAdapterTest {
     void alreadyVoidIgnoresRemoteValidityWithoutRepeatingAbandon(String variant) throws Exception {
         reply(envelope(couponWithUntrustedValidity(3, variant)));
 
-        SupplierGatewayResponse response = adapter().invalid(invalid());
+        SupplierGatewayResponse response = adapter().invalid(invalid(true));
 
         assertSuccess(response, 3);
         assertThat(response.minisoReceipt()).isEqualTo(localReceipt(3));
@@ -305,13 +283,54 @@ class MinisoRechargeSupplierGatewayAdapterTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"couponCode", "phone", "batchId"})
+    @ValueSource(strings = {"missing", "null", "", "   "})
+    void recoveryAcceptsAbsentPhoneOnlyWithLocalReceiptAndPreservesLocalIdentity(String phone) throws Exception {
+        var remote = (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(coupon(3));
+        if (phone.equals("missing")) remote.remove("phone");
+        else if (phone.equals("null")) remote.putNull("phone");
+        else remote.put("phone", phone);
+        String raw = envelope(remote.toString());
+        reply(raw);
+        var response = adapter().invalid(invalid(true));
+        assertSuccess(response, 3);
+        assertThat(response.minisoReceipt()).isEqualTo(localReceipt(3));
+        assertThat(response.rawResponse()).isEqualTo(raw);
+        assertThat(calls.remove().path()).endsWith("/queryGrand");
+        assertThat(calls).isEmpty();
+
+        // 同一缺字段回包不能扩散为普通查单或发券的成功证据。
+        reply(raw);
+        assertUnknown(adapter().query(query()));
+        reply(raw.replace("\"status\":3", "\"status\":0"));
+        assertUnknown(adapter().dispatch(dispatch("MINISO")));
+    }
+
+    @Test
+    void recoveryRejectsConflictingIdentityAndNonIntegralVoidStatus() {
+        for (String damaged : List.of(
+                coupon(3).replace(PHONE, "13900139000"),
+                coupon(3).replace("\"" + PHONE + "\"", "123"),
+                coupon(3).replace(COUPON, "FOREIGN"),
+                coupon(3).replace("123", "124"),
+                coupon(3).replace("123", "\"123\""),
+                coupon(3).replace("\"status\":3", "\"status\":\"3\""),
+                coupon(3).replace("\"status\":3", "\"status\":3.0"),
+                coupon(3) + "," + coupon(3))) {
+            reply(envelope(damaged));
+            assertUnknown(adapter().invalid(invalid(true)));
+            assertThat(calls.remove().path()).endsWith("/queryGrand");
+            assertThat(calls).isEmpty();
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"couponCode", "batchId", "status"})
     void invalidRejectsMissingVoucherIdentityBeforeAbandon(String field) throws Exception {
-        var remote = (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(coupon(0));
+        var remote = (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(coupon(3));
         remote.remove(field);
         reply(envelope(remote.toString()));
 
-        assertUnknown(adapter().invalid(invalid()));
+        assertUnknown(adapter().invalid(invalid(true)));
 
         assertThat(calls.remove().path()).endsWith("/queryGrand");
         assertThat(calls).isEmpty();
@@ -321,7 +340,6 @@ class MinisoRechargeSupplierGatewayAdapterTest {
     void staleRemoteUnusedCannotDowngradePersistedUsedExpiredOrVoidBeforeAbandon() {
         for (int localStatus : List.of(1, 2, 3)) {
             reply(envelope(coupon(0)));
-            reply("{\"code\":200,\"data\":{\"succeed\":[{\"couponCode\":\"COUPON-1\",\"msg\":\"成功\"}],\"failed\":[]}}");
             assertUnknown(adapter(Optional.of(localReceipt(localStatus))).invalid(invalid()));
             assertThat(calls).noneMatch(call -> call.path().endsWith("/abandonUserCoupon"));
             replies.clear();
@@ -333,7 +351,7 @@ class MinisoRechargeSupplierGatewayAdapterTest {
     void samePersistedCouponWithRemoteVoidRecoversForEveryLocalStatus() {
         for (int localStatus : List.of(0, 1, 2, 3)) {
             reply(envelope(coupon(3)));
-            assertSuccess(adapter(Optional.of(localReceipt(localStatus))).invalid(invalid()), 3);
+            assertSuccess(adapter(Optional.of(localReceipt(localStatus))).invalid(invalid(true)), 3);
             assertThat(calls.remove().path()).endsWith("/queryGrand");
             assertThat(calls).isEmpty();
         }
@@ -349,21 +367,51 @@ class MinisoRechargeSupplierGatewayAdapterTest {
                 "{\"succeed\":\"COUPON-1\",\"failed\":[]}",
                 "{\"succeed\":[\"COUPON-1\"],\"failed\":[]}",
                 "{\"succeed\":[{\"couponCode\":\"COUPON-1\"}],\"failed\":[]}")) {
-            reply(envelope(coupon(0)));
             reply("{\"code\":200,\"data\":" + data + "}");
             assertUnknown(adapter().invalid(invalid()));
+            assertThat(calls.remove().path()).endsWith("/abandonUserCoupon");
+            assertThat(calls).isEmpty();
         }
     }
 
     @Test
     void alreadyVoidRecoversWithoutRepeatingAbandonAndUsedOrExpiredNeverCancel() {
-        for (int status : List.of(3, 1, 2)) {
+        for (int status : List.of(3, 0, 1, 2)) {
             reply(envelope(coupon(status)));
-            SupplierGatewayResponse response = adapter().invalid(invalid());
+            SupplierGatewayResponse response = adapter().invalid(invalid(true));
             if (status == 3) assertSuccess(response, 3); else assertUnknown(response);
             assertThat(calls.remove().path()).endsWith("/queryGrand");
             assertThat(calls).isEmpty();
         }
+    }
+
+    @Test
+    void abandonTimeoutRecoversRemoteVoidWithNullPhoneWithoutAnotherAbandon() {
+        server.removeContext("/");
+        server.createContext("/", exchange -> {
+            String path = exchange.getRequestURI().getPath();
+            calls.add(new Call(path, JSON.readTree(exchange.getRequestBody())));
+            // 模拟供应商已处理但回包丢失：不返回HTTP头，强制真实客户端达到请求超时。
+            if (path.endsWith("/abandonUserCoupon")) return;
+            byte[] bytes = envelope(coupon(3).replace("\"" + PHONE + "\"", "null"))
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            exchange.getResponseBody().write(bytes);
+            exchange.close();
+        });
+        client = new MinisoHttpClient(new MinisoSettings(
+                URI.create("http://127.0.0.1:" + server.getAddress().getPort()), "MINISO", "test",
+                "tripartite1.0", "test-key", Duration.ofMillis(200)), HttpClient.newHttpClient(), JSON);
+        var gateway = adapter();
+
+        assertUnknown(gateway.invalid(invalid()));
+        assertThat(calls.remove().path()).endsWith("/abandonUserCoupon");
+        assertThat(calls).isEmpty();
+        var recovered = gateway.invalid(invalid(true));
+        assertSuccess(recovered, 3);
+        assertThat(recovered.minisoReceipt()).isEqualTo(localReceipt(3));
+        assertThat(calls.remove().path()).endsWith("/queryGrand");
+        assertThat(calls).isEmpty();
     }
 
     @Test
@@ -413,6 +461,9 @@ class MinisoRechargeSupplierGatewayAdapterTest {
     }
     private static SupplierInvalidGatewayRequest invalid() {
         return new SupplierInvalidGatewayRequest("EVENT", ORDER, "OUT", ORG, PHONE, "MINISO", Map.of());
+    }
+    private static SupplierInvalidGatewayRequest invalid(boolean queryOnly) {
+        return new SupplierInvalidGatewayRequest("EVENT", ORDER, "OUT", ORG, PHONE, "MINISO", Map.of(), queryOnly);
     }
     private void reply(String body) { replies.add(new Reply(200, body)); }
     private static String envelope(String coupon) { return "{\"code\":200,\"data\":[" + coupon + "]}"; }
