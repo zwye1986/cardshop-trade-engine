@@ -203,10 +203,10 @@ class DeploymentArtifactContractTest {
                             preparation.cancelled(order, Instant.parse("2026-10-26T03:30:00Z"), 10).orElseThrow(),
                             preparation.redeemed(order, "synthetic-redemption", LocalDateTime.of(2026, 10, 26, 11, 20), 10)
                                     .orElseThrow());
-                    assertThat(tasks.get(0).encodedPayload()).startsWith("operate_type:1,");
-                    assertThat(tasks.get(1).encodedPayload()).startsWith("operate_type:3,");
-                    assertThat(tasks.get(2).encodedPayload()).startsWith("operate_type:2,");
                     var json = new ObjectMapper();
+                    assertThat(json.readTree(tasks.get(0).encodedPayload()).path("operate_type").asText()).isEqualTo("1");
+                    assertThat(json.readTree(tasks.get(1).encodedPayload()).path("operate_type").asText()).isEqualTo("3");
+                    assertThat(json.readTree(tasks.get(2).encodedPayload()).path("operate_type").asText()).isEqualTo("2");
                     for (var task : tasks) {
                         assertThat(task.deliveryChannel()).isEqualTo(NotifyDeliveryChannel.BOCOM_OPENAPI);
                         assertThat(task.payload()).doesNotContainKeys("sign", "keyId");

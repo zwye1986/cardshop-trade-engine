@@ -1,25 +1,24 @@
 package com.cardshop.trade.engine.application.recharge;
 
 import com.cardshop.trade.engine.domain.notify.MerchantNotifyOperation;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigInteger;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import java.util.StringJoiner;
 
 /**
  * 交行 2104 业务正文编码器，不承担开放平台 form 或签名编码。
  *
  * <p>参见 docs/交行直充业务系统详细设计.md「本次交行回调对接确认」及「交行 2104 通知实施细化」。
  * 只允许通知类型定义的字段，空字符串原样保留，金额以整数分输出；重试应发送持久化的原文，不能重新调用此编码器改写。
- * 银行未定义逗号转义协议，因此拒绝违反“值不含逗号”约束的数据，不截断、不自行转义。
+ * 2026-10-26用户确认将内层正文改为JSON字符串；标准序列化处理特殊字符，外层DTO仍使用String。
  */
 public final class Bocom2104PayloadCodec {
     public static final int MAX_CHARACTERS = 2500;
+    private static final ObjectMapper JSON = new ObjectMapper();
     private static final String OPERATE_TYPE = "operate_type";
-    private static final String FIELD_SEPARATOR = ",";
-    private static final String KEY_VALUE_SEPARATOR = ":";
     private static final List<String> ORDER_FIELDS = List.of(
             "order_id", "out_order_sn", "total_price", "type", "total_settle_price",
             "timestamp", "nonce_str", "order_status", "account");
@@ -37,14 +36,17 @@ public final class Bocom2104PayloadCodec {
             // 不包含字段值，避免 account/未知敏感字段进入异常日志。
             throw new IllegalArgumentException("bank notification fields do not match operation schema");
         }
-        StringJoiner encoded = new StringJoiner(FIELD_SEPARATOR);
-        encoded.add(OPERATE_TYPE + KEY_VALUE_SEPARATOR + operation.code());
+        var encoded = JSON.createObjectNode();
+        encoded.put(OPERATE_TYPE, operation.code());
         for (String name : expected) {
             String value = wireValue(name, fields.get(name));
-            if (value.contains(FIELD_SEPARATOR)) {
-                throw new IllegalArgumentException("bank notification value contains unsupported delimiter");
+            // 在JSON转义前拒绝非法代理项，防止序列化掩盖无效Unicode；金额不能退化为字符串。
+            validateUnicode(value);
+            if (AMOUNT_FIELDS.contains(name)) {
+                encoded.put(name, new BigInteger(value));
+            } else {
+                encoded.put(name, value);
             }
-            encoded.add(name + KEY_VALUE_SEPARATOR + value);
         }
         String result = encoded.toString();
         validate(result);
@@ -56,6 +58,13 @@ public final class Bocom2104PayloadCodec {
         if (text == null || text.isBlank()) {
             throw new IllegalArgumentException("bank notification content required");
         }
+        validateUnicode(text);
+        if (text.codePointCount(0, text.length()) > MAX_CHARACTERS) {
+            throw new IllegalArgumentException("bank notification exceeds character limit");
+        }
+    }
+
+    private static void validateUnicode(String text) {
         for (int index = 0; index < text.length(); index++) {
             char current = text.charAt(index);
             if (Character.isHighSurrogate(current)) {
@@ -65,9 +74,6 @@ public final class Bocom2104PayloadCodec {
             } else if (Character.isLowSurrogate(current)) {
                 throw new IllegalArgumentException("invalid Unicode in bank notification");
             }
-        }
-        if (text.codePointCount(0, text.length()) > MAX_CHARACTERS) {
-            throw new IllegalArgumentException("bank notification exceeds character limit");
         }
     }
 

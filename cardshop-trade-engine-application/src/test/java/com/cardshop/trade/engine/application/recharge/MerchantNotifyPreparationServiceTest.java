@@ -23,25 +23,36 @@ class MerchantNotifyPreparationServiceTest {
                 "com.cardshop.trade.engine.application.recharge.MerchantNotifyPreparationService"))
                 .doesNotThrowAnyException();
     }
-    @Test void emptyOrderUrlStillCreatesBankTaskWithoutBusinessKey() {
+    @Test void emptyOrderUrlStillCreatesBankTaskWithoutBusinessKey() throws Exception {
         var task = service((org,url) -> Optional.of(BANK)).orderStatus(order("", 1950), "12", 10).orElseThrow();
         assertThat(task.deliveryChannel()).isEqualTo(NotifyDeliveryChannel.BOCOM_OPENAPI);
         assertThat(task.routeSnapshot()).isEqualTo(BANK);
         assertThat(task.notifyUrl()).isEqualTo(BANK.gatewayUrl());
         assertThat(task.payload().get("total_price")).isEqualTo(1950L);
         assertThat(task.payload()).doesNotContainKeys("sign", "keyId");
-        assertThat(task.encodedPayload()).startsWith("operate_type:1,").contains("total_price:1950,");
+        var encoded = new com.fasterxml.jackson.databind.ObjectMapper().readTree(task.encodedPayload());
+        assertThat(encoded.path("operate_type").asText()).isEqualTo("1");
+        assertThat(encoded.path("total_price").longValue()).isEqualTo(1950);
         assertThat(task.payload().get("timestamp")).isEqualTo("1792551600000");
     }
-    @Test void redeemedAndCancelledKeepDistinctFactsAndOriginalEventTimes() {
+    @Test void redeemedAndCancelledKeepDistinctFactsAndOriginalEventTimes() throws Exception {
         var service = service((org,url) -> Optional.of(BANK));
         var useTime = LocalDateTime.parse("2026-10-20T08:09:10");
         var redeemed = service.redeemed(order("",100),"event1",useTime,10).orElseThrow();
-        assertThat(redeemed.encodedPayload()).startsWith("operate_type:2,")
-                .contains("use_time:2026-10-20 08:09:10,state_type:3,use_state:2,invalid_time:");
+        var json = new com.fasterxml.jackson.databind.ObjectMapper();
+        var use = json.readTree(redeemed.encodedPayload());
+        assertThat(use.path("operate_type").asText()).isEqualTo("2");
+        assertThat(use.path("use_time").asText()).isEqualTo("2026-10-20 08:09:10");
+        assertThat(use.path("invalid_time").asText()).isEmpty();
+        assertThat(use.path("state_type").asText()).isEqualTo("3");
+        assertThat(use.path("use_state").asText()).isEqualTo("2");
         var cancelled = service.cancelled(order("",100), Instant.parse("2026-10-20T01:02:03Z"),10).orElseThrow();
-        assertThat(cancelled.encodedPayload()).startsWith("operate_type:3,")
-                .contains("use_time:,state_type:3,use_state:3,invalid_time:2026-10-20 09:02:03");
+        var invalid = json.readTree(cancelled.encodedPayload());
+        assertThat(invalid.path("operate_type").asText()).isEqualTo("3");
+        assertThat(invalid.path("use_time").asText()).isEmpty();
+        assertThat(invalid.path("invalid_time").asText()).isEqualTo("2026-10-20 09:02:03");
+        assertThat(invalid.path("state_type").asText()).isEqualTo("3");
+        assertThat(invalid.path("use_state").asText()).isEqualTo("3");
         assertThat(cancelled.bizStatus()).isEqualTo("CANCELLED");
         assertThat(redeemed.bizStatus()).isEqualTo("REDEEMED");
     }

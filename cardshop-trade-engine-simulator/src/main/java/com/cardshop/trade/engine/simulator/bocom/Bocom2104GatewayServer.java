@@ -4,6 +4,10 @@ import com.bocom.api.security.keygen.SM2KeyGen;
 import com.bocom.api.utils.BocomSignature;
 import com.bocom.api.utils.WebUtils;
 import com.bocom.api.utils.enums.EncryptType;
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.*;
 import java.io.IOException;
@@ -114,15 +118,24 @@ public final class Bocom2104GatewayServer implements AutoCloseable {
         }
         return result;
     }
-    /** 只在第一个冒号处分割，时间中的冒号与字段空串必须原样保留。 */
+    /** 独立解析内层JSON字符串，保留文本与空串；参见详细设计「本次交行回调对接确认」。 */
     public static Map<String,String> parseFields(String text) {
         if(text.codePointCount(0,text.length())>2500) throw new IllegalArgumentException("business text too large");
-        var result=new LinkedHashMap<String,String>();
-        for(String part:text.split(",",-1)) {
-            int colon=part.indexOf(':');
-            if(colon<=0 || result.putIfAbsent(part.substring(0,colon),part.substring(colon+1))!=null)
-                throw new IllegalArgumentException("invalid or duplicate business field");
+        JsonNode fields;
+        try {
+            fields=JSON.reader().with(JsonParser.Feature.STRICT_DUPLICATE_DETECTION)
+                    .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(text);
+        } catch(JsonProcessingException exception) {
+            throw new IllegalArgumentException("invalid business JSON",exception);
         }
+        if(fields==null || !fields.isObject()) throw new IllegalArgumentException("business JSON object required");
+        var result=new LinkedHashMap<String,String>();
+        fields.fields().forEachRemaining(field->{
+            var value=field.getValue();
+            if(!value.isTextual() && !(Set.of("total_price","total_settle_price").contains(field.getKey()) && value.isIntegralNumber()))
+                throw new IllegalArgumentException("invalid business field type");
+            result.put(field.getKey(),value.asText());
+        });
         return Collections.unmodifiableMap(result);
     }
     private static String required(String value) {if(value==null || value.isBlank()) throw new IllegalArgumentException("required gateway field missing");return value;}

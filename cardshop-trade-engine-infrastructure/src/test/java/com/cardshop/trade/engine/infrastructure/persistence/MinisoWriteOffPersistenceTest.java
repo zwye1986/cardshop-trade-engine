@@ -185,8 +185,10 @@ public class MinisoWriteOffPersistenceTest {
         bankStore.processBatch(1,0,10,"worker");
         assertThat(eventStatus()).isEqualTo("PROCESSED");
         assertThat(count("recharge_notify_task")).isEqualTo(1);
-        assertThat(jdbc.queryForObject("select encoded_payload from recharge_notify_task",String.class))
-                .startsWith("operate_type:2,").contains("state_type:3,use_state:2");
+        var encoded = new ObjectMapper().readTree(jdbc.queryForObject("select encoded_payload from recharge_notify_task",String.class));
+        assertThat(encoded.path("operate_type").asText()).isEqualTo("2");
+        assertThat(encoded.path("state_type").asText()).isEqualTo("3");
+        assertThat(encoded.path("use_state").asText()).isEqualTo("2");
         verifyNoInteractions(credentials);
     }
 

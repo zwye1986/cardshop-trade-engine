@@ -73,7 +73,7 @@ class BocomSdkClientFactoryTest {
         var content = new Bocom2104Request.Content();
         content.setHead(new Bocom2104Request.Head());
         var body = new Bocom2104Request.Body();
-        body.setTrxDataImprt("order_id:offline,out_order_sn:offline,total_price:1");
+        body.setTrxDataImprt("{\"order_id\":\"offline\",\"out_order_sn\":\"offline\",\"total_price\":1}");
         body.setProtocol("offline-test");
         content.setBody(body);
         request.setBizContent(content);

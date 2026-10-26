@@ -759,7 +759,7 @@ class RechargeOutboxWorkerServiceTest {
         assertThat(notifyTaskPort.createdTasks).isEmpty();
     }
 
-    @Test void bankDispatchAndCancellationCreateTasksWithEmptyOriginalUrlWithoutMerchantKey() {
+    @Test void bankDispatchAndCancellationCreateTasksWithEmptyOriginalUrlWithoutMerchantKey() throws Exception {
         for (var type : List.of(OutboxEventType.SUPPLIER_DISPATCH,OutboxEventType.INVALID_ORDER)) {
             var original=orderWithNotifyUrl("");
             var order=type==OutboxEventType.SUPPLIER_DISPATCH ? original : new RechargeFulfillmentOrder(
@@ -784,8 +784,9 @@ class RechargeOutboxWorkerServiceTest {
             var result=service.processDue(1,0,10,"worker",List.of(type),1);
             assertThat(result.succeeded()).isEqualTo(1);
             assertThat(tasks.createdTasks).hasSize(1);
-            assertThat(tasks.createdTasks.getFirst().encodedPayload()).startsWith(
-                    type==OutboxEventType.SUPPLIER_DISPATCH ? "operate_type:1," : "operate_type:3,");
+            var encoded = new com.fasterxml.jackson.databind.ObjectMapper().readTree(tasks.createdTasks.getFirst().encodedPayload());
+            assertThat(encoded.path("operate_type").asText()).isEqualTo(
+                    type==OutboxEventType.SUPPLIER_DISPATCH ? "1" : "3");
             assertThat(tasks.createdTasks.getFirst().payload()).doesNotContainKeys("sign","keyId");
             if (type == OutboxEventType.INVALID_ORDER) {
                 assertThat(orders.authorization).isNotNull();

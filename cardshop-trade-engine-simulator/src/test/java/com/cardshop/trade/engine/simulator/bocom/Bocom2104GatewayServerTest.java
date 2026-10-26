@@ -20,7 +20,9 @@ class Bocom2104GatewayServerTest {
             var bank = Bocom2104GatewayServer.generateKeys(algorithm);
             try (var server = new Bocom2104GatewayServer("offline-app", algorithm, merchant.publicKey(), bank.privateKey())) {
                 server.start();
-                String text="operate_type:2,order_id:O-SYNTHETIC,out_order_sn:OUT-SYNTHETIC,use_time:2026-10-21 11:12:13,invalid_time:";
+                String text=new ObjectMapper().writeValueAsString(Map.of("operate_type","2","order_id","O-SYNTHETIC",
+                        "out_order_sn","OUT-SYNTHETIC","use_time","2026-10-21 11:12:13","invalid_time","",
+                        "account","中😀,quote\"slash\\line\n"));
                 var first=send(server,merchant.privateKey(),algorithm,text,"msg-1");
                 var second=send(server,merchant.privateKey(),algorithm,text,"msg-2");
                 assertThat(first.statusCode()).as(server.failures().toString()).isEqualTo(200);
@@ -29,7 +31,8 @@ class Bocom2104GatewayServerTest {
                 String biz=response.get("rsp_biz_content").toString();
                 assertThat(BocomSignature.verify(type(algorithm),biz,bank.publicKey(),"UTF-8",response.get("sign").asText())).isTrue();
                 assertThat(server.observations()).hasSize(2);
-                assertThat(server.observations().getFirst().fields()).containsEntry("use_time","2026-10-21 11:12:13").containsEntry("invalid_time","");
+                assertThat(server.observations().getFirst().fields()).containsEntry("use_time","2026-10-21 11:12:13")
+                        .containsEntry("invalid_time","").containsEntry("account","中😀,quote\"slash\\line\n");
                 assertThat(server.find("msg-2")).isPresent();
                 assertThat(server.businessEventCount()).isEqualTo(1);
                 var wrong=Bocom2104GatewayServer.generateKeys(algorithm);
@@ -42,11 +45,16 @@ class Bocom2104GatewayServerTest {
         var keys=Bocom2104GatewayServer.generateKeys("RSA");
         try(var server=new Bocom2104GatewayServer("offline-app","RSA",keys.publicKey(),keys.privateKey())) {
             server.start();
+            String text="{\"operate_type\":\"1\",\"order_id\":\"O\",\"out_order_sn\":\"OUT\",\"total_price\":1950,\"total_settle_price\":1877}";
             server.mode(Bocom2104GatewayServer.Mode.BUSINESS_FAILURE);
-            assertThat(send(server,keys.privateKey(),"RSA","operate_type:1,order_id:O,out_order_sn:OUT","failed").body()).as(server.failures().toString()).contains("500");
+            assertThat(send(server,keys.privateKey(),"RSA",text,"failed").body()).as(server.failures().toString()).contains("500");
             server.mode(Bocom2104GatewayServer.Mode.HTTP_FAILURE);
-            assertThat(send(server,keys.privateKey(),"RSA","operate_type:1,order_id:O,out_order_sn:OUT","http").statusCode()).isEqualTo(500);
-            assertThatThrownBy(()->Bocom2104GatewayServer.parseFields("order_id:O,order_id:OTHER")).isInstanceOf(IllegalArgumentException.class);
+            assertThat(send(server,keys.privateKey(),"RSA",text,"http").statusCode()).isEqualTo(500);
+            assertThat(server.observations().getFirst().fields()).containsEntry("total_price","1950").containsEntry("total_settle_price","1877");
+            for(String invalid:List.of("{\"order_id\":\"O\",\"order_id\":\"OTHER\"}","order_id:O","[]","null",
+                    "{\"account\":null}","{\"account\":{}}","{\"account\":true}","{\"order_id\":\"O\"} trailing")) {
+                assertThatThrownBy(()->Bocom2104GatewayServer.parseFields(invalid)).isInstanceOf(IllegalArgumentException.class);
+            }
         }
     }
     private HttpResponse<String> send(Bocom2104GatewayServer server,String privateKey,String algorithm,String text,String msgId) throws Exception {

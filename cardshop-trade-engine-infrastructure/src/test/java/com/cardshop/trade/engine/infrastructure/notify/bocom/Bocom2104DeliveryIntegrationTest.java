@@ -43,6 +43,13 @@ class Bocom2104DeliveryIntegrationTest {
                     var last=gateway.requests.subList(gateway.requests.size()-2,gateway.requests.size());
                     assertThat(last).allSatisfy(o->{assertThat(o.encoded()).isEqualTo(request.encodedPayload());assertThat(o.protocol()).isEqualTo("offline-contract");});
                     assertThat(last.stream().map(Observed::msgId).toList()).containsExactlyElementsOf(audit.started);
+                    assertThat(last.getFirst().fields()).containsEntry("operate_type",operation.code())
+                            .containsEntry("account","synthetic,\"account\\中😀\n")
+                            .containsEntry("order_id","O-SYNTHETIC").containsEntry("out_order_sn","OUT-SYNTHETIC");
+                    if(operation==MerchantNotifyOperation.ORDER_STATUS) {
+                        assertThat(last.getFirst().fields()).containsEntry("total_price","12345")
+                                .containsEntry("total_settle_price","12000").containsEntry("order_status","12");
+                    }
                     if(operation!=MerchantNotifyOperation.ORDER_STATUS) {
                         assertThat(last.getFirst().encoded()).contains("2026-10-21 11:12:13");
                         assertThat(last.getFirst().fields().get(operation==MerchantNotifyOperation.REDEEMED?"invalid_time":"use_time")).isEmpty();
@@ -95,7 +102,7 @@ class Bocom2104DeliveryIntegrationTest {
     }
     private MerchantNotifyRequest request(String url,String algorithm,MerchantNotifyOperation operation) throws Exception {
         var fields=new LinkedHashMap<String,Object>();fields.put("order_id","O-SYNTHETIC");fields.put("out_order_sn","OUT-SYNTHETIC");
-        fields.put("timestamp","1792551600");fields.put("nonce_str","0123456789abcdef0123456789abcdef");fields.put("account","synthetic-account");
+        fields.put("timestamp","1792551600");fields.put("nonce_str","0123456789abcdef0123456789abcdef");fields.put("account","synthetic,\"account\\中😀\n");
         if(operation==MerchantNotifyOperation.ORDER_STATUS) {fields.put("total_price",12345);fields.put("total_settle_price",12000);fields.put("type","1");fields.put("order_status","12");}
         else {fields.put("use_time",operation==MerchantNotifyOperation.REDEEMED?"2026-10-21 11:12:13":"");fields.put("invalid_time",operation==MerchantNotifyOperation.CANCELLED?"2026-10-21 11:12:13":"");fields.put("state_type","3");fields.put("use_state",operation==MerchantNotifyOperation.REDEEMED?"2":"3");}
         var route=new MerchantNotifyRoute(NotifyDeliveryChannel.BOCOM_OPENAPI,"SYNTHETIC","offline-route",url,"offline-contract","offline-app",algorithm,"pk1","bk1");
@@ -128,8 +135,15 @@ class Bocom2104DeliveryIntegrationTest {
                     String sign=form.remove("sign");assertThat(form).containsEntry("app_id","offline-app").containsEntry("charset","UTF-8");
                     assertThat(BocomSignature.verify(type,WebUtils.buildOrderedSignStr(PATH,form),merchantPublicKey,"UTF-8",sign)).isTrue();
                     var biz=JSON.readTree(form.get("biz_content"));assertThat(biz.path("head").isObject()).isTrue();
-                    String encoded=biz.path("body").path("trx_data_imprt").asText();var fields=new LinkedHashMap<String,String>();
-                    for(String item:encoded.split(",",-1)){int colon=item.indexOf(':');assertThat(colon).isPositive();fields.put(item.substring(0,colon),item.substring(colon+1));}
+                    var text=biz.path("body").path("trx_data_imprt");assertThat(text.isTextual()).isTrue();
+                    String encoded=text.textValue();var inner=JSON.readTree(encoded);assertThat(inner.isObject()).isTrue();
+                    var fields=new LinkedHashMap<String,String>();
+                    inner.fields().forEachRemaining(entry->{
+                        if(Set.of("total_price","total_settle_price").contains(entry.getKey()))
+                            assertThat(entry.getValue().isIntegralNumber()).isTrue();
+                        else assertThat(entry.getValue().isTextual()).isTrue();
+                        fields.put(entry.getKey(),entry.getValue().asText());
+                    });
                     requests.add(new Observed(form.get("msg_id"),biz.path("body").path("protocol").asText(),encoded,fields));
                     if(redirect!=null){exchange.getResponseHeaders().set("Location",redirect);exchange.sendResponseHeaders(307,-1);return;}
                     String selected=responseMode;if("TIMEOUT".equals(selected))Thread.sleep(1500);

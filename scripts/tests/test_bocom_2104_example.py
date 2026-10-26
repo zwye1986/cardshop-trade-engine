@@ -14,10 +14,21 @@ class BocomExampleTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             body = json.loads(result.stdout)['body']
             payload = body['trx_data_imprt']
-            self.assertTrue(payload.startswith('operate_type:' + code + ','))
-            self.assertNotIn('keyId:', payload)
-            self.assertNotIn('sign:', payload)
+            self.assertIsInstance(payload, str)
+            fields = json.loads(payload)
+            self.assertEqual(fields['operate_type'], code)
+            self.assertEqual(fields['order_id'], 'SYNTHETIC-ORDER')
+            self.assertNotIn('keyId', fields)
+            self.assertNotIn('sign', fields)
             self.assertLessEqual(len(payload), 2500)
+            if operation == 'order':
+                self.assertIsInstance(fields['total_price'], int)
+                self.assertEqual(fields['total_price'], 100)
+                self.assertEqual(fields['order_status'], '12')
+            else:
+                self.assertEqual(fields['state_type'], '3')
+                self.assertEqual(fields['use_state'], '2' if operation == 'redeemed' else '3')
+                self.assertEqual(fields['invalid_time' if operation == 'redeemed' else 'use_time'], '')
 
 if __name__ == '__main__':
     unittest.main()

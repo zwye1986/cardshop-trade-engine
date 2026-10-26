@@ -25,9 +25,7 @@ def main():
         fields = dict(operate_type='2' if redeemed else '3', **common,
                       use_time=event_time if redeemed else '', state_type='3', use_state='2' if redeemed else '3',
                       invalid_time='' if redeemed else event_time)
-    if any(',' in str(value) for value in fields.values()):
-        parser.error('business values may not contain comma')
-    encoded = ','.join(str(key) + ':' + str(value) for key, value in fields.items())
+    encoded = json.dumps(fields, ensure_ascii=False, separators=(',', ':'))
     if len(encoded) > 2500:
         parser.error('trx_data_imprt exceeds 2500 characters')
     print(json.dumps(dict(head={}, body=dict(trx_data_imprt=encoded, protocol=options.protocol)), ensure_ascii=False, indent=2))

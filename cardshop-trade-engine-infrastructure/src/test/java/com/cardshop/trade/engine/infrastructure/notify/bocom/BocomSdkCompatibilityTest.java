@@ -40,7 +40,7 @@ class BocomSdkCompatibilityTest {
         var request = new Bocom2104Request();
         request.setServiceUrl("https://localhost/api/trade/J_IEP_001_2104/v1");
         var body = new Bocom2104Request.Body();
-        body.setTrxDataImprt("order_id:bank-order,out_order_sn:merchant-order,total_price:1950");
+        body.setTrxDataImprt("{\"operate_type\":\"1\",\"order_id\":\"bank-order\",\"out_order_sn\":\"merchant-order\",\"total_price\":1950}");
         body.setProtocol("FWS202604090265");
         var biz = new Bocom2104Request.Content();
         biz.setHead(new Bocom2104Request.Head());
@@ -49,8 +49,10 @@ class BocomSdkCompatibilityTest {
         var params = client.envelope(request);
         assertThat(request.getMethod()).isEqualTo("POST");
         assertThat(request.isNeedEncrypt()).isFalse();
-        assertThat(new ObjectMapper().readTree(params.get("biz_content")).at("/body/trx_data_imprt").asText())
-                .isEqualTo(body.getTrxDataImprt());
+        var business = new ObjectMapper().readTree(params.get("biz_content")).at("/body/trx_data_imprt");
+        assertThat(business.isTextual()).isTrue();
+        assertThat(business.asText()).isEqualTo(body.getTrxDataImprt());
+        assertThat(new ObjectMapper().readTree(business.asText()).path("total_price").isIntegralNumber()).isTrue();
         var unsigned = new java.util.HashMap<>(params);
         String requestSignature = unsigned.remove("sign");
         assertThat(new NormalPublicKeyApi(publicKey).verify(

@@ -23,6 +23,9 @@ class BocomMerchantNotifyClientAdapterTest {
         var adapter=new BocomMerchantNotifyClientAdapter(p,JSON,audit,CLOCK,(route,pk,bk)->(r,id)-> {
             assertThat(audit.started).contains(id);ids.add(id);
             bodies.add(((Bocom2104Request.Content)r.getBizContent()).getBody().getTrxDataImprt());
+            var fields=JSON.readTree(bodies.getLast());
+            assertThat(fields.path("operate_type").asText()).isEqualTo("1");
+            assertThat(fields.path("total_price").isIntegralNumber()).isTrue();
             return response("S","200");
         });
         var request=request();
@@ -33,6 +36,21 @@ class BocomMerchantNotifyClientAdapterTest {
         assertThat(bodies).containsExactly(request.encodedPayload(),request.encodedPayload());
         assertThat(audit.finished).allSatisfy(result->assertThat(result.status()).isEqualTo("SUCCESS"));
         assertThat(audit.finished.getFirst().refMsgId()).isEqualTo("bank-ref");
+    }
+    @Test void oldCommaEncodedTaskIsNotRewrittenOrSent() throws Exception {
+        var original=request();
+        var fields=JSON.readTree(original.payload());
+        String legacy="operate_type:1,order_id:O1,out_order_sn:OUT1,total_price:100,type:1,total_settle_price:100,"
+                +"timestamp:1792551600000,nonce_str:"+fields.path("nonce_str").asText()+",order_status:12,account:test-account";
+        var old=new MerchantNotifyRequest(original.taskId(),original.notifyUrl(),original.payload(),original.orgCode(),
+                original.orderId(),original.outOrderSn(),original.deliveryChannel(),original.routeSnapshot(),legacy,
+                original.claimVersion(),original.lockedBy(),original.lockedUntil(),original.notifyType(),original.bizStatus());
+        var audit=new Audit();
+        var sender=new BocomMerchantNotifyClientAdapter(properties(),JSON,audit,CLOCK,
+                (route,pk,bk)->(r,id)->response("S","200"));
+        assertThat(sender.send(old).disposition()).isEqualTo(MerchantNotifySendResult.Disposition.MANUAL_REQUIRED);
+        assertThat(audit.started).isEmpty();
+        assertThat(old.encodedPayload()).isEqualTo(legacy);
     }
     @Test void bothGatewayAndBusinessAckAreRequired() throws Exception {
         for(var codes:List.of(List.of("S","500"),List.of("F","200"),List.of("P","200"),List.of("S",""))) {
