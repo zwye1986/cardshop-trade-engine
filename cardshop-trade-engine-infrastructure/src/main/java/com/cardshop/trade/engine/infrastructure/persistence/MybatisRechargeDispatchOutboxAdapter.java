@@ -7,6 +7,22 @@ import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxCommand
 import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxCommand;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort;
+import com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection;
+import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationState;
+import com.cardshop.trade.engine.application.recharge.MinisoWriteOffException;
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
+import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
+import com.cardshop.trade.engine.domain.order.VoucherUseState;
+import com.cardshop.trade.engine.application.recharge.FulfillmentDispatchStatus;
+import static com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationState.Status.*;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.*;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
+import java.util.function.Supplier;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 import com.cardshop.trade.engine.domain.order.OutboxEventType;
 import com.cardshop.trade.engine.domain.order.TaskStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeDispatchOutboxDO;
@@ -37,13 +53,144 @@ import java.util.Optional;
 public class MybatisRechargeDispatchOutboxAdapter
         implements RechargeOutboxPort, SupplierQueryOutboxPort, InvalidRechargeOrderOutboxPort {
 
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(MybatisRechargeDispatchOutboxAdapter.class);
+    private final LogStormGuard invalidationLogs = LogStormGuard.defaultGuard();
     private static final int DEFAULT_MAX_RETRY_COUNT = 10;
+    private static final int ADMISSION_TRANSACTION_TIMEOUT_SECONDS = 10;
+    private static final String MINISO_CHANNEL = "MINISO";
+    private static final String DB_PERSISTED = "DB_PERSISTED";
+    private static final int MINISO_COUPON_UNUSED = 0;
     private static final ZoneId LEGACY_CARDSHOP_DB_ZONE = ZoneId.of("Asia/Shanghai");
 
     private final RechargeDispatchOutboxMapper mapper;
     private final RechargeDispatchOutboxPersistWriter writer;
     private final ObjectMapper objectMapper;
     private final Clock clock;
+    private McOrderMapper orderMapper;
+    private RechargeOrderExtMapper extMapper;
+    private MinisoWriteOffOrderLocks orderLocks;
+    private Supplier<MinisoWriteOffProtection> protection;
+    private Supplier<RechargeFulfillmentOrderPort> orders;
+    private TransactionTemplate admission;
+    private TransactionTemplate observation;
+
+    /** 作废受理使用主SqlSession及短事务，依赖延迟解析以避免Worker/资金适配器循环装配。参见详细设计9.3.2。 */
+    public MybatisRechargeDispatchOutboxAdapter(RechargeDispatchOutboxMapper mapper, ObjectMapper objectMapper,
+            Clock clock, McOrderMapper orderMapper, RechargeOrderExtMapper extMapper,
+            MinisoWriteOffEventMapper events, MinisoReceiptMapper receipts, MinisoCouponGuardMapper guards,
+            Supplier<MinisoWriteOffProtection> protection, Supplier<RechargeFulfillmentOrderPort> orders,
+            PlatformTransactionManager tm) {
+        this(mapper, objectMapper, clock);
+        this.orderMapper = orderMapper;
+        this.extMapper = extMapper;
+        this.orderLocks = new MinisoWriteOffOrderLocks(events, receipts, guards);
+        this.protection = protection;
+        this.orders = orders;
+        admission = new TransactionTemplate(tm);
+        admission.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        admission.setTimeout(ADMISSION_TRANSACTION_TIMEOUT_SECONDS);
+        observation = new TransactionTemplate(tm);
+        observation.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        observation.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
+        observation.setReadOnly(true);
+        observation.setTimeout(ADMISSION_TRANSACTION_TIMEOUT_SECONDS);
+    }
+
+    @Override
+    public RechargeOrderInvalidationState prepareInvalidOrder(InvalidRechargeOrderOutboxCommand command) {
+        return Objects.requireNonNull(admission, "persistent admission dependencies required").execute(tx -> {
+            var order = orderMapper.selectInvalidationOrder(command.orgCode(), command.outOrderSn(), true);
+            if (order == null) return new RechargeOrderInvalidationState(null, null, NOT_ACCEPTED, "订单尚未落库，作废未受理");
+            var ext = extMapper.selectInvalidationOrder(order.getOrderId(), true);
+            var state = invalidationState(order, ext);
+            if (state.status() != NOT_ACCEPTED) return state;
+            if (!owned(order, ext) || !Objects.equals(command.orderId(), order.getOrderId())) return state;
+            if (!Objects.equals(order.getOrderStatus(), LegacyOrderStatusCode.SUCCESS.code())
+                    || !FulfillmentDispatchStatus.SUCCESS.name().equals(ext.getDispatchStatus())
+                    || !VoucherUseState.UNUSED.code().equals(ext.getVoucherUseState())
+                    || ext.getVoucherUseTime() != null) {
+                return new RechargeOrderInvalidationState(state.order(), null, NOT_ACCEPTED, "订单未发券成功或券不可作废，作废未受理");
+            }
+            if (MINISO_CHANNEL.equals(order.getSupplierChannel())) {
+                var local = orderLocks.lock(order.getOrderId(), now());
+                if (local == null || local.receipt().couponCode() == null || local.receipt().couponCode().isBlank()
+                        || local.receipt().phone() == null || local.receipt().phone().isBlank()
+                        || local.receipt().couponStatus() != MINISO_COUPON_UNUSED) {
+                    return new RechargeOrderInvalidationState(state.order(), null, NOT_ACCEPTED, "本地券凭据不完整或券不可作废，作废未受理");
+                }
+                try {
+                    Objects.requireNonNull(protection.get(), "MINISO protection required").assertVoidAllowed(order.getOrderId());
+                } catch (MinisoWriteOffException ex) {
+                    if (ex.reason() != MinisoWriteOffException.Reason.REDEEM_VOID_CONFLICT) throw ex;
+                    if (invalidationLogs.shouldLog("invalidation.redemption").shouldLog()) {
+                        log.warn("作废首次受理遇已认证核销证据 orderId={}", order.getOrderId(), ex);
+                    }
+                    return new RechargeOrderInvalidationState(state.order(), null, NOT_ACCEPTED, "券已存在核销证据，作废未受理");
+                }
+            }
+            try {
+                enqueueInvalidOrder(command);
+                if (mapper.selectInvalidation(invalidEventId(order.getOrderId()), order.getOrgCode(),
+                        order.getOrderId(), order.getOutOrderId()) == null) {
+                    throw new IllegalStateException("invalidation event identity mismatch");
+                }
+            } catch (RuntimeException ex) {
+                // TransactionTemplate回滚成功才透出该标记；回滚失败覆盖为事务异常，仍按未知处理。见详细设计9.3.2。
+                throw new AdmissionRolledBackException(ex);
+            }
+            return new RechargeOrderInvalidationState(state.order(), invalidEventId(order.getOrderId()), PENDING, "");
+        });
+    }
+
+    @Override
+    public Optional<RechargeOrderInvalidationState> findInvalidOrder(String orgCode, String outOrderSn) {
+        return Objects.requireNonNull(observation, "persistent observation dependencies required").execute(tx -> {
+            var order = orderMapper.selectInvalidationOrder(orgCode, outOrderSn, false);
+            return order == null ? Optional.empty()
+                    : Optional.of(invalidationState(order, extMapper.selectInvalidationOrder(order.getOrderId(), false)));
+        });
+    }
+
+    private RechargeOrderInvalidationState invalidationState(McOrderDO order, RechargeOrderExtDO ext) {
+        boolean owned = owned(order, ext);
+        var snapshot = MybatisRechargeOrderQueryAdapter.toSnapshot(order, owned ? ext : null, order.getOutOrderId());
+        var event = mapper.selectInvalidation(invalidEventId(order.getOrderId()), order.getOrgCode(),
+                order.getOrderId(), order.getOutOrderId());
+        String eventId = event == null ? null : event.getEventId();
+        if (owned && FulfillmentDispatchStatus.CANCELLED.name().equals(ext.getDispatchStatus())) {
+            boolean complete = Objects.equals(order.getOrderStatus(), LegacyOrderStatusCode.SUCCESS.code())
+                    && VoucherUseState.CANCELLED.code().equals(ext.getVoucherUseState())
+                    && ext.getVoucherInvalidTime() != null && ext.getVoucherUseTime() == null;
+            if (complete && MINISO_CHANNEL.equals(order.getSupplierChannel())) {
+                try {
+                    complete = Objects.requireNonNull(orders.get(), "funds decision reader required")
+                            .hasMinisoTerminalFundsDecision(order.getOrgCode(), order.getOutOrderId());
+                } catch (MinisoWriteOffException ex) {
+                    if (invalidationLogs.shouldLog("invalidation.decision").shouldLog()) {
+                        log.error("作废资金裁决不完整，保留人工核查 orderId={}", order.getOrderId(), ex);
+                    }
+                    complete = false;
+                }
+            }
+            return new RechargeOrderInvalidationState(snapshot, eventId, complete ? COMPLETED : MANUAL_REQUIRED,
+                    complete ? "" : "作废历史事实或资金裁决需人工核查");
+        }
+        if (event != null) return new RechargeOrderInvalidationState(snapshot, eventId,
+                TaskStatus.MANUAL_REQUIRED.name().equals(event.getStatus()) ? MANUAL_REQUIRED : PENDING, "");
+        return new RechargeOrderInvalidationState(snapshot, null, NOT_ACCEPTED,
+                owned ? "尚无作废操作" : "订单缺少新引擎持久归属，作废未受理");
+    }
+
+    private static boolean owned(McOrderDO order, RechargeOrderExtDO ext) {
+        return ext != null && DB_PERSISTED.equals(ext.getPersistStatus())
+                && Objects.equals(order.getOrderId(), ext.getOrderId())
+                && Objects.equals(order.getOrgCode(), ext.getOrgCode())
+                && Objects.equals(order.getOutOrderId(), ext.getOutOrderSn());
+    }
+
+    private static String invalidEventId(String orderId) {
+        return "invalid-" + Objects.requireNonNull(orderId, "platform order id required");
+    }
 
     public MybatisRechargeDispatchOutboxAdapter(
             RechargeDispatchOutboxMapper mapper,
@@ -163,16 +310,15 @@ public class MybatisRechargeDispatchOutboxAdapter
     }
 
     /**
-     * 写入 {@code INVALID_ORDER} 可靠事件，供派单 Worker 异步调用供应商作废。
+     * 仅供已通过受理事务的内部路径写原事件，提交后由请求或恢复Worker推进。
      *
      * <p>参见 {@code docs/交行直充业务系统详细设计.md}「9.3 作废设计」「9.1 派单 Outbox」。
      * {@code event_id} 固定为 {@code invalid-{orderId}}，{@code shard_key} 与之相同以保证分片稳定。
      */
-    @Override
-    public void enqueueInvalidOrder(InvalidRechargeOrderOutboxCommand command) {
+    void enqueueInvalidOrder(InvalidRechargeOrderOutboxCommand command) {
         Objects.requireNonNull(command, "command must not be null");
         LocalDateTime now = now();
-        String eventId = "invalid-" + command.orderId();
+        String eventId = invalidEventId(command.orderId());
         RechargeDispatchOutboxDO outbox = new RechargeDispatchOutboxDO();
         outbox.setEventId(eventId);
         outbox.setEventType(OutboxEventType.INVALID_ORDER.name());
@@ -183,7 +329,8 @@ public class MybatisRechargeDispatchOutboxAdapter
         outbox.setStatus(TaskStatus.INIT.name());
         outbox.setRetryCount(0);
         outbox.setMaxRetryCount(DEFAULT_MAX_RETRY_COUNT);
-        outbox.setNextRetryTime(now);
+        // 参见详细设计9.3.2：首次事件应立即可执行，避免datetime舍入到下一秒使唯一即时唤醒落空。
+        outbox.setNextRetryTime(now.withNano(0));
         outbox.setLockedBy(null);
         outbox.setLockedUntil(null);
         outbox.setVersion(0L);

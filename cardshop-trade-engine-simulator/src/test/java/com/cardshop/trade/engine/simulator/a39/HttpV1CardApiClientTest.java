@@ -28,6 +28,51 @@ import static org.assertj.core.api.Assertions.assertThat;
 class HttpV1CardApiClientTest {
 
     @Test
+    void invalidationUsesDedicatedPathAndPreservesSignedPayloadWithOrWithoutSm4() throws Exception {
+        var mapper = new ObjectMapper();
+        String aesKey = "0123456789abcdef";
+        var received = new java.util.concurrent.atomic.AtomicReference<String>();
+        var authorization = new java.util.concurrent.atomic.AtomicReference<String>();
+        var calls = new java.util.concurrent.atomic.AtomicInteger();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/v1/cardapi/order/invalid", exchange -> {
+            calls.incrementAndGet();
+            received.set(new String(exchange.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
+            authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
+            byte[] bytes = "{\"code\":\"202\",\"msg\":\"pending\",\"data\":{}}".getBytes(StandardCharsets.UTF_8);
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (var output = exchange.getResponseBody()) { output.write(bytes); }
+        });
+        server.start();
+        try {
+            var client = new HttpV1CardApiClient(URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
+                    HttpClient.newHttpClient(), mapper, new LegacySm4BodyEncoder());
+            var payload = new java.util.LinkedHashMap<String, Object>(Map.of("out_order_sn", "EXISTING",
+                    "timestamp", "1793844000000", "nonce_str", "0123456789abcdef0123456789abcdef"));
+            payload.put("sign", new V12Signer().signQueryOrder(payload, TestKeys.KEY).sign());
+            for (boolean sm4 : List.of(false, true)) {
+                assertThat(client.invalidRechargeOrder("fixture-token", payload, sm4, aesKey).code()).isEqualTo("202");
+                String plain = received.get();
+                if (sm4) {
+                    byte[] encoded = java.util.Base64.getDecoder().decode(plain);
+                    var cipher = new org.bouncycastle.crypto.paddings.PaddedBufferedBlockCipher(
+                            new org.bouncycastle.crypto.modes.CBCBlockCipher(new org.bouncycastle.crypto.engines.SM4Engine()));
+                    cipher.init(false, new org.bouncycastle.crypto.params.ParametersWithIV(
+                            new org.bouncycastle.crypto.params.KeyParameter(aesKey.getBytes(StandardCharsets.UTF_8)),
+                            java.util.Arrays.copyOf(encoded, 16)));
+                    byte[] decoded = new byte[cipher.getOutputSize(encoded.length - 16)];
+                    int length = cipher.processBytes(encoded, 16, encoded.length - 16, decoded, 0);
+                    length += cipher.doFinal(decoded, length);
+                    plain = new String(decoded, 0, length, StandardCharsets.UTF_8);
+                }
+                assertThat(mapper.readTree(plain)).isEqualTo(mapper.valueToTree(payload));
+                assertThat(authorization.get()).isEqualTo("fixture-token");
+            }
+            assertThat(calls.get()).isEqualTo(2);
+        } finally { server.stop(0); }
+    }
+
+    @Test
     void rejectsRemoteHttpBeforeSendingCredentials() {
         CapturingTimeoutHttpClient transport = new CapturingTimeoutHttpClient();
         var client = new HttpV1CardApiClient(URI.create("http://api.example"), transport,

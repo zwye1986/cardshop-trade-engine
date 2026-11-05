@@ -107,6 +107,11 @@ class A39BusinessScenarioRunnerTest {
 
     private static final class CapturingClient implements V1CardApiClient {
 
+        @Override
+        public ApiResponse invalidRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            throw new AssertionError("scenario mode must not invalidate orders");
+        }
+
         private final ApiResponse createResponse;
         private Runnable beforeCreate = () -> { };
         private Map<String, Object> createPayload = Map.of();

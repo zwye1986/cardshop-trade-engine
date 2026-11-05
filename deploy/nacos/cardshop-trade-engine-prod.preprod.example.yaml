@@ -76,6 +76,8 @@ trade:
       # 生产/预生产禁止打开故障注入。
       enabled: false
     v1:
+      # 新JAR作废响应等待预算；发布前核验调用方支持业务202且读取超时至少10秒。
+      invalidation-wait-timeout-ms: 5000
       sign-alg: HMAC-SM3
       signing-key-encryption-key: ${V1_SIGNING_KEY_ENCRYPTION_KEY:}
       merchant-config-preheat:

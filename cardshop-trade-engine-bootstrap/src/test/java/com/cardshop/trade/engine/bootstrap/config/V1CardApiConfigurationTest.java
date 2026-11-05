@@ -124,7 +124,7 @@ class V1CardApiConfigurationTest {
         contextRunner
                 .withBean(V1MerchantProfilePort.class, () -> interfaceProxy(V1MerchantProfilePort.class))
                 .withBean(RechargeOrderQueryPort.class, () -> interfaceProxy(RechargeOrderQueryPort.class))
-                .withBean(InvalidRechargeOrderOutboxPort.class, InvalidRechargeOrderOutboxPort::noop)
+                .withBean(InvalidRechargeOrderOutboxPort.class, () -> interfaceProxy(InvalidRechargeOrderOutboxPort.class))
                 .run(context -> {
                     assertThat(context).hasBean("v1QueryRechargeOrderUseCase");
                     assertThat(context).hasBean("v1InvalidRechargeOrderUseCase");
@@ -132,6 +132,8 @@ class V1CardApiConfigurationTest {
                     assertThat(context).doesNotHaveBean("unavailableInvalidRechargeOrderUseCase");
                     assertThat(context).hasSingleBean(QueryRechargeOrderUseCase.class);
                     assertThat(context).hasSingleBean(InvalidRechargeOrderUseCase.class);
+                    assertThat(context.getBean(InvalidRechargeOrderUseCase.class))
+                            .isNotInstanceOf(V1InvalidRechargeOrderUseCaseService.class);
                 });
     }
 
@@ -148,6 +150,27 @@ class V1CardApiConfigurationTest {
                     assertThat(context.getBean(InvalidRechargeOrderUseCase.class))
                             .isNotInstanceOf(V1InvalidRechargeOrderUseCaseService.class);
                 });
+    }
+
+    @Test
+    void invalidationStaysUnavailableWhenEitherWorkerOrProtectionIsMissing() {
+        for (boolean provideWorker : List.of(false, true)) {
+            var runner = contextRunner
+                    .withBean(V1MerchantProfilePort.class, () -> interfaceProxy(V1MerchantProfilePort.class))
+                    .withBean(RechargeOrderQueryPort.class, () -> interfaceProxy(RechargeOrderQueryPort.class))
+                    .withBean(InvalidRechargeOrderOutboxPort.class, () -> interfaceProxy(InvalidRechargeOrderOutboxPort.class));
+            runner = provideWorker
+                    ? runner.withBean(com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService.class,
+                            () -> org.mockito.Mockito.mock(com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService.class))
+                    : runner.withBean(com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection.class,
+                            () -> interfaceProxy(com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection.class));
+            runner.run(context -> {
+                assertThat(context).hasSingleBean(InvalidRechargeOrderUseCase.class);
+                var result = context.getBean(InvalidRechargeOrderUseCase.class).invalidRechargeOrder(null,
+                        new com.cardshop.trade.engine.application.v1.InvalidRechargeOrderContext(java.time.Duration.ofSeconds(5)));
+                assertThat(result.msg()).contains("暂未启用");
+            });
+        }
     }
 
     @Test
@@ -352,7 +375,17 @@ class V1CardApiConfigurationTest {
 
         @Bean
         InvalidRechargeOrderOutboxPort invalidRechargeOrderOutboxPort() {
-            return InvalidRechargeOrderOutboxPort.noop();
+            return interfaceProxy(InvalidRechargeOrderOutboxPort.class);
+        }
+
+        @Bean
+        com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService invalidationWorker() {
+            return org.mockito.Mockito.mock(com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService.class);
+        }
+
+        @Bean
+        com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection invalidationProtection() {
+            return interfaceProxy(com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection.class);
         }
     }
 }

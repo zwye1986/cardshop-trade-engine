@@ -26,6 +26,16 @@ import org.apache.ibatis.annotations.Update;
 @Mapper
 public interface RechargeDispatchOutboxMapper extends BaseMapper<RechargeDispatchOutboxDO> {
 
+    /** 观察原操作不能受due/状态过滤，且必须核对完整商户订单身份；参见详细设计9.3.2。 */
+    @Select("""
+            select event_id,event_type,org_code,order_id,out_order_sn,status
+            from recharge_dispatch_outbox
+            where event_id=#{eventId} and event_type='INVALID_ORDER'
+              and org_code=#{orgCode} and order_id=#{orderId} and out_order_sn=#{outOrderSn}
+            """)
+    RechargeDispatchOutboxDO selectInvalidation(@Param("eventId") String eventId, @Param("orgCode") String orgCode,
+            @Param("orderId") String orderId, @Param("outOrderSn") String outOrderSn);
+
     /**
      * 幂等写入派单履约事件。
      *

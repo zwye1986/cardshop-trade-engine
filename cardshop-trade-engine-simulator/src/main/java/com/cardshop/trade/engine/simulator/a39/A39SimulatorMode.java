@@ -13,6 +13,7 @@ public enum A39SimulatorMode {
 
     SCENARIO,
     LOAD,
+    INVALIDATE,
     SUPPLIER_MOCK;
 
     static A39SimulatorMode parse(String value) {
@@ -20,8 +21,9 @@ public enum A39SimulatorMode {
         return switch (normalized) {
             case "scenario" -> SCENARIO;
             case "load" -> LOAD;
+            case "invalidate" -> INVALIDATE;
             case "supplier-mock", "supplier_mock" -> SUPPLIER_MOCK;
-            default -> throw new IllegalArgumentException("mode must be scenario, load, or supplier-mock");
+            default -> throw new IllegalArgumentException("mode must be scenario, load, invalidate, or supplier-mock");
         };
     }
 }

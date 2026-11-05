@@ -105,6 +105,11 @@ public final class HttpV1CardApiClient implements V1CardApiClient {
         return post("/v1/cardapi/order/getRechargeOrder", token, payload, sm4Enabled, aesKey);
     }
 
+    @Override
+    public ApiResponse invalidRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) throws Exception {
+        return post("/v1/cardapi/order/invalid", token, payload, sm4Enabled, aesKey);
+    }
+
     private ApiResponse post(String path, String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) throws Exception {
         // V1.2凭证只能经HTTPS传输；仅内存测试的回环HTTP例外，参见详细设计3.1。
         String host = baseUri.getHost();

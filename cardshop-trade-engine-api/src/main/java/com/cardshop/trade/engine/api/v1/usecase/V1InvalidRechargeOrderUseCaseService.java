@@ -7,8 +7,10 @@ import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolFailureReason;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckResult;
 import com.cardshop.trade.engine.api.v1.protocol.V1ProtocolPrecheckService;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderUseCase;
+import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderContext;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationService;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationState;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxCommand;
-import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderSnapshot;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
@@ -16,9 +18,6 @@ import com.cardshop.trade.engine.application.v1.V1CardApiResultStatus;
 import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
-import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
-import com.cardshop.trade.engine.domain.order.PersistStatus;
-import com.cardshop.trade.engine.domain.order.VoucherUseState;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,43 +27,36 @@ import org.springframework.util.StringUtils;
  * V1 作废订单用例。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 作废设计」「9.6 交行对外券状态修订」。
- * 未落库返回处理中，已落库由outbox异步作废；已完成且具有可信时间时直接返回原券事实。
- * 发券成功后的作废保留订单12，名创3/3与订单失败6独立，接口线程不直接调用供应商。
+ * 验签后受理并立即推进原Outbox，完成返回200、未知结果202；首次与重复请求共用持久资金完成谓词。
+ * 发券成功后的作废保留订单12，接口不直接调用供应商，HTTP等待与执行生命周期分离。
  */
 public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrderUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(V1InvalidRechargeOrderUseCaseService.class);
-    private static final String ORDER_STATUS_DESC_PROCESSING = "处理中";
 
     private final V1ProtocolPrecheckService precheckService;
     private final V1MerchantProfilePort merchantProfilePort;
     private final RechargeOrderQueryPort orderQueryPort;
-    private final InvalidRechargeOrderOutboxPort invalidOrderOutboxPort;
-
-    public V1InvalidRechargeOrderUseCaseService(
-            V1ProtocolPrecheckService precheckService,
-            V1MerchantProfilePort merchantProfilePort,
-            RechargeOrderQueryPort orderQueryPort) {
-        this(precheckService, merchantProfilePort, orderQueryPort, InvalidRechargeOrderOutboxPort.noop());
-    }
+    private final RechargeOrderInvalidationService invalidationService;
 
     public V1InvalidRechargeOrderUseCaseService(
             V1ProtocolPrecheckService precheckService,
             V1MerchantProfilePort merchantProfilePort,
             RechargeOrderQueryPort orderQueryPort,
-            InvalidRechargeOrderOutboxPort invalidOrderOutboxPort) {
+            RechargeOrderInvalidationService invalidationService) {
         this.precheckService = precheckService;
         this.merchantProfilePort = merchantProfilePort;
         this.orderQueryPort = orderQueryPort;
-        this.invalidOrderOutboxPort = invalidOrderOutboxPort;
+        this.invalidationService = invalidationService;
     }
 
     @Override
-    public V1CardApiResult invalidRechargeOrder(V1MerchantCommand command) {
+    public V1CardApiResult invalidRechargeOrder(V1MerchantCommand command, InvalidRechargeOrderContext context) {
+        if (!context.preparing()) return context.response();
         Optional<V1MerchantProfile> maybeMerchant = merchantProfilePort.findByAppIdAndOrgCode(command.appId(), command.orgCode());
         if (maybeMerchant.isEmpty()) {
             log.warn("V1作废商户资料缺失 appId={}, orgCode={}", command.appId(), command.orgCode());
-            return V1CardApiResultStatus.AUTH_FAILED.result();
+            return context.finish(V1CardApiResultStatus.AUTH_FAILED.result());
         }
 
         V1MerchantProfile merchant = maybeMerchant.get();
@@ -72,53 +64,66 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
                 command.rawBody(),
                 new V1MerchantSecurityProfile(merchant.appId(), merchant.orgCode(), merchant.aesKey(), command.signingCredential()));
         if (!precheck.valid()) {
-            return protocolFailure(precheck.reason());
+            return context.finish(protocolFailure(precheck.reason()));
         }
         V1RechargeOrderInvalidRequest request = precheck.payload();
         if (!validRequest(request)) {
-            return V1CardApiResultStatus.PARAM_ERROR.result();
+            return context.finish(V1CardApiResultStatus.PARAM_ERROR.result());
         }
 
         return orderQueryPort.findByOrgCodeAndOutOrderSn(merchant.orgCode(), request.outOrderSn())
-                .map(snapshot -> toInvalidResult(merchant, request, snapshot))
-                .orElseGet(V1CardApiResultStatus.ORDER_NOT_FOUND::result);
+                .map(snapshot -> toInvalidResult(merchant, request, snapshot, context))
+                .orElseGet(() -> context.finish(V1CardApiResultStatus.ORDER_NOT_FOUND.result()));
     }
 
     private V1CardApiResult toInvalidResult(
             V1MerchantProfile merchant,
             V1RechargeOrderInvalidRequest request,
-            RechargeOrderSnapshot snapshot) {
-        if (!PersistStatus.DB_PERSISTED.name().equals(defaultText(snapshot.persistStatus(), ""))) {
-            return processing(snapshot);
-        }
-        /*
-         * 详细设计「9.6 交行对外券状态修订」：名创3/3、其他直充2/3及可信完成时间才证明作废完成。
-         * 重复请求直接返回已保存事实，不重建任务、不刷新时间，也不再次触发供应商作废。
-         */
-        if (VoucherUseState.isSupportedStateType(snapshot.stateType())
-                && VoucherUseState.CANCELLED.code().equals(snapshot.useState())
-                && StringUtils.hasText(snapshot.invalidTime())) {
-            return V1QueryRechargeOrderUseCaseService.snapshotResult(snapshot);
-        }
-        /*
-         * docs/交行直充业务系统详细设计.md「9.2 作废设计」要求 DB_PERSISTED 订单只生成
-         * INVALID_ORDER outbox，由 Worker 异步调用供应商作废。接口线程仍返回处理中，避免超时后调用方
-         * 重复请求导致供应商重复作废。
-         */
-        invalidOrderOutboxPort.enqueueInvalidOrder(new InvalidRechargeOrderOutboxCommand(
+            RechargeOrderSnapshot snapshot,
+            InvalidRechargeOrderContext context) {
+        if (!context.beginAdmission(merchant.orgCode(), request.outOrderSn(), pending(snapshot))) return context.response();
+        var state = invalidationService.invalidate(new InvalidRechargeOrderOutboxCommand(
                 merchant.orgCode(),
                 snapshot.orderId(),
-                snapshot.outOrderSn(),
-                defaultText(request.reason(), "")));
-        return processing(snapshot);
+                request.outOrderSn(),
+                defaultText(request.reason(), "")), prepared -> {
+                    if (prepared.status() == RechargeOrderInvalidationState.Status.PENDING
+                            || prepared.status() == RechargeOrderInvalidationState.Status.MANUAL_REQUIRED) {
+                        context.prepared(toResult(prepared));
+                    } else context.finish(toResult(prepared));
+                });
+        var result = toResult(state);
+        if (state.status() == RechargeOrderInvalidationState.Status.PENDING
+                || state.status() == RechargeOrderInvalidationState.Status.MANUAL_REQUIRED) {
+            context.prepared(result);
+            return context.response();
+        }
+        return context.finish(result);
     }
 
-    private static V1CardApiResult processing(RechargeOrderSnapshot snapshot) {
-        return V1CardApiResultStatus.SUCCESS.result(new V1RechargeOrderResponse(
-                snapshot.orderId(),
-                snapshot.outOrderSn(),
-                Integer.toString(LegacyOrderStatusCode.ACCEPTED.code()),
-                ORDER_STATUS_DESC_PROCESSING));
+    @Override
+    public Optional<V1CardApiResult> observeInvalidRechargeOrder(InvalidRechargeOrderContext context) {
+        var view = context.view();
+        if (view.phase() != InvalidRechargeOrderContext.Phase.ADMITTING
+                && view.phase() != InvalidRechargeOrderContext.Phase.OBSERVING) return Optional.empty();
+        return invalidationService.observe(view.orgCode(), view.outOrderSn())
+                .filter(state -> state.status() == RechargeOrderInvalidationState.Status.COMPLETED)
+                .map(state -> context.finish(toResult(state)));
+    }
+
+    private static V1CardApiResult toResult(RechargeOrderInvalidationState state) {
+        return switch (state.status()) {
+            case COMPLETED -> V1QueryRechargeOrderUseCaseService.snapshotResult(state.order());
+            case PENDING, MANUAL_REQUIRED -> pending(state.order());
+            case NOT_ACCEPTED -> V1CardApiResultStatus.BUSINESS_FAILED.result(state.reason());
+        };
+    }
+
+    private static V1CardApiResult pending(RechargeOrderSnapshot snapshot) {
+        if (snapshot == null) return V1CardApiResultStatus.INVALIDATION_PENDING.result();
+        var queried = (V1RechargeOrderResponse) V1QueryRechargeOrderUseCaseService.snapshotResult(snapshot).data();
+        return V1CardApiResultStatus.INVALIDATION_PENDING.result(new V1RechargeOrderResponse(
+                snapshot.orderId(), snapshot.outOrderSn(), queried.orderStatus(), "作废结果待确认"));
     }
 
     private static boolean validRequest(V1RechargeOrderInvalidRequest request) {

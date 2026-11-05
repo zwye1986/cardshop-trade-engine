@@ -72,7 +72,7 @@ public class MybatisRechargeOrderQueryAdapter implements RechargeOrderQueryPort 
         return Optional.of(toSnapshot(order, ext, outOrderSn));
     }
 
-    private static RechargeOrderSnapshot toSnapshot(
+    static RechargeOrderSnapshot toSnapshot(
             McOrderDO order,
             RechargeOrderExtDO ext,
             String requestedOutOrderSn) {

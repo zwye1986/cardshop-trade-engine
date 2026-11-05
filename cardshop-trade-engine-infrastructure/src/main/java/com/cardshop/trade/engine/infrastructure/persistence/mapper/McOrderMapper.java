@@ -17,6 +17,18 @@ import org.apache.ibatis.annotations.Param;
 @Mapper
 public interface McOrderMapper extends BaseMapper<McOrderDO> {
 
+    /** 同商户直充受理/观察，锁定仅用于受理短事务；参见详细设计9.3.2。 */
+    @org.apache.ibatis.annotations.Select("""
+            <script>
+            select order_Id,org_code,out_orderId,product_type,num,account,supplier_channel,
+                   order_status,order_price,fail_code,fail_reason
+            from mc_order where org_code=#{orgCode} and out_orderId=#{outOrderSn} and product_type=1
+            <if test="lock">for update</if>
+            </script>
+            """)
+    McOrderDO selectInvalidationOrder(@Param("orgCode") String orgCode,
+            @Param("outOrderSn") String outOrderSn, @Param("lock") boolean lock);
+
     /**
      * 按直充幂等键写入订单事实，唯一冲突时保持原订单不变。
      */

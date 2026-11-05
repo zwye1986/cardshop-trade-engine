@@ -45,7 +45,7 @@ class V1ControllerBlockingBoundaryTest {
                 (request, body) -> { throw new AssertionError("legacy route forbidden"); },
                 command -> { throw new AssertionError("create must not run"); },
                 command -> { throw new AssertionError("query must not run"); },
-                command -> { throw new AssertionError("invalid must not run"); });
+                (command, context) -> { throw new AssertionError("invalid must not run"); });
         for (var result : List.of(
                 controller.createRechargeOrder(null, Mono.just("{}"), request("/v1/cardapi/order/createRechargeOrder")),
                 controller.getRechargeOrder(null, Mono.just("{}"), request("/v1/cardapi/order/getRechargeOrder")),
@@ -92,7 +92,7 @@ class V1ControllerBlockingBoundaryTest {
                 legacyClient(),
                 createUseCase(),
                 queryUseCase,
-                command -> new V1CardApiResult("200", "操作成功", null));
+                (command, context) -> new V1CardApiResult("200", "操作成功", null));
 
         controller.getRechargeOrder("Bearer token", Mono.just("{}"),
                 request("/v1/cardapi/order/getRechargeOrder")).block();

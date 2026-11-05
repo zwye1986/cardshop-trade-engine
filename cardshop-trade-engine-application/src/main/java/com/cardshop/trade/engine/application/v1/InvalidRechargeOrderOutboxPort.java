@@ -1,5 +1,8 @@
 package com.cardshop.trade.engine.application.v1;
 
+import com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationState;
+import java.util.Optional;
+
 /**
  * DB_PERSISTED 订单作废 outbox 端口。
  *
@@ -7,10 +10,19 @@ package com.cardshop.trade.engine.application.v1;
  */
 public interface InvalidRechargeOrderOutboxPort {
 
-    void enqueueInvalidOrder(InvalidRechargeOrderOutboxCommand command);
+    /** 短事务受理，原事件优先；NOT_ACCEPTED必须不创建首次事件。参见详细设计9.3.2。 */
+    RechargeOrderInvalidationState prepareInvalidOrder(InvalidRechargeOrderOutboxCommand command);
 
-    static InvalidRechargeOrderOutboxPort noop() {
-        return command -> {
-        };
+    /** 主库一致事实读取，不筛due、不取写锁；存储故障不得伪装无订单。参见详细设计9.3.2。 */
+    Optional<RechargeOrderInvalidationState> findInvalidOrder(String orgCode, String outOrderSn);
+
+    /**
+     * 首次事件写入失败且受理事务已确认回滚，参见详细设计9.3.2。
+     * 只能在锁内证明无原事件后使用；事务回滚失败必须覆盖本异常，不能向调用方虚称未受理。
+     */
+    final class AdmissionRolledBackException extends RuntimeException {
+        public AdmissionRolledBackException(RuntimeException cause) {
+            super("first invalidation admission rolled back", cause);
+        }
     }
 }

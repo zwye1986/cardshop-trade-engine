@@ -23,6 +23,10 @@ public interface McDepartRecordMapper extends BaseMapper<McDepartRecordDO> {
             + "where order_id=#{orderId} and type=#{type} for update")
     List<McDepartRecordDO> lockPreDeductRecords(@Param("orderId") String orderId, @Param("type") String type);
 
+    /** 一致快照观察的只读版本，不阻塞资金收尾；校验规则仍共用履约适配器。参见详细设计9.3.5。 */
+    @Select("select org_code,order_id,type,`value` from mc_depart_record where order_id=#{orderId} and type=#{type}")
+    List<McDepartRecordDO> selectPreDeductRecords(@Param("orderId") String orderId, @Param("type") String type);
+
     /**
      * 写入资金流水。
      *

@@ -52,6 +52,14 @@ public interface RechargeFulfillmentOrderPort {
     }
 
     /**
+     * 在调用方主库一致快照事务内只读核验原资金裁决；不重裁决、不取写锁。
+     * 与恢复入口共用资金校验规则，损坏事实抛异常而非伪成功；参见详细设计9.3.5。
+     */
+    default boolean hasMinisoTerminalFundsDecision(String orgCode, String outOrderSn) {
+        throw new UnsupportedOperationException("MINISO terminal observation requires persistent adapter");
+    }
+
+    /**
      * 在同一主事务中裁决MINISO终态及首次释放许可；empty仅表示可信订单原本未预扣。
      * 返回empty前必须同事务保存独立无需释放裁决，重试不能凭预扣标记推断该事实。
      * 参见 {@code docs/交行直充业务系统详细设计.md}「9.8」。已有许可返回首次冻结值，不重新裁决。

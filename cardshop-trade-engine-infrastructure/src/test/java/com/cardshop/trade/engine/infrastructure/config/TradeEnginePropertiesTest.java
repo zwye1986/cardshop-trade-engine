@@ -21,6 +21,16 @@ class TradeEnginePropertiesTest {
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withUserConfiguration(PropertiesConfiguration.class);
 
+    @Test void invalidationDeadlineHasExplicitPositiveMillisecondBudget() {
+        contextRunner.run(context -> assertThat(context.getBean(TradeEngineProperties.class).getV1()
+                .getInvalidationWaitTimeoutMs()).isEqualTo(5000));
+        contextRunner.withPropertyValues("trade.engine.v1.invalidation-wait-timeout-ms=7000")
+                .run(context -> assertThat(context.getBean(TradeEngineProperties.class).getV1()
+                        .getInvalidationWaitTimeoutMs()).isEqualTo(7000));
+        contextRunner.withPropertyValues("trade.engine.v1.invalidation-wait-timeout-ms=0")
+                .run(context -> assertThat(context).hasFailed());
+    }
+
     @Test
     void minisoIsOptInAndUsesIndependentSupplierCredentials() {
         contextRunner.run(context -> assertThat(context.getBean(TradeEngineProperties.class)

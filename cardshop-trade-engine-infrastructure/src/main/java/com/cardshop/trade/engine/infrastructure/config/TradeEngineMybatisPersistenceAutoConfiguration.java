@@ -302,8 +302,15 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     public MybatisRechargeDispatchOutboxAdapter rechargeOutboxPort(
             RechargeDispatchOutboxMapper dispatchOutboxMapper,
             ObjectMapper objectMapper,
-            Clock clock) {
-        return new MybatisRechargeDispatchOutboxAdapter(dispatchOutboxMapper, objectMapper, clock);
+            Clock clock, McOrderMapper orders, RechargeOrderExtMapper ext,
+            com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoWriteOffEventMapper events,
+            MinisoReceiptMapper receipts,
+            com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoCouponGuardMapper guards,
+            ObjectProvider<com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection> protection,
+            ObjectProvider<RechargeFulfillmentOrderPort> fulfillment,
+            PlatformTransactionManager transactionManager) {
+        return new MybatisRechargeDispatchOutboxAdapter(dispatchOutboxMapper, objectMapper, clock,
+                orders, ext, events, receipts, guards, protection::getIfAvailable, fulfillment::getIfAvailable, transactionManager);
     }
 
     /**

@@ -15,6 +15,11 @@ import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxCommand;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationState;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationService;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
+import static org.mockito.Mockito.mock;
+import static com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationState.Status.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.time.Clock;
@@ -157,12 +162,13 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
     @ParameterizedTest
     @ValueSource(strings = {"2", "3"})
     void repeatedInvalidReturnsCompletedVoucherFactWithoutEnqueuingAgain(String stateType) {
-        RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort();
+        RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort(new RechargeOrderInvalidationState(
+                voucherSnapshot(stateType, "3", "", "2026-10-19 10:20:30"), "invalid-O", COMPLETED, ""));
         var service = new V1InvalidRechargeOrderUseCaseService(
                 precheckService(),
                 (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, outOrderSn) -> Optional.of(voucherSnapshot(stateType, "3", "", "2026-10-19 10:20:30")),
-                invalidOutboxPort);
+                invalidationService(invalidOutboxPort));
 
         V1CardApiResult result = service.invalidRechargeOrder(command("OUT-QUERY-1", "nonce-invalid-123456789012345678"));
 
@@ -178,58 +184,61 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"2", "3"})
-    void invalidWithoutTrustedCompletionTimeStillEnqueuesAsynchronousWork(String stateType) {
-        RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort();
+    void invalidWithoutTrustedCompletionTimeRequiresManualConfirmation(String stateType) {
+        RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort(new RechargeOrderInvalidationState(
+                voucherSnapshot(stateType, "3", "", ""), null, MANUAL_REQUIRED, ""));
         var service = new V1InvalidRechargeOrderUseCaseService(
                 precheckService(),
                 (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, outOrderSn) -> Optional.of(voucherSnapshot(stateType, "3", "", "")),
-                invalidOutboxPort);
+                invalidationService(invalidOutboxPort));
 
         V1RechargeOrderResponse data = (V1RechargeOrderResponse) service.invalidRechargeOrder(
                 command("OUT-QUERY-1", "nonce-invalid-123456789012345678")).data();
 
-        assertThat(data.orderStatus()).isEqualTo("2");
-        assertThat(invalidOutboxPort.commands).hasSize(1);
-    }
-
-    @Test
-    void invalidReturnsProcessingForOrderThatHasNotBeenPersistedToMysql() {
-        RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort();
-        var service = new V1InvalidRechargeOrderUseCaseService(
-                precheckService(),
-                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
-                (orgCode, outOrderSn) -> Optional.of(snapshot("ACCEPTED", "PENDING_MQ", "PASSED", "", "")),
-                invalidOutboxPort);
-
-        V1CardApiResult result = service.invalidRechargeOrder(command("OUT-INVALID-1", "nonce-invalid-123456789012345678"));
-
-        assertThat(result.code()).isEqualTo("200");
-        V1RechargeOrderResponse data = (V1RechargeOrderResponse) result.data();
-        assertThat(data.orderStatus()).isEqualTo("2");
-        assertThat(data.orderStatusDesc()).isEqualTo("处理中");
+        assertThat(data.orderStatus()).isEqualTo("12");
+        assertThat(data.useState()).isEmpty();
+        assertThat(data.invalidTime()).isEmpty();
         assertThat(invalidOutboxPort.commands).isEmpty();
     }
 
     @Test
-    void invalidEnqueuesInvalidOrderOutboxWhenMysqlOrderHasPersisted() {
-        RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort();
+    void invalidRejectsOrderThatHasNotBeenPersistedToMysql() {
+        RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort(new RechargeOrderInvalidationState(
+                null, null, NOT_ACCEPTED, "订单尚未落库，作废未受理"));
+        var service = new V1InvalidRechargeOrderUseCaseService(
+                precheckService(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
+                (orgCode, outOrderSn) -> Optional.of(snapshot("ACCEPTED", "PENDING_MQ", "PASSED", "", "")),
+                invalidationService(invalidOutboxPort));
+
+        V1CardApiResult result = service.invalidRechargeOrder(command("OUT-INVALID-1", "nonce-invalid-123456789012345678"));
+
+        assertThat(result.code()).isEqualTo("503");
+        assertThat(result.msg()).contains("未受理");
+        assertThat(invalidOutboxPort.commands).isEmpty();
+    }
+
+    @Test
+    void invalidPendingDoesNotClaimSuccessAndUsesSignedExternalOrderIdentity() {
+        RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort(new RechargeOrderInvalidationState(
+                snapshot("SUCCESS", "DB_PERSISTED", "PASSED", "", ""), "invalid-O", PENDING, ""));
         var service = new V1InvalidRechargeOrderUseCaseService(
                 precheckService(),
                 (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
                 (orgCode, outOrderSn) -> Optional.of(snapshot("SUPPLIER_ACCEPTED", "DB_PERSISTED", "PASSED", "", "")),
-                invalidOutboxPort);
+                invalidationService(invalidOutboxPort));
 
         V1CardApiResult result = service.invalidRechargeOrder(command("OUT-INVALID-2", "nonce-invalid-223456789012345678"));
 
-        assertThat(result.code()).isEqualTo("200");
+        assertThat(result.code()).isEqualTo("202");
         V1RechargeOrderResponse data = (V1RechargeOrderResponse) result.data();
-        assertThat(data.orderStatus()).isEqualTo("2");
-        assertThat(data.orderStatusDesc()).isEqualTo("处理中");
+        assertThat(data.orderStatus()).isEqualTo("12");
+        assertThat(data.orderStatusDesc()).isEqualTo("作废结果待确认");
         assertThat(invalidOutboxPort.commands).singleElement().satisfies(command -> {
             assertThat(command.orgCode()).isEqualTo("A36");
             assertThat(command.orderId()).isEqualTo("202607051337458961474292");
-            assertThat(command.outOrderSn()).isEqualTo("OUT-QUERY-1");
+            assertThat(command.outOrderSn()).isEqualTo("OUT-INVALID-2");
             assertThat(command.reason()).isEqualTo("");
         });
     }
@@ -293,13 +302,22 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
                 "", "", true, stateType, useState, useTime, invalidTime);
     }
 
+    private static RechargeOrderInvalidationService invalidationService(InvalidRechargeOrderOutboxPort port) {
+        return new RechargeOrderInvalidationService(port, mock(RechargeOutboxWorkerService.class), "http-fixture");
+    }
+
     private static final class RecordingInvalidOutboxPort implements InvalidRechargeOrderOutboxPort {
 
         private final List<InvalidRechargeOrderOutboxCommand> commands = new ArrayList<>();
+        private final RechargeOrderInvalidationState state;
+        RecordingInvalidOutboxPort(RechargeOrderInvalidationState state) { this.state = state; }
 
-        @Override
-        public void enqueueInvalidOrder(InvalidRechargeOrderOutboxCommand command) {
-            commands.add(command);
+        @Override public RechargeOrderInvalidationState prepareInvalidOrder(InvalidRechargeOrderOutboxCommand command) {
+            if (state.status() == PENDING) commands.add(command);
+            return state;
+        }
+        @Override public Optional<RechargeOrderInvalidationState> findInvalidOrder(String orgCode, String outOrderSn) {
+            return Optional.of(state);
         }
     }
 }

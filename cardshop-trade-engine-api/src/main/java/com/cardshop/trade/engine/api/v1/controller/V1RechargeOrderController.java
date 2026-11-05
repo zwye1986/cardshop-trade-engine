@@ -8,6 +8,11 @@ import com.cardshop.trade.engine.api.v1.security.AuthenticatedMerchant;
 import com.cardshop.trade.engine.api.v1.security.V1TokenAuthenticator;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderUseCase;
+import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderContext;
+import com.cardshop.trade.engine.application.v1.V1CardApiResultStatus;
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
+import com.cardshop.trade.engine.api.v1.usecase.V1InvalidationSettings;
+import java.time.Duration;
 import com.cardshop.trade.engine.application.v1.QueryRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
 import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
@@ -48,6 +53,8 @@ public class V1RechargeOrderController {
      * <p>参见详细设计「3. API/V1 接入层」。
      */
     private static final String LOAD_TEST_HEADER = "X-Load-Test";
+    private static final Duration INVALIDATION_OBSERVATION_INTERVAL = Duration.ofMillis(100);
+    private final LogStormGuard invalidationLogs = LogStormGuard.defaultGuard();
 
     private final V1RouteDecisionService routeDecisionService;
     private final V1TokenAuthenticator tokenAuthenticator;
@@ -55,6 +62,7 @@ public class V1RechargeOrderController {
     private final CreateRechargeOrderUseCase createRechargeOrderUseCase;
     private final QueryRechargeOrderUseCase queryRechargeOrderUseCase;
     private final InvalidRechargeOrderUseCase invalidRechargeOrderUseCase;
+    private final V1InvalidationSettings invalidationSettings;
 
     public V1RechargeOrderController(
             V1RouteDecisionService routeDecisionService,
@@ -63,12 +71,23 @@ public class V1RechargeOrderController {
             CreateRechargeOrderUseCase createRechargeOrderUseCase,
             QueryRechargeOrderUseCase queryRechargeOrderUseCase,
             InvalidRechargeOrderUseCase invalidRechargeOrderUseCase) {
+        this(routeDecisionService, tokenAuthenticator, legacyCardApiClient, createRechargeOrderUseCase,
+                queryRechargeOrderUseCase, invalidRechargeOrderUseCase,
+                new V1InvalidationSettings(InvalidRechargeOrderContext.DEFAULT_WAIT_TIMEOUT, (code, duration) -> {}));
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public V1RechargeOrderController(V1RouteDecisionService routeDecisionService, V1TokenAuthenticator tokenAuthenticator,
+            LegacyCardApiClient legacyCardApiClient, CreateRechargeOrderUseCase createRechargeOrderUseCase,
+            QueryRechargeOrderUseCase queryRechargeOrderUseCase, InvalidRechargeOrderUseCase invalidRechargeOrderUseCase,
+            V1InvalidationSettings invalidationSettings) {
         this.routeDecisionService = routeDecisionService;
         this.tokenAuthenticator = tokenAuthenticator;
         this.legacyCardApiClient = legacyCardApiClient;
         this.createRechargeOrderUseCase = createRechargeOrderUseCase;
         this.queryRechargeOrderUseCase = queryRechargeOrderUseCase;
         this.invalidRechargeOrderUseCase = invalidRechargeOrderUseCase;
+        this.invalidationSettings = invalidationSettings;
     }
 
     @PostMapping("/createRechargeOrder")
@@ -92,7 +111,59 @@ public class V1RechargeOrderController {
             @RequestHeader(value = HttpHeaders.AUTHORIZATION, required = false) String authorization,
             @RequestBody(required = false) Mono<String> body,
             ServerHttpRequest request) {
-        return routeOrderRequest(authorization, body, request, invalidRechargeOrderUseCase::invalidRechargeOrder);
+        return body.defaultIfEmpty("").flatMap(rawBody -> Mono.defer(() -> {
+            var context = new InvalidRechargeOrderContext(invalidationSettings.waitTimeout());
+            long started = System.nanoTime();
+            // cache仅在本次请求中存活。响应截止/断开取消等待订阅，但不取消已进入受理的执行源。
+            Mono<V1CardApiResult> execution = authenticateOnBlockingScheduler(authorization).flatMap(merchant -> {
+                if (!context.preparing()) return Mono.just(context.response());
+                if (merchant.isEmpty() || merchant.get().signingCredential() == null) {
+                    return Mono.just(context.finish(V1CardApiResultStatus.AUTH_FAILED.result()));
+                }
+                var decision = routeDecisionService.decideOrder(path(request), merchant.orElseThrow());
+                logOrderDecision(request, decision, merchant);
+                if (decision.isLegacy()) return Mono.just(context.finish(V1CardApiResultStatus.SYSTEM_BUSY.result()));
+                var principal = merchant.orElseThrow();
+                return Mono.fromCallable(() -> invalidRechargeOrderUseCase.invalidRechargeOrder(
+                        new V1MerchantCommand(principal.appId(), principal.orgCode(), rawBody,
+                                request.getHeaders().getFirst(LOAD_TEST_HEADER), principal.signingCredential()), context))
+                        .subscribeOn(Schedulers.boundedElastic());
+            }).onErrorResume(ex -> {
+                if (invalidationLogs.shouldLog("invalidation.execute").shouldLog()) {
+                    log.error("作废请求执行异常 phase={}", context.view().phase(), ex);
+                }
+                if (ex instanceof com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort.AdmissionRolledBackException) {
+                    return Mono.just(context.finish(V1CardApiResultStatus.SYSTEM_BUSY.result()));
+                }
+                return Mono.just(context.closeResponse());
+            }).cache();
+            // 未决执行结果不能立即结束等待；串行读每次完成后再计间隔，独立于执行线程和截止计时。
+            Mono<V1CardApiResult> immediate = execution.filter(result -> !V1CardApiResultStatus.INVALIDATION_PENDING.code().equals(result.code()));
+            Mono<V1CardApiResult> observed = Mono.defer(() -> Mono.fromCallable(() ->
+                            invalidRechargeOrderUseCase.observeInvalidRechargeOrder(context))
+                    .subscribeOn(Schedulers.boundedElastic())
+                    .onErrorResume(ex -> {
+                        if (invalidationLogs.shouldLog("invalidation.observe").shouldLog()) {
+                            log.error("作废主库观察异常 phase={}", context.view().phase(), ex);
+                        }
+                        return Mono.just(Optional.empty());
+                    }))
+                    .repeatWhen(repeat -> repeat.delayElements(INVALIDATION_OBSERVATION_INTERVAL))
+                    .filter(Optional::isPresent).next().map(Optional::orElseThrow);
+            Mono<V1CardApiResult> deadline = Mono.delay(Duration.ofNanos(context.remainingNanos()))
+                    .map(ignored -> {
+                        if (invalidationLogs.shouldLog("invalidation.deadline").shouldLog()) {
+                            log.warn("作废响应等待到期 phase={}", context.view().phase());
+                        }
+                        return context.closeResponse();
+                    });
+            // firstWithValue忽略未决执行分支的empty，计时器永远有值；不可使用firstWithSignal让empty抢走响应。
+            return Mono.firstWithValue(immediate, observed, deadline)
+                    .doOnNext(result -> invalidationSettings.responseObserver().accept(result.code(),
+                            Duration.ofNanos(System.nanoTime() - started)))
+                    .map(V1RechargeOrderController::ok)
+                    .doFinally(signal -> context.closeResponse());
+        }));
     }
 
     private Mono<ResponseEntity<?>> routeOrderRequest(

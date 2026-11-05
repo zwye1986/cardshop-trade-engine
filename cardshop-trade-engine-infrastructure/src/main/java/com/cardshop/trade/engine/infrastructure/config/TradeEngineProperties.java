@@ -892,6 +892,15 @@ public class TradeEngineProperties {
      */
     public static class V1 {
 
+        /** 完整作废body起算的响应等待毫秒数，含认证及排队；五秒初始工程预算，参见详细设计9.3.4。 */
+        private int invalidationWaitTimeoutMs = 5000;
+
+        public int getInvalidationWaitTimeoutMs() { return invalidationWaitTimeoutMs; }
+        public void setInvalidationWaitTimeoutMs(int value) {
+            if (value <= 0) throw new IllegalArgumentException("invalidation-wait-timeout-ms must be positive");
+            invalidationWaitTimeoutMs = value;
+        }
+
         /**
          * 是否启用请求 SM4 解密。
          */

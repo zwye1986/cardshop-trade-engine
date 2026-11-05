@@ -249,6 +249,17 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
         return ext.getBalanceNoReleaseDecidedAt() != null;
     }
 
+    @Override
+    public boolean hasMinisoTerminalFundsDecision(String orgCode, String outOrderSn) {
+        if (!org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()) {
+            throw new IllegalStateException("terminal observation requires consistent snapshot transaction");
+        }
+        var order = orderMapper.selectInvalidationOrder(orgCode, outOrderSn, false);
+        var ext = order == null ? null : extMapper.selectInvalidationOrder(order.getOrderId(), false);
+        validateMinisoOwnership(order, ext);
+        return authorization(order, ext, false).isPresent() || ext.getBalanceNoReleaseDecidedAt() != null;
+    }
+
     /** 首次裁决锁内提交终态与授权，HTTP/Redis由后续Worker在锁外执行；参见详细设计9.8。 */
     @Override
     @Transactional
@@ -397,6 +408,11 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
     }
 
     private Optional<MinisoBalanceReleaseAuthorization> authorization(McOrderDO order, RechargeOrderExtDO ext) {
+        return authorization(order, ext, true);
+    }
+
+    /** 同一规则分别读取锁内当前事实与只读快照；不复制一份更宽松的成功判定。参见详细设计9.3.5、9.8。 */
+    private Optional<MinisoBalanceReleaseAuthorization> authorization(McOrderDO order, RechargeOrderExtDO ext, boolean lock) {
         var time = ext.getBalanceReleaseAuthorizedAt();
         var event = ext.getBalanceReleaseEventId();
         var amount = ext.getBalanceReleaseAmount();
@@ -412,30 +428,39 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
                     || FulfillmentDispatchStatus.CANCELLED.name().equals(ext.getDispatchStatus())
                             && (!VoucherUseState.CANCELLED.code().equals(ext.getVoucherUseState())
                                     || ext.getVoucherInvalidTime() == null)
-                    || !preDeductRecords(order.getOrderId()).isEmpty()) {
+                    || !preDeductRecords(order.getOrderId(), lock).isEmpty()) {
                 throw new MinisoWriteOffException(RELEASE_AUTHORIZATION_INCONSISTENT);
             }
-            validateSourceEvent(order, noReleaseEvent);
+            validateSourceEvent(order, noReleaseEvent, lock);
             return Optional.empty();
         }
         if (time == null && event == null && amount == null) return Optional.empty();
         if (time == null || event == null || event.isBlank() || amount == null || amount <= 0
                 || !matchesReleaseTerminal(ext.getDispatchStatus(), order.getOrderStatus())
-                || amount != preDeductAmount(order)) {
+                || amount != preDeductAmount(order, lock)) {
             throw new MinisoWriteOffException(RELEASE_AUTHORIZATION_INCONSISTENT);
         }
-        validateSourceEvent(order, event);
+        validateSourceEvent(order, event, lock);
         return Optional.of(new MinisoBalanceReleaseAuthorization(order.getOrderId(), order.getOrgCode(),
                 order.getOutOrderId(), event, amount, time.atZone(LEGACY_CARDSHOP_DB_ZONE).toInstant()));
     }
 
     private java.util.List<McDepartRecordDO> preDeductRecords(String orderId) {
-        return Objects.requireNonNull(departRecords, "MINISO pre-deduction mapper required")
-                .lockPreDeductRecords(orderId, PRE_DEDUCT_RECORD_TYPE);
+        return preDeductRecords(orderId, true);
+    }
+
+    private java.util.List<McDepartRecordDO> preDeductRecords(String orderId, boolean lock) {
+        Objects.requireNonNull(departRecords, "MINISO pre-deduction mapper required");
+        return lock ? departRecords.lockPreDeductRecords(orderId, PRE_DEDUCT_RECORD_TYPE)
+                : departRecords.selectPreDeductRecords(orderId, PRE_DEDUCT_RECORD_TYPE);
     }
 
     private long preDeductAmount(McOrderDO order) {
-        var records = preDeductRecords(order.getOrderId());
+        return preDeductAmount(order, true);
+    }
+
+    private long preDeductAmount(McOrderDO order, boolean lock) {
+        var records = preDeductRecords(order.getOrderId(), lock);
         if (records.size() != 1 || order.getOrderPrice() == null || order.getOrderPrice() <= 0
                 || !order.getOrgCode().equals(records.getFirst().getOrgCode())
                 || !order.getOrderPrice().equals(records.getFirst().getValue())) {
@@ -445,13 +470,17 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
     }
 
     private void validateSourceEvent(McOrderDO order, String eventId) {
+        validateSourceEvent(order, eventId, true);
+    }
+
+    private void validateSourceEvent(McOrderDO order, String eventId, boolean lock) {
         if (eventId == null || eventId.isBlank()) throw new MinisoWriteOffException(RELEASE_EVIDENCE_MISSING);
         var event = Objects.requireNonNull(dispatchEvents, "MINISO dispatch mapper required")
                 .selectOne(new LambdaQueryWrapper<RechargeDispatchOutboxDO>()
                         .select(RechargeDispatchOutboxDO::getEventId, RechargeDispatchOutboxDO::getEventType,
                                 RechargeDispatchOutboxDO::getOrderId, RechargeDispatchOutboxDO::getOrgCode,
                                 RechargeDispatchOutboxDO::getOutOrderSn)
-                        .eq(RechargeDispatchOutboxDO::getEventId, eventId).last("for update"));
+                        .eq(RechargeDispatchOutboxDO::getEventId, eventId).last(lock ? "for update" : ""));
         if (event == null || !order.getOrderId().equals(event.getOrderId())
                 || !order.getOrgCode().equals(event.getOrgCode()) || !order.getOutOrderId().equals(event.getOutOrderSn())
                 || !(OutboxEventType.INVALID_ORDER.name().equals(event.getEventType())

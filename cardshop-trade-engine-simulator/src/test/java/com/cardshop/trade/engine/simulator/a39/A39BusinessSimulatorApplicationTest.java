@@ -156,6 +156,11 @@ class A39BusinessSimulatorApplicationTest {
 
     private static final class SingleCreateClient implements V1CardApiClient {
 
+        @Override
+        public ApiResponse invalidRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            throw new AssertionError("load mode must not invalidate orders");
+        }
+
         private final ApiResponse response;
         private int createCount;
         private int queryCount;
@@ -184,6 +189,11 @@ class A39BusinessSimulatorApplicationTest {
     }
 
     private static final class TokenFailureClient implements V1CardApiClient {
+
+        @Override
+        public ApiResponse invalidRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            throw new AssertionError("load mode must not invalidate orders");
+        }
 
         private int createCount;
         private int queryCount;

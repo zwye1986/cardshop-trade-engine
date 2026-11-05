@@ -18,6 +18,19 @@ import org.apache.ibatis.annotations.Select;
 @Mapper
 public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
 
+    /** 观察不使用查单的缺扩展兼容默认值，显式读取归属与资金裁决；参见详细设计9.3.2。 */
+    @Select("""
+            <script>
+            select order_id,org_code,out_order_sn,persist_status,validation_status,dispatch_allowed,
+                   dispatch_status,supplier_batch_id,balance_reserved,voucher_use_state,voucher_use_time,
+                   voucher_invalid_time,balance_release_authorized_at,balance_release_event_id,
+                   balance_release_amount,balance_no_release_decided_at,balance_no_release_event_id
+            from recharge_order_ext where order_id=#{orderId}
+            <if test="lock">for update</if>
+            </script>
+            """)
+    RechargeOrderExtDO selectInvalidationOrder(@Param("orderId") String orderId, @Param("lock") boolean lock);
+
     /**
      * 插入或推进订单持久化状态。
      */

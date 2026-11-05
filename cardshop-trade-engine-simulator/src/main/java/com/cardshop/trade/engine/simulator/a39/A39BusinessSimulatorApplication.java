@@ -124,6 +124,9 @@ public final class A39BusinessSimulatorApplication {
         if (options.mode() == A39SimulatorMode.LOAD) {
             return runLoad(options, client, signer, logSink);
         }
+        if (options.mode() == A39SimulatorMode.INVALIDATE) {
+            return new A39InvalidationScenarioRunner(client, signer, logSink).run(options);
+        }
         return runScenario(options, client, signer, logSink);
     }
 

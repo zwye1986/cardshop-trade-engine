@@ -512,6 +512,22 @@ class TradeEngineMybatisPersistenceAutoConfigurationTest {
     static class TestMapperAutoConfiguration {
 
         @Bean
+        @org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean(org.springframework.transaction.PlatformTransactionManager.class)
+        org.springframework.transaction.PlatformTransactionManager transactionManager() {
+            return new org.springframework.jdbc.datasource.DataSourceTransactionManager(dataSource());
+        }
+
+        @Bean
+        com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoWriteOffEventMapper minisoWriteOffEventMapper() {
+            return mapperProxy(com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoWriteOffEventMapper.class);
+        }
+
+        @Bean
+        com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoCouponGuardMapper minisoCouponGuardMapper() {
+            return mapperProxy(com.cardshop.trade.engine.infrastructure.persistence.mapper.MinisoCouponGuardMapper.class);
+        }
+
+        @Bean
         SqlSessionFactory sqlSessionFactory() {
             return configuredSqlSessionFactory();
         }

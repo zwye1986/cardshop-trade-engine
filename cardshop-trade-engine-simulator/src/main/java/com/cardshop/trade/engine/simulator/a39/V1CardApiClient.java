@@ -16,6 +16,8 @@ public interface V1CardApiClient {
 
     ApiResponse getRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) throws Exception;
 
+    ApiResponse invalidRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) throws Exception;
+
     /**
      * 单次 HTTP 调用的客户端侧耗时拆分。
      *

@@ -292,7 +292,7 @@ class A39SimulatorOptionsTest {
                 secretEnv(),
                 FIXED_CLOCK))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("mode must be scenario, load, or supplier-mock");
+                .hasMessageContaining("mode must be scenario, load, invalidate, or supplier-mock");
 
         assertThatThrownBy(() -> A39SimulatorOptions.parse(
                 new String[]{"--mode", "load", "--concurrency", "0"},

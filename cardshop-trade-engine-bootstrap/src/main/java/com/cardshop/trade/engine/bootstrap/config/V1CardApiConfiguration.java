@@ -7,6 +7,12 @@ import com.cardshop.trade.engine.api.v1.security.V1TimestampSettings;
 import com.cardshop.trade.engine.api.v1.security.V1TokenSettings;
 import com.cardshop.trade.engine.api.v1.usecase.V1CreateRechargeOrderUseCaseService;
 import com.cardshop.trade.engine.api.v1.usecase.V1InvalidRechargeOrderUseCaseService;
+import com.cardshop.trade.engine.api.v1.usecase.V1InvalidationSettings;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationService;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxWorkerService;
+import com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import com.cardshop.trade.engine.api.v1.usecase.V1IssueTokenUseCaseService;
 import com.cardshop.trade.engine.api.v1.usecase.V1QueryRechargeOrderUseCaseService;
 import com.cardshop.trade.engine.api.v1.usecase.V1RechargeAcceptSettings;
@@ -96,6 +102,26 @@ public class V1CardApiConfiguration {
     @Bean
     public V1RechargeAcceptSettings v1RechargeAcceptSettings(TradeEngineProperties properties) {
         return new V1RechargeAcceptSettings(Duration.ofSeconds(properties.getOrder().getPendingProtectSeconds()));
+    }
+
+    /** 只度量HTTP等待，不把商户/订单放入指标标签；参见详细设计9.3.8。 */
+    @Bean
+    public V1InvalidationSettings v1InvalidationSettings(TradeEngineProperties properties,
+            ObjectProvider<MeterRegistry> registries) {
+        return new V1InvalidationSettings(Duration.ofMillis(properties.getV1().getInvalidationWaitTimeoutMs()),
+                (code, duration) -> {
+                    var registry = registries.getIfAvailable();
+                    if (registry == null) return;
+                    String result = switch (code) {
+                        case "200" -> "completed";
+                        case "202" -> "pending";
+                        case "500" -> "busy";
+                        case "502" -> "error";
+                        default -> "rejected";
+                    };
+                    registry.counter("trade.engine.invalidation.response.total", "result", result).increment();
+                    Timer.builder("trade.engine.invalidation.wait.duration").register(registry).record(duration);
+                });
     }
 
     /**
@@ -283,7 +309,9 @@ public class V1CardApiConfiguration {
             V1ProtocolPrecheckService precheckService,
             ObjectProvider<V1MerchantProfilePort> merchantProfilePortProvider,
             ObjectProvider<RechargeOrderQueryPort> orderQueryPortProvider,
-            ObjectProvider<InvalidRechargeOrderOutboxPort> invalidOrderOutboxPortProvider) {
+            ObjectProvider<InvalidRechargeOrderOutboxPort> invalidOrderOutboxPortProvider,
+            ObjectProvider<RechargeOutboxWorkerService> workers,
+            ObjectProvider<MinisoWriteOffProtection> protection) {
         /*
          * 参见 docs/交行直充业务系统详细设计.md「9.2 作废设计」。作废入口除了商户资料和订单查询端口，
          * 还依赖 MyBatis outbox adapter 暴露的 InvalidRechargeOrderOutboxPort。该 adapter 由
@@ -294,18 +322,20 @@ public class V1CardApiConfiguration {
         V1MerchantProfilePort merchantProfilePort = merchantProfilePortProvider.getIfAvailable();
         RechargeOrderQueryPort orderQueryPort = orderQueryPortProvider.getIfAvailable();
         InvalidRechargeOrderOutboxPort invalidOrderOutboxPort = invalidOrderOutboxPortProvider.getIfAvailable();
-        if (merchantProfilePort == null || orderQueryPort == null || invalidOrderOutboxPort == null) {
+        var worker = workers.getIfAvailable();
+        if (merchantProfilePort == null || orderQueryPort == null || invalidOrderOutboxPort == null
+                || worker == null || protection.getIfAvailable() == null) {
             return unavailableInvalidRechargeOrderUseCase();
         }
         return new V1InvalidRechargeOrderUseCaseService(
                 precheckService,
                 merchantProfilePort,
                 orderQueryPort,
-                invalidOrderOutboxPort);
+                new RechargeOrderInvalidationService(invalidOrderOutboxPort, worker, "http-invalid-" + java.util.UUID.randomUUID()));
     }
 
     private static InvalidRechargeOrderUseCase unavailableInvalidRechargeOrderUseCase() {
-        // TODO(D6): 接入作废状态机和供应商撤单能力；参见 docs/交行直充业务系统详细设计.md「9.2 作废设计」。
-        return command -> V1CardApiResult.unavailable("新交易引擎作废暂未启用");
+        // 缺真实持久受理、Worker或保护依赖必须关闭入口，参见详细设计9.3.2。
+        return (command, context) -> V1CardApiResult.unavailable("新交易引擎作废暂未启用");
     }
 }

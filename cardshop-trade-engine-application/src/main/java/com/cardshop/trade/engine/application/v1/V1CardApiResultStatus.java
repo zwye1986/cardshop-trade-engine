@@ -9,6 +9,7 @@ package com.cardshop.trade.engine.application.v1;
 public enum V1CardApiResultStatus {
 
     SUCCESS("200", "操作成功"),
+    INVALIDATION_PENDING("202", "作废结果待确认，请查询订单状态"),
     AUTH_FAILED("401", "凭证错误"),
     SYSTEM_BUSY("500", "系统繁忙，请稍后重试"),
     SIGN_FAILED("501", "验签失败！"),

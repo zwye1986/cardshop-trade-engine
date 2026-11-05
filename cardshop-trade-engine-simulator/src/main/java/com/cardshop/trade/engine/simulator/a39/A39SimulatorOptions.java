@@ -96,6 +96,9 @@ public record A39SimulatorOptions(
         requestTimeout = requestTimeout == null || requestTimeout.isZero() || requestTimeout.isNegative()
                 ? DEFAULT_REQUEST_TIMEOUT
                 : requestTimeout;
+        if (mode == A39SimulatorMode.INVALIDATE && requestTimeout.compareTo(DEFAULT_REQUEST_TIMEOUT) < 0) {
+            throw new IllegalArgumentException("invalidate request-timeout must be at least 10s");
+        }
         outOrderPrefix = hasText(outOrderPrefix) ? outOrderPrefix.trim() : nextOutOrderSn(Clock.systemDefaultZone());
         expectedCreateCodes = normalizeCodes(expectedCreateCodes);
         progressInterval = progressInterval == null || progressInterval.isNegative() ? DEFAULT_PROGRESS_INTERVAL : progressInterval;
@@ -139,6 +142,10 @@ public record A39SimulatorOptions(
     static A39SimulatorOptions parse(String[] args, Map<String, String> env, Clock clock) {
         Map<String, String> options = parseArgs(args);
         A39SimulatorMode mode = A39SimulatorMode.parse(optionPreservingBlank(options, env, "mode", "A39_MODE", "scenario"));
+        if (mode == A39SimulatorMode.INVALIDATE
+                && !hasText(option(options, env, "out-order-sn", "A39_OUT_ORDER_SN", null))) {
+            throw new IllegalArgumentException("invalidate requires an explicit existing out-order-sn");
+        }
         int callbackPort = integer(option(options, env, "callback-port", "A39_CALLBACK_PORT", String.valueOf(DEFAULT_CALLBACK_PORT)), "callback-port");
         String notifyFallback = mode == A39SimulatorMode.LOAD ? "" : "http://127.0.0.1:" + callbackPort + "/callback/order";
         String notifyUrl = mode == A39SimulatorMode.LOAD
@@ -220,7 +227,7 @@ public record A39SimulatorOptions(
                 Defaults: --base-url http://apitest.kalaiwang.com, --app-id A35cecjXS7lZ1W30NMN, --product-id 1011, --account 18186222336, --num 1, --product-type 1, --request-sm4 true
 
                 Common options:
-                  --mode scenario|load|supplier-mock
+                  --mode scenario|load|invalidate|supplier-mock
                   supplier-mock mode uses SupplierMockOptions; see --help --mode supplier-mock
                   --base-url URL
                   --app-id APP_ID
@@ -256,6 +263,12 @@ public record A39SimulatorOptions(
                   load mode uses blank notify_url and skips query/callback waiting.
                   --duration sets load window length (0 disables, use total-orders only).
                   --rate sets target create QPS (0 means saturate concurrency).
+
+                Invalidate mode (dev/test only):
+                  --mode invalidate --out-order-sn EXISTING_ORDER
+                  --request-timeout 10s (minimum)
+                  Sends invalid once; query-attempts/query-interval bound confirmation queries.
+                  Never creates an order or retries invalid. Pending is not final failure.
 
                 Environment fallbacks:
                   A39_MODE A39_BASE_URL A39_APP_ID A39_APP_SECRET A39_AES_KEY A39_PRODUCT_ID A39_ACCOUNT

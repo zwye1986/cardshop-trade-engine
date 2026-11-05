@@ -355,6 +355,11 @@ class A39LoadTestRunnerTest {
 
     private static final class SlowRepeatingLoadClient implements V1CardApiClient {
 
+        @Override
+        public ApiResponse invalidRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            throw new AssertionError("load mode must not invalidate orders");
+        }
+
         private final V1CardApiClient.ApiResponse response;
         private final Duration delay;
 
@@ -385,6 +390,11 @@ class A39LoadTestRunnerTest {
 
     private static final class RepeatingLoadClient implements V1CardApiClient {
 
+        @Override
+        public ApiResponse invalidRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            throw new AssertionError("load mode must not invalidate orders");
+        }
+
         private final V1CardApiClient.ApiResponse response;
         private final List<Map<String, Object>> createPayloads = java.util.Collections.synchronizedList(new ArrayList<>());
 
@@ -410,6 +420,11 @@ class A39LoadTestRunnerTest {
     }
 
     private static final class CapturingLoadClient implements V1CardApiClient {
+
+        @Override
+        public ApiResponse invalidRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
+            throw new AssertionError("load mode must not invalidate orders");
+        }
 
         private final List<Object> outcomes;
         private final AtomicInteger next = new AtomicInteger();
