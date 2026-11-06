@@ -184,7 +184,7 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"2", "3"})
-    void invalidWithoutTrustedCompletionTimeRequiresManualConfirmation(String stateType) {
+    void invalidWithoutTrustedCompletionTimeFailsWithoutPendingResponse(String stateType) {
         RecordingInvalidOutboxPort invalidOutboxPort = new RecordingInvalidOutboxPort(new RechargeOrderInvalidationState(
                 voucherSnapshot(stateType, "3", "", ""), null, MANUAL_REQUIRED, ""));
         var service = new V1InvalidRechargeOrderUseCaseService(
@@ -193,12 +193,10 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
                 (orgCode, outOrderSn) -> Optional.of(voucherSnapshot(stateType, "3", "", "")),
                 invalidationService(invalidOutboxPort));
 
-        V1RechargeOrderResponse data = (V1RechargeOrderResponse) service.invalidRechargeOrder(
-                command("OUT-QUERY-1", "nonce-invalid-123456789012345678")).data();
+        var result = service.invalidRechargeOrder(command("OUT-QUERY-1", "nonce-invalid-123456789012345678"));
 
-        assertThat(data.orderStatus()).isEqualTo("12");
-        assertThat(data.useState()).isEmpty();
-        assertThat(data.invalidTime()).isEmpty();
+        assertThat(result.code()).isEqualTo("503");
+        assertThat(result.data()).isNull();
         assertThat(invalidOutboxPort.commands).isEmpty();
     }
 
@@ -231,10 +229,8 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
 
         V1CardApiResult result = service.invalidRechargeOrder(command("OUT-INVALID-2", "nonce-invalid-223456789012345678"));
 
-        assertThat(result.code()).isEqualTo("202");
-        V1RechargeOrderResponse data = (V1RechargeOrderResponse) result.data();
-        assertThat(data.orderStatus()).isEqualTo("12");
-        assertThat(data.orderStatusDesc()).isEqualTo("作废结果待确认");
+        assertThat(result.code()).isEqualTo("503");
+        assertThat(result.data()).isNull();
         assertThat(invalidOutboxPort.commands).singleElement().satisfies(command -> {
             assertThat(command.orgCode()).isEqualTo("A36");
             assertThat(command.orderId()).isEqualTo("202607051337458961474292");

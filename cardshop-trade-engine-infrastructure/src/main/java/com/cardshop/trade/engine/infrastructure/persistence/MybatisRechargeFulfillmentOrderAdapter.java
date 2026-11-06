@@ -198,9 +198,10 @@ public class MybatisRechargeFulfillmentOrderAdapter implements RechargeFulfillme
                 "response_code", value(command.responseCode()),
                 "response_message", value(command.responseMessage()),
                 "supplier_order_id", value(command.supplierOrderId()),
-                "raw_response", value(command.rawResponse()))));
+                "raw_response", value(command.rawResponse()),
+                "http_status", command.httpStatus() == null ? "" : command.httpStatus())));
         flow.setUpdateTime(now());
-        flowMapper.updateById(flow);
+        if (flowMapper.updateById(flow) != 1) throw new IllegalStateException("supplier flow evidence not saved");
     }
 
     @Override

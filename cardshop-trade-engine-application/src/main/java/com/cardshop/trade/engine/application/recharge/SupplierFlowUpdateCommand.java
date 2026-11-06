@@ -20,5 +20,10 @@ public record SupplierFlowUpdateCommand(
         String responseCode,
         String responseMessage,
         String supplierOrderId,
-        String rawResponse) {
+        String rawResponse,
+        Integer httpStatus) {
+    public SupplierFlowUpdateCommand(long flowId, String status, String remark, String responseCode,
+            String responseMessage, String supplierOrderId, String rawResponse) {
+        this(flowId, status, remark, responseCode, responseMessage, supplierOrderId, rawResponse, null);
+    }
 }

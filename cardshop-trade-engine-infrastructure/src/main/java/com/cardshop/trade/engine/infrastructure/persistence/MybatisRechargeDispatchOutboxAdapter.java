@@ -10,6 +10,9 @@ import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort;
 import com.cardshop.trade.engine.application.recharge.MinisoWriteOffProtection;
 import com.cardshop.trade.engine.application.recharge.RechargeFulfillmentOrderPort;
 import com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationState;
+import com.cardshop.trade.engine.application.recharge.InvalidationAttempt;
+import com.cardshop.trade.engine.application.recharge.MinisoFulfillmentReceipt;
+import com.cardshop.trade.engine.application.recharge.SupplierFlowStartCommand;
 import com.cardshop.trade.engine.application.recharge.MinisoWriteOffException;
 import com.cardshop.trade.engine.application.logging.LogStormGuard;
 import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
@@ -71,6 +74,7 @@ public class MybatisRechargeDispatchOutboxAdapter
     private MinisoWriteOffOrderLocks orderLocks;
     private Supplier<MinisoWriteOffProtection> protection;
     private Supplier<RechargeFulfillmentOrderPort> orders;
+    private MinisoReceiptMapper receipts;
     private TransactionTemplate admission;
     private TransactionTemplate observation;
 
@@ -86,6 +90,7 @@ public class MybatisRechargeDispatchOutboxAdapter
         this.orderLocks = new MinisoWriteOffOrderLocks(events, receipts, guards);
         this.protection = protection;
         this.orders = orders;
+        this.receipts = receipts;
         admission = new TransactionTemplate(tm);
         admission.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
         admission.setTimeout(ADMISSION_TRANSACTION_TIMEOUT_SECONDS);
@@ -102,14 +107,22 @@ public class MybatisRechargeDispatchOutboxAdapter
             var order = orderMapper.selectInvalidationOrder(command.orgCode(), command.outOrderSn(), true);
             if (order == null) return new RechargeOrderInvalidationState(null, null, NOT_ACCEPTED, "订单尚未落库，作废未受理");
             var ext = extMapper.selectInvalidationOrder(order.getOrderId(), true);
-            var state = invalidationState(order, ext);
-            if (state.status() != NOT_ACCEPTED) return state;
+            var event = mapper.selectInvalidation(invalidEventId(order.getOrderId()), order.getOrgCode(),
+                    order.getOrderId(), order.getOutOrderId(), true);
+            var state = invalidationState(order, ext, event, 0);
+            boolean newRound = state.attempt() != null && state.attempt().result() == InvalidationAttempt.Result.REJECTED;
+            if (state.status() != NOT_ACCEPTED && !newRound) return state;
             if (!owned(order, ext) || !Objects.equals(command.orderId(), order.getOrderId())) return state;
             if (!Objects.equals(order.getOrderStatus(), LegacyOrderStatusCode.SUCCESS.code())
                     || !FulfillmentDispatchStatus.SUCCESS.name().equals(ext.getDispatchStatus())
                     || !VoucherUseState.UNUSED.code().equals(ext.getVoucherUseState())
                     || ext.getVoucherUseTime() != null) {
                 return new RechargeOrderInvalidationState(state.order(), null, NOT_ACCEPTED, "订单未发券成功或券不可作废，作废未受理");
+            }
+            if (ext.getBalanceReleaseAuthorizedAt() != null || ext.getBalanceReleaseEventId() != null
+                    || ext.getBalanceReleaseAmount() != null || ext.getBalanceNoReleaseDecidedAt() != null
+                    || ext.getBalanceNoReleaseEventId() != null) {
+                return new RechargeOrderInvalidationState(state.order(), null, NOT_ACCEPTED, "订单存在资金裁决，作废未受理");
             }
             if (MINISO_CHANNEL.equals(order.getSupplierChannel())) {
                 var local = orderLocks.lock(order.getOrderId(), now());
@@ -129,7 +142,25 @@ public class MybatisRechargeDispatchOutboxAdapter
                 }
             }
             try {
-                enqueueInvalidOrder(command);
+                if (newRound) {
+                    var payload = readPayload(event.getPayload());
+                    long number = state.attempt().number() + 1;
+                    payload.withArray(InvalidationAttempt.PAYLOAD_KEY).add(objectMapper.valueToTree(
+                            pendingAttempt(event.getEventId(), number, command.deadlineEpochMs())));
+                    int changed = mapper.update(null, new LambdaUpdateWrapper<RechargeDispatchOutboxDO>()
+                            .eq(RechargeDispatchOutboxDO::getEventId, event.getEventId())
+                            .eq(RechargeDispatchOutboxDO::getVersion, event.getVersion())
+                            .set(RechargeDispatchOutboxDO::getPayload, payload.toString())
+                            .set(RechargeDispatchOutboxDO::getStatus, TaskStatus.INIT.name())
+                            .set(RechargeDispatchOutboxDO::getRetryCount, 0)
+                            .set(RechargeDispatchOutboxDO::getNextRetryTime, now().withNano(0))
+                            .set(RechargeDispatchOutboxDO::getLockedBy, null)
+                            .set(RechargeDispatchOutboxDO::getLockedUntil, null)
+                            .set(RechargeDispatchOutboxDO::getLastError, "")
+                            .set(RechargeDispatchOutboxDO::getUpdatedAt, now())
+                            .setSql("version = version + 1"));
+                    if (changed != 1) throw new IllegalStateException("invalidation round changed during admission");
+                } else enqueueInvalidOrder(command);
                 if (mapper.selectInvalidation(invalidEventId(order.getOrderId()), order.getOrgCode(),
                         order.getOrderId(), order.getOutOrderId()) == null) {
                     throw new IllegalStateException("invalidation event identity mismatch");
@@ -138,25 +169,43 @@ public class MybatisRechargeDispatchOutboxAdapter
                 // TransactionTemplate回滚成功才透出该标记；回滚失败覆盖为事务异常，仍按未知处理。见详细设计9.3.2。
                 throw new AdmissionRolledBackException(ex);
             }
-            return new RechargeOrderInvalidationState(state.order(), invalidEventId(order.getOrderId()), PENDING, "");
+            return invalidationState(order, ext, mapper.selectInvalidation(invalidEventId(order.getOrderId()),
+                    order.getOrgCode(), order.getOrderId(), order.getOutOrderId()), 0);
         });
     }
 
     @Override
     public Optional<RechargeOrderInvalidationState> findInvalidOrder(String orgCode, String outOrderSn) {
+        return findInvalidOrder(orgCode, outOrderSn, 0);
+    }
+
+    @Override
+    public Optional<RechargeOrderInvalidationState> findInvalidOrder(String orgCode, String outOrderSn, long attemptNo) {
         return Objects.requireNonNull(observation, "persistent observation dependencies required").execute(tx -> {
             var order = orderMapper.selectInvalidationOrder(orgCode, outOrderSn, false);
             return order == null ? Optional.empty()
-                    : Optional.of(invalidationState(order, extMapper.selectInvalidationOrder(order.getOrderId(), false)));
+                    : Optional.of(invalidationState(order, extMapper.selectInvalidationOrder(order.getOrderId(), false),
+                            mapper.selectInvalidation(invalidEventId(order.getOrderId()), order.getOrgCode(),
+                                    order.getOrderId(), order.getOutOrderId()), attemptNo));
         });
     }
 
-    private RechargeOrderInvalidationState invalidationState(McOrderDO order, RechargeOrderExtDO ext) {
+    private RechargeOrderInvalidationState invalidationState(McOrderDO order, RechargeOrderExtDO ext,
+            RechargeDispatchOutboxDO event, long attemptNo) {
         boolean owned = owned(order, ext);
         var snapshot = MybatisRechargeOrderQueryAdapter.toSnapshot(order, owned ? ext : null, order.getOutOrderId());
-        var event = mapper.selectInvalidation(invalidEventId(order.getOrderId()), order.getOrgCode(),
-                order.getOrderId(), order.getOutOrderId());
         String eventId = event == null ? null : event.getEventId();
+        var attempt = event == null ? null : attempt(event.getPayload(), attemptNo);
+        if (attempt != null) {
+            if (!owned) return new RechargeOrderInvalidationState(snapshot, eventId, MANUAL_REQUIRED, "作废归属证据不完整");
+            // 加入轮次不能重新获得五分钟；只读观察按原截止失败，不在这里取写锁或发起恢复。
+            if (attempt.result() == InvalidationAttempt.Result.PENDING
+                    && (clock.millis() >= attempt.deadlineEpochMs() || TaskStatus.MANUAL_REQUIRED.name().equals(event.getStatus()))) {
+                return new RechargeOrderInvalidationState(snapshot, eventId, RechargeOrderInvalidationState.Status.FAILED,
+                        "作废失败", attempt);
+            }
+            return new RechargeOrderInvalidationState(snapshot, eventId, PENDING, "").withAttempt(attempt);
+        }
         if (owned && FulfillmentDispatchStatus.CANCELLED.name().equals(ext.getDispatchStatus())) {
             boolean complete = Objects.equals(order.getOrderStatus(), LegacyOrderStatusCode.SUCCESS.code())
                     && VoucherUseState.CANCELLED.code().equals(ext.getVoucherUseState())
@@ -179,6 +228,109 @@ public class MybatisRechargeDispatchOutboxAdapter
                 TaskStatus.MANUAL_REQUIRED.name().equals(event.getStatus()) ? MANUAL_REQUIRED : PENDING, "");
         return new RechargeOrderInvalidationState(snapshot, null, NOT_ACCEPTED,
                 owned ? "尚无作废操作" : "订单缺少新引擎持久归属，作废未受理");
+    }
+
+    /** JSON是持久边界，仅在这里转换；无数组表示旧合同，损坏数组不得按无操作重新发送。 */
+    private com.fasterxml.jackson.databind.node.ObjectNode readPayload(String payload) {
+        try {
+            var tree = objectMapper.readTree(payload);
+            if (tree == null || !tree.isObject()) throw new IllegalStateException("invalidation payload must be an object");
+            return (com.fasterxml.jackson.databind.node.ObjectNode) tree;
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("invalid invalidation payload");
+        }
+    }
+
+    private InvalidationAttempt attempt(String payload, long number) {
+        var root = readPayload(payload);
+        var attempts = root.get(InvalidationAttempt.PAYLOAD_KEY);
+        if (attempts == null) return null;
+        if (!attempts.isArray() || attempts.isEmpty()) throw new IllegalStateException("invalidation attempts missing");
+        var index = number == 0 ? attempts.size() - 1 : Math.toIntExact(number - 1);
+        if (index < 0 || index >= attempts.size()) throw new IllegalStateException("invalidation round not found");
+        try {
+            var value = objectMapper.treeToValue(attempts.get(index), InvalidationAttempt.class);
+            if (value.number() != index + 1L || value.supplierRequestId() == null || value.supplierRequestId().isBlank()
+                    || value.deadlineEpochMs() <= 0 || value.result() == null
+                    || (value.result() != InvalidationAttempt.Result.PENDING && value.confirmedEpochMs() <= 0)) {
+                throw new IllegalStateException("invalidation round evidence invalid");
+            }
+            return value;
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("invalid invalidation round");
+        }
+    }
+
+    private InvalidationAttempt pendingAttempt(String eventId, long number, long deadlineEpochMs) {
+        return new InvalidationAttempt(number, number == 1 ? eventId : eventId + "-" + number,
+                deadlineEpochMs == 0 ? clock.millis() + java.time.Duration.ofMinutes(5).toMillis() : deadlineEpochMs,
+                InvalidationAttempt.Result.PENDING, 0, null);
+    }
+
+    @Override
+    public Optional<Long> startInvalidationCall(RechargeOutboxEvent event, SupplierFlowStartCommand flow) {
+        return admission.execute(tx -> {
+            var row = lockCurrentInvalidation(event);
+            if (row == null || attempt(row.getPayload(), 0).result() != InvalidationAttempt.Result.PENDING
+                    || clock.millis() >= event.invalidationAttempt().deadlineEpochMs()
+                    || orders.get().hasSupplierInvalidationAttempt(event.orderId(), flow.supplierRequestId())) return Optional.empty();
+            // 受理后可能收到核销，必须在发送登记事务内按原锁序重新裁决，HTTP仍在事务外（详细设计9.3.5）。
+            if (MINISO_CHANNEL.equals(flow.channel())) {
+                var local = orderLocks.lock(event.orderId(), now());
+                if (local == null || local.receipt().couponStatus() != MINISO_COUPON_UNUSED) return Optional.empty();
+                Objects.requireNonNull(protection.get(), "MINISO protection required").assertVoidAllowed(event.orderId());
+            }
+            return Optional.of(orders.get().insertSupplierFlowStart(flow));
+        });
+    }
+
+    @Override
+    public boolean completeInvalidation(RechargeOutboxEvent event, InvalidationAttempt result) {
+        return Boolean.TRUE.equals(admission.execute(tx -> {
+            var row = lockCurrentInvalidation(event);
+            if (row == null) return false;
+            var previous = attempt(row.getPayload(), 0);
+            if (previous.result() != InvalidationAttempt.Result.PENDING) return previous.equals(result);
+            var payload = readPayload(row.getPayload());
+            ((com.fasterxml.jackson.databind.node.ArrayNode) payload.get(InvalidationAttempt.PAYLOAD_KEY))
+                    .set(Math.toIntExact(result.number() - 1), objectMapper.valueToTree(result));
+            var update = new LambdaUpdateWrapper<RechargeDispatchOutboxDO>()
+                    .eq(RechargeDispatchOutboxDO::getEventId, event.eventId())
+                    .eq(RechargeDispatchOutboxDO::getVersion, event.version())
+                    .set(RechargeDispatchOutboxDO::getPayload, payload.toString())
+                    .set(RechargeDispatchOutboxDO::getUpdatedAt, now());
+            if (result.result() == InvalidationAttempt.Result.REJECTED || result.result() == InvalidationAttempt.Result.UNKNOWN) {
+                update.set(RechargeDispatchOutboxDO::getStatus, result.result() == InvalidationAttempt.Result.REJECTED
+                                ? TaskStatus.SUCCESS.name() : TaskStatus.MANUAL_REQUIRED.name())
+                        .set(RechargeDispatchOutboxDO::getLockedUntil, null)
+                        .set(RechargeDispatchOutboxDO::getLastError, result.result().name());
+            }
+            return mapper.update(null, update) == 1;
+        }));
+    }
+
+    private RechargeDispatchOutboxDO lockCurrentInvalidation(RechargeOutboxEvent event) {
+        var order = orderMapper.selectInvalidationOrder(event.orgCode(), event.outOrderSn(), true);
+        if (order == null || !event.orderId().equals(order.getOrderId())) return null;
+        var ext = extMapper.selectInvalidationOrder(event.orderId(), true);
+        if (!owned(order, ext)) return null;
+        var row = mapper.selectInvalidation(event.eventId(), event.orgCode(), event.orderId(), event.outOrderSn(), true);
+        if (row == null || !Objects.equals(row.getVersion(), event.version())
+                || !TaskStatus.PROCESSING.name().equals(row.getStatus()) || row.getLockedUntil() == null
+                || !row.getLockedUntil().isAfter(now())
+                || attempt(row.getPayload(), 0).number() != event.invalidationAttempt().number()) return null;
+        return row;
+    }
+
+    @Override
+    public Optional<MinisoFulfillmentReceipt> findInvalidationReceipt(String orgCode, String orderId) {
+        var snapshot = receipts.selectSnapshot(orgCode, orderId);
+        var receipt = receipts.selectReceipt(orderId);
+        if (snapshot == null || receipt == null || !orgCode.equals(receipt.orgCode())
+                || !snapshot.account().equals(receipt.phone())
+                || Long.parseLong(snapshot.batchId()) != receipt.batchId()) return Optional.empty();
+        return Optional.of(new MinisoFulfillmentReceipt(receipt.orderId(), receipt.orgCode(), receipt.batchId(),
+                receipt.couponCode(), receipt.phone(), receipt.beginTime(), receipt.endTime(), 3));
     }
 
     private static boolean owned(McOrderDO order, RechargeOrderExtDO ext) {
@@ -384,7 +536,8 @@ public class MybatisRechargeDispatchOutboxAdapter
                 outbox.getMaxRetryCount() == null ? DEFAULT_MAX_RETRY_COUNT : outbox.getMaxRetryCount(),
                 outbox.getVersion() == null ? 0L : outbox.getVersion(),
                 outbox.getNextRetryTime(),
-                outbox.getLastError());
+                outbox.getLastError(),
+                OutboxEventType.INVALID_ORDER.name().equals(outbox.getEventType()) ? attempt(outbox.getPayload(), 0) : null);
     }
 
     private String invalidPayload(InvalidRechargeOrderOutboxCommand command) {
@@ -393,7 +546,9 @@ public class MybatisRechargeDispatchOutboxAdapter
                     "org_code", command.orgCode(),
                     "order_id", command.orderId(),
                     "out_order_sn", command.outOrderSn(),
-                    "reason", command.reason() == null ? "" : command.reason()));
+                    "reason", command.reason() == null ? "" : command.reason(),
+                    InvalidationAttempt.PAYLOAD_KEY, List.of(pendingAttempt(invalidEventId(command.orderId()), 1,
+                            command.deadlineEpochMs()))));
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("serialize invalid order outbox payload failed", ex);
         }

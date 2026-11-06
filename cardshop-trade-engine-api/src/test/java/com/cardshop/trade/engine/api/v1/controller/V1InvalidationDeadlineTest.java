@@ -30,7 +30,7 @@ class V1InvalidationDeadlineTest {
         var nowNanos = new AtomicLong(0);
         var timeout = InvalidRechargeOrderContext.DEFAULT_WAIT_TIMEOUT;
         var context = new InvalidRechargeOrderContext(timeout, nowNanos::get);
-        var pending = new V1CardApiResult("202", "pending", null);
+        var pending = new V1CardApiResult("503", "作废失败", null);
         nowNanos.set(timeout.toNanos() + offsetNanos);
 
         // 故意不先调用closeResponse，证明调度器迟到也不能让未开始的受理晚启动。
@@ -39,7 +39,7 @@ class V1InvalidationDeadlineTest {
         assertThat(context.beginAdmission("A36", "EXISTING", pending)).isEqualTo(offsetNanos < 0);
         assertThat(context.view().phase()).isEqualTo(offsetNanos < 0
                 ? InvalidRechargeOrderContext.Phase.ADMITTING : InvalidRechargeOrderContext.Phase.PREPARING);
-        assertThat(context.closeResponse().code()).isEqualTo(offsetNanos < 0 ? "202" : "500");
+        assertThat(context.closeResponse().code()).isEqualTo("500");
         assertThat(context.beginAdmission("A36", "LATE", pending)).isFalse();
     }
 
@@ -49,13 +49,13 @@ class V1InvalidationDeadlineTest {
         var nowNanos = new AtomicLong(0);
         var timeout = InvalidRechargeOrderContext.DEFAULT_WAIT_TIMEOUT;
         var context = new InvalidRechargeOrderContext(timeout, nowNanos::get);
-        var pending = new V1CardApiResult("202", "pending", null);
+        var pending = new V1CardApiResult("503", "作废失败", null);
         var completed = new V1CardApiResult("200", "completed", null);
         assertThat(context.beginAdmission("A36", "EXISTING", pending)).isTrue();
         context.prepared(pending);
         nowNanos.set(timeout.toNanos() + offsetNanos);
 
-        // 截止同刻remaining=0：即使截止回调尚未运行，也不能覆盖最后的安全202快照。
+        // 截止同刻remaining=0：迟到成功不能覆盖已经对交行关闭的失败。
         assertThat(context.finish(completed)).isSameAs(offsetNanos < 0 ? completed : pending);
         nowNanos.set(timeout.toNanos() + 1);
         assertThat(context.closeResponse()).isSameAs(offsetNanos < 0 ? completed : pending);
@@ -111,7 +111,7 @@ class V1InvalidationDeadlineTest {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var persisted = new AtomicInteger();
-        var pending = new V1CardApiResult("202", "pending", null);
+        var pending = new V1CardApiResult("503", "作废失败", null);
         nowNanos.set(timeout.toNanos() - 1);
         try (var executor = Executors.newSingleThreadExecutor()) {
             var execution = executor.submit(() -> {
@@ -125,13 +125,13 @@ class V1InvalidationDeadlineTest {
             try {
                 assertThat(entered.await(1, TimeUnit.SECONDS)).isTrue();
                 nowNanos.set(timeout.toNanos());
-                assertThat(context.closeResponse()).isSameAs(pending);
+                assertThat(context.closeResponse().code()).isEqualTo("500");
                 assertThat(persisted.get()).isZero();
                 nowNanos.incrementAndGet();
             } finally {
                 release.countDown();
             }
-            assertThat(execution.get(1, TimeUnit.SECONDS)).isSameAs(pending);
+            assertThat(execution.get(1, TimeUnit.SECONDS).code()).isEqualTo("500");
             assertThat(persisted.get()).isEqualTo(1);
             assertThat(context.view().phase()).isEqualTo(InvalidRechargeOrderContext.Phase.CLOSED);
         }
@@ -159,11 +159,12 @@ class V1InvalidationDeadlineTest {
                 (request, body) -> Mono.just(ResponseEntity.ok("unused")),
                 command -> CompletableFuture.completedFuture(new V1CardApiResult("200", "unused", null)),
                 command -> new V1CardApiResult("200", "unused", null),
-                (command, context) -> { calls.incrementAndGet(); return new V1CardApiResult("200", "wrong", null); });
+                (command, context) -> { calls.incrementAndGet(); return new V1CardApiResult("200", "wrong", null); },
+                new com.cardshop.trade.engine.api.v1.usecase.V1InvalidationSettings(Duration.ofMillis(200), (code, elapsed) -> {}));
         var response = controller.invalidRechargeOrder("Bearer fixture", Mono.just("{}"),
                 MockServerHttpRequest.post("/v1/cardapi/order/invalid").build()).toFuture();
         try {
-            var result = response.get(5500, TimeUnit.MILLISECONDS);
+            var result = response.get(2, TimeUnit.SECONDS);
             assertThat(result.getBody()).isInstanceOfSatisfying(V1CardApiResponse.class,
                     body -> { assertThat(body.code()).isEqualTo("500"); assertThat(body.data()).isNull(); });
         } finally { release.countDown(); }
@@ -173,7 +174,7 @@ class V1InvalidationDeadlineTest {
     }
 
     @Test
-    void deadlineDuringAdmissionReturnsPendingAndDoesNotCancelExecution() throws Exception {
+    void deadlineDuringAdmissionReturnsFailureAndDoesNotCancelExecution() throws Exception {
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var persisted = new CountDownLatch(1);
@@ -188,7 +189,7 @@ class V1InvalidationDeadlineTest {
                 MockServerHttpRequest.post("/v1/cardapi/order/invalid").build()).toFuture();
         try {
             assertThat(entered.await(1, TimeUnit.SECONDS)).isTrue();
-            assertThat(((V1CardApiResponse<?>) response.get(2, TimeUnit.SECONDS).getBody()).code()).isEqualTo("202");
+            assertThat(((V1CardApiResponse<?>) response.get(2, TimeUnit.SECONDS).getBody()).code()).isEqualTo("500");
             assertThat(persisted.getCount()).isEqualTo(1);
         } finally { release.countDown(); }
         assertThat(persisted.await(1, TimeUnit.SECONDS)).isTrue();

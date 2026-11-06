@@ -11,7 +11,8 @@ trade:
         tripartite: ${MINISO_TRIPARTITE:}
         version: tripartite1.0
         key: ${MINISO_API_KEY:}
-        timeout-ms: 3000
+        # MINISO单次30秒，发券/查询/作废共用；不自动重发作废。
+        timeout-ms: 30000
         # 核销接收/恢复与主动发券独立；停入口后可保留processing-enabled继续恢复。
         callback:
           enabled: false

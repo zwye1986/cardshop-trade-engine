@@ -114,7 +114,6 @@ public class V1CardApiConfiguration {
                     if (registry == null) return;
                     String result = switch (code) {
                         case "200" -> "completed";
-                        case "202" -> "pending";
                         case "500" -> "busy";
                         case "502" -> "error";
                         default -> "rejected";

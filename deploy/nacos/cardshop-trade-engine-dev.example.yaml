@@ -54,7 +54,7 @@ trade:
       enabled: false
     v1:
       # 新JAR作废响应等待预算；包含认证及排队，不取消已开始的作废。
-      invalidation-wait-timeout-ms: 5000
+      invalidation-wait-timeout-ms: 300000
       sign-alg: HMAC-SM3
       signing-key-encryption-key: ${V1_SIGNING_KEY_ENCRYPTION_KEY:}
       merchant-config-preheat:

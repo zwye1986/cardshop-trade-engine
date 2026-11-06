@@ -27,7 +27,7 @@ import org.springframework.util.StringUtils;
  * V1 作废订单用例。
  *
  * <p>对应 {@code docs/交行直充业务系统详细设计.md}「9.3 作废设计」「9.6 交行对外券状态修订」。
- * 验签后受理并立即推进原Outbox，完成返回200、未知结果202；首次与重复请求共用持久资金完成谓词。
+ * 验签后受理并立即推进指定轮次，供应商确认成功直接200、失败503，不返回202。
  * 发券成功后的作废保留订单12，接口不直接调用供应商，HTTP等待与执行生命周期分离。
  */
 public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrderUseCase {
@@ -81,20 +81,23 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
             V1RechargeOrderInvalidRequest request,
             RechargeOrderSnapshot snapshot,
             InvalidRechargeOrderContext context) {
-        if (!context.beginAdmission(merchant.orgCode(), request.outOrderSn(), pending(snapshot))) return context.response();
+        if (!context.beginAdmission(merchant.orgCode(), request.outOrderSn(), failed())) return context.response();
         var state = invalidationService.invalidate(new InvalidRechargeOrderOutboxCommand(
                 merchant.orgCode(),
                 snapshot.orderId(),
                 request.outOrderSn(),
-                defaultText(request.reason(), "")), prepared -> {
-                    if (prepared.status() == RechargeOrderInvalidationState.Status.PENDING
-                            || prepared.status() == RechargeOrderInvalidationState.Status.MANUAL_REQUIRED) {
+                defaultText(request.reason(), ""), System.currentTimeMillis()
+                        + java.time.Duration.ofNanos(context.remainingNanos()).toMillis()), prepared -> {
+                    context.bind(prepared);
+                    if (prepared.status() == RechargeOrderInvalidationState.Status.PENDING) {
                         context.prepared(toResult(prepared));
                     } else context.finish(toResult(prepared));
+                }, result -> {
+                    var response = toResult(result);
+                    return context.finish(response).code().equals(response.code());
                 });
         var result = toResult(state);
-        if (state.status() == RechargeOrderInvalidationState.Status.PENDING
-                || state.status() == RechargeOrderInvalidationState.Status.MANUAL_REQUIRED) {
+        if (state.status() == RechargeOrderInvalidationState.Status.PENDING) {
             context.prepared(result);
             return context.response();
         }
@@ -106,24 +109,23 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
         var view = context.view();
         if (view.phase() != InvalidRechargeOrderContext.Phase.ADMITTING
                 && view.phase() != InvalidRechargeOrderContext.Phase.OBSERVING) return Optional.empty();
-        return invalidationService.observe(view.orgCode(), view.outOrderSn())
-                .filter(state -> state.status() == RechargeOrderInvalidationState.Status.COMPLETED)
+        var operation = context.operation();
+        if (operation == null) return Optional.empty();
+        return invalidationService.observe(view.orgCode(), view.outOrderSn(), operation)
+                .filter(state -> state.status() != RechargeOrderInvalidationState.Status.PENDING)
                 .map(state -> context.finish(toResult(state)));
     }
 
     private static V1CardApiResult toResult(RechargeOrderInvalidationState state) {
         return switch (state.status()) {
             case COMPLETED -> V1QueryRechargeOrderUseCaseService.snapshotResult(state.order());
-            case PENDING, MANUAL_REQUIRED -> pending(state.order());
+            case PENDING, MANUAL_REQUIRED, FAILED -> failed();
             case NOT_ACCEPTED -> V1CardApiResultStatus.BUSINESS_FAILED.result(state.reason());
         };
     }
 
-    private static V1CardApiResult pending(RechargeOrderSnapshot snapshot) {
-        if (snapshot == null) return V1CardApiResultStatus.INVALIDATION_PENDING.result();
-        var queried = (V1RechargeOrderResponse) V1QueryRechargeOrderUseCaseService.snapshotResult(snapshot).data();
-        return V1CardApiResultStatus.INVALIDATION_PENDING.result(new V1RechargeOrderResponse(
-                snapshot.orderId(), snapshot.outOrderSn(), queried.orderStatus(), "作废结果待确认"));
+    private static V1CardApiResult failed() {
+        return V1CardApiResultStatus.BUSINESS_FAILED.result("作废失败");
     }
 
     private static boolean validRequest(V1RechargeOrderInvalidRequest request) {

@@ -59,6 +59,32 @@ class RechargeOrderInvalidationTransactionTest {
         assertThat(port.findInvalidOrder("A", "SAME").orElseThrow().eventId()).isEqualTo("invalid-OA");
         assertThat(port.findInvalidOrder("B", "SAME").orElseThrow().status()).isEqualTo(RechargeOrderInvalidationState.Status.NOT_ACCEPTED);
     }
+
+    @Test void explicitFailureAllowsNextValidRequestToAppendRoundWithoutReplacingEvidence() throws Exception {
+        port.prepareInvalidOrder(command("A", "OA"));
+        var json = new ObjectMapper();
+        var payload = (com.fasterxml.jackson.databind.node.ObjectNode) json.readTree(jdbc.queryForObject(
+                "select payload from recharge_dispatch_outbox where event_id='invalid-OA'", String.class));
+        var first = payload.putArray("invalidation_attempts").addObject();
+        // 此夹具直接给出供应商明确failed且证据已提交的边界，不借任务FAILED推断可重申请。
+        first.put("attempt_no", 1).put("supplier_request_id", "invalid-OA")
+                .put("deadline_at", CLOCK.millis() + 300000).put("result", "REJECTED")
+                .put("confirmed_at", CLOCK.millis()).put("flow_id", 17);
+        jdbc.update("update recharge_dispatch_outbox set payload=?,status='SUCCESS',version=4 where event_id='invalid-OA'",
+                payload.toString());
+
+        assertThat(port.prepareInvalidOrder(command("A", "OA")).status()).isEqualTo(RechargeOrderInvalidationState.Status.PENDING);
+        var saved = json.readTree(jdbc.queryForObject("select payload from recharge_dispatch_outbox", String.class));
+        assertThat(saved.path("invalidation_attempts").size()).isEqualTo(2);
+        assertThat(saved.path("invalidation_attempts").get(0)).isEqualTo(first);
+        assertThat(saved.path("invalidation_attempts").get(1).path("supplier_request_id").asText()).isEqualTo("invalid-OA-2");
+        assertThat(jdbc.queryForObject("select version from recharge_dispatch_outbox", Long.class)).isGreaterThan(4);
+        assertThat(jdbc.queryForObject("select count(*) from recharge_dispatch_outbox", Integer.class)).isEqualTo(1);
+        assertThat(port.prepareInvalidOrder(command("A", "OA")).status()).isEqualTo(RechargeOrderInvalidationState.Status.PENDING);
+        assertThat(json.readTree(jdbc.queryForObject("select payload from recharge_dispatch_outbox", String.class))
+                .path("invalidation_attempts").size()).isEqualTo(2);
+    }
+
     @Test void legacyMissingExtensionAndUnissuedOrderAreNotAdmitted() {
         jdbc.update("delete from recharge_order_ext where order_id='OA'");
         jdbc.update("update mc_order set order_status=13 where order_Id='OB'");
@@ -66,9 +92,32 @@ class RechargeOrderInvalidationTransactionTest {
         assertThat(port.prepareInvalidOrder(command("B", "OB")).status()).isEqualTo(RechargeOrderInvalidationState.Status.NOT_ACCEPTED);
         assertThat(jdbc.queryForObject("select count(*) from recharge_dispatch_outbox", Integer.class)).isZero();
     }
+
+    @Test void expiredRoundIsFailureForJoiningRequestsAndCannotExtendItsDeadline() {
+        var deadline = CLOCK.millis() - 1;
+        var state = port.prepareInvalidOrder(new InvalidRechargeOrderOutboxCommand("A", "OA", "SAME", "", deadline));
+        assertThat(state.status()).isEqualTo(RechargeOrderInvalidationState.Status.FAILED);
+        var joined = port.prepareInvalidOrder(command("A", "OA"));
+        assertThat(joined.status()).isEqualTo(RechargeOrderInvalidationState.Status.FAILED);
+        assertThat(joined.attempt().deadlineEpochMs()).isEqualTo(deadline);
+        assertThat(joined.attempt().number()).isEqualTo(1);
+    }
+
+    @Test void oldOwnerCannotOverwriteNewRoundOrChangeBoundObservation() {
+        port.prepareInvalidOrder(command("A", "OA"));
+        var type = com.cardshop.trade.engine.domain.order.OutboxEventType.INVALID_ORDER;
+        var old = port.claim(port.findDueByEventId("invalid-OA", type).orElseThrow(), "first", Duration.ofSeconds(120)).orElseThrow();
+        assertThat(port.completeInvalidation(old, old.invalidationAttempt().finish(InvalidationAttempt.Result.REJECTED, CLOCK.millis(), 17L))).isTrue();
+        var next = port.prepareInvalidOrder(command("A", "OA"));
+        assertThat(next.attempt().number()).isEqualTo(2);
+        assertThat(port.completeInvalidation(old, old.invalidationAttempt().finish(InvalidationAttempt.Result.SUCCESS, CLOCK.millis(), 17L))).isFalse();
+        assertThat(port.findInvalidOrder("A", "SAME", 1).orElseThrow().status()).isEqualTo(RechargeOrderInvalidationState.Status.FAILED);
+        assertThat(port.findInvalidOrder("A", "SAME").orElseThrow().attempt()).isEqualTo(next.attempt());
+    }
+
     @Test void notDueAndManualOriginalEventsRemainVisibleWithoutFirstAdmissionChecks() {
         port.prepareInvalidOrder(command("A", "OA"));
-        jdbc.update("update recharge_dispatch_outbox set status='FAILED',next_retry_time='2030-01-01',retry_count=4");
+        jdbc.update("update recharge_dispatch_outbox set payload='{}',status='FAILED',next_retry_time='2030-01-01',retry_count=4");
         jdbc.update("update mc_order set order_status=13 where order_Id='OA'");
         assertThat(port.prepareInvalidOrder(command("A", "OA")).status()).isEqualTo(RechargeOrderInvalidationState.Status.PENDING);
         jdbc.update("update recharge_dispatch_outbox set status='MANUAL_REQUIRED'");

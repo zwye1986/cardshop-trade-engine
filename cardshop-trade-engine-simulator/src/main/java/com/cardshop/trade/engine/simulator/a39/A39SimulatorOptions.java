@@ -63,6 +63,8 @@ public record A39SimulatorOptions(
     private static final int DEFAULT_LOAD_CONCURRENCY = 10;
     private static final int DEFAULT_LOAD_TOTAL_ORDERS = 200;
     private static final Duration DEFAULT_REQUEST_TIMEOUT = Duration.ofSeconds(10);
+    // 覆盖服务端5分钟等待并留10秒网络余量，仅作废模式使用；参见详细设计9.3.4。
+    private static final Duration INVALIDATION_REQUEST_TIMEOUT = Duration.ofSeconds(310);
     private static final int DEFAULT_ERROR_SAMPLE_LIMIT = 20;
     private static final Duration DEFAULT_PROGRESS_INTERVAL = Duration.ofSeconds(10);
     private static final DateTimeFormatter ORDER_TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMddHHmmss");
@@ -94,10 +96,10 @@ public record A39SimulatorOptions(
         queryInterval = queryInterval == null || queryInterval.isNegative() ? DEFAULT_QUERY_INTERVAL : queryInterval;
         callbackWait = callbackWait == null || callbackWait.isNegative() ? DEFAULT_CALLBACK_WAIT : callbackWait;
         requestTimeout = requestTimeout == null || requestTimeout.isZero() || requestTimeout.isNegative()
-                ? DEFAULT_REQUEST_TIMEOUT
+                ? (mode == A39SimulatorMode.INVALIDATE ? INVALIDATION_REQUEST_TIMEOUT : DEFAULT_REQUEST_TIMEOUT)
                 : requestTimeout;
-        if (mode == A39SimulatorMode.INVALIDATE && requestTimeout.compareTo(DEFAULT_REQUEST_TIMEOUT) < 0) {
-            throw new IllegalArgumentException("invalidate request-timeout must be at least 10s");
+        if (mode == A39SimulatorMode.INVALIDATE && requestTimeout.compareTo(INVALIDATION_REQUEST_TIMEOUT) < 0) {
+            throw new IllegalArgumentException("invalidate request-timeout must be at least 310s");
         }
         outOrderPrefix = hasText(outOrderPrefix) ? outOrderPrefix.trim() : nextOutOrderSn(Clock.systemDefaultZone());
         expectedCreateCodes = normalizeCodes(expectedCreateCodes);
@@ -183,7 +185,8 @@ public record A39SimulatorOptions(
                 mode,
                 integer(option(options, env, "concurrency", "A39_LOAD_CONCURRENCY", String.valueOf(DEFAULT_LOAD_CONCURRENCY)), "concurrency"),
                 totalOrders,
-                duration(option(options, env, "request-timeout", "A39_REQUEST_TIMEOUT", DEFAULT_REQUEST_TIMEOUT.toString()), "request-timeout"),
+                duration(option(options, env, "request-timeout", "A39_REQUEST_TIMEOUT",
+                        (mode == A39SimulatorMode.INVALIDATE ? INVALIDATION_REQUEST_TIMEOUT : DEFAULT_REQUEST_TIMEOUT).toString()), "request-timeout"),
                 option(options, env, "out-order-prefix", "A39_OUT_ORDER_PREFIX", nextOutOrderSn(clock)),
                 bool(option(options, env, "unique-accounts", "A39_UNIQUE_ACCOUNTS", "false")),
                 codes(optionPreservingBlank(options, env, "expected-create-codes", "A39_EXPECTED_CREATE_CODES", "200,510")),
@@ -266,9 +269,9 @@ public record A39SimulatorOptions(
 
                 Invalidate mode (dev/test only):
                   --mode invalidate --out-order-sn EXISTING_ORDER
-                  --request-timeout 10s (minimum)
-                  Sends invalid once; query-attempts/query-interval bound confirmation queries.
-                  Never creates an order or retries invalid. Pending is not final failure.
+                  --request-timeout 310s (minimum)
+                  Sends invalid once with at least 310s request timeout; returns success or failure.
+                  Never creates an order, queries after failure, or retries invalid automatically.
 
                 Environment fallbacks:
                   A39_MODE A39_BASE_URL A39_APP_ID A39_APP_SECRET A39_AES_KEY A39_PRODUCT_ID A39_ACCOUNT

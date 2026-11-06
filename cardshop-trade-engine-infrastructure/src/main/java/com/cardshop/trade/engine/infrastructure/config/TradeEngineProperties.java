@@ -892,8 +892,8 @@ public class TradeEngineProperties {
      */
     public static class V1 {
 
-        /** 完整作废body起算的响应等待毫秒数，含认证及排队；五秒初始工程预算，参见详细设计9.3.4。 */
-        private int invalidationWaitTimeoutMs = 5000;
+        /** 完整作废body起算的响应等待上限毫秒数，含认证及排队；五分钟，参见详细设计9.3.4。 */
+        private int invalidationWaitTimeoutMs = 300000;
 
         public int getInvalidationWaitTimeoutMs() { return invalidationWaitTimeoutMs; }
         public void setInvalidationWaitTimeoutMs(int value) {
@@ -1711,7 +1711,8 @@ public class TradeEngineProperties {
             private String tripartite = "";
             private String version = "tripartite1.0";
             private String key = "";
-            private int timeoutMs = 3000;
+            /** MINISO单次请求超时毫秒数，发券/查询/作废共用；参见详细设计9.3.4。 */
+            private int timeoutMs = 30000;
             public boolean isEnabled() { return enabled; }
             public void setEnabled(boolean value) { enabled = value; }
             public String getBaseUrl() { return baseUrl; }

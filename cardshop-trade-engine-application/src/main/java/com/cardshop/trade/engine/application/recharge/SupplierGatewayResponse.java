@@ -17,16 +17,25 @@ public record SupplierGatewayResponse(
         String responseCode,
         String responseMessage,
         String rawResponse,
-        MinisoFulfillmentReceipt minisoReceipt) {
+        MinisoFulfillmentReceipt minisoReceipt,
+        Integer httpStatus) {
+    public SupplierGatewayResponse(SupplierGatewayStatus status, String supplierOrderId, String responseCode,
+            String responseMessage, String rawResponse, MinisoFulfillmentReceipt minisoReceipt) {
+        this(status, supplierOrderId, responseCode, responseMessage, rawResponse, minisoReceipt, null);
+    }
     public SupplierGatewayResponse(SupplierGatewayStatus status, String supplierOrderId, String responseCode, String responseMessage, String rawResponse) {
         this(status, supplierOrderId, responseCode, responseMessage, rawResponse, null);
     }
 
     /** 携带凭据参与成功事务；参见详细设计名创实施约束。 */
     public SupplierGatewayResponse withMinisoReceipt(MinisoFulfillmentReceipt receipt) {
-        return new SupplierGatewayResponse(status, supplierOrderId, responseCode, responseMessage, rawResponse, receipt);
+        return new SupplierGatewayResponse(status, supplierOrderId, responseCode, responseMessage, rawResponse, receipt, httpStatus);
     }
 
+    /** 仅受控审计保留实际HTTP状态，不把业务码当HTTP码；参见详细设计9.3.7。 */
+    public SupplierGatewayResponse withHttpStatus(int value) {
+        return new SupplierGatewayResponse(status, supplierOrderId, responseCode, responseMessage, rawResponse, minisoReceipt, value);
+    }
 
     /** 供应商原文可能包含券码，只允许受控落库，不进入默认日志表示。 */
     @Override public String toString() {

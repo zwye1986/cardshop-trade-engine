@@ -7,9 +7,7 @@ import json
 def classify(response):
     code = str(response.get('code', ''))
     if code == '503':
-        return 'not-accepted'
-    if code == '202':
-        return 'pending'
+        return 'failed'
     if code != '200':
         return 'protocol-error'
     data = response.get('data') or {}
@@ -19,18 +17,17 @@ def classify(response):
                  and isinstance(data.get('invalid_time'), str)
                  and bool(data['invalid_time'].strip())
                  and data.get('use_time') in (None, ''))
-    return 'completed' if completed else 'pending'
+    return 'completed' if completed else 'protocol-error'
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--scenario', choices=('completed', 'pending', 'not-accepted'), default='completed')
+    parser.add_argument('--scenario', choices=('completed', 'failed'), default='completed')
     scenario = parser.parse_args().scenario
-    codes = {'completed': '200', 'pending': '202', 'not-accepted': '503'}
+    codes = {'completed': '200', 'failed': '503'}
     response = {'code': codes[scenario], 'msg': {
-        'completed': '操作成功', 'pending': '作废结果待确认，请查询订单状态',
-        'not-accepted': '订单尚未落库，作废未受理'}[scenario]}
-    if scenario != 'not-accepted':
+        'completed': '操作成功', 'failed': '作废失败'}[scenario], 'data': None}
+    if scenario == 'completed':
         response['data'] = dict(order_id='SYNTHETIC-ORDER', out_order_sn='SYNTHETIC-OUT',
                                 order_status='12', order_status_desc='成功' if scenario == 'completed' else '作废结果待确认',
                                 state_type='3' if scenario == 'completed' else '',

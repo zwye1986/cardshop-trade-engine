@@ -28,13 +28,21 @@ public interface RechargeDispatchOutboxMapper extends BaseMapper<RechargeDispatc
 
     /** 观察原操作不能受due/状态过滤，且必须核对完整商户订单身份；参见详细设计9.3.2。 */
     @Select("""
-            select event_id,event_type,org_code,order_id,out_order_sn,status
+            <script>
+            select event_id,event_type,org_code,order_id,out_order_sn,status,payload,version,
+                   locked_by,locked_until,retry_count,max_retry_count,next_retry_time,last_error
             from recharge_dispatch_outbox
             where event_id=#{eventId} and event_type='INVALID_ORDER'
               and org_code=#{orgCode} and order_id=#{orderId} and out_order_sn=#{outOrderSn}
+            <if test="lock">for update</if>
+            </script>
             """)
     RechargeDispatchOutboxDO selectInvalidation(@Param("eventId") String eventId, @Param("orgCode") String orgCode,
-            @Param("orderId") String orderId, @Param("outOrderSn") String outOrderSn);
+            @Param("orderId") String orderId, @Param("outOrderSn") String outOrderSn, @Param("lock") boolean lock);
+
+    default RechargeDispatchOutboxDO selectInvalidation(String eventId, String orgCode, String orderId, String outOrderSn) {
+        return selectInvalidation(eventId, orgCode, orderId, outOrderSn, false);
+    }
 
     /**
      * 幂等写入派单履约事件。

@@ -23,7 +23,9 @@ class TradeEnginePropertiesTest {
 
     @Test void invalidationDeadlineHasExplicitPositiveMillisecondBudget() {
         contextRunner.run(context -> assertThat(context.getBean(TradeEngineProperties.class).getV1()
-                .getInvalidationWaitTimeoutMs()).isEqualTo(5000));
+                .getInvalidationWaitTimeoutMs()).isEqualTo(300000));
+        contextRunner.run(context -> assertThat(context.getBean(TradeEngineProperties.class)
+                .getSupplier().getMiniso().getTimeoutMs()).isEqualTo(30000));
         contextRunner.withPropertyValues("trade.engine.v1.invalidation-wait-timeout-ms=7000")
                 .run(context -> assertThat(context.getBean(TradeEngineProperties.class).getV1()
                         .getInvalidationWaitTimeoutMs()).isEqualTo(7000));

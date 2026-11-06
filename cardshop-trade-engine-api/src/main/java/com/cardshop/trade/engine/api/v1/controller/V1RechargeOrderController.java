@@ -132,13 +132,15 @@ public class V1RechargeOrderController {
                 if (invalidationLogs.shouldLog("invalidation.execute").shouldLog()) {
                     log.error("作废请求执行异常 phase={}", context.view().phase(), ex);
                 }
-                if (ex instanceof com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort.AdmissionRolledBackException) {
-                    return Mono.just(context.finish(V1CardApiResultStatus.SYSTEM_BUSY.result()));
-                }
+                context.finish(V1CardApiResultStatus.SYSTEM_BUSY.result());
                 return Mono.just(context.closeResponse());
             }).cache();
             // 未决执行结果不能立即结束等待；串行读每次完成后再计间隔，独立于执行线程和截止计时。
-            Mono<V1CardApiResult> immediate = execution.filter(result -> !V1CardApiResultStatus.INVALIDATION_PENDING.code().equals(result.code()));
+            Mono<V1CardApiResult> immediate = execution.filter(result -> context.view().phase() == InvalidRechargeOrderContext.Phase.CLOSED
+                    || (!V1CardApiResultStatus.BUSINESS_FAILED.code().equals(result.code())
+                        && !V1CardApiResultStatus.INVALIDATION_PENDING.code().equals(result.code())));
+            // 供应商有效成功在Worker回调中立即完成future，不等待任何本地写入或下一次主库观察。
+            Mono<V1CardApiResult> delivered = Mono.fromFuture(context.completion(), true);
             Mono<V1CardApiResult> observed = Mono.defer(() -> Mono.fromCallable(() ->
                             invalidRechargeOrderUseCase.observeInvalidRechargeOrder(context))
                     .subscribeOn(Schedulers.boundedElastic())
@@ -146,7 +148,7 @@ public class V1RechargeOrderController {
                         if (invalidationLogs.shouldLog("invalidation.observe").shouldLog()) {
                             log.error("作废主库观察异常 phase={}", context.view().phase(), ex);
                         }
-                        return Mono.just(Optional.empty());
+                        return Mono.just(Optional.of(context.finish(V1CardApiResultStatus.SYSTEM_BUSY.result())));
                     }))
                     .repeatWhen(repeat -> repeat.delayElements(INVALIDATION_OBSERVATION_INTERVAL))
                     .filter(Optional::isPresent).next().map(Optional::orElseThrow);
@@ -158,7 +160,7 @@ public class V1RechargeOrderController {
                         return context.closeResponse();
                     });
             // firstWithValue忽略未决执行分支的empty，计时器永远有值；不可使用firstWithSignal让empty抢走响应。
-            return Mono.firstWithValue(immediate, observed, deadline)
+            return Mono.firstWithValue(immediate, delivered, observed, deadline)
                     .doOnNext(result -> invalidationSettings.responseObserver().accept(result.code(),
                             Duration.ofNanos(System.nanoTime() - started)))
                     .map(V1RechargeOrderController::ok)

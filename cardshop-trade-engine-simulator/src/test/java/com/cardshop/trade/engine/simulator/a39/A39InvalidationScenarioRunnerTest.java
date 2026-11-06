@@ -16,7 +16,7 @@ class A39InvalidationScenarioRunnerTest {
         return A39SimulatorOptions.parse(args.toArray(String[]::new), Map.of("A39_APP_SECRET", "fixture"), Clock.systemUTC());
     }
 
-    @Test void pendingContinuesPastIssuedOrderAndStopsOnlyWithInvalidationTime() throws Exception {
+    @Test void successRequiresCompleteTerminalResponseWithoutQuerying() throws Exception {
         var invalidations = new AtomicInteger();
         var queries = new AtomicInteger();
         var logs = new ArrayList<String>();
@@ -26,7 +26,8 @@ class A39InvalidationScenarioRunnerTest {
                     case "getToken" -> new Credentials("fixture-token", null, TestKeys.KEY);
                     case "invalidRechargeOrder" -> {
                         invalidations.incrementAndGet(); payloads.add((Map<?, ?>) args[1]);
-                        yield new V1CardApiClient.ApiResponse("202", "pending", Map.of());
+                        yield new V1CardApiClient.ApiResponse("200", "ok", Map.of("order_status", "12",
+                                "state_type", "3", "use_state", "3", "invalid_time", "2026-11-06 10:00:00"));
                     }
                     case "getRechargeOrder" -> {
                         payloads.add((Map<?, ?>) args[1]);
@@ -39,21 +40,22 @@ class A39InvalidationScenarioRunnerTest {
                 });
         assertThat(A39BusinessSimulatorApplication.run(options(), client, logs::add)).isZero();
         assertThat(invalidations.get()).isEqualTo(1);
-        assertThat(queries.get()).isEqualTo(3);
+        assertThat(queries.get()).isZero();
         assertThat(payloads).allSatisfy(p -> {
             assertThat(p.get("out_order_sn")).isEqualTo("EXISTING");
             assertThat(p.get("sign")).isEqualTo(new V12Signer().signQueryOrder((Map) p, TestKeys.KEY).sign());
         });
-        assertThat(payloads.stream().map(p -> p.get("nonce_str")).distinct().count()).isEqualTo(4);
+        assertThat(payloads).hasSize(1);
         assertThat(String.join("\n", logs)).contains("作废完成").doesNotContain("fixture-token", TestKeys.KEY);
     }
 
-    @Test void requiresExplicitExistingOrderAndAtLeastTenSecondTimeout() {
+    @Test void requiresExplicitExistingOrderAndBudgetWithNetworkMargin() {
         assertThatThrownBy(() -> A39SimulatorOptions.parse(new String[]{"--mode=invalidate", "--request-sm4=false"},
                 Map.of("A39_APP_SECRET", "fixture"), Clock.systemUTC())).isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("out-order-sn");
-        assertThatThrownBy(() -> options("--request-timeout=9s")).isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("10");
+        assertThatThrownBy(() -> options("--request-timeout=300s")).isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("310");
+        assertThat(options().requestTimeout()).isEqualTo(java.time.Duration.ofSeconds(310));
     }
 
     @Test void rejectedAndContradictoryResultsNeverReportCompletedOrResendInvalidation() throws Exception {
@@ -77,9 +79,9 @@ class A39InvalidationScenarioRunnerTest {
                         default -> throw new AssertionError(method.getName());
                     });
             assertThat(A39BusinessSimulatorApplication.run(options(), client, logs::add))
-                    .isEqualTo("503".equals(code) ? 1 : 2);
+                    .isEqualTo(1);
             assertThat(invalidations.get()).isEqualTo(1);
-            assertThat(queries.get()).isEqualTo("503".equals(code) ? 0 : 3);
+            assertThat(queries.get()).isZero();
             assertThat(String.join("\n", logs)).doesNotContain("作废完成");
         }
     }

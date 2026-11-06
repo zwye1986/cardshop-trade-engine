@@ -9,12 +9,14 @@ import java.util.function.LongSupplier;
  * 原子发布阶段、已验签身份及安全响应；HTTP结束只关闭受理机会，不取消已开始的事务/执行。
  */
 public final class InvalidRechargeOrderContext {
-    public static final Duration DEFAULT_WAIT_TIMEOUT = Duration.ofSeconds(5);
+    public static final Duration DEFAULT_WAIT_TIMEOUT = Duration.ofMinutes(5);
     public enum Phase { PREPARING, ADMITTING, OBSERVING, CLOSED }
     public record View(Phase phase, String orgCode, String outOrderSn, V1CardApiResult response) {}
     private final long deadlineNanos;
     private final LongSupplier nanoTime;
     private final AtomicReference<View> state = new AtomicReference<>(new View(Phase.PREPARING, null, null, null));
+    private final java.util.concurrent.CompletableFuture<V1CardApiResult> completion = new java.util.concurrent.CompletableFuture<>();
+    private volatile com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationState operation;
 
     public InvalidRechargeOrderContext(Duration timeout) {
         this(timeout, System::nanoTime);
@@ -33,6 +35,9 @@ public final class InvalidRechargeOrderContext {
 
     public long remainingNanos() { return Math.max(0, deadlineNanos - nanoTime.getAsLong()); }
     public View view() { return state.get(); }
+    public java.util.concurrent.CompletableFuture<V1CardApiResult> completion() { return completion; }
+    public void bind(com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationState operation) { this.operation = operation; }
+    public com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationState operation() { return operation; }
 
     public boolean preparing() { return state.get().phase() == Phase.PREPARING && remainingNanos() > 0; }
 
@@ -46,6 +51,7 @@ public final class InvalidRechargeOrderContext {
     public void prepared(V1CardApiResult result) { publish(result, Phase.OBSERVING); }
     public V1CardApiResult finish(V1CardApiResult result) {
         publish(result, Phase.CLOSED);
+        if (state.get().phase() == Phase.CLOSED) completion.complete(response());
         return response();
     }
 
@@ -59,8 +65,11 @@ public final class InvalidRechargeOrderContext {
 
     /** 截止/断开在同一原子快照上关闭；PREPARING没有已验证订单数据，只返回繁忙。 */
     public V1CardApiResult closeResponse() {
-        var closed = state.updateAndGet(v -> new View(Phase.CLOSED, v.orgCode(), v.outOrderSn(), v.response()));
-        return closed.response() == null ? V1CardApiResultStatus.SYSTEM_BUSY.result() : closed.response();
+        var closed = state.updateAndGet(v -> new View(Phase.CLOSED, v.orgCode(), v.outOrderSn(),
+                v.phase() == Phase.ADMITTING ? V1CardApiResultStatus.SYSTEM_BUSY.result() : v.response()));
+        var response = closed.response() == null ? V1CardApiResultStatus.SYSTEM_BUSY.result() : closed.response();
+        completion.complete(response);
+        return response;
     }
 
     public V1CardApiResult response() {

@@ -34,7 +34,16 @@ public record RechargeOutboxEvent(
         int maxRetryCount,
         long version,
         LocalDateTime nextRetryTime,
-        String lastError) {
+        String lastError,
+        InvalidationAttempt invalidationAttempt) {
+
+    /** 非作废及切换前事件没有轮次；保留其既有恢复语义，参见详细设计9.3.7。 */
+    public RechargeOutboxEvent(String eventId, OutboxEventType eventType, String orgCode, String orderId,
+            String outOrderSn, String payload, int retryCount, int maxRetryCount, long version,
+            LocalDateTime nextRetryTime, String lastError) {
+        this(eventId, eventType, orgCode, orderId, outOrderSn, payload, retryCount, maxRetryCount,
+                version, nextRetryTime, lastError, null);
+    }
 
     public RechargeOutboxEvent {
         eventId = requireText(eventId, "eventId");
@@ -59,7 +68,8 @@ public record RechargeOutboxEvent(
                 maxRetryCount,
                 version + 1,
                 nextRetryTime,
-                lastError);
+                lastError,
+                invalidationAttempt);
     }
 
     /**

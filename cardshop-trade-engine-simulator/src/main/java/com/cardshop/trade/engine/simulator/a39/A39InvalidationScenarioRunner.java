@@ -6,18 +6,15 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 /**
- * 指定既有订单的一次作废与有限确认；参见详细设计9.3.6。
- * 网络结果未知只能查询原单，不能重发作废；主单12不表示券已作废。
+ * 指定既有订单的一次同步作废；参见详细设计9.3.6。
+ * 失败不自动查询转成功、不重发；主单12不表示券已作废，nonce不区分业务轮次。
  */
 public final class A39InvalidationScenarioRunner {
     private static final String SUCCESS = "200";
-    private static final String PENDING = "202";
-    private static final String NOT_ACCEPTED = "503";
     private static final String ISSUED_ORDER_STATUS = "12";
     private static final String MINISO_STATE_TYPE = "3";
     private static final String OTHER_CHANNEL_STATE_TYPE = "2";
     private static final String CANCELLED_USE_STATE = "3";
-    private static final int EXIT_PENDING = 2;
     private final V1CardApiClient client;
     private final V12Signer signer;
     private final Consumer<String> log;
@@ -28,7 +25,7 @@ public final class A39InvalidationScenarioRunner {
         this.log = log;
     }
 
-    /** 0=已确认完成，1=明确未受理/协议错误，2=仍待确认；不输出凭据或券原文。 */
+    /** 0=成功，1=失败/协议错误/网络故障；不输出凭据或券原文。 */
     public int run(A39SimulatorOptions options) throws Exception {
         Credentials credential = client.getToken(options.appId(), options.appSecret());
         try {
@@ -39,34 +36,12 @@ public final class A39InvalidationScenarioRunner {
                 log.accept("作废完成");
                 return 0;
             }
-            if (NOT_ACCEPTED.equals(response.code())) {
-                log.accept("作废明确未受理，请核查条件；不自动重发");
-                return 1;
-            }
-            if (!SUCCESS.equals(response.code()) && !PENDING.equals(response.code())) {
-                log.accept("作废协议错误，请核查；不自动重发");
-                return 1;
-            }
+            log.accept("作废失败或响应不符合终态合同；保留证据，不自动查询或重发");
         } catch (IOException ex) {
-            // 远端可能已受理；只记录类型，不泄露包含凭据/业务回包的异常文本。
-            log.accept("作废网络结果未知 type=" + ex.getClass().getSimpleName() + "，查询原单，不重发");
+            // 对外失败不证明供应商未执行，只留安全类型，由运营对账审计。
+            log.accept("作废网络失败 type=" + ex.getClass().getSimpleName() + "，保留证据，不自动查询或重发");
         }
-        for (int attempt = 0; attempt < options.queryAttempts(); attempt++) {
-            if (attempt > 0) Thread.sleep(options.queryInterval().toMillis());
-            try {
-                var response = client.getRechargeOrder(credential.token(), payload(options, credential),
-                        options.requestSm4Enabled(), options.aesKey());
-                if (completed(response)) {
-                    log.accept("作废完成");
-                    return 0;
-                }
-                log.accept("作废确认中 query=" + (attempt + 1) + " code=" + response.code());
-            } catch (IOException ex) {
-                log.accept("查单网络结果未知 type=" + ex.getClass().getSimpleName());
-            }
-        }
-        log.accept("仍待确认/需核查，不是作废失败；保留原订单等待恢复或通知");
-        return EXIT_PENDING;
+        return 1;
     }
 
     private Map<String, Object> payload(A39SimulatorOptions options, Credentials credential) {

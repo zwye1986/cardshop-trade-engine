@@ -244,6 +244,18 @@ class MinisoRechargeSupplierGatewayAdapterTest {
     }
 
     @Test
+    void completeTargetFailureIsExplicitRejectionRegardlessOfMessageWording() {
+        String raw = "{\"code\":200,\"data\":{\"succeed\":[],\"failed\":[{\"couponCode\":\"COUPON-1\",\"msg\":\"供应商新增拒绝原因\"}]}}";
+        reply(raw);
+        var response = adapter().invalid(invalid());
+        assertThat(response.status()).isEqualTo(SupplierGatewayStatus.FAILED);
+        assertThat(response.rawResponse()).isEqualTo(raw);
+        assertThat(response.minisoReceipt()).isNull();
+        assertThat(calls.remove().path()).endsWith("/abandonUserCoupon");
+        assertThat(calls).isEmpty();
+    }
+
+    @Test
     void invalidRequiresPersistedReceiptBeforeAbandon() {
         assertUnknown(adapter(Optional.empty()).invalid(invalid()));
         assertUnknown(adapter(Optional.empty()).invalid(invalid(true)));

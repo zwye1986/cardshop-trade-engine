@@ -15,5 +15,9 @@ public record InvalidRechargeOrderOutboxCommand(
         String orgCode,
         String orderId,
         String outOrderSn,
-        String reason) {
+        String reason,
+        long deadlineEpochMs) {
+    public InvalidRechargeOrderOutboxCommand(String orgCode, String orderId, String outOrderSn, String reason) {
+        this(orgCode, orderId, outOrderSn, reason, 0);
+    }
 }

@@ -92,7 +92,11 @@ public final class MinisoRechargeSupplierGatewayAdapter implements RechargeSuppl
                         .orElseGet(() -> unknown(request.orderId(), query.rawBody()));
             }
             MinisoApiResponse result = client.abandonUserCoupon(List.of(confirmed.couponCode()));
-            if (!completeVoid(result, confirmed.couponCode())) return unknown(request.orderId(), result.rawBody());
+            if (completeVoid(result, confirmed.couponCode(), false)) {
+                return SupplierGatewayResponse.failed(request.orderId(), Integer.toString(CODE_SUCCESS),
+                        "名创明确拒绝目标券作废", result.rawBody()).withHttpStatus(result.httpStatus());
+            }
+            if (!completeVoid(result, confirmed.couponCode(), true)) return unknownResponse(request.orderId(), result);
             return success(result, new MinisoFulfillmentReceipt(confirmed.orderId(), confirmed.orgCode(),
                     confirmed.batchId(), confirmed.couponCode(), confirmed.phone(), confirmed.beginTime(),
                     confirmed.endTime(), STATUS_VOID));
@@ -196,11 +200,11 @@ public final class MinisoRechargeSupplierGatewayAdapter implements RechargeSuppl
     }
 
     /** 两个数组均为合同必返字段；成功对象必须精确对应请求券且带 msg，不接受外来券或重复券。 */
-    private boolean completeVoid(MinisoApiResponse response, String requestedCode) {
+    private boolean completeVoid(MinisoApiResponse response, String requestedCode, boolean success) {
         if (!successfulEnvelope(response)) return false;
         JsonNode data = response.body().path("data");
-        JsonNode succeed = data.path("succeed");
-        JsonNode failed = data.path("failed");
+        JsonNode succeed = data.path(success ? "succeed" : "failed");
+        JsonNode failed = data.path(success ? "failed" : "succeed");
         if (!data.isObject() || !succeed.isArray() || succeed.size() != SINGLE_COUPON
                 || !failed.isArray() || !failed.isEmpty()) return false;
         JsonNode item = succeed.get(0);
@@ -218,11 +222,18 @@ public final class MinisoRechargeSupplierGatewayAdapter implements RechargeSuppl
 
     private SupplierGatewayResponse success(MinisoApiResponse response, MinisoFulfillmentReceipt receipt) {
         return SupplierGatewayResponse.success(receipt.orderId(), Integer.toString(CODE_SUCCESS),
-                "名创完整凭据已确认", response.rawBody()).withMinisoReceipt(receipt);
+                "名创完整凭据已确认", response.rawBody()).withMinisoReceipt(receipt).withHttpStatus(response.httpStatus());
     }
 
     private static SupplierGatewayResponse unknown(String orderId, String raw) {
         return SupplierGatewayResponse.retryableFailed(orderId, UNKNOWN_CODE, UNKNOWN_MESSAGE, raw);
+    }
+
+    private static SupplierGatewayResponse unknownResponse(String orderId, MinisoApiResponse response) {
+        var code = response.body() == null ? null : response.body().path("code");
+        String businessCode = code != null && (code.isTextual() || code.isIntegralNumber()) ? code.asText() : UNKNOWN_CODE;
+        return SupplierGatewayResponse.retryableFailed(orderId, businessCode, UNKNOWN_MESSAGE, response.rawBody())
+                .withHttpStatus(response.httpStatus());
     }
 
     /** 高频重试只采样记录安全异常栈；原始异常的 message/cause 可能包含手机号、券码或连接密钥。 */
@@ -232,13 +243,12 @@ public final class MinisoRechargeSupplierGatewayAdapter implements RechargeSuppl
         } catch (InterruptedException exception) {
             Thread.currentThread().interrupt();
             logFailure(orderId, operation, exception);
-            return unknown(orderId, null);
+            return SupplierGatewayResponse.retryableFailed(orderId, exception.getClass().getSimpleName(), UNKNOWN_MESSAGE, null);
         } catch (IOException | RuntimeException exception) {
             logFailure(orderId, operation, exception);
             // HTTP 已返回的不可解析正文仍是受控流水证据，不能因安全异常省略了正文就丢失原始响应。
-            String raw = exception instanceof MinisoHttpClient.InvalidResponseException invalid
-                    ? invalid.response().rawBody() : null;
-            return unknown(orderId, raw);
+            if (exception instanceof MinisoHttpClient.InvalidResponseException invalid) return unknownResponse(orderId, invalid.response());
+            return SupplierGatewayResponse.retryableFailed(orderId, exception.getClass().getSimpleName(), UNKNOWN_MESSAGE, null);
         }
     }
 

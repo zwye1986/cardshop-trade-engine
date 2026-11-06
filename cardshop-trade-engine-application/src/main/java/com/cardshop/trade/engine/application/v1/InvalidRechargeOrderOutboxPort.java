@@ -1,6 +1,10 @@
 package com.cardshop.trade.engine.application.v1;
 
 import com.cardshop.trade.engine.application.recharge.RechargeOrderInvalidationState;
+import com.cardshop.trade.engine.application.recharge.InvalidationAttempt;
+import com.cardshop.trade.engine.application.recharge.RechargeOutboxEvent;
+import com.cardshop.trade.engine.application.recharge.MinisoFulfillmentReceipt;
+import com.cardshop.trade.engine.application.recharge.SupplierFlowStartCommand;
 import java.util.Optional;
 
 /**
@@ -15,6 +19,27 @@ public interface InvalidRechargeOrderOutboxPort {
 
     /** 主库一致事实读取，不筛due、不取写锁；存储故障不得伪装无订单。参见详细设计9.3.2。 */
     Optional<RechargeOrderInvalidationState> findInvalidOrder(String orgCode, String outOrderSn);
+
+    /** 固定本HTTP已受理的轮次，禁止观察跳到后来新轮；参见详细设计9.3.7。 */
+    default Optional<RechargeOrderInvalidationState> findInvalidOrder(String orgCode, String outOrderSn, long attemptNo) {
+        return findInvalidOrder(orgCode, outOrderSn).filter(state -> state.attempt() == null
+                || state.attempt().number() == attemptNo);
+    }
+
+    /** 锁内核对轮次、租约和截止后提交唯一调用尝试；empty表示禁止发送，参见详细设计9.3.7。 */
+    default Optional<Long> startInvalidationCall(RechargeOutboxEvent event, SupplierFlowStartCommand flow) {
+        throw new UnsupportedOperationException("persistent invalidation call registration required");
+    }
+
+    /** 只允许本轮未决→终态；旧version/轮次不得覆盖新轮，参见详细设计9.3.7。 */
+    default boolean completeInvalidation(RechargeOutboxEvent event, InvalidationAttempt result) {
+        throw new UnsupportedOperationException("persistent invalidation result required");
+    }
+
+    /** 已有可靠SUCCESS恢复本地收尾时只读取原本地凭据，绝不再请求供应商；参见详细设计9.3.5。 */
+    default Optional<MinisoFulfillmentReceipt> findInvalidationReceipt(String orgCode, String orderId) {
+        throw new UnsupportedOperationException("persistent invalidation receipt required");
+    }
 
     /**
      * 首次事件写入失败且受理事务已确认回滚，参见详细设计9.3.2。

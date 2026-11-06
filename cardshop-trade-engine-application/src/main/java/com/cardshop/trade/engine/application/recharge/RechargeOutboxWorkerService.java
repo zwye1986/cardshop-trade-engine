@@ -351,6 +351,17 @@ public class RechargeOutboxWorkerService {
             String eventId,
             OutboxEventType eventType,
             String workerId) {
+        return processEvent(eventId, eventType, workerId, null, ignored -> true);
+    }
+
+    /** HTTP只推进受理时选定的一轮，成功回调早于任何回包持久化；参见详细设计9.3.3、9.3.7。 */
+    public RechargeOutboxBatchResult.Outcome processInvalidationEvent(String eventId, long attemptNo,
+            String workerId, java.util.function.Predicate<InvalidationAttempt> onResult) {
+        return processEvent(eventId, OutboxEventType.INVALID_ORDER, workerId, attemptNo, onResult);
+    }
+
+    private RechargeOutboxBatchResult.Outcome processEvent(String eventId, OutboxEventType eventType,
+            String workerId, Long attemptNo, java.util.function.Predicate<InvalidationAttempt> onResult) {
         Objects.requireNonNull(eventType, "eventType must not be null");
         Optional<RechargeOutboxEvent> maybeEvent = outboxPort.findDueByEventId(eventId, eventType);
         if (maybeEvent.isEmpty()) {
@@ -365,6 +376,8 @@ public class RechargeOutboxWorkerService {
             return RechargeOutboxBatchResult.Outcome.SKIPPED;
         }
         RechargeOutboxEvent event = maybeEvent.get();
+        if (attemptNo != null && (event.invalidationAttempt() == null
+                || event.invalidationAttempt().number() != attemptNo)) return RechargeOutboxBatchResult.Outcome.SKIPPED;
         if (event.retryExhausted()) {
             outboxPort.markManualRequired(event, retryExhaustedMessage(event));
             return RechargeOutboxBatchResult.Outcome.FAILED;
@@ -391,7 +404,7 @@ public class RechargeOutboxWorkerService {
          * 同账号限频预检；claim 成功后必须重新读取订单事实，避免订单在预检和抢占之间已由查单、人工或重复
          * worker 推进终态时继续使用旧快照调用供应商。
          */
-        return handleClaimed(claimedEvent, loadOrder(claimedEvent));
+        return handleClaimed(claimedEvent, loadOrder(claimedEvent), onResult);
     }
 
     /**
@@ -532,7 +545,15 @@ public class RechargeOutboxWorkerService {
     private record FairSelectResult(List<RechargeOutboxEvent> selected, int deferredCount) {}
 
     private RechargeOutboxBatchResult.Outcome handleClaimed(RechargeOutboxEvent event, RechargeFulfillmentOrder order) {
+        return handleClaimed(event, order, ignored -> true);
+    }
+
+    private RechargeOutboxBatchResult.Outcome handleClaimed(RechargeOutboxEvent event, RechargeFulfillmentOrder order,
+            java.util.function.Predicate<InvalidationAttempt> onResult) {
         try {
+            if (event.eventType() == OutboxEventType.INVALID_ORDER && event.invalidationAttempt() != null) {
+                return handleSynchronousInvalidation(event, order, onResult);
+            }
             if (isMiniso(order) && (event.eventType() == OutboxEventType.SUPPLIER_DISPATCH
                     || event.eventType() == OutboxEventType.SUPPLIER_QUERY
                     || event.eventType() == OutboxEventType.INVALID_ORDER)) {
@@ -575,6 +596,28 @@ public class RechargeOutboxWorkerService {
             if (errorLogs.shouldLog("outbox.handle." + ex.getClass().getSimpleName()).shouldLog()) {
                 log.error("outbox事件处理异常 eventId={}, eventType={}, orderId={}, orgCode={}",
                     event.eventId(), event.eventType(), event.orderId(), event.orgCode(), ex);
+            }
+            if (event.eventType() == OutboxEventType.INVALID_ORDER && event.invalidationAttempt() != null) {
+                // 成功回调已发布时不覆盖；持久SUCCESS也不改UNKNOWN，原任务仅恢复本地收尾（9.3.5）。
+                var port = (com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort) outboxPort;
+                var state = port.findInvalidOrder(event.orgCode(), event.outOrderSn(), event.invalidationAttempt().number());
+                if (state.isPresent() && state.get().status() == RechargeOrderInvalidationState.Status.COMPLETED) {
+                    if (ex instanceof MinisoWriteOffException conflict
+                            && (conflict.reason() == MinisoWriteOffException.Reason.REDEEM_VOID_CONFLICT
+                            || conflict.reason() == MinisoWriteOffException.Reason.RELEASE_AUTHORIZATION_INCONSISTENT
+                            || conflict.reason() == MinisoWriteOffException.Reason.RELEASE_TERMINAL_CONFLICT
+                            || conflict.reason() == MinisoWriteOffException.Reason.RELEASE_EVIDENCE_MISSING)) {
+                        // 已核销或资金证据冲突不能靠重试修复；保留远端成功，停止退款并转人工（9.3.5）。
+                        outboxPort.markManualRequired(event, conflict.getMessage());
+                    } else {
+                        markFailedOrManualRequired(event, "INVALIDATION_LOCAL_CLEANUP_FAILED", settings.retryBackoff());
+                    }
+                } else {
+                    var unknown = event.invalidationAttempt().finish(InvalidationAttempt.Result.UNKNOWN, clock.millis(), null);
+                    onResult.test(unknown);
+                    port.completeInvalidation(event, unknown);
+                }
+                return RechargeOutboxBatchResult.Outcome.FAILED;
             }
             if (ex instanceof MinisoWriteOffException conflict
                     && conflict.reason() == MinisoWriteOffException.Reason.REDEEM_VOID_CONFLICT) {
@@ -929,6 +972,99 @@ public class RechargeOutboxWorkerService {
             }
             default -> throw new IllegalStateException("unsupported supplier query status: " + response.status());
         }
+    }
+
+    /** 新轮次合同不进入旧queryOnly恢复；失败只审计，成功才能恢复本地资金，参见详细设计9.3.5—9.3.7。 */
+    private RechargeOutboxBatchResult.Outcome handleSynchronousInvalidation(RechargeOutboxEvent event,
+            RechargeFulfillmentOrder order, java.util.function.Predicate<InvalidationAttempt> onResult) {
+        var port = (com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort) outboxPort;
+        var attempt = event.invalidationAttempt();
+        if (attempt.result() == InvalidationAttempt.Result.SUCCESS) {
+            onResult.test(attempt);
+            return finishConfirmedInvalidation(event, order, attempt,
+                    isMiniso(order) ? port.findInvalidationReceipt(event.orgCode(), event.orderId()).orElseThrow(
+                            () -> new IllegalStateException("INVALIDATION_RECEIPT_MISSING")) : null);
+        }
+        if (attempt.result() != InvalidationAttempt.Result.PENDING) {
+            onResult.test(attempt);
+            outboxPort.markManualRequired(event, "INVALIDATION_FAILURE_AUDIT_ONLY");
+            return RechargeOutboxBatchResult.Outcome.FAILED;
+        }
+        if (order == null || clock.millis() >= attempt.deadlineEpochMs()
+                || order.orderStatus() != ORDER_STATUS_SUCCESS) {
+            var unknown = attempt.finish(InvalidationAttempt.Result.UNKNOWN, clock.millis(), null);
+            onResult.test(unknown);
+            port.completeInvalidation(event, unknown);
+            return RechargeOutboxBatchResult.Outcome.FAILED;
+        }
+        var started = port.startInvalidationCall(event, new SupplierFlowStartCommand(order.orderId(), order.outOrderSn(),
+                order.supplierChannel(), "new", "同步作废调用", attempt.supplierRequestId(),
+                Map.of("supplier_request_id", attempt.supplierRequestId(), "operation", OutboxEventType.INVALID_ORDER.name(),
+                        "attempt_no", attempt.number(), "started_at", clock.millis())));
+        if (started.isEmpty()) {
+            var unknown = attempt.finish(InvalidationAttempt.Result.UNKNOWN, clock.millis(), null);
+            onResult.test(unknown);
+            port.completeInvalidation(event, unknown);
+            return RechargeOutboxBatchResult.Outcome.FAILED;
+        }
+        long flowId = started.orElseThrow();
+        var response = supplierGatewayPort.invalid(new SupplierInvalidGatewayRequest(attempt.supplierRequestId(),
+                order.orderId(), order.outOrderSn(), order.orgCode(), order.account(), order.supplierChannel(),
+                Map.of("outbox_payload", event.payload()), false));
+        var outcome = switch (response.status()) {
+            case SUCCESS -> InvalidationAttempt.Result.SUCCESS;
+            case FAILED -> InvalidationAttempt.Result.REJECTED;
+            case PROCESSING, RETRYABLE_FAILED -> InvalidationAttempt.Result.UNKNOWN;
+        };
+        if (clock.millis() >= attempt.deadlineEpochMs()) outcome = InvalidationAttempt.Result.UNKNOWN;
+        var result = attempt.finish(outcome, clock.millis(), flowId);
+        // 回调只做请求局部原子发布；先交付200，流水/结果/资金的阻塞不得延迟银行响应（9.3.3）。
+        // 单个HTTP断开不是整轮失败；轮次只受持久截止约束，参见详细设计9.3.7。
+        onResult.test(result);
+        if (result.result() == InvalidationAttempt.Result.SUCCESS) {
+            boolean saved;
+            try {
+                saved = port.completeInvalidation(event, result);
+            } finally {
+                // 成功结果保存失败也尽量留下原回包；失败继续抛至采样边界，不伪装审计完整。
+                orderPort.updateSupplierFlow(flowUpdate(flowId, response));
+            }
+            if (!saved) return RechargeOutboxBatchResult.Outcome.SKIPPED;
+            return finishConfirmedInvalidation(event, order, result, response.minisoReceipt());
+        }
+        // 明确failed必须先可靠保存完整回包，才能开放后续申请；留证失败由异常边界转UNKNOWN。
+        orderPort.updateSupplierFlow(flowUpdate(flowId, response));
+        port.completeInvalidation(event, result);
+        return RechargeOutboxBatchResult.Outcome.FAILED;
+    }
+
+    /** 已确认成功只补本地事实和资金，不重复HTTP；核销及许可仍由原事务裁决，参见详细设计9.3.5、9.8。 */
+    private RechargeOutboxBatchResult.Outcome finishConfirmedInvalidation(RechargeOutboxEvent event,
+            RechargeFulfillmentOrder order, InvalidationAttempt attempt, MinisoFulfillmentReceipt receipt) {
+        var invalidTime = java.time.Instant.ofEpochMilli(attempt.confirmedEpochMs());
+        if (isMiniso(order)) {
+            var existing = orderPort.findMinisoReleaseAuthorization(order.orderId());
+            if (existing.isPresent()) return completeAuthorizedMinisoRelease(event, order, existing.orElseThrow());
+            if (orderPort.isMinisoTerminalNoReleaseRequired(order.orderId())) return completeMinisoTerminalTask(event, order);
+        }
+        var update = new OrderFulfillmentStatusUpdate(order.orderId(), FulfillmentDispatchStatus.CANCELLED,
+                ORDER_STATUS_SUCCESS, DATA_STATUS_PROCESSED, attempt.flowId(), null, null, "供应商作废成功")
+                .withMinisoReceipt(receipt).withInvalidTime(invalidTime);
+        if (isMiniso(order)) {
+            var authorization = orderPort.authorizeMinisoTerminalRelease(update, event.eventId());
+            if (authorization.isPresent() && !releaseAuthorizedMinisoBalance(event, authorization.orElseThrow(), "供应商作废成功")) {
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
+        } else {
+            orderPort.updateFulfillmentStatus(update);
+            if (!releaseBalanceReservationAndEnqueueDelta(event, order, "供应商作废成功")) {
+                return RechargeOutboxBatchResult.Outcome.FAILED;
+            }
+        }
+        createWriteOffNotifyTask(order, invalidTime);
+        frequencyPort.releaseIfOwned(order.orgCode(), order.account(), order.orderId(), settings.frequencySuccessMinimumHold());
+        outboxPort.markSuccess(event);
+        return RechargeOutboxBatchResult.Outcome.SUCCEEDED;
     }
 
     private RechargeOutboxBatchResult.Outcome handleInvalidOrder(
@@ -1341,6 +1477,6 @@ public class RechargeOutboxWorkerService {
                 response.responseCode(),
                 response.responseMessage(),
                 response.supplierOrderId(),
-                response.rawResponse());
+                response.rawResponse(), response.httpStatus());
     }
 }
