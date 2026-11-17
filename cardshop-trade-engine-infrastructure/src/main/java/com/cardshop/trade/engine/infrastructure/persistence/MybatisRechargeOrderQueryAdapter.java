@@ -1,5 +1,8 @@
 package com.cardshop.trade.engine.infrastructure.persistence;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.cardshop.trade.engine.application.recharge.RechargeOrderIdentityConflictException;
+import com.cardshop.trade.engine.application.v1.RechargeOrderExistencePort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderSnapshot;
 import com.cardshop.trade.engine.application.logging.LogStormGuard;
@@ -28,48 +31,76 @@ import org.springframework.util.StringUtils;
  * `mc_order` 和 `recharge_order_ext`，不调用供应商、不推进订单状态；供应商状态推进必须由 outbox/XXL-Job
  * 异步完成，避免高频查单放大供应商压力。
  */
-public class MybatisRechargeOrderQueryAdapter implements RechargeOrderQueryPort {
+public class MybatisRechargeOrderQueryAdapter implements RechargeOrderQueryPort, RechargeOrderExistencePort {
 
     private static final Logger log = LoggerFactory.getLogger(MybatisRechargeOrderQueryAdapter.class);
     private static final DateTimeFormatter VOUCHER_TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final LogStormGuard HISTORICAL_CANCEL_LOG_GUARD = LogStormGuard.defaultGuard();
+    private static final int MAX_LEGACY_CANDIDATES = 2;
 
-    private final McOrderQueryReader orderReader;
-    private final RechargeOrderExtQueryReader extReader;
+    private final McOrderMapper orderMapper;
+    private final RechargeOrderExtMapper extMapper;
 
     public MybatisRechargeOrderQueryAdapter(
             McOrderMapper orderMapper,
             RechargeOrderExtMapper extMapper) {
-        this(orderMapper::selectByOrgAndOutOrder, extMapper::selectByOrgAndOutOrder);
+        this.orderMapper = Objects.requireNonNull(orderMapper, "orderMapper must not be null");
+        this.extMapper = Objects.requireNonNull(extMapper, "extMapper must not be null");
     }
 
-    MybatisRechargeOrderQueryAdapter(
-            McOrderQueryReader orderReader,
-            RechargeOrderExtQueryReader extReader) {
-        this.orderReader = Objects.requireNonNull(orderReader, "orderReader must not be null");
-        this.extReader = Objects.requireNonNull(extReader, "extReader must not be null");
+    /** 只判断持久占用，历史歧义和孤儿 ext 同样占用；参见详细设计3章、8.2.1。 */
+    @Override
+    public boolean existsPersistedOrder(String orgCode, String outOrderSn) {
+        return extMapper.selectByOrgAndOutOrder(orgCode, outOrderSn) != null
+                || !orderMapper.selectList(directRechargeIdentity(orgCode, outOrderSn)
+                        .select(McOrderDO::getOrderId).last("limit 1")).isEmpty();
     }
 
+    /** 优先按 ext 平台号定位新单，无 ext 仅允许唯一归属0的旧直充单只读展示；参见详细设计8.2.1。 */
     @Override
     public Optional<RechargeOrderSnapshot> findByOrgCodeAndOutOrderSn(String orgCode, String outOrderSn) {
-        McOrderDO order = orderReader.selectByOrgAndOutOrder(orgCode, outOrderSn);
-        if (order == null || !StringUtils.hasText(order.getOrderId())) {
-            return Optional.empty();
+        RechargeOrderExtDO ext = extMapper.selectByOrgAndOutOrder(orgCode, outOrderSn);
+        if (ext != null) {
+            McOrderDO order = orderMapper.selectByOrderId(ext.getOrderId());
+            if (order == null
+                    || !StringUtils.hasText(ext.getOrderId())
+                    || !Objects.equals(ext.getOrderId(), order.getOrderId())
+                    || !Objects.equals(orgCode, ext.getOrgCode())
+                    || !Objects.equals(outOrderSn, ext.getOutOrderSn())
+                    || !Objects.equals(orgCode, order.getOrgCode())
+                    || !Objects.equals(outOrderSn, order.getOutOrderId())
+                    || !Objects.equals(McOrderDO.DIRECT_RECHARGE_PRODUCT_TYPE, order.getProductType())
+                    || !Objects.equals(McOrderDO.TRADE_ENGINE_OWNED, order.getTradeEngineOwned())) {
+                throw new RechargeOrderIdentityConflictException("MySQL订单身份冲突，需人工核查 orgCode=" + orgCode
+                        + ", outOrderSn=" + outOrderSn + ", extOrderId=" + ext.getOrderId()
+                        + ", mcOrderId=" + (order == null ? "" : order.getOrderId()));
+            }
+            return Optional.of(toSnapshot(order, ext, outOrderSn));
         }
-        RechargeOrderExtDO ext = extReader.selectByOrgAndOutOrder(orgCode, outOrderSn);
-        if (ext != null && !order.getOrderId().equals(ext.getOrderId())) {
-            /*
-             * 查询条件相同但平台订单号不同，说明扩展表和旧订单事实存在不一致。查单仍以 mc_order 事实为准，
-             * 但保守丢弃 ext 状态，避免错误的 persist_status 影响作废入口判断。
-             */
-            log.warn("MySQL查单发现mc_order与recharge_order_ext订单号不一致 orgCode={}, outOrderSn={}, mcOrderId={}, extOrderId={}",
-                    orgCode,
-                    outOrderSn,
-                    order.getOrderId(),
-                    ext.getOrderId());
-            ext = null;
+        var candidates = orderMapper.selectList(directRechargeIdentity(orgCode, outOrderSn)
+                .select(McOrderDO::getOrderId, McOrderDO::getOrgCode, McOrderDO::getOutOrderId,
+                        McOrderDO::getTradeEngineOwned, McOrderDO::getProductType, McOrderDO::getOrderStatus,
+                        McOrderDO::getFailCode, McOrderDO::getFailReason, McOrderDO::getSupplierChannel)
+                .orderByAsc(McOrderDO::getId).last("limit " + MAX_LEGACY_CANDIDATES));
+        if (candidates.isEmpty()) return Optional.empty();
+        McOrderDO order = candidates.getFirst();
+        if (candidates.size() > 1 || !Objects.equals(0, order.getTradeEngineOwned())
+                || !Objects.equals(orgCode, order.getOrgCode())
+                || !Objects.equals(outOrderSn, order.getOutOrderId())
+                || !StringUtils.hasText(order.getOrderId())) {
+            throw new RechargeOrderIdentityConflictException("MySQL旧单身份歧义、文本错配或新单缺失ext，需人工核查 orgCode="
+                    + orgCode + ", outOrderSn=" + outOrderSn + ", orderId=" + order.getOrderId()
+                    + ", candidateCount=" + candidates.size());
         }
-        return Optional.of(toSnapshot(order, ext, outOrderSn));
+        return Optional.of(toSnapshot(order, null, outOrderSn));
+    }
+
+    private static LambdaQueryWrapper<McOrderDO> directRechargeIdentity(String orgCode, String outOrderSn) {
+        // 使用旧表现有(out_orderId,org_code)索引，不依赖收窄后旧单为NULL的生成列；参见详细设计8.2.1。
+        return new LambdaQueryWrapper<McOrderDO>()
+                .eq(McOrderDO::getOutOrderId, outOrderSn)
+                .eq(McOrderDO::getOrgCode, orgCode)
+                .eq(McOrderDO::getProductType, McOrderDO.DIRECT_RECHARGE_PRODUCT_TYPE);
     }
 
     static RechargeOrderSnapshot toSnapshot(
@@ -141,20 +172,4 @@ public class MybatisRechargeOrderQueryAdapter implements RechargeOrderQueryPort 
     private static String defaultText(String value) {
         return value == null ? "" : value;
     }
-}
-
-/**
- * 旧订单事实读取抽象，便于单元测试不启动 MyBatis 容器。
- */
-interface McOrderQueryReader {
-
-    McOrderDO selectByOrgAndOutOrder(String orgCode, String outOrderSn);
-}
-
-/**
- * 新链路扩展状态读取抽象，便于单元测试覆盖 ext 缺失和不一致场景。
- */
-interface RechargeOrderExtQueryReader {
-
-    RechargeOrderExtDO selectByOrgAndOutOrder(String orgCode, String outOrderSn);
 }

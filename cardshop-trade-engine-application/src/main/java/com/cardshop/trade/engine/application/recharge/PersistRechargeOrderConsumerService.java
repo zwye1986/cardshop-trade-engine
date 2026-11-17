@@ -373,11 +373,7 @@ public class PersistRechargeOrderConsumerService {
                     redisOrderWritten,
                     selected,
                     aggregate,
-                    new PersistedOrderProbe(
-                            selected.snapshot().orgCode(),
-                            selected.snapshot().outOrderSn(),
-                            selected.snapshot().orderId(),
-                            selected.snapshot().orderVersion())));
+                    PersistedOrderProbe.from(selected.snapshot())));
         }
         Set<PersistedOrderProbe> alreadyPersistedProbes = alreadyPersistedProbes(selectedMessages);
         List<SelectedBatchMessage> persistedCandidates = selectedMessages.stream()

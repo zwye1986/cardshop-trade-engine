@@ -5,6 +5,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcilePort;
 import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.application.v1.RechargeOrderExistencePort;
+import com.cardshop.trade.engine.infrastructure.persistence.FallbackRechargeOrderQueryAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.MybatisRechargeBalanceReconcileAdapter;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McExtDepartMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
@@ -76,7 +78,13 @@ class TradeEngineRedisPendingAutoConfigurationTest {
                 .withBean(Clock.class, Clock::systemUTC)
                 .withUserConfiguration(QueryMapperBeans.class)
                 .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
-                .run(context -> assertThat(context).hasSingleBean(RechargeOrderQueryPort.class));
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargeOrderExistencePort.class);
+                    var query = context.getBean(RechargeOrderQueryPort.class);
+                    assertThat(query).isInstanceOf(FallbackRechargeOrderQueryAdapter.class);
+                    assertThat(new org.springframework.beans.DirectFieldAccessor(query).getPropertyValue("fallback"))
+                            .isSameAs(context.getBean(RechargeOrderExistencePort.class));
+                });
     }
 
     private static <T> T proxy(Class<T> type) {

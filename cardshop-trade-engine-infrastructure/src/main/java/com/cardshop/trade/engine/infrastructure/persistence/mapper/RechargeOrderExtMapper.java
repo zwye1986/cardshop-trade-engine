@@ -217,6 +217,9 @@ public interface RechargeOrderExtMapper extends BaseMapper<RechargeOrderExtDO> {
               org_code,
               out_order_sn,
               persist_status,
+              request_hash,
+              request_hash_version,
+              request_hash_alg,
               persisted_version
             from recharge_order_ext
             where order_id in

@@ -59,6 +59,7 @@ public interface McOrderMapper extends BaseMapper<McOrderDO> {
               account,
               coupon_type,
               order_type,
+              trade_engine_owned,
               fail_code,
               fail_reason
             )
@@ -88,6 +89,7 @@ public interface McOrderMapper extends BaseMapper<McOrderDO> {
               #{account},
               #{couponType},
               #{orderType},
+              #{tradeEngineOwned},
               #{failCode},
               #{failReason}
             )
@@ -130,6 +132,7 @@ public interface McOrderMapper extends BaseMapper<McOrderDO> {
               account,
               coupon_type,
               order_type,
+              trade_engine_owned,
               fail_code,
               fail_reason
             )
@@ -161,6 +164,7 @@ public interface McOrderMapper extends BaseMapper<McOrderDO> {
               #{row.account},
               #{row.couponType},
               #{row.orderType},
+              #{row.tradeEngineOwned},
               #{row.failCode},
               #{row.failReason}
             )
@@ -170,6 +174,18 @@ public interface McOrderMapper extends BaseMapper<McOrderDO> {
             </script>
             """)
     int insertOrderBatchIfAbsent(@Param("rows") List<McOrderDO> rows);
+
+    /** 批量读取不可变主单身份，保持事实写入和恢复路径同一合同；参见详细设计8.2.1。 */
+    @org.apache.ibatis.annotations.Select("""
+            <script>
+            select order_Id,org_code,out_orderId,trade_engine_owned,product_type,order_price
+            from mc_order where order_Id in
+            <foreach collection="orderIds" item="orderId" open="(" separator="," close=")">
+              #{orderId}
+            </foreach>
+            </script>
+            """)
+    List<McOrderDO> selectPersistIdentities(@Param("orderIds") List<String> orderIds);
 
     /**
      * 按平台订单号读取旧表订单事实。

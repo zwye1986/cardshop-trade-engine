@@ -14,6 +14,7 @@ import com.cardshop.trade.engine.application.v1.V1CardApiResultStatus;
 import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
 import com.cardshop.trade.engine.domain.order.LegacyOrderStatusCode;
 import com.cardshop.trade.engine.domain.order.PersistStatus;
 import com.cardshop.trade.engine.domain.order.ValidationStatus;
@@ -31,6 +32,7 @@ import org.springframework.util.StringUtils;
 public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(V1QueryRechargeOrderUseCaseService.class);
+    private static final LogStormGuard QUERY_FAILURE_LOG_GUARD = LogStormGuard.defaultGuard();
     private static final String ORDER_STATUS_VALIDATION_FAILED = "VALIDATION_FAILED";
     private static final String ORDER_STATUS_ACCEPT_REJECTED = "ACCEPT_REJECTED";
     private static final String ORDER_STATUS_SUPPLIER_FAILED = "SUPPLIER_FAILED";
@@ -78,7 +80,18 @@ public class V1QueryRechargeOrderUseCaseService implements QueryRechargeOrderUse
             return V1CardApiResultStatus.PARAM_ERROR.result();
         }
 
-        return orderQueryPort.findByOrgCodeAndOutOrderSn(merchant.orgCode(), request.outOrderSn())
+        Optional<RechargeOrderSnapshot> snapshot;
+        try {
+            snapshot = orderQueryPort.findByOrgCodeAndOutOrderSn(merchant.orgCode(), request.outOrderSn());
+        } catch (RuntimeException ex) {
+            // 查单热路径采样错误栈；身份冲突和数据库故障都不能伪装不存在，参见详细设计3章。
+            if (QUERY_FAILURE_LOG_GUARD.shouldLog("v1-query.persistence-failure").shouldLog()) {
+                log.error("V1查单持久事实读取失败，需人工核查 orgCode={}, outOrderSn={}",
+                        merchant.orgCode(), request.outOrderSn(), ex);
+            }
+            return V1CardApiResultStatus.SYSTEM_BUSY.result("系统繁忙，请稍后重试或联系人工核查");
+        }
+        return snapshot
                 .map(V1QueryRechargeOrderUseCaseService::snapshotResult)
                 .orElseGet(V1CardApiResultStatus.ORDER_NOT_FOUND::result);
     }

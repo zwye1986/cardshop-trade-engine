@@ -23,14 +23,16 @@ class InvalidationExampleTest(unittest.TestCase):
             self.assertEqual(module.classify({'code': '200', 'data': data}), expected)
         self.assertEqual(module.classify({'code': '202'}), 'protocol-error')
         self.assertEqual(module.classify({'code': '503'}), 'failed')
+        # 历史歧义/持久库故障的500不等于不存在、已作废或可自动重试资金操作。
+        self.assertEqual(module.classify({'code': '500', 'msg': '系统繁忙，请联系人工核查'}), 'protocol-error')
         self.assertEqual(module.classify({'code': '999'}), 'protocol-error')
 
     def test_cli_only_outputs_synthetic_offline_responses(self):
-        for scenario in ('completed', 'failed'):
+        for scenario in ('completed', 'failed', 'identity-conflict'):
             result = subprocess.run([sys.executable, str(SCRIPT), '--scenario', scenario], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             parsed = json.loads(result.stdout)
-            self.assertEqual(parsed['classification'], scenario)
+            self.assertEqual(parsed['classification'], 'protocol-error' if scenario == 'identity-conflict' else scenario)
             self.assertEqual(parsed['http_status'], 200)
             self.assertNotIn('token', result.stdout)
 

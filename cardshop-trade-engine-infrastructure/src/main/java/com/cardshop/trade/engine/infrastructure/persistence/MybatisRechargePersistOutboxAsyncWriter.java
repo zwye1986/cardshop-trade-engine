@@ -7,6 +7,8 @@ import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeBalan
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeDispatchOutboxDO;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeBalanceDeltaOutboxMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispatchOutboxMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -42,6 +44,7 @@ public class MybatisRechargePersistOutboxAsyncWriter implements RechargePersistO
     private final RechargeBalanceDeltaOutboxSinglePersistWriter balanceSingleWriter;
     private final RechargeBalanceDeltaOutboxBatchPersistWriter balanceBatchWriter;
     private final RechargeOrderPersistenceRowConverter rowConverter;
+    private final RechargeOrderIdentityVerifier identityVerifier;
     private final TradeEngineObservabilityMetrics observabilityMetrics;
     private final boolean batchEnabled;
     private final TransactionOperations transactionOperations;
@@ -82,6 +85,7 @@ public class MybatisRechargePersistOutboxAsyncWriter implements RechargePersistO
                 mappers.dispatchMapper()::insertDispatchOutboxBatchIfAbsent,
                 mappers.balanceMapper()::insertIfAbsent,
                 mappers.balanceMapper()::insertBalanceDeltaBatchIfAbsent,
+                new RechargeOrderIdentityVerifier(mappers.orderMapper(), mappers.extMapper()),
                 objectMapper,
                 observabilityMetrics,
                 dispatchInitialDelay,
@@ -94,6 +98,7 @@ public class MybatisRechargePersistOutboxAsyncWriter implements RechargePersistO
             RechargeDispatchOutboxBatchPersistWriter dispatchBatchWriter,
             RechargeBalanceDeltaOutboxSinglePersistWriter balanceSingleWriter,
             RechargeBalanceDeltaOutboxBatchPersistWriter balanceBatchWriter,
+            RechargeOrderIdentityVerifier identityVerifier,
             ObjectMapper objectMapper,
             TradeEngineObservabilityMetrics observabilityMetrics,
             Duration dispatchInitialDelay,
@@ -112,6 +117,7 @@ public class MybatisRechargePersistOutboxAsyncWriter implements RechargePersistO
                 balanceBatchWriter,
                 "balanceBatchWriter must not be null");
         this.rowConverter = new RechargeOrderPersistenceRowConverter(objectMapper, dispatchInitialDelay);
+        this.identityVerifier = Objects.requireNonNull(identityVerifier);
         this.observabilityMetrics = observabilityMetrics == null
                 ? TradeEngineObservabilityMetrics.noop()
                 : observabilityMetrics;
@@ -134,6 +140,8 @@ public class MybatisRechargePersistOutboxAsyncWriter implements RechargePersistO
         long startedAtNanos = System.nanoTime();
         try {
             transactionOperations.execute(status -> {
+                // 必须从writer自己的事务和连接确认已提交事实，不能替未提交/冲突消息生成可执行事件。
+                identityVerifier.verifyCommitted(sorted);
                 writeSorted(sorted);
                 return null;
             });
@@ -194,12 +202,16 @@ public class MybatisRechargePersistOutboxAsyncWriter implements RechargePersistO
         SqlSessionTemplate sqlSessionTemplate = new SqlSessionTemplate(sqlSessionFactory);
         return new OutboxMapperBundle(
                 sqlSessionTemplate.getMapper(RechargeDispatchOutboxMapper.class),
-                sqlSessionTemplate.getMapper(RechargeBalanceDeltaOutboxMapper.class));
+                sqlSessionTemplate.getMapper(RechargeBalanceDeltaOutboxMapper.class),
+                sqlSessionTemplate.getMapper(McOrderMapper.class),
+                sqlSessionTemplate.getMapper(RechargeOrderExtMapper.class));
     }
 
     private record OutboxMapperBundle(
             RechargeDispatchOutboxMapper dispatchMapper,
-            RechargeBalanceDeltaOutboxMapper balanceMapper) {
+            RechargeBalanceDeltaOutboxMapper balanceMapper,
+            McOrderMapper orderMapper,
+            RechargeOrderExtMapper extMapper) {
     }
 }
 

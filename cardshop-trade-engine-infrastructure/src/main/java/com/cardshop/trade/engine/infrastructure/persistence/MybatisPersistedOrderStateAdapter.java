@@ -5,6 +5,8 @@ import com.cardshop.trade.engine.application.recharge.PersistedOrderStatePort;
 import com.cardshop.trade.engine.application.recharge.PersistedOrderProbe;
 import com.cardshop.trade.engine.domain.order.PersistStatus;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -31,9 +33,11 @@ public class MybatisPersistedOrderStateAdapter implements PersistedOrderStatePor
     private static final String LOG_EVENT_BATCH_STATE_LOOKUP_FAILED = "persisted-order-state.batch-lookup.failed";
 
     private final RechargeOrderExtMapper extMapper;
+    private final McOrderMapper orderMapper;
     private final LogStormGuard logStormGuard = LogStormGuard.defaultGuard();
 
-    public MybatisPersistedOrderStateAdapter(RechargeOrderExtMapper extMapper) {
+    public MybatisPersistedOrderStateAdapter(McOrderMapper orderMapper, RechargeOrderExtMapper extMapper) {
+        this.orderMapper = Objects.requireNonNull(orderMapper, "orderMapper must not be null");
         this.extMapper = Objects.requireNonNull(extMapper, "extMapper must not be null");
     }
 
@@ -41,7 +45,9 @@ public class MybatisPersistedOrderStateAdapter implements PersistedOrderStatePor
     public boolean isPersistedAtLeast(String orgCode, String outOrderSn, String orderId, long orderVersion) {
         try {
             RechargeOrderExtDO ext = extMapper.selectByOrderId(orderId);
-            return matchesPersistedAtLeast(ext, orgCode, outOrderSn, orderId, orderVersion);
+            var orders = orderMapper.selectPersistIdentities(List.of(orderId));
+            return orders.size() == 1 && matchesOrder(orders.getFirst(), orgCode, outOrderSn, orderId)
+                    && matchesPersistedAtLeast(ext, orgCode, outOrderSn, orderId, orderVersion);
         } catch (RuntimeException ex) {
             /*
              * 这是后台补投前置二次确认。查询失败时不能把订单当作已落库，否则会误删 Redis pending；
@@ -79,6 +85,10 @@ public class MybatisPersistedOrderStateAdapter implements PersistedOrderStatePor
                     .distinct()
                     .toList();
             List<RechargeOrderExtDO> rows = extMapper.selectByOrderIds(orderIds);
+            Map<String, McOrderDO> ordersById = new LinkedHashMap<>();
+            for (var order : orderMapper.selectPersistIdentities(orderIds)) {
+                ordersById.put(order.getOrderId(), order);
+            }
             Map<String, RechargeOrderExtDO> rowsByOrderId = new LinkedHashMap<>();
             if (rows != null) {
                 for (RechargeOrderExtDO row : rows) {
@@ -91,7 +101,16 @@ public class MybatisPersistedOrderStateAdapter implements PersistedOrderStatePor
             Set<PersistedOrderProbe> persisted = new LinkedHashSet<>();
             for (PersistedOrderProbe probe : requested) {
                 RechargeOrderExtDO ext = rowsByOrderId.get(probe.orderId());
-                if (matchesPersistedAtLeast(
+                var order = ordersById.get(probe.orderId());
+                // 缺金额或摘要的旧探针不具备批消费跳过资格，保守进入事实事务完成最终裁决。
+                if (probe.orderPrice() != null && probe.requestHash() != null
+                        && probe.requestHashVersion() != null && probe.requestHashAlg() != null
+                        && matchesOrder(order, probe.orgCode(), probe.outOrderSn(), probe.orderId())
+                        && Objects.equals(probe.orderPrice(), order.getOrderPrice())
+                        && ext != null && Objects.equals(probe.requestHash(), ext.getRequestHash())
+                        && Objects.equals(probe.requestHashVersion(), ext.getRequestHashVersion())
+                        && Objects.equals(probe.requestHashAlg(), ext.getRequestHashAlg())
+                        && matchesPersistedAtLeast(
                         ext,
                         probe.orgCode(),
                         probe.outOrderSn(),
@@ -140,5 +159,12 @@ public class MybatisPersistedOrderStateAdapter implements PersistedOrderStatePor
         long persistedVersion = ext.getPersistedVersion() == null ? 0L : ext.getPersistedVersion();
         return PersistStatus.DB_PERSISTED.name().equals(ext.getPersistStatus())
                 && persistedVersion >= Math.max(1L, orderVersion);
+    }
+
+    private static boolean matchesOrder(McOrderDO order, String orgCode, String outOrderSn, String orderId) {
+        return order != null && Objects.equals(orderId, order.getOrderId())
+                && Objects.equals(orgCode, order.getOrgCode()) && Objects.equals(outOrderSn, order.getOutOrderId())
+                && Objects.equals(McOrderDO.TRADE_ENGINE_OWNED, order.getTradeEngineOwned())
+                && Objects.equals(McOrderDO.DIRECT_RECHARGE_PRODUCT_TYPE, order.getProductType());
     }
 }

@@ -22,11 +22,12 @@ def classify(response):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--scenario', choices=('completed', 'failed'), default='completed')
+    parser.add_argument('--scenario', choices=('completed', 'failed', 'identity-conflict'), default='completed')
     scenario = parser.parse_args().scenario
-    codes = {'completed': '200', 'failed': '503'}
+    codes = {'completed': '200', 'failed': '503', 'identity-conflict': '500'}
     response = {'code': codes[scenario], 'msg': {
-        'completed': '操作成功', 'failed': '作废失败'}[scenario], 'data': None}
+        'completed': '操作成功', 'failed': '作废失败',
+        'identity-conflict': '系统繁忙，请稍后重试或联系人工核查'}[scenario], 'data': None}
     if scenario == 'completed':
         response['data'] = dict(order_id='SYNTHETIC-ORDER', out_order_sn='SYNTHETIC-OUT',
                                 order_status='12', order_status_desc='成功' if scenario == 'completed' else '作废结果待确认',

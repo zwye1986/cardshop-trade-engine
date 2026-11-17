@@ -60,6 +60,7 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
     private final McDepartRecordBatchPersistWriter departRecordWriter;
     private final RechargeOrderPersistenceRowConverter rowConverter;
     private final TradeEngineObservabilityMetrics observabilityMetrics;
+    private final RechargeOrderIdentityVerifier identityVerifier;
 
     public MybatisBatchRechargeOrderPersistenceAdapter(
             SqlSessionFactory sqlSessionFactory,
@@ -97,6 +98,7 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
                 mappers.dispatchOutboxMapper()::insertDispatchOutboxBatchIfAbsent,
                 mappers.balanceDeltaOutboxMapper()::insertBalanceDeltaBatchIfAbsent,
                 mappers.departRecordMapper()::insertDepartRecordBatchIfAbsent,
+                new RechargeOrderIdentityVerifier(mappers.orderMapper(), mappers.extMapper()),
                 objectMapper,
                 observabilityMetrics,
                 dispatchInitialDelay);
@@ -108,6 +110,7 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
             RechargeDispatchOutboxBatchPersistWriter dispatchOutboxWriter,
             RechargeBalanceDeltaOutboxBatchPersistWriter balanceDeltaOutboxWriter,
             McDepartRecordBatchPersistWriter departRecordWriter,
+            RechargeOrderIdentityVerifier identityVerifier,
             ObjectMapper objectMapper) {
         this(
                 orderWriter,
@@ -115,6 +118,7 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
                 dispatchOutboxWriter,
                 balanceDeltaOutboxWriter,
                 departRecordWriter,
+                identityVerifier,
                 objectMapper,
                 TradeEngineObservabilityMetrics.noop(),
                 Duration.ofSeconds(1));
@@ -126,6 +130,7 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
             RechargeDispatchOutboxBatchPersistWriter dispatchOutboxWriter,
             RechargeBalanceDeltaOutboxBatchPersistWriter balanceDeltaOutboxWriter,
             McDepartRecordBatchPersistWriter departRecordWriter,
+            RechargeOrderIdentityVerifier identityVerifier,
             ObjectMapper objectMapper,
             TradeEngineObservabilityMetrics observabilityMetrics) {
         this(
@@ -134,6 +139,7 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
                 dispatchOutboxWriter,
                 balanceDeltaOutboxWriter,
                 departRecordWriter,
+                identityVerifier,
                 objectMapper,
                 observabilityMetrics,
                 Duration.ofSeconds(1));
@@ -145,6 +151,7 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
             RechargeDispatchOutboxBatchPersistWriter dispatchOutboxWriter,
             RechargeBalanceDeltaOutboxBatchPersistWriter balanceDeltaOutboxWriter,
             McDepartRecordBatchPersistWriter departRecordWriter,
+            RechargeOrderIdentityVerifier identityVerifier,
             ObjectMapper objectMapper,
             TradeEngineObservabilityMetrics observabilityMetrics,
             Duration dispatchInitialDelay) {
@@ -156,6 +163,7 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
                 balanceDeltaOutboxWriter, "balanceDeltaOutboxWriter must not be null");
         this.departRecordWriter = Objects.requireNonNull(departRecordWriter, "departRecordWriter must not be null");
         this.rowConverter = new RechargeOrderPersistenceRowConverter(objectMapper, dispatchInitialDelay);
+        this.identityVerifier = Objects.requireNonNull(identityVerifier);
         this.observabilityMetrics = observabilityMetrics == null
                 ? TradeEngineObservabilityMetrics.noop()
                 : observabilityMetrics;
@@ -212,12 +220,17 @@ public class MybatisBatchRechargeOrderPersistenceAdapter
             List<McOrderDO> orderRows = sorted.stream()
                     .map(rowConverter::toMcOrder)
                     .toList();
+            var existing = identityVerifier.readOrders(sorted);
             recordPhase(PHASE_MC_ORDER, () -> orderWriter.insertOrderBatchIfAbsent(orderRows));
+            identityVerifier.verifyOrders(sorted);
+            identityVerifier.verifyExistingExtensions(sorted.stream()
+                    .filter(a -> existing.containsKey(a.snapshot().orderId())).toList());
 
             List<RechargeOrderExtDO> extRows = sorted.stream()
                     .map(rowConverter::toExt)
                     .toList();
             recordPhase(PHASE_RECHARGE_ORDER_EXT, () -> extWriter.insertBatchOrUpdatePersistState(extRows));
+            identityVerifier.verifyExtensions(sorted);
 
             List<McDepartRecordDO> departRecordRows = sorted.stream()
                     .filter(RechargeOrderPersistenceRowConverter::preDeductRecordRequired)

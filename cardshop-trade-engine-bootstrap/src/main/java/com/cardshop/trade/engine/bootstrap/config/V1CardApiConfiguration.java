@@ -27,6 +27,7 @@ import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderOutboxPort;
 import com.cardshop.trade.engine.application.v1.IssueV1TokenUseCase;
 import com.cardshop.trade.engine.application.v1.QueryRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.application.v1.RechargeOrderExistencePort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
 import com.cardshop.trade.engine.application.v1.V1CreateOrderStageObserver;
@@ -209,17 +210,21 @@ public class V1CardApiConfiguration {
             Clock clock,
             V1RechargeAcceptSettings settings,
             @org.springframework.beans.factory.annotation.Qualifier("tradeDbTaskExecutor") java.util.concurrent.Executor tradeDbTaskExecutor,
-            ObjectProvider<V1CreateOrderStageObserver> createOrderStageObserverProvider) {
+            ObjectProvider<V1CreateOrderStageObserver> createOrderStageObserverProvider,
+            ObjectProvider<RechargeOrderExistencePort> orderExistencePortProvider) {
         V1MerchantProfilePort merchantProfilePort = merchantProfilePortProvider.getIfAvailable();
         V1ProductCandidateSelector productCandidateSelector = productCandidateSelectorProvider.getIfAvailable();
         AcceptRechargeOrderPort acceptRechargeOrderPort = acceptRechargeOrderPortProvider.getIfAvailable();
         RechargeAcceptReliabilityPort rechargeAcceptReliabilityPort = rechargeAcceptReliabilityPortProvider.getIfAvailable();
         PersistRechargeOrderMessagePublisher persistMessagePublisher = persistMessagePublisherProvider.getIfAvailable();
+        RechargeOrderExistencePort orderExistencePort = orderExistencePortProvider.getIfAvailable();
         if (merchantProfilePort == null
                 || productCandidateSelector == null
                 || acceptRechargeOrderPort == null
                 || rechargeAcceptReliabilityPort == null
-                || persistMessagePublisher == null) {
+                || persistMessagePublisher == null
+                || orderExistencePort == null) {
+            // Redis-only 环境不能以缓存未命中当作持久不存在，保持写入口关闭；参见详细设计3章、8.2.1。
             return unavailableCreateRechargeOrderUseCase();
         }
         return new V1CreateRechargeOrderUseCaseService(
@@ -237,7 +242,8 @@ public class V1CardApiConfiguration {
                 clock,
                 settings,
                 tradeDbTaskExecutor,
-                () -> createOrderStageObserverProvider.getIfAvailable(V1CreateOrderStageObserver::noop));
+                () -> createOrderStageObserverProvider.getIfAvailable(V1CreateOrderStageObserver::noop),
+                orderExistencePort);
     }
 
     @Bean

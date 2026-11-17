@@ -147,7 +147,8 @@ class MinisoBridgeMysqlContractTest {
             return count;
         }, row -> { throw new AssertionError("failed validation must not dispatch"); },
         row -> { throw new AssertionError("unreserved order must not flush balance"); },
-        row -> { throw new AssertionError("unreserved order must not write debit"); }, new com.fasterxml.jackson.databind.ObjectMapper());
+        row -> { throw new AssertionError("unreserved order must not write debit"); },
+        new RechargeOrderIdentityVerifier(orders, extensions), new com.fasterxml.jackson.databind.ObjectMapper());
         var proxy = new org.springframework.aop.framework.ProxyFactory(target);
         proxy.addAdvice(new org.springframework.transaction.interceptor.TransactionInterceptor(
                 new org.springframework.jdbc.datasource.DataSourceTransactionManager(source),

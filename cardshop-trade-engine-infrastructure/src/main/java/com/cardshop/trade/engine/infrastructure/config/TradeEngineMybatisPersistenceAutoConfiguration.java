@@ -232,7 +232,7 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     }
 
     /**
-     * 创建 writer 专用 SqlSessionFactory，只注册两张 outbox Mapper。
+     * 创建 writer 专用 SqlSessionFactory，同时提供已提交事实身份读取；参见详细设计8.2.1。
      */
     @Bean(name = "persistOutboxWriterSqlSessionFactory", autowireCandidate = false)
     @ConditionalOnBean(name = "persistOutboxWriterDataSource")
@@ -243,6 +243,8 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
         MybatisConfiguration configuration = new MybatisConfiguration();
         configuration.addMapper(RechargeDispatchOutboxMapper.class);
         configuration.addMapper(RechargeBalanceDeltaOutboxMapper.class);
+        configuration.addMapper(McOrderMapper.class);
+        configuration.addMapper(RechargeOrderExtMapper.class);
         GlobalConfig globalConfig = new GlobalConfig();
         globalConfig.setSqlInjector(new DefaultSqlInjector());
 
@@ -284,8 +286,8 @@ public class TradeEngineMybatisPersistenceAutoConfiguration {
     @Bean
     @ConditionalOnBean(SqlSessionFactory.class)
     @ConditionalOnMissingBean(PersistedOrderStatePort.class)
-    public PersistedOrderStatePort persistedOrderStatePort(RechargeOrderExtMapper extMapper) {
-        return new MybatisPersistedOrderStateAdapter(extMapper);
+    public PersistedOrderStatePort persistedOrderStatePort(McOrderMapper orderMapper, RechargeOrderExtMapper extMapper) {
+        return new MybatisPersistedOrderStateAdapter(orderMapper, extMapper);
     }
 
     /**

@@ -22,6 +22,31 @@ import org.junit.jupiter.api.Test;
  */
 class RechargeD2ChangelogContractTest {
 
+    /** 前置包装不能改变原发布身份或checksum，参见详细设计8.2.1。 */
+    @Test
+    void compatibleEntryPreservesEveryOriginalIdentityAndChecksumInOrder() throws Exception {
+        try (var resources = new DirectoryResourceAccessor(Path.of("src/main/resources"))) {
+            var parser = ChangeLogParserFactory.getInstance();
+            String master = "db/changelog/db.changelog-master.yaml";
+            String entry = "db/changelog/db.changelog-production-compatible.yaml";
+            var original = parser.getParser(master, resources).parse(master, new ChangeLogParameters(), resources);
+            var compatible = parser.getParser(entry, resources).parse(entry, new ChangeLogParameters(), resources);
+            var originalIds = original.getChangeSets().stream().map(change -> change.getId()).toList();
+            var included = compatible.getChangeSets().stream().filter(change -> originalIds.contains(change.getId())).toList();
+            assertThat(included).hasSameSizeAs(original.getChangeSets());
+            for (int index = 0; index < included.size(); index++) {
+                var source = original.getChangeSets().get(index);
+                var actual = included.get(index);
+                assertThat(java.util.List.of(actual.getId(), actual.getAuthor(), actual.getFilePath(),
+                        actual.generateCheckSum(liquibase.ChecksumVersion.latest()).toString()))
+                        .containsExactly(source.getId(), source.getAuthor(), source.getFilePath(),
+                                source.generateCheckSum(liquibase.ChecksumVersion.latest()).toString());
+            }
+            assertThat(compatible.getChangeSets().getFirst().getId()).isEqualTo("0026-compat-environment-guard");
+            assertThat(compatible.getChangeSets().getLast().getId()).isEqualTo("0026-compat-postconditions");
+        }
+    }
+
     @Test
     void changelogDeclaresD2TablesAndMcOrderCompatibilityFields() throws IOException {
         String changelog = Files.readString(Path.of("src/main/resources/db/changelog/db.changelog-master.yaml"));

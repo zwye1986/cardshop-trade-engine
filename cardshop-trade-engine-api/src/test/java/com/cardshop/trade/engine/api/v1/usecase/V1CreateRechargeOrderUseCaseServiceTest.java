@@ -70,27 +70,88 @@ class V1CreateRechargeOrderUseCaseServiceTest {
 
     private final CapturingAcceptPort acceptPort = new CapturingAcceptPort();
     private final RecordingProductConfigPreheatPort productConfigPreheatPort = new RecordingProductConfigPreheatPort();
+    private final RecordingExistencePort existencePort = new RecordingExistencePort();
+    private int productSelections;
     private final V1CreateRechargeOrderUseCaseService service = new V1CreateRechargeOrderUseCaseService(
             precheckService(),
             new RequestHashCanonicalizer(),
             (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
-            (orgCode, productId, account) -> V1ProductSelection.passed(
-                    productId,
-                    "73301289",
-                    "TF_KA",
-                    "话费50元",
-                    "codekey",
-                    1,
-                    5200L,
-                    5000L,
-                    4900L,
-                    11L),
+            (orgCode, productId, account) -> {
+                productSelections++;
+                return V1ProductSelection.passed(
+                        productId,
+                        "73301289",
+                        "TF_KA",
+                        "话费50元",
+                        "codekey",
+                        1,
+                        5200L,
+                        5000L,
+                        4900L,
+                        11L);
+            },
             acceptPort,
             productConfigPreheatPort,
             () -> "202607051337458961474292",
             CLOCK,
             new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
-            SYNC_EXECUTOR);
+            SYNC_EXECUTOR,
+            existencePort);
+
+    @Test
+    void rejectsPersistedDuplicateBeforeProductSelectionRedisAndFailureFacts() {
+        existencePort.exists = true;
+        V1CardApiResult result = service.createRechargeOrder(
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36",
+                        validRawBody("OUT-OLD", "nonce-12345678901234567890123456", 2)))
+                .toCompletableFuture().join();
+
+        assertThat(result.code()).isEqualTo("505");
+        assertThat(result.msg()).isEqualTo("订单号重复");
+        assertThat(existencePort.identity).isEqualTo("A36/OUT-OLD");
+        assertThat(acceptPort.lastCommand).isNull();
+        assertThat(productConfigPreheatPort.selection).isNull();
+        assertThat(productSelections).isZero();
+    }
+
+    @Test
+    void closesCreateBeforeRedisAndFailureFactsWhenPersistenceIsUnavailable() {
+        existencePort.failure = new IllegalStateException("database unavailable");
+        V1CardApiResult result = service.createRechargeOrder(
+                com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36",
+                        validRawBody("OUT-DB-DOWN", "nonce-12345678901234567890123456", 1)))
+                .toCompletableFuture().join();
+
+        assertThat(result.code()).isEqualTo("500");
+        assertThat(acceptPort.lastCommand).isNull();
+        assertThat(productConfigPreheatPort.selection).isNull();
+        assertThat(productSelections).isZero();
+    }
+
+    @Test
+    void recordsDedicatedPersistentLookupLatencyEvenWhenCheckFailsClosed() {
+        var stages = new java.util.LinkedHashMap<String, Duration>();
+        var publisher = new RecordingPersistPublisher();
+        var localService = new V1CreateRechargeOrderUseCaseService(
+                precheckService(), new RequestHashCanonicalizer(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", false, 7L)),
+                (orgCode, productId, account) -> { throw new AssertionError("占用检查前不能选品"); },
+                acceptPort, new RecordingReliabilityPort(), publisher, AcceptAnomalyRecordPort.noop(),
+                RedisHaGuardPort.noop(), V1ProductConfigPreheatPort.noop(), () -> "unused", CLOCK,
+                new V1RechargeAcceptSettings(Duration.ofMinutes(5)), SYNC_EXECUTOR,
+                (com.cardshop.trade.engine.application.v1.V1CreateOrderStageObserver) stages::put,
+                (orgCode, outOrderSn) -> { throw new IllegalStateException("database unavailable"); });
+
+        var response = localService.createRechargeOrder(com.cardshop.trade.engine.api.v1.V12TestCredentials.command(
+                "app-gray", "A36", validRawBody("OUT-OBSERVE", "nonce-12345678901234567890123456", 2)))
+                .toCompletableFuture().join();
+
+        assertThat(response.code()).isEqualTo("500");
+        assertThat(stages).containsKeys("persisted_existence", "prepare", "sync_total");
+        assertThat(stages.get("persisted_existence")).isPositive();
+        assertThat(acceptPort.lastCommand).isNull();
+        assertThat(publisher.publishCalls).isZero();
+    }
 
     @Test
     void acceptsValidCreateRequestAndBuildsRedisCommandFromLegacyV1Fields() {
@@ -141,6 +202,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
         assertThat(result.code()).isEqualTo("501");
         assertThat(result.msg()).isEqualTo("验签不合规！");
         assertThat(acceptPort.lastCommand).isNull();
+        assertThat(existencePort.identity).isNull();
     }
 
     @Test
@@ -161,6 +223,7 @@ class V1CreateRechargeOrderUseCaseServiceTest {
             assertThat(result.code()).isEqualTo("506");
             assertThat(result.msg()).isEqualTo("notify_url格式不正确");
             assertThat(acceptPort.lastCommand).isNull();
+            assertThat(existencePort.identity).isNull();
             assertThat(appender.list)
                     .extracting(ILoggingEvent::getLevel)
                     .doesNotContain(Level.ERROR);
@@ -241,7 +304,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 () -> "202607051337458961474292",
                 CLOCK,
                 new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
-                SYNC_EXECUTOR);
+                SYNC_EXECUTOR,
+                (orgCode, outOrderSn) -> false);
 
         V1CardApiResult result = localService.createRechargeOrder(
                 com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody("OUT-1004", "nonce-12345678901234567890123459", 1)))
@@ -292,7 +356,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 () -> "202607051337458961474292",
                 CLOCK,
                 new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
-                SYNC_EXECUTOR);
+                SYNC_EXECUTOR,
+                (orgCode, outOrderSn) -> false);
 
         localService.createRechargeOrder(
                         com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody(
@@ -322,7 +387,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 () -> "202607051337458961474292",
                 CLOCK,
                 new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
-                SYNC_EXECUTOR);
+                SYNC_EXECUTOR,
+                (orgCode, outOrderSn) -> false);
 
         V1CardApiResult result = localService.createRechargeOrder(
                         com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody(
@@ -355,7 +421,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 () -> "202607051337458961474292",
                 CLOCK,
                 new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
-                SYNC_EXECUTOR);
+                SYNC_EXECUTOR,
+                (orgCode, outOrderSn) -> false);
 
         V1CardApiResult result = localService.createRechargeOrder(
                         com.cardshop.trade.engine.api.v1.V12TestCredentials.command("app-gray", "A36", validRawBody(
@@ -411,7 +478,12 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 () -> "202607051337458961474292",
                 CLOCK,
                 new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
-                recordingExecutor);
+                recordingExecutor,
+                (orgCode, outOrderSn) -> {
+                    assertThat(Thread.currentThread().getName()).isEqualTo(executorThread.get());
+                    assertThat(Thread.currentThread().getName()).isNotEqualTo("main");
+                    return false;
+                });
 
         try {
             localService.createRechargeOrder(
@@ -810,7 +882,8 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                 () -> "202607051337458961474292",
                 CLOCK,
                 new V1RechargeAcceptSettings(Duration.ofMinutes(5)),
-                tradeDbTaskExecutor);
+                tradeDbTaskExecutor,
+                (orgCode, outOrderSn) -> false);
     }
 
     private static String validRawBody(String outOrderSn, String nonceStr, int num) {
@@ -835,6 +908,20 @@ class V1CreateRechargeOrderUseCaseServiceTest {
                   "sign": "%s"
                 }
                 """.formatted(outOrderSn, nonceStr, notifyUrl, num, sign);
+    }
+
+    private static final class RecordingExistencePort implements com.cardshop.trade.engine.application.v1.RechargeOrderExistencePort {
+
+        private boolean exists;
+        private String identity;
+        private RuntimeException failure;
+
+        @Override
+        public boolean existsPersistedOrder(String orgCode, String outOrderSn) {
+            identity = orgCode + "/" + outOrderSn;
+            if (failure != null) throw failure;
+            return exists;
+        }
     }
 
     private static final class CapturingAcceptPort implements AcceptRechargeOrderPort {

@@ -552,35 +552,42 @@ public class TradeEngineInfrastructureConfiguration {
         return new RedisV1TokenStoreAdapter(redisTemplate, properties);
     }
 
+    /** 同一 MySQL 适配器同时提供最终查询和持久占用；参见详细设计3章、8.2.1。 */
     @Bean
+    @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class})
+    @ConditionalOnMissingBean(MybatisRechargeOrderQueryAdapter.class)
+    public MybatisRechargeOrderQueryAdapter mybatisRechargeOrderQueryAdapter(
+            McOrderMapper orderMapper, RechargeOrderExtMapper extMapper) {
+        return new MybatisRechargeOrderQueryAdapter(orderMapper, extMapper);
+    }
+
+    @Bean
+    @org.springframework.context.annotation.Primary
     @ConditionalOnBean(ReactiveStringRedisTemplate.class)
-    @ConditionalOnMissingBean(RechargeOrderQueryPort.class)
+    @ConditionalOnMissingBean(value = RechargeOrderQueryPort.class, ignored = MybatisRechargeOrderQueryAdapter.class)
     public RechargeOrderQueryPort rechargeOrderQueryPort(
             ReactiveStringRedisTemplate redisTemplate,
             RechargeRedisKeyBuilder keyBuilder,
             TradeEngineProperties properties,
-            ObjectProvider<McOrderMapper> orderMapperProvider,
-            ObjectProvider<RechargeOrderExtMapper> extMapperProvider) {
+            ObjectProvider<MybatisRechargeOrderQueryAdapter> mysqlQueryProvider) {
         int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
         RechargeOrderQueryPort redisQueryPort = new RedisRechargeOrderQueryAdapter(
                 redisTemplate,
                 keyBuilder,
                 java.time.Duration.ofMillis(timeoutMs));
-        McOrderMapper orderMapper = orderMapperProvider.getIfAvailable();
-        RechargeOrderExtMapper extMapper = extMapperProvider.getIfAvailable();
-        if (orderMapper == null || extMapper == null) {
+        MybatisRechargeOrderQueryAdapter mysqlQuery = mysqlQueryProvider.getIfAvailable();
+        if (mysqlQuery == null) {
             return redisQueryPort;
         }
-        return new FallbackRechargeOrderQueryAdapter(
-                redisQueryPort,
-                new MybatisRechargeOrderQueryAdapter(orderMapper, extMapper));
+        // 聚合查询为 Primary，避免可见的 MySQL 双端口 Bean 绕开 Redis 受理期规则。
+        return new FallbackRechargeOrderQueryAdapter(redisQueryPort, mysqlQuery);
     }
 
     @Bean
-    @ConditionalOnBean(RechargeOrderExtMapper.class)
+    @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class})
     @ConditionalOnMissingBean(PersistedOrderStatePort.class)
-    public PersistedOrderStatePort persistedOrderStatePort(RechargeOrderExtMapper extMapper) {
-        return new MybatisPersistedOrderStateAdapter(extMapper);
+    public PersistedOrderStatePort persistedOrderStatePort(McOrderMapper orderMapper, RechargeOrderExtMapper extMapper) {
+        return new MybatisPersistedOrderStateAdapter(orderMapper, extMapper);
     }
 
     /**

@@ -477,7 +477,8 @@ class PersistRechargeOrderConsumerServiceTest {
         assertThat(result.persistedCount()).isEqualTo(1);
         assertThat(result.skippedAlreadyPersistedCount()).isZero();
         assertThat(persistedStatePort.probes)
-                .containsExactly(new PersistedOrderProbe("A36", "OUT-1001", "ORDER-1001", 2L));
+                .containsExactly(new PersistedOrderProbe("A36", "OUT-1001", "ORDER-1001", 2L,
+                        5200L, "request-hash-1001", "v1", "SHA-256"));
         assertThat(batchPersistencePort.withOutboxCalls).hasSize(1);
         assertThat(batchPersistencePort.withOutboxCalls.getFirst().getFirst().snapshot().orderVersion()).isEqualTo(2L);
         assertThat(reliabilityPort.lastPersistedVersion).isEqualTo(2L);
@@ -790,9 +791,9 @@ class PersistRechargeOrderConsumerServiceTest {
         public Set<PersistedOrderProbe> findPersistedAtLeast(Collection<PersistedOrderProbe> requestedProbes) {
             batchLookupCalls++;
             probes.addAll(requestedProbes);
-            Set<PersistedOrderProbe> result = new HashSet<>(requestedProbes);
-            result.retainAll(alreadyPersisted);
-            return result;
+            return requestedProbes.stream().filter(probe -> alreadyPersisted.contains(new PersistedOrderProbe(
+                    probe.orgCode(), probe.outOrderSn(), probe.orderId(), probe.orderVersion())))
+                    .collect(java.util.stream.Collectors.toSet());
         }
     }
 

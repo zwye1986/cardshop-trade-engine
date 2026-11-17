@@ -18,6 +18,7 @@ import com.cardshop.trade.engine.application.v1.V1CardApiResultStatus;
 import com.cardshop.trade.engine.application.v1.V1MerchantCommand;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfile;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
+import com.cardshop.trade.engine.application.logging.LogStormGuard;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +34,7 @@ import org.springframework.util.StringUtils;
 public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrderUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(V1InvalidRechargeOrderUseCaseService.class);
+    private static final LogStormGuard QUERY_FAILURE_LOG_GUARD = LogStormGuard.defaultGuard();
 
     private final V1ProtocolPrecheckService precheckService;
     private final V1MerchantProfilePort merchantProfilePort;
@@ -71,8 +73,19 @@ public class V1InvalidRechargeOrderUseCaseService implements InvalidRechargeOrde
             return context.finish(V1CardApiResultStatus.PARAM_ERROR.result());
         }
 
-        return orderQueryPort.findByOrgCodeAndOutOrderSn(merchant.orgCode(), request.outOrderSn())
-                .map(snapshot -> toInvalidResult(merchant, request, snapshot, context))
+        Optional<RechargeOrderSnapshot> snapshot;
+        try {
+            snapshot = orderQueryPort.findByOrgCodeAndOutOrderSn(merchant.orgCode(), request.outOrderSn());
+        } catch (RuntimeException ex) {
+            // 只处理受理前查询错误，不改变后续平台号/资金/券的作废裁决；参见详细设计3章、9.3。
+            if (QUERY_FAILURE_LOG_GUARD.shouldLog("v1-invalid.persistence-failure").shouldLog()) {
+                log.error("V1作废持久事实读取失败，未进入作废受理，需人工核查 orgCode={}, outOrderSn={}",
+                        merchant.orgCode(), request.outOrderSn(), ex);
+            }
+            return context.finish(V1CardApiResultStatus.SYSTEM_BUSY.result("系统繁忙，请稍后重试或联系人工核查"));
+        }
+        return snapshot
+                .map(order -> toInvalidResult(merchant, request, order, context))
                 .orElseGet(() -> context.finish(V1CardApiResultStatus.ORDER_NOT_FOUND.result()));
     }
 

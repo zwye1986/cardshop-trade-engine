@@ -16,6 +16,21 @@ import java.time.LocalDateTime;
 @TableName("mc_order")
 public class McOrderDO {
 
+    public static final int TRADE_ENGINE_OWNED = 1;
+    public static final int DIRECT_RECHARGE_PRODUCT_TYPE = 1;
+
+    /** 新引擎订单归属标记：0旧系统，1新引擎 */
+    @TableField("trade_engine_owned")
+    private Integer tradeEngineOwned;
+
+    public Integer getTradeEngineOwned() {
+        return tradeEngineOwned;
+    }
+
+    public void setTradeEngineOwned(Integer tradeEngineOwned) {
+        this.tradeEngineOwned = tradeEngineOwned;
+    }
+
     /**
      * 旧表自增主键。
      */

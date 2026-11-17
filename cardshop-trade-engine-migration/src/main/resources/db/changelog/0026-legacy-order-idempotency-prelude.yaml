@@ -1,0 +1,83 @@
+databaseChangeLog:
+  # 元数据/身份守卫在所有写操作前执行；未知异构必须HALT，参见详细设计8.2.1。
+  - changeSet:
+      id: 0026-compat-environment-guard
+      author: cardshop
+      changes:
+        - customChange:
+            class: com.cardshop.trade.engine.migration.ProductionCompatibilityChange
+            param:
+              name: phase
+              value: guard
+      rollback:
+        - sql:
+            sql: SELECT 1
+  - changeSet:
+      id: 0026-compat-add-owned
+      author: cardshop
+      preConditions:
+        - onFail: CONTINUE
+        - onError: HALT
+        - not:
+            columnExists:
+              tableName: mc_order
+              columnName: trade_engine_owned
+      changes:
+        - sql:
+            sql: |
+              ALTER TABLE mc_order ADD COLUMN trade_engine_owned tinyint NOT NULL DEFAULT 0
+                COMMENT '新引擎订单归属标记：0旧系统，1新引擎'
+      # 归属事实不可通过自动回滚删除；失败保留现场，按同入口前向恢复。
+      rollback:
+        - sql:
+            sql: SELECT 1
+  - changeSet:
+      id: 0026-compat-backfill-owned
+      author: cardshop
+      runInTransaction: false
+      changes:
+        - customChange:
+            class: com.cardshop.trade.engine.migration.ProductionCompatibilityChange
+            param:
+              name: phase
+              value: backfill
+      rollback:
+        - sql:
+            sql: SELECT 1
+  - changeSet:
+      id: 0026-compat-check-target-duplicates
+      author: cardshop
+      changes:
+        - customChange:
+            class: com.cardshop.trade.engine.migration.ProductionCompatibilityChange
+            param:
+              name: phase
+              value: duplicates
+      rollback:
+        - sql:
+            sql: SELECT 1
+  - changeSet:
+      id: 0026-compat-reshape-direct-key
+      author: cardshop
+      runInTransaction: false
+      changes:
+        - customChange:
+            class: com.cardshop.trade.engine.migration.ProductionCompatibilityChange
+            param:
+              name: phase
+              value: reshape
+      rollback:
+        - sql:
+            sql: SELECT 1
+  - changeSet:
+      id: 0026-compat-preconditions
+      author: cardshop
+      changes:
+        - customChange:
+            class: com.cardshop.trade.engine.migration.ProductionCompatibilityChange
+            param:
+              name: phase
+              value: preconditions
+      rollback:
+        - sql:
+            sql: SELECT 1

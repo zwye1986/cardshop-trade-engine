@@ -1,0 +1,50 @@
+-- 仅供本机新建可丢弃schema；复用miniso-bridge/legacy-baseline.sql的主单/流水投影。
+-- 不含引擎新增字段/表，它们必须由真实兼容入口发布；参见详细设计8.2.1。
+CREATE TABLE mc_order (
+    id bigint NOT NULL AUTO_INCREMENT COMMENT '表主键',
+    order_Id varchar(100) NOT NULL COMMENT '平台订单号',
+    org_code varchar(64) DEFAULT NULL COMMENT '商户编码',
+    out_orderId varchar(100) DEFAULT NULL COMMENT '商户订单号',
+    product_type int DEFAULT NULL COMMENT '商品类型',
+    order_status varchar(8) DEFAULT NULL,
+    num bigint DEFAULT NULL,
+    produt_code varchar(64) DEFAULT NULL,
+    supplier_channel varchar(64) DEFAULT NULL,
+    account varchar(32) DEFAULT NULL,
+    data longtext,
+    data_status varchar(32) DEFAULT NULL,
+    remark varchar(500) DEFAULT NULL,
+    flow_id bigint DEFAULT NULL,
+    edit_time datetime DEFAULT NULL,
+    create_time datetime DEFAULT '2020-01-01 00:00:00',
+    end_time datetime DEFAULT NULL,
+    success_time datetime DEFAULT NULL,
+    update_time datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    product_name varchar(255),
+    product_price bigint,
+    product_value bigint,
+    out_order_no varchar(100),
+    order_price bigint,
+    refund_order_price bigint DEFAULT 0,
+    callback_url varchar(500),
+    request_ip varchar(64),
+    res_data longtext,
+    parent_id varchar(100),
+    coupon_type varchar(32),
+    order_type varchar(32),
+    PRIMARY KEY (id),
+    UNIQUE KEY order_id_index (order_Id),
+    KEY out_orderId_code_index (out_orderId,org_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci;
+
+CREATE TABLE mc_depart_record (
+    id bigint NOT NULL AUTO_INCREMENT COMMENT '表主键',
+    order_id varchar(100) DEFAULT NULL COMMENT '平台订单号',
+    type varchar(8) DEFAULT NULL COMMENT '流水类型',
+    org_code varchar(64),
+    value bigint,
+    create_time datetime,
+    before_balance bigint DEFAULT NULL COMMENT '变动前余额',
+    balance bigint DEFAULT NULL COMMENT '变动后余额',
+    PRIMARY KEY (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb3 COLLATE=utf8mb3_general_ci;

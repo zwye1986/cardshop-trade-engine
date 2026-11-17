@@ -16,6 +16,7 @@ import com.cardshop.trade.engine.application.v1.InvalidRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.IssueV1TokenUseCase;
 import com.cardshop.trade.engine.application.v1.QueryRechargeOrderUseCase;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.application.v1.RechargeOrderExistencePort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1MerchantConfigPreheatPort;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
@@ -56,6 +57,7 @@ class V1CardApiConfigurationTest {
     @Test
     void registersSingleRealBeanWhenDependenciesPresent() {
         contextRunner
+                .withBean(RechargeOrderExistencePort.class, () -> (orgCode, outOrderSn) -> false)
                 .withBean(AcceptRechargeOrderPort.class, () -> interfaceProxy(AcceptRechargeOrderPort.class))
                 .withBean(RechargeAcceptReliabilityPort.class, () -> interfaceProxy(RechargeAcceptReliabilityPort.class))
                 .withBean(PersistRechargeOrderMessagePublisher.class, () -> interfaceProxy(PersistRechargeOrderMessagePublisher.class))
@@ -70,6 +72,24 @@ class V1CardApiConfigurationTest {
                     assertThat(context).doesNotHaveBean("unavailableCreateRechargeOrderUseCase");
                     assertThat(context.getBean(CreateRechargeOrderUseCase.class))
                             .isInstanceOf(V1CreateRechargeOrderUseCaseService.class);
+                });
+    }
+
+    @Test
+    void redisOnlyQueryCapabilityCannotEnableCreateWithoutTrustedPersistence() {
+        contextRunner
+                .withBean(AcceptRechargeOrderPort.class, () -> interfaceProxy(AcceptRechargeOrderPort.class))
+                .withBean(RechargeAcceptReliabilityPort.class, () -> interfaceProxy(RechargeAcceptReliabilityPort.class))
+                .withBean(PersistRechargeOrderMessagePublisher.class, () -> interfaceProxy(PersistRechargeOrderMessagePublisher.class))
+                .withBean(V1MerchantProfilePort.class, () -> interfaceProxy(V1MerchantProfilePort.class))
+                .withBean(V1ProductCandidateSelector.class, () -> interfaceProxy(V1ProductCandidateSelector.class))
+                .withBean(RechargeOrderQueryPort.class, () -> (orgCode, outOrderSn) -> Optional.empty())
+                .run(context -> {
+                    var useCase = context.getBean(CreateRechargeOrderUseCase.class);
+                    assertThat(useCase).isNotInstanceOf(V1CreateRechargeOrderUseCaseService.class);
+                    var response = useCase.createRechargeOrder(null).toCompletableFuture().join();
+                    assertThat(response.code()).isEqualTo("505");
+                    assertThat(response.msg()).isEqualTo("新交易引擎直充受理暂未启用");
                 });
     }
 
@@ -371,6 +391,11 @@ class V1CardApiConfigurationTest {
         @Bean
         RechargeOrderQueryPort rechargeOrderQueryPort() {
             return interfaceProxy(RechargeOrderQueryPort.class);
+        }
+
+        @Bean
+        RechargeOrderExistencePort rechargeOrderExistencePort() {
+            return (orgCode, outOrderSn) -> false;
         }
 
         @Bean

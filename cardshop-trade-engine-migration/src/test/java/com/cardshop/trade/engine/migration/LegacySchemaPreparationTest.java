@@ -17,6 +17,7 @@ import liquibase.database.DatabaseFactory;
 import liquibase.database.jvm.JdbcConnection;
 import liquibase.parser.ChangeLogParserFactory;
 import liquibase.resource.ClassLoaderResourceAccessor;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -82,11 +83,19 @@ class LegacySchemaPreparationTest {
             assertThat(port).matches("[0-9]{1,5}");
             assertThat(Integer.parseInt(port)).isBetween(1024, 65535).isNotEqualTo(3306);
             assertThat(password).isNotBlank();
-            schema = "legacy_schema_it_" + UUID.randomUUID().toString().replace("-", "");
+            schema = "compat_migration_legacy_" + UUID.randomUUID().toString().replace("-", "");
             try (var connection = DriverManager.getConnection(url("mysql"), "root", password)) {
-                assertThat(query(connection, "SELECT VERSION()")).startsWith("8.0.28");
+                assertThat(query(connection, "SELECT VERSION()")).matches("8\\.0\\.(28|36)([-.].*)?");
                 assertThat(query(connection, "SELECT @@lower_case_table_names")).isEqualTo("1");
                 connection.createStatement().execute("CREATE DATABASE " + schema + " CHARACTER SET utf8 COLLATE utf8_general_ci");
+            }
+        }
+
+        @AfterEach
+        void removeDisposableSchema() throws Exception {
+            if (schema != null) try (var connection = DriverManager.getConnection(url("mysql"), "root", password);
+                    var statement = connection.createStatement()) {
+                statement.execute("DROP DATABASE IF EXISTS " + schema);
             }
         }
 

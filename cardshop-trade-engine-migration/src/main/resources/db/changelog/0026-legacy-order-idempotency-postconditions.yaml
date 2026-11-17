@@ -1,0 +1,14 @@
+databaseChangeLog:
+  # 原master正常执行后再核验主单/ext/资金/事件和全部新增表关键列，不补造业务事实。
+  - changeSet:
+      id: 0026-compat-postconditions
+      author: cardshop
+      changes:
+        - customChange:
+            class: com.cardshop.trade.engine.migration.ProductionCompatibilityChange
+            param:
+              name: phase
+              value: postconditions
+      rollback:
+        - sql:
+            sql: SELECT 1

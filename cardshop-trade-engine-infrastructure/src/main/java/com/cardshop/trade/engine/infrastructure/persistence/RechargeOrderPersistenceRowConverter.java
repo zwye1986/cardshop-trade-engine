@@ -66,6 +66,7 @@ final class RechargeOrderPersistenceRowConverter {
         PersistOrderSnapshot snapshot = aggregate.snapshot();
         LocalDateTime persistedAt = persistedAt(aggregate);
         McOrderDO order = new McOrderDO();
+        order.setTradeEngineOwned(McOrderDO.TRADE_ENGINE_OWNED);
         order.setOrgCode(snapshot.orgCode());
         order.setCreateTime(persistedAt);
         order.setEditTime(persistedAt);

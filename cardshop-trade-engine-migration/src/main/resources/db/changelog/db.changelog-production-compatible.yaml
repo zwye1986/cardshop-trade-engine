@@ -1,0 +1,17 @@
+databaseChangeLog:
+  - preConditions:
+      - onFail: HALT
+      - onError: HALT
+      - onSqlOutput: TEST
+      - customPrecondition:
+          className: com.cardshop.trade.engine.migration.ProductionCompatibilityChange
+  # 保留原文件路径与checksum；执行顺序取决于include而非编号，参见详细设计8.2.1。
+  - include:
+      file: 0026-legacy-order-idempotency-prelude.yaml
+      relativeToChangelogFile: true
+  - include:
+      file: db.changelog-master.yaml
+      relativeToChangelogFile: true
+  - include:
+      file: 0026-legacy-order-idempotency-postconditions.yaml
+      relativeToChangelogFile: true

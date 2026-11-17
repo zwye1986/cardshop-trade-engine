@@ -42,6 +42,39 @@ class V1QueryAndInvalidRechargeOrderUseCaseServiceTest {
     private static final Instant NOW = Instant.parse("2026-07-05T04:15:58Z");
     private static final Clock CLOCK = Clock.fixed(NOW, ZoneOffset.UTC);
 
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void queryMapsPersistenceFailureToSystemBusyInsteadOfOrderNotFound(boolean identityConflict) {
+        var service = new V1QueryRechargeOrderUseCaseService(
+                precheckService(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
+                (orgCode, outOrderSn) -> {
+                    if (identityConflict) throw new com.cardshop.trade.engine.application.recharge.RechargeOrderIdentityConflictException("ambiguous identity");
+                    throw new IllegalStateException("database unavailable");
+                });
+
+        assertThat(service.queryRechargeOrder(command("OUT-QUERY-1", "nonce-query-12345678901234567890")).code())
+                .isEqualTo("500");
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void invalidMapsPersistenceFailureToSystemBusyWithoutAdmission(boolean identityConflict) {
+        var invalidation = mock(RechargeOrderInvalidationService.class);
+        var service = new V1InvalidRechargeOrderUseCaseService(
+                precheckService(),
+                (appId, orgCode) -> Optional.of(new V1MerchantProfile(appId, orgCode, "", true, 7L)),
+                (orgCode, outOrderSn) -> {
+                    if (identityConflict) throw new com.cardshop.trade.engine.application.recharge.RechargeOrderIdentityConflictException("ambiguous identity");
+                    throw new IllegalStateException("database unavailable");
+                },
+                invalidation);
+
+        assertThat(service.invalidRechargeOrder(command("OUT-QUERY-1", "nonce-invalid-123456789012345678")).code())
+                .isEqualTo("500");
+        org.mockito.Mockito.verifyNoInteractions(invalidation);
+    }
+
     @Test
     void queryReturnsProcessingWhenRedisOrderIsStillPendingPersistence() {
         var service = new V1QueryRechargeOrderUseCaseService(

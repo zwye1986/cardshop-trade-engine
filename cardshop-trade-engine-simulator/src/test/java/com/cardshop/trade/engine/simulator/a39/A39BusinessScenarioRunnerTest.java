@@ -40,6 +40,27 @@ class A39BusinessScenarioRunnerTest {
     }
 
     @Test
+    void persistentHistoricalDuplicateDoesNotTriggerQueryOrAnotherCreate() throws Exception {
+        var client = new CapturingClient(new V1CardApiClient.ApiResponse("505", "订单号重复", Map.of()));
+        var result = new A39BusinessScenarioRunner(client, new V12Signer(), Duration.ZERO).run(options("OLD-OUT", 3));
+        assertThat(result.createResponse().code()).isEqualTo("505");
+        assertThat(result.queryResponses()).isEmpty();
+        assertThat(client.queryPayloads).isEmpty();
+        assertThat(client.createCount).isOne();
+    }
+
+    @Test
+    void ambiguousHistoricalQueryIsNeverInterpretedAsSuccessfulTerminalOrder() throws Exception {
+        var client = new CapturingClient(new V1CardApiClient.ApiResponse("200", "操作成功", Map.of()));
+        client.queryResponses.add(new V1CardApiClient.ApiResponse("500", "系统繁忙，请联系人工核查", Map.of()));
+        var result = new A39BusinessScenarioRunner(client, new V12Signer(), Duration.ZERO).run(options("OLD-OUT", 1));
+        assertThat(result.queryResponses()).hasSize(1);
+        assertThat(result.queryResponses().getFirst().code()).isEqualTo("500");
+        assertThat(result.queryResponses().getFirst().data()).doesNotContainKey("order_status");
+        assertThat(client.createCount).isOne();
+    }
+
+    @Test
     void logsOrderStatusChangesOnlyWhenQueryStatusChanges() throws Exception {
         CapturingClient client = new CapturingClient(new V1CardApiClient.ApiResponse("200", "操作成功", Map.of()));
         client.queryResponses.add(new V1CardApiClient.ApiResponse("200", "操作成功", Map.of("order_status", "2")));
@@ -113,6 +134,7 @@ class A39BusinessScenarioRunnerTest {
         }
 
         private final ApiResponse createResponse;
+        private int createCount;
         private Runnable beforeCreate = () -> { };
         private Map<String, Object> createPayload = Map.of();
         private final List<Map<String, Object>> queryPayloads = new ArrayList<>();
@@ -130,6 +152,7 @@ class A39BusinessScenarioRunnerTest {
         @Override
         public ApiResponse createRechargeOrder(String token, Map<String, Object> payload, boolean sm4Enabled, String aesKey) {
             beforeCreate.run();
+            createCount++;
             this.createPayload = Map.copyOf(payload);
             return createResponse;
         }

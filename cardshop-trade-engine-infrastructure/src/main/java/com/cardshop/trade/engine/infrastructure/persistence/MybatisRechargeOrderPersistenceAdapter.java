@@ -14,6 +14,7 @@ import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeDispa
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -35,6 +36,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
     private final RechargeBalanceDeltaOutboxPersistWriter balanceDeltaOutboxWriter;
     private final McDepartRecordPersistWriter departRecordWriter;
     private final RechargeOrderPersistenceRowConverter rowConverter;
+    private final RechargeOrderIdentityVerifier identityVerifier;
 
     public MybatisRechargeOrderPersistenceAdapter(
             McOrderMapper orderMapper,
@@ -71,6 +73,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
                 dispatchOutboxMapper::insertIfAbsent,
                 balanceDeltaOutboxMapper::insertIfAbsent,
                 departRecordMapper::insertIfAbsent,
+                new RechargeOrderIdentityVerifier(orderMapper, extMapper),
                 objectMapper,
                 dispatchInitialDelay);
     }
@@ -81,6 +84,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
             RechargeDispatchOutboxPersistWriter dispatchOutboxWriter,
             RechargeBalanceDeltaOutboxPersistWriter balanceDeltaOutboxWriter,
             McDepartRecordPersistWriter departRecordWriter,
+            RechargeOrderIdentityVerifier identityVerifier,
             ObjectMapper objectMapper) {
         this(
                 orderWriter,
@@ -88,6 +92,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
                 dispatchOutboxWriter,
                 balanceDeltaOutboxWriter,
                 departRecordWriter,
+                identityVerifier,
                 objectMapper,
                 Duration.ofSeconds(1));
     }
@@ -98,6 +103,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
             RechargeDispatchOutboxPersistWriter dispatchOutboxWriter,
             RechargeBalanceDeltaOutboxPersistWriter balanceDeltaOutboxWriter,
             McDepartRecordPersistWriter departRecordWriter,
+            RechargeOrderIdentityVerifier identityVerifier,
             ObjectMapper objectMapper,
             Duration dispatchInitialDelay) {
         this.orderWriter = Objects.requireNonNull(orderWriter, "orderWriter must not be null");
@@ -107,6 +113,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
         this.balanceDeltaOutboxWriter = Objects.requireNonNull(
                 balanceDeltaOutboxWriter, "balanceDeltaOutboxWriter must not be null");
         this.departRecordWriter = Objects.requireNonNull(departRecordWriter, "departRecordWriter must not be null");
+        this.identityVerifier = Objects.requireNonNull(identityVerifier);
         this.rowConverter = new RechargeOrderPersistenceRowConverter(objectMapper, dispatchInitialDelay);
     }
 
@@ -118,7 +125,7 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
      * recharge_balance_delta_outbox}。
      *
      * <p>重复 MQ 消息会再次进入该方法，因此 Mapper 必须使用幂等 insert/upsert：
-     * {@code mc_order} 保持首次事实并作为减少重复写的串行点（orderInserted == 1 才写资金流水），
+     * {@code mc_order} 保持首次事实并作为串行点，先确认完整身份再写幂等资金流水，
      * {@code recharge_order_ext} 只前进版本，资金流水按 {@code trade_engine_record_key} DB 唯一键兜底，
      * 派单/余额刷账两张 outbox 表各自按 {@code event_id} 幂等；D9 派单事件与 D12 余额刷账事件在同一事务内落地，
      * 避免订单已落库但余额沉淀或缺派单事件。
@@ -127,16 +134,19 @@ public class MybatisRechargeOrderPersistenceAdapter implements RechargeOrderPers
     @Transactional
     public void persist(OrderPersistAggregate aggregate) {
         Objects.requireNonNull(aggregate, "aggregate must not be null");
-        /*
-         * 以 mc_order 的唯一键 uk_direct_recharge_out_order_key 作为同订单落库的第一道串行点：
-         * insertIfAbsent 返回 1 表示本事务是首次落库该订单，返回 0 表示订单事实已由先前提交的事务写入。
-         * mc_order 与 mc_depart_record 在同一事务内提交，orderInserted == 1 时才尝试写 PRE_DEDUCT；
-         * 资金流水本身仍依赖 `trade_engine_record_key` 唯一键做最终幂等兜底。参见
-         * docs/交行直充业务系统详细设计.md「8.3 异步落库 Consumer」资金流水幂等约束。
-         */
-        int orderInserted = orderWriter.insertIfAbsent(rowConverter.toMcOrder(aggregate));
+        var selected = List.of(aggregate);
+        // JDBC的FOUND_ROWS选项会让ODKU无操作也返回1，不能据affected rows认定首次插入。
+        // 插入前读用于识别已有孤儿；插入唯一键串行后再核完整身份，流水仍以唯一键最终幂等。
+        boolean existed = identityVerifier.readOrders(selected).containsKey(aggregate.snapshot().orderId());
+        orderWriter.insertIfAbsent(rowConverter.toMcOrder(aggregate));
+        identityVerifier.verifyOrders(selected);
+        // 已有主单不能借新消息认领缺失或不同摘要的扩展；主单锁后再核扩展，保持全链路锁序。
+        if (existed) {
+            identityVerifier.verifyExistingExtensions(selected);
+        }
         extWriter.insertOrUpdatePersistState(rowConverter.toExt(aggregate));
-        if (orderInserted == 1 && RechargeOrderPersistenceRowConverter.preDeductRecordRequired(aggregate)) {
+        identityVerifier.verifyExtensions(selected);
+        if (!existed && RechargeOrderPersistenceRowConverter.preDeductRecordRequired(aggregate)) {
             departRecordWriter.insertPreDeductIfAbsent(rowConverter.toPreDeductRecord(aggregate));
         }
         if (aggregate.dispatchOutboxRequired()) {

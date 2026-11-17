@@ -22,6 +22,7 @@ import com.cardshop.trade.engine.application.recharge.ReplicationWaitResult;
 import com.cardshop.trade.engine.application.recharge.RedisHaGuardPort;
 import com.cardshop.trade.engine.application.logging.LogStormGuard;
 import com.cardshop.trade.engine.application.v1.CreateRechargeOrderUseCase;
+import com.cardshop.trade.engine.application.v1.RechargeOrderExistencePort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderIdGenerator;
 import com.cardshop.trade.engine.application.v1.V1CardApiResult;
 import com.cardshop.trade.engine.application.v1.V1CardApiResultStatus;
@@ -82,6 +83,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     private static final String LOG_EVENT_PRODUCT_CACHE_UNAVAILABLE = "v1-create-order.product-cache.unavailable";
     private static final LogStormGuard PRODUCT_CACHE_ERROR_LOG_GUARD =
             LogStormGuard.atMostOncePer(PRODUCT_CACHE_ERROR_LOG_INTERVAL);
+    private static final LogStormGuard PERSISTENCE_ERROR_LOG_GUARD = LogStormGuard.defaultGuard();
+    private static final String STAGE_PERSISTED_EXISTENCE = "persisted_existence";
 
     private final V1ProtocolPrecheckService precheckService;
     private final RequestHashCanonicalizer requestHashCanonicalizer;
@@ -98,6 +101,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
     private final V1RechargeAcceptSettings settings;
     private final Executor tradeDbTaskExecutor;
     private final Supplier<V1CreateOrderStageObserver> stageObserverSupplier;
+    private final RechargeOrderExistencePort orderExistencePort;
 
     public V1CreateRechargeOrderUseCaseService(
             V1ProtocolPrecheckService precheckService,
@@ -108,7 +112,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             RechargeOrderIdGenerator orderIdGenerator,
             Clock clock,
             V1RechargeAcceptSettings settings,
-            Executor tradeDbTaskExecutor) {
+            Executor tradeDbTaskExecutor,
+            RechargeOrderExistencePort orderExistencePort) {
         this(
                 precheckService,
                 requestHashCanonicalizer,
@@ -124,7 +129,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 clock,
                 settings,
                 tradeDbTaskExecutor,
-                V1CreateOrderStageObserver.noop());
+                V1CreateOrderStageObserver.noop(),
+                orderExistencePort);
     }
 
     public V1CreateRechargeOrderUseCaseService(
@@ -137,7 +143,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             RechargeOrderIdGenerator orderIdGenerator,
             Clock clock,
             V1RechargeAcceptSettings settings,
-            Executor tradeDbTaskExecutor) {
+            Executor tradeDbTaskExecutor,
+            RechargeOrderExistencePort orderExistencePort) {
         this(
                 precheckService,
                 requestHashCanonicalizer,
@@ -153,7 +160,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 clock,
                 settings,
                 tradeDbTaskExecutor,
-                V1CreateOrderStageObserver.noop());
+                V1CreateOrderStageObserver.noop(),
+                orderExistencePort);
     }
 
     public V1CreateRechargeOrderUseCaseService(
@@ -167,7 +175,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             RechargeOrderIdGenerator orderIdGenerator,
             Clock clock,
             V1RechargeAcceptSettings settings,
-            Executor tradeDbTaskExecutor) {
+            Executor tradeDbTaskExecutor,
+            RechargeOrderExistencePort orderExistencePort) {
         this(
                 precheckService,
                 requestHashCanonicalizer,
@@ -183,7 +192,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 clock,
                 settings,
                 tradeDbTaskExecutor,
-                V1CreateOrderStageObserver.noop());
+                V1CreateOrderStageObserver.noop(),
+                orderExistencePort);
     }
 
     public V1CreateRechargeOrderUseCaseService(
@@ -198,7 +208,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             RechargeOrderIdGenerator orderIdGenerator,
             Clock clock,
             V1RechargeAcceptSettings settings,
-            Executor tradeDbTaskExecutor) {
+            Executor tradeDbTaskExecutor,
+            RechargeOrderExistencePort orderExistencePort) {
         this(
                 precheckService,
                 requestHashCanonicalizer,
@@ -214,7 +225,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 clock,
                 settings,
                 tradeDbTaskExecutor,
-                V1CreateOrderStageObserver.noop());
+                V1CreateOrderStageObserver.noop(),
+                orderExistencePort);
     }
 
     public V1CreateRechargeOrderUseCaseService(
@@ -230,7 +242,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             RechargeOrderIdGenerator orderIdGenerator,
             Clock clock,
             V1RechargeAcceptSettings settings,
-            Executor tradeDbTaskExecutor) {
+            Executor tradeDbTaskExecutor,
+            RechargeOrderExistencePort orderExistencePort) {
         this(
                 precheckService,
                 requestHashCanonicalizer,
@@ -246,40 +259,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 clock,
                 settings,
                 tradeDbTaskExecutor,
-                V1CreateOrderStageObserver.noop());
-    }
-
-    public V1CreateRechargeOrderUseCaseService(
-            V1ProtocolPrecheckService precheckService,
-            RequestHashCanonicalizer requestHashCanonicalizer,
-            V1MerchantProfilePort merchantProfilePort,
-            V1ProductCandidateSelector productCandidateSelector,
-            AcceptRechargeOrderPort acceptRechargeOrderPort,
-            RechargeAcceptReliabilityPort reliabilityPort,
-            PersistRechargeOrderMessagePublisher persistMessagePublisher,
-            AcceptAnomalyRecordPort acceptAnomalyRecordPort,
-            RedisHaGuardPort redisHaGuardPort,
-            V1ProductConfigPreheatPort productConfigPreheatPort,
-            RechargeOrderIdGenerator orderIdGenerator,
-            Clock clock,
-            V1RechargeAcceptSettings settings,
-            Executor tradeDbTaskExecutor) {
-        this(
-                precheckService,
-                requestHashCanonicalizer,
-                merchantProfilePort,
-                productCandidateSelector,
-                acceptRechargeOrderPort,
-                reliabilityPort,
-                persistMessagePublisher,
-                acceptAnomalyRecordPort,
-                redisHaGuardPort,
-                productConfigPreheatPort,
-                orderIdGenerator,
-                clock,
-                settings,
-                tradeDbTaskExecutor,
-                V1CreateOrderStageObserver.noop());
+                V1CreateOrderStageObserver.noop(),
+                orderExistencePort);
     }
 
     public V1CreateRechargeOrderUseCaseService(
@@ -297,7 +278,7 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             Clock clock,
             V1RechargeAcceptSettings settings,
             Executor tradeDbTaskExecutor,
-            V1CreateOrderStageObserver stageObserver) {
+            RechargeOrderExistencePort orderExistencePort) {
         this(
                 precheckService,
                 requestHashCanonicalizer,
@@ -313,7 +294,8 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
                 clock,
                 settings,
                 tradeDbTaskExecutor,
-                () -> stageObserver == null ? V1CreateOrderStageObserver.noop() : stageObserver);
+                V1CreateOrderStageObserver.noop(),
+                orderExistencePort);
     }
 
     public V1CreateRechargeOrderUseCaseService(
@@ -331,10 +313,48 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
             Clock clock,
             V1RechargeAcceptSettings settings,
             Executor tradeDbTaskExecutor,
-            Supplier<V1CreateOrderStageObserver> stageObserverSupplier) {
+            V1CreateOrderStageObserver stageObserver,
+            RechargeOrderExistencePort orderExistencePort) {
+        this(
+                precheckService,
+                requestHashCanonicalizer,
+                merchantProfilePort,
+                productCandidateSelector,
+                acceptRechargeOrderPort,
+                reliabilityPort,
+                persistMessagePublisher,
+                acceptAnomalyRecordPort,
+                redisHaGuardPort,
+                productConfigPreheatPort,
+                orderIdGenerator,
+                clock,
+                settings,
+                tradeDbTaskExecutor,
+                () -> stageObserver == null ? V1CreateOrderStageObserver.noop() : stageObserver,
+                orderExistencePort);
+    }
+
+    public V1CreateRechargeOrderUseCaseService(
+            V1ProtocolPrecheckService precheckService,
+            RequestHashCanonicalizer requestHashCanonicalizer,
+            V1MerchantProfilePort merchantProfilePort,
+            V1ProductCandidateSelector productCandidateSelector,
+            AcceptRechargeOrderPort acceptRechargeOrderPort,
+            RechargeAcceptReliabilityPort reliabilityPort,
+            PersistRechargeOrderMessagePublisher persistMessagePublisher,
+            AcceptAnomalyRecordPort acceptAnomalyRecordPort,
+            RedisHaGuardPort redisHaGuardPort,
+            V1ProductConfigPreheatPort productConfigPreheatPort,
+            RechargeOrderIdGenerator orderIdGenerator,
+            Clock clock,
+            V1RechargeAcceptSettings settings,
+            Executor tradeDbTaskExecutor,
+            Supplier<V1CreateOrderStageObserver> stageObserverSupplier,
+            RechargeOrderExistencePort orderExistencePort) {
         this.precheckService = precheckService;
         this.requestHashCanonicalizer = requestHashCanonicalizer;
         this.merchantProfilePort = merchantProfilePort;
+        this.orderExistencePort = Objects.requireNonNull(orderExistencePort, "orderExistencePort must not be null");
         this.productCandidateSelector = productCandidateSelector;
         this.productConfigPreheatPort = productConfigPreheatPort == null
                 ? V1ProductConfigPreheatPort.noop()
@@ -582,6 +602,26 @@ public class V1CreateRechargeOrderUseCaseService implements CreateRechargeOrderU
         String syntaxError = validatePayload(request);
         if (syntaxError != null) {
             return Preparation.error(V1CardApiResultStatus.PARAM_ERROR.result(syntaxError));
+        }
+        /*
+         * 可信持久占用不依赖 Redis/Fallback 展示查询，且先于选品和失败事实发布。
+         * prepare 已隔离到 tradeDbTaskExecutor；参见详细设计「3. API/V1 接入层」「8.2.1」。
+         */
+        long existenceStartedNanos = System.nanoTime();
+        try {
+            if (orderExistencePort.existsPersistedOrder(merchant.orgCode(), request.outOrderSn())) {
+                return Preparation.error(V1CardApiResultStatus.ORDER_DUPLICATE.result("订单号重复"));
+            }
+        } catch (RuntimeException ex) {
+            // 接单热路径在数据库故障时采样错误栈，失败关闭且不产生 Redis/失败单副作用。
+            if (PERSISTENCE_ERROR_LOG_GUARD.shouldLog("v1-create.persisted-existence-failure").shouldLog()) {
+                log.error("V1下单持久占用检查失败，Redis接单前拒绝 orgCode={}, outOrderSn={}",
+                        merchant.orgCode(), request.outOrderSn(), ex);
+            }
+            return Preparation.error(V1CardApiResultStatus.SYSTEM_BUSY.result("系统繁忙"));
+        } finally {
+            recordStage(STAGE_PERSISTED_EXISTENCE,
+                    Duration.ofNanos(Math.max(0L, System.nanoTime() - existenceStartedNanos)));
         }
         String notifyUrl = normalizeNotifyUrl(request.notifyUrl());
 

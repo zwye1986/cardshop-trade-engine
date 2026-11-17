@@ -112,6 +112,15 @@ public class TradeEngineRedisPendingAutoConfiguration {
         return new RedisDirectRechargeFrequencyAdapter(redisTemplate, Duration.ofMillis(timeoutMs));
     }
 
+    /** MyBatis 后置阶段补齐同一个可信持久查询/占用适配器；参见详细设计3章、8.2.1。 */
+    @Bean
+    @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class})
+    @ConditionalOnMissingBean(MybatisRechargeOrderQueryAdapter.class)
+    public MybatisRechargeOrderQueryAdapter mybatisRechargeOrderQueryAdapter(
+            McOrderMapper orderMapper, RechargeOrderExtMapper extMapper) {
+        return new MybatisRechargeOrderQueryAdapter(orderMapper, extMapper);
+    }
+
     /**
      * 创建 V1 查单/作废共用的订单快照查询端口。
      *
@@ -122,27 +131,24 @@ public class TradeEngineRedisPendingAutoConfiguration {
      * 后置自动配置中兜底创建真实端口：Redis 始终作为受理期短期事实来源；MySQL Mapper 已存在时再叠加最终事实兜底。
      */
     @Bean
+    @org.springframework.context.annotation.Primary
     @ConditionalOnBean(ReactiveStringRedisTemplate.class)
-    @ConditionalOnMissingBean(RechargeOrderQueryPort.class)
+    @ConditionalOnMissingBean(value = RechargeOrderQueryPort.class, ignored = MybatisRechargeOrderQueryAdapter.class)
     public RechargeOrderQueryPort rechargeOrderQueryPort(
             ReactiveStringRedisTemplate redisTemplate,
             RechargeRedisKeyBuilder keyBuilder,
             TradeEngineProperties properties,
-            ObjectProvider<McOrderMapper> orderMapperProvider,
-            ObjectProvider<RechargeOrderExtMapper> extMapperProvider) {
+            ObjectProvider<MybatisRechargeOrderQueryAdapter> mysqlQueryProvider) {
         int timeoutMs = Math.max(100, properties.getRedis().getWaitTimeoutMs() * 5);
         RechargeOrderQueryPort redisQueryPort = new RedisRechargeOrderQueryAdapter(
                 redisTemplate,
                 keyBuilder,
                 Duration.ofMillis(timeoutMs));
-        McOrderMapper orderMapper = orderMapperProvider.getIfAvailable();
-        RechargeOrderExtMapper extMapper = extMapperProvider.getIfAvailable();
-        if (orderMapper == null || extMapper == null) {
+        MybatisRechargeOrderQueryAdapter mysqlQuery = mysqlQueryProvider.getIfAvailable();
+        if (mysqlQuery == null) {
             return redisQueryPort;
         }
-        return new FallbackRechargeOrderQueryAdapter(
-                redisQueryPort,
-                new MybatisRechargeOrderQueryAdapter(orderMapper, extMapper));
+        return new FallbackRechargeOrderQueryAdapter(redisQueryPort, mysqlQuery);
     }
 
     /**

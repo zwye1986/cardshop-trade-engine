@@ -24,6 +24,7 @@ import com.cardshop.trade.engine.application.recharge.MarkPersistStateResult;
 import com.cardshop.trade.engine.application.recharge.RechargeSupplierGatewayPort;
 import com.cardshop.trade.engine.application.recharge.SupplierQueryOutboxPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
+import com.cardshop.trade.engine.application.v1.RechargeOrderExistencePort;
 import com.cardshop.trade.engine.application.v1.V1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.CachedV1MerchantProfilePort;
 import com.cardshop.trade.engine.application.v1.CachedV1ProductCandidateSelector;
@@ -210,6 +211,7 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
                 .run(context -> {
                     assertThat(context).hasSingleBean(RechargeOrderQueryPort.class);
+                    assertThat(context).doesNotHaveBean(RechargeOrderExistencePort.class);
                     assertThat(context.getBean(RechargeOrderQueryPort.class))
                             .isInstanceOf(RedisRechargeOrderQueryAdapter.class);
                 });
@@ -222,9 +224,46 @@ class TradeEngineInfrastructureConfigurationTest {
                 .withBean(McOrderMapper.class, () -> mapperProxy(McOrderMapper.class))
                 .withBean(RechargeOrderExtMapper.class, () -> mapperProxy(RechargeOrderExtMapper.class))
                 .run(context -> {
-                    assertThat(context).hasSingleBean(RechargeOrderQueryPort.class);
+                    assertThat(context.getBeansOfType(RechargeOrderQueryPort.class)).hasSize(2);
+                    assertThat(context).hasSingleBean(RechargeOrderExistencePort.class);
                     assertThat(context.getBean(RechargeOrderQueryPort.class))
                             .isInstanceOf(FallbackRechargeOrderQueryAdapter.class);
+                    assertThat(new org.springframework.beans.DirectFieldAccessor(context.getBean(RechargeOrderQueryPort.class))
+                            .getPropertyValue("fallback")).isSameAs(context.getBean(RechargeOrderExistencePort.class));
+                });
+    }
+
+    @Test
+    void lateRedisConfigurationAlsoProvidesTrustedPersistenceCapability() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withBean(RechargeRedisKeyBuilder.class, () -> new RechargeRedisKeyBuilder("test", 1))
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
+                .withBean(McOrderMapper.class, () -> mapperProxy(McOrderMapper.class))
+                .withBean(RechargeOrderExtMapper.class, () -> mapperProxy(RechargeOrderExtMapper.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargeOrderExistencePort.class);
+                    assertThat(context.getBean(RechargeOrderQueryPort.class)).isInstanceOf(FallbackRechargeOrderQueryAdapter.class);
+                    assertThat(new org.springframework.beans.DirectFieldAccessor(context.getBean(RechargeOrderQueryPort.class))
+                            .getPropertyValue("fallback")).isSameAs(context.getBean(RechargeOrderExistencePort.class));
+                });
+    }
+
+    @Test
+    void normalAndLateConfigurationsShareOneMysqlAdapterAndPrimaryRedisFallback() {
+        contextRunner
+                .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
+                .withBean(Clock.class, Clock::systemUTC)
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineInfrastructureConfigurationTest::redisTemplate)
+                .withBean(McOrderMapper.class, () -> mapperProxy(McOrderMapper.class))
+                .withBean(RechargeOrderExtMapper.class, () -> mapperProxy(RechargeOrderExtMapper.class))
+                .run(context -> {
+                    assertThat(context).hasSingleBean(RechargeOrderExistencePort.class);
+                    assertThat(context.getBean(RechargeOrderQueryPort.class)).isInstanceOf(FallbackRechargeOrderQueryAdapter.class);
+                    assertThat(new org.springframework.beans.DirectFieldAccessor(context.getBean(RechargeOrderQueryPort.class))
+                            .getPropertyValue("fallback")).isSameAs(context.getBean(RechargeOrderExistencePort.class));
                 });
     }
 

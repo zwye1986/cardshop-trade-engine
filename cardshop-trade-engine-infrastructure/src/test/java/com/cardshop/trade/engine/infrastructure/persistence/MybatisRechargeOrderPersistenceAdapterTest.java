@@ -40,6 +40,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
                 store,
                 store,
                 store,
+                store.facts.verifier(),
                 new ObjectMapper());
 
         adapter.persist(aggregate(snapshot("PASSED", true, "", "")));
@@ -47,6 +48,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         assertThat(store.order.getOrderId()).isEqualTo("ORDER-1001");
         assertThat(store.order.getOutOrderId()).isEqualTo("OUT-1001");
         assertThat(store.order.getProductCode()).isEqualTo("SKU-100");
+        assertThat(store.order.getTradeEngineOwned()).isEqualTo(1);
         assertThat(store.order.getParentId()).isEqualTo("PARENT-100");
         assertThat(store.order.getProductName()).isEqualTo("交行话费100元");
         assertThat(store.order.getOrderPrice()).isEqualTo(5200L);
@@ -111,6 +113,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
                 store,
                 store,
                 store,
+                store.facts.verifier(),
                 new ObjectMapper());
 
         adapter.persist(aggregate(snapshot("FAILED", false, "PRODUCT_NOT_ALLOWED", "商品无权限")));
@@ -129,6 +132,10 @@ class MybatisRechargeOrderPersistenceAdapterTest {
     @Test
     void skipsPreDeductRecordWhenOrderAlreadyExists() {
         RecordingStore store = new RecordingStore();
+        var converter = new RechargeOrderPersistenceRowConverter(new ObjectMapper());
+        var existing = aggregate(snapshot("PASSED", true, "", ""));
+        store.facts.orders.put("ORDER-1001", converter.toMcOrder(existing));
+        store.facts.extensions.put("ORDER-1001", converter.toExt(existing));
         store.nextOrderInsertResult = 0;
         MybatisRechargeOrderPersistenceAdapter adapter = new MybatisRechargeOrderPersistenceAdapter(
                 store,
@@ -136,6 +143,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
                 store,
                 store,
                 store,
+                store.facts.verifier(),
                 new ObjectMapper());
 
         adapter.persist(aggregate(snapshot("PASSED", true, "", "")));
@@ -155,6 +163,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
                 store,
                 store,
                 store,
+                store.facts.verifier(),
                 new ObjectMapper());
 
         adapter.persist(aggregate(snapshot("PASSED", true, "", "")));
@@ -227,6 +236,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
 
         private McOrderDO order;
         private RechargeOrderExtDO ext;
+        private final RecordingOrderFacts facts = new RecordingOrderFacts();
         private final List<RechargeDispatchOutboxDO> dispatchOutboxes = new ArrayList<>();
         private final List<RechargeBalanceDeltaOutboxDO> balanceOutboxes = new ArrayList<>();
         private final List<McDepartRecordDO> departRecords = new ArrayList<>();
@@ -255,6 +265,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
                 return 0;
             }
             this.order = order;
+            facts.orders.put(order.getOrderId(), order);
             ordersByDirectKey.put(directKey, order);
             orderInsertResults.add(1);
             return 1;
@@ -264,6 +275,7 @@ class MybatisRechargeOrderPersistenceAdapterTest {
         public int insertOrUpdatePersistState(RechargeOrderExtDO ext) {
             extPersistCalls++;
             this.ext = ext;
+            facts.extensions.put(ext.getOrderId(), ext);
             return 1;
         }
 

@@ -43,6 +43,7 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
                 store,
                 store,
                 store,
+                store.facts.verifier(),
                 new ObjectMapper());
 
         adapter.persistBatchWithOutbox(List.of(aggregate("ORDER-1001", "OUT-1001")));
@@ -68,6 +69,7 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
                 store,
                 store,
                 store,
+                store.facts.verifier(),
                 new ObjectMapper());
 
         adapter.persistBatchWithOutbox(List.of(
@@ -97,6 +99,7 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
                 store,
                 store,
                 store,
+                store.facts.verifier(),
                 new ObjectMapper(),
                 metrics);
 
@@ -178,6 +181,7 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
                 store,
                 store,
                 store,
+                store.facts.verifier(),
                 new ObjectMapper(),
                 metrics);
 
@@ -251,6 +255,7 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
             McDepartRecordBatchPersistWriter {
 
         private final List<String> events = new ArrayList<>();
+        private final RecordingOrderFacts facts = new RecordingOrderFacts();
         private final List<McDepartRecordDO> departRecords = new ArrayList<>();
         private final Map<String, McDepartRecordDO> departRecordsByKey = new LinkedHashMap<>();
         private final Map<String, RechargeDispatchOutboxDO> dispatchByEventId = new LinkedHashMap<>();
@@ -259,12 +264,14 @@ class MybatisBatchRechargeOrderPersistenceAdapterTest {
         @Override
         public int insertOrderBatchIfAbsent(List<McOrderDO> orders) {
             events.add("orderBatch:" + orderIds(orders));
+            orders.forEach(row -> facts.orders.putIfAbsent(row.getOrderId(), row));
             return orders.size();
         }
 
         @Override
         public int insertBatchOrUpdatePersistState(List<RechargeOrderExtDO> rows) {
             events.add("extBatch:" + extOrderIds(rows));
+            rows.forEach(row -> facts.extensions.putIfAbsent(row.getOrderId(), row));
             return rows.size();
         }
 

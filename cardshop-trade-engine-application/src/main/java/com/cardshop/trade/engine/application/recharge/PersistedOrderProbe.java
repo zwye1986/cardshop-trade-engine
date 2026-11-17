@@ -11,12 +11,31 @@ package com.cardshop.trade.engine.application.recharge;
  * @param outOrderSn 商户订单号
  * @param orderId 平台订单号
  * @param orderVersion 本次选中快照版本
+ * @param orderPrice 订单金额，单位分；旧调用未提供时不得跳过事实事务
+ * @param requestHash 不可变请求摘要
+ * @param requestHashVersion 请求摘要规范版本
+ * @param requestHashAlg 请求摘要算法
  */
 public record PersistedOrderProbe(
         String orgCode,
         String outOrderSn,
         String orderId,
-        long orderVersion) {
+        long orderVersion,
+        Long orderPrice,
+        String requestHash,
+        String requestHashVersion,
+        String requestHashAlg) {
+
+    /** 旧调用缺少不可变请求身份时不能用于批消费跳过裁决；参见详细设计8.2.1。 */
+    public PersistedOrderProbe(String orgCode, String outOrderSn, String orderId, long orderVersion) {
+        this(orgCode, outOrderSn, orderId, orderVersion, null, null, null, null);
+    }
+
+    public static PersistedOrderProbe from(PersistOrderSnapshot snapshot) {
+        return new PersistedOrderProbe(snapshot.orgCode(), snapshot.outOrderSn(), snapshot.orderId(),
+                snapshot.orderVersion(), snapshot.orderPrice(), snapshot.requestHash(),
+                snapshot.requestHashVersion(), snapshot.requestHashAlg());
+    }
 
     public PersistedOrderProbe {
         orgCode = requireText(orgCode, "orgCode");

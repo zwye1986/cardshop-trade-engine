@@ -45,6 +45,7 @@ class MybatisRechargePersistOutboxAsyncWriterTest {
                 store,
                 store,
                 store,
+                committedFacts(),
                 new ObjectMapper(),
                 metrics,
                 Duration.ofSeconds(5),
@@ -86,6 +87,7 @@ class MybatisRechargePersistOutboxAsyncWriterTest {
                 store,
                 store,
                 store,
+                committedFacts(),
                 new ObjectMapper(),
                 TradeEngineObservabilityMetrics.noop(),
                 Duration.ofSeconds(5),
@@ -111,6 +113,7 @@ class MybatisRechargePersistOutboxAsyncWriterTest {
                 store,
                 store,
                 store,
+                committedFacts(),
                 new ObjectMapper(),
                 TradeEngineObservabilityMetrics.noop(),
                 Duration.ofSeconds(5),
@@ -123,6 +126,17 @@ class MybatisRechargePersistOutboxAsyncWriterTest {
 
         assertThat(store.dispatchByEventId).containsOnlyKeys("dispatch-ORDER-1001");
         assertThat(store.balanceByEventId).containsOnlyKeys("balance-flush-ORDER-1001");
+    }
+
+    private static RechargeOrderIdentityVerifier committedFacts() {
+        var facts = new RecordingOrderFacts();
+        var converter = new RechargeOrderPersistenceRowConverter(new ObjectMapper());
+        for (var aggregate : List.of(aggregate("ORDER-1001", "OUT-1001", true, true),
+                aggregate("ORDER-1002", "OUT-1002", true, true))) {
+            facts.orders.put(aggregate.snapshot().orderId(), converter.toMcOrder(aggregate));
+            facts.extensions.put(aggregate.snapshot().orderId(), converter.toExt(aggregate));
+        }
+        return facts.verifier();
     }
 
     private static OrderPersistAggregate aggregate(

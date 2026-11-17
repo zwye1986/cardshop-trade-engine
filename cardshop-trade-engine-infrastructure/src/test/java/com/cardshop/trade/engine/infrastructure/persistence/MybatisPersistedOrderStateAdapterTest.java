@@ -7,6 +7,8 @@ import static org.mockito.Mockito.when;
 
 import com.cardshop.trade.engine.application.recharge.PersistedOrderProbe;
 import com.cardshop.trade.engine.infrastructure.persistence.entity.RechargeOrderExtDO;
+import com.cardshop.trade.engine.infrastructure.persistence.entity.McOrderDO;
+import com.cardshop.trade.engine.infrastructure.persistence.mapper.McOrderMapper;
 import com.cardshop.trade.engine.infrastructure.persistence.mapper.RechargeOrderExtMapper;
 import java.util.List;
 import java.util.Set;
@@ -29,15 +31,15 @@ class MybatisPersistedOrderStateAdapterTest {
                         ext("ORDER-2", "A36", "OUT-2", "PERSIST_QUEUED", 5L),
                         ext("ORDER-3", "A36", "OUT-3-OTHER", "DB_PERSISTED", 5L),
                         ext("ORDER-4", "A36", "OUT-4", "DB_PERSISTED", 1L)));
-        MybatisPersistedOrderStateAdapter adapter = new MybatisPersistedOrderStateAdapter(mapper);
+        var orders = mock(McOrderMapper.class);
+        when(orders.selectPersistIdentities(List.of("ORDER-1", "ORDER-2", "ORDER-3", "ORDER-4")))
+                .thenReturn(java.util.stream.IntStream.rangeClosed(1, 4).mapToObj(i -> order(i)).toList());
+        MybatisPersistedOrderStateAdapter adapter = new MybatisPersistedOrderStateAdapter(orders, mapper);
 
         Set<PersistedOrderProbe> persisted = adapter.findPersistedAtLeast(List.of(
-                new PersistedOrderProbe("A36", "OUT-1", "ORDER-1", 2L),
-                new PersistedOrderProbe("A36", "OUT-2", "ORDER-2", 5L),
-                new PersistedOrderProbe("A36", "OUT-3", "ORDER-3", 5L),
-                new PersistedOrderProbe("A36", "OUT-4", "ORDER-4", 2L)));
+                probe(1, 2L), probe(2, 5L), probe(3, 5L), probe(4, 2L)));
 
-        assertThat(persisted).containsExactly(new PersistedOrderProbe("A36", "OUT-1", "ORDER-1", 2L));
+        assertThat(persisted).containsExactly(probe(1, 2L));
         verify(mapper).selectByOrderIds(List.of("ORDER-1", "ORDER-2", "ORDER-3", "ORDER-4"));
     }
 
@@ -45,12 +47,50 @@ class MybatisPersistedOrderStateAdapterTest {
     void batchLookupReturnsEmptyWhenMapperFails() {
         RechargeOrderExtMapper mapper = mock(RechargeOrderExtMapper.class);
         when(mapper.selectByOrderIds(List.of("ORDER-1"))).thenThrow(new IllegalStateException("db unavailable"));
-        MybatisPersistedOrderStateAdapter adapter = new MybatisPersistedOrderStateAdapter(mapper);
+        MybatisPersistedOrderStateAdapter adapter = new MybatisPersistedOrderStateAdapter(mock(McOrderMapper.class), mapper);
 
         Set<PersistedOrderProbe> persisted = adapter.findPersistedAtLeast(List.of(
                 new PersistedOrderProbe("A36", "OUT-1", "ORDER-1", 1L)));
 
         assertThat(persisted).isEmpty();
+    }
+
+    @Test
+    void batchSkipRejectsAmountHashMetadataAndOwnershipMismatch() {
+        var orders = mock(McOrderMapper.class);
+        var extensions = mock(RechargeOrderExtMapper.class);
+        var order = order(1);
+        var ext = ext("ORDER-1", "A36", "OUT-1", "DB_PERSISTED", 2);
+        when(orders.selectPersistIdentities(List.of("ORDER-1"))).thenReturn(List.of(order));
+        when(extensions.selectByOrderIds(List.of("ORDER-1"))).thenReturn(List.of(ext));
+        var adapter = new MybatisPersistedOrderStateAdapter(orders, extensions);
+        assertThat(adapter.findPersistedAtLeast(List.of(probe(1, 2)))).containsExactly(probe(1, 2));
+        order.setOrderPrice(138L);
+        assertThat(adapter.findPersistedAtLeast(List.of(probe(1, 2)))).isEmpty();
+        order.setOrderPrice(137L);
+        for (String different : List.of("hash", "version", "algorithm", "ownership")) {
+            ext.setRequestHash(different.equals("hash") ? "other" : "hash");
+            ext.setRequestHashVersion(different.equals("version") ? "v2" : "v1");
+            ext.setRequestHashAlg(different.equals("algorithm") ? "SM3" : "SHA-256");
+            order.setTradeEngineOwned(different.equals("ownership") ? 0 : 1);
+            assertThat(adapter.findPersistedAtLeast(List.of(probe(1, 2)))).isEmpty();
+        }
+    }
+
+    private static PersistedOrderProbe probe(int number, long version) {
+        return new PersistedOrderProbe("A36", "OUT-" + number, "ORDER-" + number, version,
+                137L, "hash", "v1", "SHA-256");
+    }
+
+    private static McOrderDO order(int number) {
+        var order = new McOrderDO();
+        order.setOrderId("ORDER-" + number);
+        order.setOrgCode("A36");
+        order.setOutOrderId("OUT-" + number);
+        order.setOrderPrice(137L);
+        order.setProductType(1);
+        order.setTradeEngineOwned(1);
+        return order;
     }
 
     private static RechargeOrderExtDO ext(
@@ -65,6 +105,9 @@ class MybatisPersistedOrderStateAdapterTest {
         ext.setOutOrderSn(outOrderSn);
         ext.setPersistStatus(persistStatus);
         ext.setPersistedVersion(persistedVersion);
+        ext.setRequestHash("hash");
+        ext.setRequestHashVersion("v1");
+        ext.setRequestHashAlg("SHA-256");
         return ext;
     }
 }
