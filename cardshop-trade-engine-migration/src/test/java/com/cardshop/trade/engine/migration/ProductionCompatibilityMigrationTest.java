@@ -200,9 +200,10 @@ class ProductionCompatibilityMigrationTest {
         assertThat(ledger()).isEqualTo(ledger);
     }
 
-    @Test
-    void reentersWhenSuccessfulCompatibilityDdlWasNotRecorded() throws Exception {
-        oldTables();
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void reentersWhenSuccessfulCompatibilityDdlWasNotRecorded(boolean noPad) throws Exception {
+        if (noPad) noPadTables(); else oldTables();
         duplicates();
         migrate(ENTRY);
         var before = facts();
@@ -211,9 +212,10 @@ class ProductionCompatibilityMigrationTest {
         assertThat(facts()).isEqualTo(before);
     }
 
-    @Test
-    void sqlPreviewRefusesDynamicMigrationWithoutMutatingExistingOwnership() throws Exception {
-        oldTables();
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void sqlPreviewRefusesDynamicMigrationWithoutMutatingExistingOwnership(boolean noPad) throws Exception {
+        if (noPad) noPadTables(); else oldTables();
         try (var connection = connect(schema); var resources = new ClassLoaderResourceAccessor()) {
             var database = DatabaseFactory.getInstance().findCorrectDatabaseImplementation(new JdbcConnection(connection));
             try (var migration = new Liquibase(LegacySchemaPreparation.changelog(resources), resources, database)) {
@@ -238,9 +240,10 @@ class ProductionCompatibilityMigrationTest {
     }
 
     @ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(ints = {1, 2, 3, 4, 5, 6})
-    void resumesAfterEachSuccessfulPreludeStep(int steps) throws Exception {
-        oldTables();
+    @org.junit.jupiter.params.provider.CsvSource({"1,false", "2,false", "3,false", "4,false", "5,false", "6,false",
+            "1,true", "2,true", "3,true", "4,true", "5,true", "6,true"})
+    void resumesAfterEachSuccessfulPreludeStep(int steps, boolean noPad) throws Exception {
+        if (noPad) noPadTables(); else oldTables();
         duplicates();
         var before = facts();
         try (var connection = connect(schema); var resources = new ClassLoaderResourceAccessor()) {
@@ -286,9 +289,9 @@ class ProductionCompatibilityMigrationTest {
     }
 
     @ParameterizedTest
-    @ValueSource(booleans = {false, true})
-    void permitsExistingColonProtocolButRefusesActualTupleCollision(boolean collision) throws Exception {
-        oldTables();
+    @org.junit.jupiter.params.provider.CsvSource({"false,false", "true,false", "false,true", "true,true"})
+    void permitsExistingColonProtocolButRefusesActualTupleCollision(boolean collision, boolean noPad) throws Exception {
+        if (noPad) noPadTables(); else oldTables();
         try (var connection = connect(schema); var resources = new ClassLoaderResourceAccessor()) {
             var database = DatabaseFactory.getInstance().findCorrectDatabaseImplementation(new JdbcConnection(connection));
             try (var migration = new Liquibase(LegacySchemaPreparation.changelog(resources), resources, database)) {
@@ -308,9 +311,10 @@ class ProductionCompatibilityMigrationTest {
         }
     }
 
-    @Test
-    void backfillsAcrossPrimaryKeyBatchesAndPreservesAutomaticBusinessTimestamps() throws Exception {
-        oldTables();
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void backfillsAcrossPrimaryKeyBatchesAndPreservesAutomaticBusinessTimestamps(boolean noPad) throws Exception {
+        if (noPad) noPadTables(); else oldTables();
         try (var connection = connect(schema); var resources = new ClassLoaderResourceAccessor()) {
             var database = DatabaseFactory.getInstance().findCorrectDatabaseImplementation(new JdbcConnection(connection));
             try (var migration = new Liquibase(LegacySchemaPreparation.changelog(resources), resources, database)) {
@@ -365,6 +369,122 @@ class ProductionCompatibilityMigrationTest {
         } finally {
             executor.shutdownNow();
         }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void upgradesNoPadSchemaWithoutChangingIdentitySemantics(boolean oldMasterApplied) throws Exception {
+        noPadTables();
+        if (oldMasterApplied) {
+            migrate("db/changelog/db.changelog-master.yaml");
+            // 对齐现场旧生成列变体：缺org_code空串条件且保留原唯一索引，不能只覆盖master标准表达式。
+            sql("ALTER TABLE mc_order MODIFY direct_recharge_out_order_key varchar(191) COLLATE utf8mb4_0900_ai_ci "
+                    + "GENERATED ALWAYS AS (CASE WHEN product_type=1 AND org_code IS NOT NULL "
+                    + "AND out_orderId IS NOT NULL AND out_orderId<>'' THEN concat(org_code,':',out_orderId) ELSE NULL END) "
+                    + "STORED COMMENT '直充订单唯一幂等键(org_code:out_orderId)'");
+        } else try (var connection = connect(schema); var resources = new ClassLoaderResourceAccessor()) {
+            var database = DatabaseFactory.getInstance().findCorrectDatabaseImplementation(new JdbcConnection(connection));
+            try (var migration = new Liquibase(LegacySchemaPreparation.changelog(resources), resources, database)) {
+                migration.update(new Contexts(), new LabelExpression());
+            }
+        }
+        sql("INSERT INTO databasechangelog(ID,AUTHOR,FILENAME,DATEEXECUTED,ORDEREXECUTED,EXECTYPE,MD5SUM) "
+                + "VALUES('other-history','fixture','legacy/history.xml','2020-01-01',100,'EXECUTED','9:unchanged')");
+        sql("INSERT INTO mc_order(order_Id,org_code,out_orderId,product_type,order_price,update_time) VALUES"
+                + "('p-plain','A35','out',1,137,'2020-01-02'),('p-space','A35','out ',1,211,'2020-01-03'),"
+                + "('p-unicode','A35','café😀',1,307,'2020-01-04'),('old-only','OLD','untouched',1,419,'2020-01-05')");
+        sql("INSERT INTO recharge_order_ext(order_id,org_code,out_order_sn,request_hash,request_hash_version,request_hash_alg,"
+                + "persist_status,persist_source,validation_status) SELECT order_Id,org_code,out_orderId,'h','v1','SHA256',"
+                + "'PERSISTED','MQ','VALID' FROM mc_order WHERE org_code='A35'");
+        var before = facts();
+        var priorLedger = ledger();
+        migrate(ENTRY);
+        assertThat(facts()).isEqualTo(before);
+        assertThat(ledger()).containsAll(priorLedger);
+        assertThat(scalar("SELECT COUNT(*) FROM mc_order WHERE trade_engine_owned=1")).isEqualTo("3");
+        assertThat(scalar("SELECT trade_engine_owned FROM mc_order WHERE order_Id='old-only'")).isEqualTo("0");
+        assertThat(scalar("SELECT direct_recharge_out_order_key IS NULL FROM mc_order WHERE order_Id='old-only'")).isEqualTo("1");
+        assertThat(scalar("SELECT HEX(direct_recharge_out_order_key) FROM mc_order WHERE order_Id='p-space'"))
+                .isEqualTo("4133353A6F757420");
+        assertThat(scalar("SELECT direct_recharge_out_order_key FROM mc_order WHERE order_Id='p-unicode'"))
+                .isEqualTo("A35:café😀");
+        assertThat(scalar("SELECT COLLATION_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+                + "AND TABLE_NAME='mc_order' AND COLUMN_NAME='direct_recharge_out_order_key'"))
+                .isEqualTo("utf8mb4_0900_ai_ci");
+        var ledger = ledger();
+        var ddl = scalar("SHOW CREATE TABLE mc_order", 2);
+        migrate(ENTRY);
+        assertThat(ledger()).isEqualTo(ledger);
+        assertThat(scalar("SHOW CREATE TABLE mc_order", 2)).isEqualTo(ddl);
+        // 保留NO PAD尾随空格区分，同时不能把大小写/重音不敏感规则错误改成二进制。
+        assertThatThrownBy(() -> sql("INSERT INTO mc_order(order_Id,org_code,out_orderId,product_type,trade_engine_owned) "
+                + "VALUES('case-conflict','a35','OUT',1,1)")).hasMessageContaining("Duplicate entry");
+        assertThatThrownBy(() -> sql("INSERT INTO mc_order(order_Id,org_code,out_orderId,product_type,trade_engine_owned) "
+                + "VALUES('accent-conflict','A35','cafe😀',1,1)")).hasMessageContaining("Duplicate entry");
+        sql("INSERT INTO mc_order(order_Id,org_code,out_orderId,product_type,trade_engine_owned) "
+                + "VALUES('two-spaces','A35','out  ',1,1)");
+        assertThat(scalar("SELECT COUNT(*) FROM mc_order WHERE trade_engine_owned=1")).isEqualTo("4");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "ALTER DATABASE %s CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci",
+            "ALTER TABLE mc_order DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci",
+            "ALTER TABLE mc_depart_record DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci",
+            "ALTER TABLE mc_order MODIFY org_code varchar(64) COLLATE utf8mb4_general_ci",
+            "ALTER TABLE recharge_order_ext MODIFY order_id varchar(100) COLLATE utf8mb4_bin NOT NULL",
+            "ALTER TABLE mc_depart_record MODIFY type varchar(8) COLLATE utf8mb4_general_ci",
+            "ALTER TABLE mc_order MODIFY direct_recharge_out_order_key varchar(191) COLLATE utf8mb4_general_ci "
+                    + "GENERATED ALWAYS AS (CASE WHEN product_type=1 AND org_code IS NOT NULL AND org_code<>'' "
+                    + "AND out_orderId IS NOT NULL AND out_orderId<>'' THEN concat(org_code,':',out_orderId) ELSE NULL END) STORED"})
+    void refusesUnknownOrMixedNoPadCollationsBeforeWriting(String mutation) throws Exception {
+        noPadTables();
+        migrate("db/changelog/db.changelog-master.yaml");
+        sql(mutation.contains("%s") ? mutation.formatted(schema) : mutation);
+        var ddl = scalar("SHOW CREATE TABLE mc_order", 2);
+        var ledger = ledger();
+        assertThatThrownBy(() -> migrate(ENTRY)).hasStackTraceContaining(
+                mutation.startsWith("ALTER DATABASE") ? "Unsupported database collation" : "NO PAD");
+        assertThat(scalar("SHOW CREATE TABLE mc_order", 2)).isEqualTo(ddl);
+        assertThat(ledger()).isEqualTo(ledger);
+        assertThat(scalar("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() "
+                + "AND TABLE_NAME='mc_order' AND COLUMN_NAME='trade_engine_owned'")).isEqualTo("0");
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {126, 127})
+    void enforcesNoPadGeneratedKeyLengthAtBoundary(int externalLength) throws Exception {
+        noPadTables();
+        try (var connection = connect(schema); var resources = new ClassLoaderResourceAccessor()) {
+            var database = DatabaseFactory.getInstance().findCorrectDatabaseImplementation(new JdbcConnection(connection));
+            try (var migration = new Liquibase(LegacySchemaPreparation.changelog(resources), resources, database)) {
+                migration.update(new Contexts(), new LabelExpression());
+            }
+        }
+        // 合成宽列只为越过191边界；不能由当前较窄的DTO长度限制掩盖迁移的长度守卫。
+        sql("ALTER TABLE mc_order MODIFY out_orderId varchar(191)");
+        sql("ALTER TABLE recharge_order_ext MODIFY out_order_sn varchar(191) NOT NULL");
+        sql("INSERT INTO mc_order(order_Id,org_code,out_orderId,product_type) VALUES('boundary',REPEAT('a',64),REPEAT('b',"
+                + externalLength + "),1)");
+        sql("INSERT INTO recharge_order_ext(order_id,org_code,out_order_sn,request_hash,request_hash_version,request_hash_alg,"
+                + "persist_status,persist_source,validation_status) SELECT order_Id,org_code,out_orderId,'h','v1','SHA256',"
+                + "'PERSISTED','MQ','VALID' FROM mc_order");
+        var before = facts();
+        if (externalLength == 126) {
+            migrate(ENTRY);
+            assertThat(scalar("SELECT CHAR_LENGTH(direct_recharge_out_order_key) FROM mc_order")).isEqualTo("191");
+        } else {
+            assertThatThrownBy(() -> migrate(ENTRY)).hasStackTraceContaining("Owned identity incompatible with concatenated key");
+        }
+        assertThat(facts()).isEqualTo(before);
+    }
+
+    /** 仅转换本机随机schema的合成夹具，不读取远端配置或复制真实业务数据。 */
+    private void noPadTables() throws Exception {
+        sql("ALTER DATABASE " + schema + " CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+        oldTables();
+        sql("ALTER TABLE mc_order CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
+        sql("ALTER TABLE mc_depart_record CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci");
     }
 
     private void oldTables() throws Exception {

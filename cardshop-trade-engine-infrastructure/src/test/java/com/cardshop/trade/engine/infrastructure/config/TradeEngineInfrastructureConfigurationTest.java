@@ -237,6 +237,8 @@ class TradeEngineInfrastructureConfigurationTest {
     void lateRedisConfigurationAlsoProvidesTrustedPersistenceCapability() {
         new ApplicationContextRunner()
                 .withConfiguration(AutoConfigurations.of(TradeEngineRedisPendingAutoConfiguration.class))
+                .withBean(org.apache.ibatis.session.SqlSessionFactory.class,
+                        () -> mapperProxy(org.apache.ibatis.session.SqlSessionFactory.class))
                 .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
                 .withBean(RechargeRedisKeyBuilder.class, () -> new RechargeRedisKeyBuilder("test", 1))
                 .withBean(Clock.class, Clock::systemUTC)

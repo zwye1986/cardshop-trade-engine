@@ -25,6 +25,7 @@ import com.cardshop.trade.engine.infrastructure.redis.RedisPersistOrderSnapshotA
 import com.cardshop.trade.engine.infrastructure.redis.RedisV1MerchantConfigPreheatAdapter;
 import java.time.Clock;
 import java.time.Duration;
+import org.apache.ibatis.session.SqlSessionFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
@@ -112,9 +113,12 @@ public class TradeEngineRedisPendingAutoConfiguration {
         return new RedisDirectRechargeFrequencyAdapter(redisTemplate, Duration.ofMillis(timeoutMs));
     }
 
-    /** MyBatis 后置阶段补齐同一个可信持久查询/占用适配器；参见详细设计3章、8.2.1。 */
+    /**
+     * MyBatis就绪后提供可信查询/持久占用端口；参见详细设计3章、8.2.1及pro120装配修复。
+     * Mapper扫描在条件解析之后完成，不能按Mapper存在性提前跳过；必需参数在实例化时解析。
+     */
     @Bean
-    @ConditionalOnBean({McOrderMapper.class, RechargeOrderExtMapper.class})
+    @ConditionalOnBean(SqlSessionFactory.class)
     @ConditionalOnMissingBean(MybatisRechargeOrderQueryAdapter.class)
     public MybatisRechargeOrderQueryAdapter mybatisRechargeOrderQueryAdapter(
             McOrderMapper orderMapper, RechargeOrderExtMapper extMapper) {

@@ -128,8 +128,10 @@ if [[ "$legacy_xxl" == true ]]; then
     exit 0
 fi
 run_tests 'ProductionCompatibilityMigrationTest,ProductionOrderIdentityMysqlTest'
-verify_report cardshop-trade-engine-migration migration.ProductionCompatibilityMigrationTest 37
-verify_report cardshop-trade-engine-infrastructure infrastructure.persistence.ProductionOrderIdentityMysqlTest 19
+verify_report cardshop-trade-engine-migration migration.ProductionCompatibilityMigrationTest 59
+verify_report cardshop-trade-engine-infrastructure infrastructure.persistence.ProductionOrderIdentityMysqlTest 23
+run_tests 'ProductionOrderIdentityMysqlTest' -Dproduction.compatibility.collation=utf8mb4_0900_ai_ci
+verify_report cardshop-trade-engine-infrastructure infrastructure.persistence.ProductionOrderIdentityMysqlTest 23
 # 第一个Surefire JVM正常退出后，再启动另一个JVM读取同一份已提交事实，不能用重建对象冒充重启。
 export COMPAT_RECOVERY_SCHEMA="compat_identity_$(openssl rand -hex 16)"
 run_tests 'ProductionOrderIdentityMysqlTest#commitThenRecoverAcrossJvms' -Dproduction.compatibility.restartStage=facts

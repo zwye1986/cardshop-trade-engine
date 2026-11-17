@@ -28,6 +28,7 @@ public final class ProductionCompatibilityChange implements CustomTaskChange, Cu
     private static final String KEY_COLUMN = "direct_recharge_out_order_key";
     private static final String KEY_INDEX = "uk_direct_recharge_out_order_key";
     private static final String KEY_COMMENT = "新引擎直充订单幂等唯一键";
+    private static final String UTF8MB4_NO_PAD_COLLATION = "utf8mb4_0900_ai_ci";
     private static final String LEGACY_EXPRESSION = "CASE WHEN product_type=1 AND org_code IS NOT NULL "
             + "AND org_code<>'' AND out_orderId IS NOT NULL AND out_orderId<>'' "
             + "THEN concat(org_code,':',out_orderId) ELSE NULL END";
@@ -94,9 +95,36 @@ public final class ProductionCompatibilityChange implements CustomTaskChange, Cu
                 "Supported MySQL 8.0.36+ required");
         require("1".equals(text(connection, "SELECT @@lower_case_table_names")), "lower_case_table_names must be 1");
         require("READ-COMMITTED".equals(text(connection, "SELECT @@transaction_isolation")), "READ-COMMITTED required");
-        require("utf8mb3_general_ci".equals(text(connection, "SELECT @@collation_database")), "utf8mb3_general_ci database required");
+        String databaseCollation = text(connection, "SELECT @@collation_database");
+        require(List.of("utf8mb3_general_ci", UTF8MB4_NO_PAD_COLLATION).contains(databaseCollation),
+                "Unsupported database collation");
         requiredColumns(connection, "mc_order", "order_Id", "org_code", "out_orderId", "product_type");
         requiredColumns(connection, "mc_depart_record", "order_id", "type", "before_balance", "balance");
+        if (UTF8MB4_NO_PAD_COLLATION.equals(databaseCollation)) {
+            // NO PAD与general_ci不能混用：关联/目标键分组须和保留的唯一索引一致，参见详细设计8.2.1及0900补充。
+            for (String table : List.of("mc_order", "mc_depart_record")) {
+                try (var statement = connection.prepareStatement(
+                        "SELECT TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=?")) {
+                    statement.setString(1, table);
+                    try (var rows = statement.executeQuery()) {
+                        require(rows.next() && UTF8MB4_NO_PAD_COLLATION.equals(rows.getString(1)),
+                                "NO PAD table collation differs: " + table);
+                    }
+                }
+            }
+            for (var contract : Map.of(
+                    "mc_order", List.of("order_Id", "org_code", "out_orderId", KEY_COLUMN),
+                    "mc_depart_record", List.of("order_id", "type", "trade_engine_record_key"),
+                    "recharge_order_ext", List.of("order_id", "org_code", "out_order_sn")).entrySet()) {
+                if (!tableExists(connection, contract.getKey())) continue;
+                for (String name : contract.getValue()) {
+                    var field = column(connection, contract.getKey(), name);
+                    // 首次升级可没有生成列；身份列由requiredColumns/validateExt继续核查，不补造结构。
+                    if (field != null) require(UTF8MB4_NO_PAD_COLLATION.equals(field.collation()),
+                            "NO PAD identity collation differs: " + contract.getKey() + "." + name);
+                }
+            }
+        }
         require(hasUnique(connection, "mc_order", List.of("order_id")), "mc_order platform order unique index required");
         primaryKey(connection);
         validateOwned(connection, false);
@@ -225,7 +253,9 @@ public final class ProductionCompatibilityChange implements CustomTaskChange, Cu
         if (existing == null) return;
         require("varchar(191)".equals(existing.type()) && "STORED GENERATED".equals(existing.extra())
                         && "YES".equals(existing.nullable()) && existing.defaultValue() == null
-                        && List.of("utf8mb3_general_ci", "utf8mb4_general_ci").contains(existing.collation()),
+                        && (UTF8MB4_NO_PAD_COLLATION.equals(text(connection, "SELECT @@collation_database"))
+                            ? UTF8MB4_NO_PAD_COLLATION.equals(existing.collation())
+                            : List.of("utf8mb3_general_ci", "utf8mb4_general_ci").contains(existing.collation())),
                 "Unknown generated direct key definition");
         String expression = normalize(existing.expression());
         boolean target = expression.equals(normalize(TARGET_EXPRESSION));

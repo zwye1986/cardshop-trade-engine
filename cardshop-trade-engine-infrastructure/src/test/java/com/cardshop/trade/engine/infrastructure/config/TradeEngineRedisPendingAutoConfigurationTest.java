@@ -2,6 +2,7 @@ package com.cardshop.trade.engine.infrastructure.config;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.baomidou.mybatisplus.autoconfigure.MybatisPlusAutoConfiguration;
 import com.cardshop.trade.engine.application.recharge.RechargeBalanceReconcilePort;
 import com.cardshop.trade.engine.application.recharge.RechargeCacheRepairPort;
 import com.cardshop.trade.engine.application.v1.RechargeOrderQueryPort;
@@ -16,9 +17,14 @@ import com.cardshop.trade.engine.infrastructure.redis.RechargeRedisKeyBuilder;
 import com.cardshop.trade.engine.infrastructure.redis.RedisRechargeCacheRepairAdapter;
 import java.lang.reflect.Proxy;
 import java.time.Clock;
+import java.util.UUID;
+import org.apache.ibatis.session.SqlSessionFactory;
 import org.junit.jupiter.api.Test;
+import org.springframework.boot.autoconfigure.AutoConfigurationPackages;
 import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.context.annotation.Bean;
 import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory;
 import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
@@ -33,6 +39,32 @@ import org.springframework.data.redis.serializer.RedisSerializationContext;
  * `/v1/cardapi/order/invalid` 返回“新交易引擎作废暂未启用”。这些端口必须放在 Redis 后置自动配置中兜底。
  */
 class TradeEngineRedisPendingAutoConfigurationTest {
+
+    @Test
+    void realMapperScanProvidesTrustedPersistenceAndMysqlQueryFallback() {
+        // 使用真实延后扫描，不能预注册Mapper替身掩盖解析期条件误判。参见详细设计pro120装配修复。
+        new ApplicationContextRunner()
+                .withInitializer(context -> AutoConfigurationPackages.register(
+                        (BeanDefinitionRegistry) context.getBeanFactory(),
+                        "com.cardshop.trade.engine.infrastructure.persistence.mapper"))
+                .withBean(ReactiveStringRedisTemplate.class, TradeEngineRedisPendingAutoConfigurationTest::redisTemplate)
+                .withBean(RechargeRedisKeyBuilder.class, () -> new RechargeRedisKeyBuilder("test", 1))
+                .withBean(TradeEngineProperties.class, TradeEngineProperties::new)
+                .withBean(Clock.class, Clock::systemUTC)
+                .withPropertyValues("spring.datasource.url=jdbc:h2:mem:" + UUID.randomUUID()
+                                + ";MODE=MySQL;DATABASE_TO_LOWER=TRUE",
+                        "spring.datasource.driver-class-name=org.h2.Driver")
+                .withConfiguration(AutoConfigurations.of(DataSourceAutoConfiguration.class,
+                        MybatisPlusDdlRunnerCompatibilityAutoConfiguration.class,
+                        MybatisPlusAutoConfiguration.class, TradeEngineRedisPendingAutoConfiguration.class))
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(McOrderMapper.class);
+                    assertThat(context).hasSingleBean(RechargeOrderExistencePort.class);
+                    assertThat(context.getBean(RechargeOrderQueryPort.class))
+                            .isInstanceOf(FallbackRechargeOrderQueryAdapter.class);
+                });
+    }
 
     @Test
     void registersRechargeOrderQueryPortAfterRedisTemplateIsAvailable() {
@@ -104,6 +136,11 @@ class TradeEngineRedisPendingAutoConfigurationTest {
     }
 
     static class QueryMapperBeans {
+
+        @Bean
+        SqlSessionFactory sqlSessionFactory() {
+            return proxy(SqlSessionFactory.class);
+        }
 
         @Bean
         McOrderMapper mcOrderMapper() {
